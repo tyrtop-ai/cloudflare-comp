@@ -460,6 +460,19 @@ test('/api/run passes base and the request\'s host to the room', async () => {
   assert.deepEqual(seen[1][4].selfHosts, ['control.example-workers.net', 'ai.example.com', 'docs-host.example.com']);
 });
 
+// R6-room/record-2: every path the person grants is kept, at Start and at Continue, however many.
+test('every path the person grants is kept, at Start and through /api/continue', async () => {
+  const paths = Array.from({length: 70}, (_, i) => `src/file${i}.js`);
+  const {room} = liveRoom({room_id: 'room-grants-0001'});
+  await room.start(README_GOAL, 20, {pipeline: 'v8'}, 'room-grants-0001', {selfHosts: ['control.example.com'], grants: paths});
+  assert.deepEqual(room.read('base_approved', []), paths);
+  const seen = [];
+  const env = {APP_TOKEN: 'fixture-token', ROOMS: {getByName: () => ({resume: async (...args) => { seen.push(args); return {status: 'running'}; }})}};
+  await worker.fetch(new Request('https://control.example.com/api/continue', {method: 'POST', headers: {authorization: 'Bearer fixture-token', 'content-type': 'application/json'},
+    body: JSON.stringify({room: 'room-grants-0001', budget: 20, grants: paths})}), env);
+  assert.deepEqual(seen[0][2].grants, paths);
+});
+
 // ============================================================ S8b review
 const {contractErrors} = await import('../src/contracts.js');
 const {packagePath, partsRoot} = await import('../src/assembly.js');

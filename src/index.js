@@ -7828,7 +7828,7 @@ export class ControlRoom extends DurableObject {
     this.configure(settings);
     if (roomId) this.set('room_id',roomId);
     this.save('fetch_self_hosts',(Array.isArray(selfHosts)?selfHosts:[selfHosts]).filter(h=>typeof h==='string'&&h).slice(0,8));
-    if(Array.isArray(grants)&&grants.length){const given=[...new Set(grants.filter(p=>typeof p==='string'&&isPath(p)))].slice(0,64);this.save('base_approved',given);if(given.length)this.event('system','base_granted',clip(`The person granted changing ${given.join(', ')} at Start.`,500));}
+    if(Array.isArray(grants)&&grants.length){const given=[...new Set(grants.filter(p=>typeof p==='string'&&isPath(p)))];this.save('base_approved',given);if(given.length)this.event('system','base_granted',clip(`The person granted changing ${given.join(', ')} at Start.`,500));}
     if(loaded) {
       for(const [path,content] of loaded.files)this.db().exec('INSERT INTO base_files(path,content,sha256,mode) VALUES (?,?,?,?)',path,content,await sha256(content),loaded.modes?.get(path)??0o644);
       for(const p of loaded.passthrough||[])this.db().exec('INSERT INTO base_passthrough(path,bytes,mode,sha256,reason) VALUES (?,?,?,?,?)',p.path,p.bytes,p.mode??0o644,await sha256Bytes(p.bytes),p.reason||'');
@@ -9352,7 +9352,7 @@ export default {
         const started=await stub.start(goal,normalizeTurnBudget(payload.budget??20),payload.settings||{},room,{base:payload.base??null,selfHosts:[url.host,...selfHostsOf(env)],...(Array.isArray(payload.grants)?{grants:payload.grants}:{})});
         return json(started,started.error?started.status||400:200);
       }
-      if (url.pathname==='/api/continue' && request.method==='POST') return json(await stub.resume(normalizeTurnBudget(payload.budget??20),payload.settings||{},{grants:Array.isArray(payload.grants)?payload.grants.filter(p=>typeof p==='string').slice(0,64):null}));
+      if (url.pathname==='/api/continue' && request.method==='POST') return json(await stub.resume(normalizeTurnBudget(payload.budget??20),payload.settings||{},{grants:Array.isArray(payload.grants)?payload.grants.filter(p=>typeof p==='string'):null}));
       // v8 S9: a change applied now (an adjustment while running), and the prompt queue.
       // v8 S9 review: a budget that is no turn budget is the request's error (400), not the server's.
       const turnsOf=v=>{try{return {budget:v==null?null:normalizeTurnBudget(v)};}catch(e){return {error:String(e?.message||e)};}};
