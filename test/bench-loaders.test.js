@@ -297,6 +297,21 @@ test('fetchDataset: a datasets-server rows URL is paged up to the wanted rows; a
   assert.equal(big.text.length, 17 * 1024 * 1024);
 });
 
+// Owner 2026-10-15 05:16 "point this thing at links and benchmarks": no deadline is set on reading one, whatever its page count.
+test('fetchDataset: no deadline on a dataset: every page is read, however long the pages take together', async () => {
+  assert.equal('timeoutMs' in BENCH_LIMITS, false);
+  const rows = Array.from({length: 250}, (_, i) => ({...MULTIPLE_JS[0], name: `t${i}`}));
+  const base = 'https://datasets-server.huggingface.co/rows?dataset=toy%2Fbig&config=js&split=test';
+  const slow = async url => {
+    await new Promise(r => setTimeout(r, 30));
+    const u = new URL(url), offset = Number(u.searchParams.get('offset')), length = Number(u.searchParams.get('length'));
+    return new Response(JSON.stringify({rows: rows.slice(offset, offset + length).map(row => ({row})), num_rows_total: rows.length}), {headers: {'content-type': 'application/json'}});
+  };
+  const r = await fetchDataset(base, {fetch: slow, policy: policy({timeoutMs: 20})});
+  assert.equal(r.error, null);
+  assert.equal(parseRows(r.text).rows.length, 250);
+});
+
 test('loadDataset: from a URL or pasted text, with a stable digest; errors for nothing usable', async () => {
   const url = 'https://raw.githubusercontent.com/toy/bench/main/mbpp.jsonl';
   const fetch = fakeFetch({[url]: body(jsonl(MBPP))});

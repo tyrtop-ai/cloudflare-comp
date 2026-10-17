@@ -44,7 +44,6 @@ const json = (body, status = 200) => Response.json(body, {status, headers: {'cac
 export const RUN_ID = /^[a-f0-9]{12}$/;
 export const KEEP_ROOMS = Object.freeze(['failed', 'all', 'none']);
 export const BENCH_DEFAULTS = Object.freeze({limit: null, concurrency: 2, budget: 60, poll_ms: 10_000, executors: 4, keep_rooms: 'failed'});
-const MAX_PURGE_TRIES = 10;
 // How many task rooms run at once at most: BENCH_EXECUTORS, else 4. (Each
 // compile opens its own box; the durable_object policy has no max_instances.)
 export const executorSlots = env => { const n = Number(env?.BENCH_EXECUTORS); return Number.isInteger(n) && n >= 1 && n <= 64 ? n : BENCH_DEFAULTS.executors; };
@@ -69,7 +68,7 @@ export class BenchRun extends DurableObject {
     const cols = query(db, "SELECT name FROM pragma_table_info('tasks')").map(c => c.name);
     for (const [c, type] of [['grader', 'TEXT'], ['once', 'TEXT'], ['rounds', 'INTEGER DEFAULT 0']]) if (!cols.includes(c)) db.exec(`ALTER TABLE tasks ADD COLUMN ${c} ${type}`);
     // Every room this run started, with what became of it.
-    db.exec('CREATE TABLE IF NOT EXISTS rooms(room TEXT PRIMARY KEY, idx INTEGER, state TEXT, purge INTEGER DEFAULT 0, purged INTEGER DEFAULT 0, tries INTEGER DEFAULT 0)');
+    db.exec('CREATE TABLE IF NOT EXISTS rooms(room TEXT PRIMARY KEY, idx INTEGER, state TEXT, purge INTEGER DEFAULT 0, purged INTEGER DEFAULT 0)');
     db.exec('CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, created_at INTEGER, row TEXT)');
   }
   db() { return this.ctx.storage.sql; }
@@ -131,12 +130,11 @@ export class BenchRun extends DurableObject {
       this.record(t, s);
     }
     const settings = this.get('settings', {}), budget = this.get('budget', BENCH_DEFAULTS.budget), concurrency = this.get('concurrency', BENCH_DEFAULTS.concurrency);
-    const skip = new Set();
     for (;;) {
       if (!this.running()) break;
       const busy = query(this.db(), "SELECT slot FROM tasks WHERE status='running'").map(r => r.slot);
       if (busy.length >= concurrency) break;
-      const t = query(this.db(), "SELECT * FROM tasks WHERE status='queued' ORDER BY idx").find(x => !skip.has(x.idx));
+      const t = query(this.db(), "SELECT * FROM tasks WHERE status='queued' ORDER BY idx LIMIT 1")[0];
       if (!t) break;
       let slot = 0;
       while (busy.includes(slot)) slot++;
@@ -157,8 +155,6 @@ export class BenchRun extends DurableObject {
       }
       if (r?.error) {
         this.db().exec('DELETE FROM rooms WHERE room=?', room);
-        // A room still running (a stop that has not finished) is retried next tick in a fresh room.
-        if (/already running/i.test(r.error)) { this.db().exec("UPDATE tasks SET status='queued',room=NULL,slot=NULL,started_at=NULL,attempt=attempt+1 WHERE idx=?", t.idx); skip.add(t.idx); continue; }
         this.finish({...now2, room: null}, {outcome: 'error', detail: clip(`the room did not start: ${r.error}`)}, null, Date.now());
       }
     }
@@ -176,11 +172,16 @@ export class BenchRun extends DurableObject {
   // task; a failed grading goes back to the room's manager as a complaint
   // and the room runs again, with the turns its budget has left. A room that
   // cannot take it (its budget spent) settles the task with that grading,
-  // and so does the run's Stop (settle).
+  // and so does the run's Stop (settle). A grading that could not run
+  // observed nothing: it is no round, the task stays where it is, and the
+  // completed room is graded again on the next tick (or, after a Stop, on
+  // the tick that resumes the run).
   async graded(t, s, now, {settle = false} = {}) {
-    const g = gradeOutcome(await this.grade(t)), round = (t.rounds || 0) + 1, once = t.once || g.outcome;
+    const g = gradeOutcome(await this.grade(t));
     const row = this.row(t.idx);
     if (!row || row.status !== 'running' || row.room !== t.room) return;
+    if (g.outcome === 'error') { this.record(t, s); return; }
+    const round = (t.rounds || 0) + 1, once = t.once || g.outcome;
     this.db().exec('UPDATE tasks SET rounds=?,once=? WHERE idx=?', round, once, t.idx);
     if (g.outcome === 'fail' && !settle) {
       let r;
@@ -226,14 +227,15 @@ export class BenchRun extends DurableObject {
     const prior = Object.fromEntries(COSTS.map(k => [k, t[k] || 0]));
     this.db().exec("UPDATE tasks SET status='queued',room=NULL,slot=NULL,started_at=NULL,attempt=attempt+1,prior=?,once=NULL,rounds=0 WHERE idx=?", JSON.stringify(prior), t.idx);
   }
-  pendingPurges() { return query(this.db(), 'SELECT COUNT(*) AS n FROM rooms WHERE purge=1 AND purged=0 AND tries<?', MAX_PURGE_TRIES)[0].n; }
-  // Delete the rooms marked for deletion; a busy one (a stop still
-  // finishing) is tried again on a later tick.
+  pendingPurges() { return query(this.db(), 'SELECT COUNT(*) AS n FROM rooms WHERE purge=1 AND purged=0')[0].n; }
+  // Delete the rooms marked for deletion; one not deleted (busy with a stop
+  // still finishing, or the delete failed) is tried again on later ticks
+  // until its delete goes through.
   async purgeRooms() {
-    for (const r of query(this.db(), 'SELECT * FROM rooms WHERE purge=1 AND purged=0 AND tries<? ORDER BY room', MAX_PURGE_TRIES)) {
+    for (const r of query(this.db(), 'SELECT * FROM rooms WHERE purge=1 AND purged=0 ORDER BY room')) {
       let out;
       try { out = await this.env.ROOMS.getByName(r.room).purge(); } catch (e) { out = {error: clip(e?.message || e)}; }
-      this.db().exec('UPDATE rooms SET tries=tries+1,purged=? WHERE room=?', out?.error ? 0 : 1, r.room);
+      if (!out?.error) this.db().exec('UPDATE rooms SET purged=1 WHERE room=?', r.room);
     }
   }
   // Stop: no new rooms start. A running room that has already ended is
@@ -284,18 +286,17 @@ export class BenchRun extends DurableObject {
       try { await this.env.ROOMS.getByName(t.room).stop(); } catch {}
     }
     this.db().exec("UPDATE tasks SET status='done' WHERE status IN ('queued','running')");
-    this.db().exec('UPDATE rooms SET purge=1,tries=0 WHERE purged=0');
+    this.db().exec('UPDATE rooms SET purge=1 WHERE purged=0');
     return this.finishDelete();
   }
   async finishDelete() {
     await this.purgeRooms();
     const left = this.pendingPurges();
     if (left) { await this.ctx.storage.setAlarm(Date.now() + this.get('poll_ms', BENCH_DEFAULTS.poll_ms)); return {status: 'deleting', rooms_left: left}; }
-    const failed = query(this.db(), 'SELECT COUNT(*) AS n FROM rooms WHERE purged=0')[0].n;
     await this.ctx.storage.deleteAlarm?.();
     if (typeof this.ctx.storage.deleteAll === 'function') await this.ctx.storage.deleteAll();
     else for (const table of ['meta', 'tasks', 'rooms']) this.db().exec(`DELETE FROM ${table}`);
-    return {status: 'deleted', rooms_not_deleted: failed};
+    return {status: 'deleted'};
   }
   // The run for the dashboard: settings, dataset, aggregates and task rows
   // (never a task's grader, tests or goal text). once: the first grading's

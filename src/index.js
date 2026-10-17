@@ -8576,10 +8576,11 @@ export class ControlRoom extends DurableObject {
       this.event('system','prompt_resumed',clip(`Continue goes on with: ${p.text}`,600));
     }
   }
-  // Bench (feedback 'until_done'): what the grader observed on the bundle the
-  // room shipped is a complaint at the room's manager, verbatim, and the room
-  // goes on for it with the turns its budget has left (budget_left, what its
-  // last run left): the room's own budget bounds every round together.
+  // Bench: a failed grading of the bundle the room shipped always comes back
+  // here, until a grading passes: what the grader observed is a complaint at
+  // the room's manager, verbatim, and the room goes on for it with the turns
+  // its budget has left (budget_left, what its last run left): the room's
+  // own budget bounds every round together.
   graderComplaint(text) {
     const m=this.roomManager();
     if(!m||!this.node(m))return {error:'Start a run first.'};
