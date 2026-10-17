@@ -699,11 +699,13 @@ export class ControlRoom extends DurableObject {
     // Each reader is an agent of the room, named reader-<hex16> as every row
     // is (rowId): recorded as it starts and as it ends (source_readers), so
     // the dashboard draws it with the others.
-    let calls=0;
+    let calls=0,named=0;
     const room=this.get('room_id',''),readers=[],read=sourceModel(this.inferenceEnv('compiler')),note=async args=>{
-      const x={id:await rowId(room,readers.length+1,'reader'),ref:args.ref,role:args.role,started_at:Date.now(),ended_at:null,noted:false,rounds:0};
+      // The readers run at the same time: each takes its number, and counts its first model call, before any await.
+      calls++;
+      const n=++named,x={id:await rowId(room,n,'reader'),ref:args.ref,role:args.role,started_at:Date.now(),ended_at:null,noted:false,rounds:0};
       readers.push(x);this.save('source_readers',readers);
-      try {const r=await read(args);calls+=r.rounds;Object.assign(x,{noted:!!r.noted,rounds:r.rounds});return r.noted;}
+      try {const r=await read(args);calls+=Math.max(0,r.rounds-1);Object.assign(x,{noted:!!r.noted,rounds:r.rounds});return r.noted;}
       finally {x.ended_at=Date.now();this.save('source_readers',readers);}
     };
     const {rows,chunks}=await loadSources(goal,{fetch:this.fetcher(),allow:report?report.allow:given,selfHosts,note,more:()=>calls<budget});

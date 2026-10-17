@@ -601,11 +601,10 @@ export async function fetchSource(goal, url, {fetch, policy = fetchPolicy(), max
   return result;
 }
 
-// Every URL in the goal, ids S1…Sn, each read whole.
+// Every URL in the goal, ids S1…Sn, each read whole, all at the same time.
 export async function fetchGoalSources(goal, {fetch, policy = fetchPolicy(), redact} = {}) {
-  const out = [], urls = goalUrls(goal);
-  for (const url of urls) out.push({id: `S${out.length + 1}`, ...await fetchSource(goal, url, {fetch, policy, urls, redact})});
-  return out;
+  const urls = goalUrls(goal);
+  return Promise.all(urls.map(async (url, i) => ({id: `S${i + 1}`, ...await fetchSource(goal, url, {fetch, policy, urls, redact})})));
 }
 
 // --- untrusted content for models -----------------------------------------------
@@ -672,20 +671,18 @@ export const NOTE_PAGE = Object.freeze({role: 'source_summary', call: 'sourceSum
 // resolves with what it noted (the call's arguments),
 // or null when it noted nothing. The quoted text only ever travels in
 // `user`, as JSON. `more()` says whether the room's budget allows another
-// reading; a part not read has no gist, and is listed all the same.
+// reading; a part not read has no gist, and is listed all the same. The
+// pages, and the parts of a page, are read at the same time (each part's
+// reader sees only its part); a page's reader starts once its parts are noted.
 export async function sourceSummaries(sources, {note, more = () => true, chunkChars = 6000} = {}) {
   const read = async (kind, sources, ref) => { try { return await note({...kind, ref, user: JSON.stringify({sources})}); } catch { return null; } };
-  const out = [];
-  for (const src of sources) {
-    if (src.error || !src.text) continue;
-    const outline = [];
-    for (const [i, chunk] of chunkText(src.text, chunkChars).entries()) {
+  return Promise.all(sources.filter(src => !src.error && src.text).map(async src => {
+    const outline = await Promise.all(chunkText(src.text, chunkChars).map(async (chunk, i) => {
       const ref = `${src.id}#${i + 1}`, noted = more() ? await read(NOTE_PART, [quoteSource({...src, ref, text: chunk})], ref) : null;
-      outline.push({ref, ...(noted ? {gist: noted.says} : {})});
-    }
+      return {ref, ...(noted ? {gist: noted.says} : {})};
+    }));
     const noted = more() ? await read(NOTE_PAGE, [{...quoteSource({...src, text: ''}), outline: outline.filter(o => o.gist)}], src.id) : null;
-    out.push({id: src.id, url: sanitizeText(src.final_url || src.url), title: noted?.title || sanitizeText(src.title), summary: noted?.says || '',
-      outline, sha256: src.sha256 ?? null});
-  }
-  return out;
+    return {id: src.id, url: sanitizeText(src.final_url || src.url), title: noted?.title || sanitizeText(src.title), summary: noted?.says || '',
+      outline, sha256: src.sha256 ?? null};
+  }));
 }
