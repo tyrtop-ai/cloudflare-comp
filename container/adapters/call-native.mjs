@@ -84,12 +84,12 @@ function reachable(names, build, reach, tool, label = n => n) {
 const rustString = t => '"' + [...String(t)].map(c => c === '\\' ? '\\\\' : c === '"' ? '\\"' : c < ' ' || c === '\x7f' ? `\\u{${c.codePointAt(0).toString(16)}}` : c).join('') + '"';
 const distinct = steps => [...new Set(steps.map(s => s.call))];
 
-// Each language: names (what the language can call by name), build (the
-// worker's argv, or the file's load failure, and the names it cannot reach)
-// and, for the shell, its own framing of a step and a record.
+// Each language: build (the worker's argv, or the file's load failure, and
+// the names it cannot reach: whether the file defines a name is its
+// compiler's answer, each name as the step gives it) and, for the shell, its
+// own framing of a step and a record.
 const LANGUAGES = {
   go: {
-    names: /^[\p{L}_][\p{L}\p{N}_]*(\.[\p{L}_][\p{L}\p{N}_]*)?$/u,
     // The file and a test file of its own package, built by `go test -c`:
     // the test binary's TestMain is the driver, so the file's main never
     // runs, and its unexported functions are in scope.
@@ -108,7 +108,6 @@ const LANGUAGES = {
     }
   },
   rust: {
-    names: /^[A-Za-z_]\w*(::[A-Za-z_]\w*)*$/,
     // The file as a library crate whose last item is the driver module
     // (a child module sees the file's private functions); a binary calls
     // the driver. Each call is written with the step's number of arguments,
@@ -145,7 +144,6 @@ const LANGUAGES = {
     }
   },
   cpp: {
-    names: /^(::)?[A-Za-z_]\w*(::[A-Za-z_]\w*)*$/,
     // One translation unit: the file (its main renamed), then the driver,
     // which takes each function's address: template deduction gives its
     // parameter types.
@@ -162,7 +160,6 @@ const LANGUAGES = {
     }
   },
   c: {
-    names: /^[A-Za-z_]\w*$/,
     // The file compiled as C, by gcc, which also writes the prototype of
     // each function it defines (-aux-info); the C++ driver declares those
     // prototypes and takes each function's address, so template deduction
@@ -175,7 +172,7 @@ const LANGUAGES = {
       // The prototypes gcc wrote for this file's own functions, by the
       // file and the name it reports for each.
       const own = readFileSync(protos, 'utf8').split('\n').filter(l => l.startsWith(`/* ${module}:`));
-      const declared = name => own.filter(l => new RegExp(`[\\s*(]${name} \\(`).test(l.slice(l.indexOf('*/') + 2)));
+      const declared = name => own.filter(l => new RegExp(`[\\s*(]${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\(`).test(l.slice(l.indexOf('*/') + 2)));
       const missing = new Map(), unsupported = new Map(), names = distinct(steps);
       for (const n of names) if (!declared(n).length) missing.set(n, '');
       const gxx = (list, linked) => {
@@ -195,7 +192,6 @@ const LANGUAGES = {
     }
   },
   java: {
-    names: /^[\p{L}_$][\p{L}\p{N}_$]*(\.[\p{L}_$][\p{L}\p{N}_$]*)*$/u,
     // The worker compiles the file with Java's own compiler (javax.tools,
     // which tells it the classes the file declares) and calls methods by
     // reflection. The roots it looks for other sources under are the
@@ -207,7 +203,6 @@ const LANGUAGES = {
     }
   },
   shell: {
-    names: /^[^\s=$`"'\\|&;<>()]+$/,
     // bash reads the file (bash -n) without running it, then the worker
     // sources it and calls each function in the same shell.
     build({abs, tmp}) {
@@ -219,7 +214,7 @@ const LANGUAGES = {
     // each argument (a string as it is; anything else as its JSON).
     encode(name, args, tmp) {
       const words = args.map(a => a.saved !== undefined && typeof a.native === 'string' ? a.native : typeof a.json === 'string' ? a.json : JSON.stringify(a.json ?? null) ?? '');
-      if (words.some(w => w.includes('\0'))) return {unsupported: 'a shell argument cannot hold a NUL character'};
+      if ([name, ...words].some(w => w.includes('\0'))) return {unsupported: 'a shell word cannot hold a NUL character'};
       return {text: [name, String(words.length), ...words].map(w => w + '\0').join('')};
     },
     decode(line, tmp) {
@@ -238,10 +233,9 @@ const steps = [...(Array.isArray(request.steps) ? request.steps : []), ...lines.
   .map(s => ({call: typeof s?.call === 'string' ? s.call : '', args: Array.isArray(s?.args) ? s.args : [], save: typeof s?.save === 'string' ? s.save : ''}));
 const module = String(request.module || ''), abs = path.resolve(process.cwd(), module), lang = LANGUAGES[language];
 const tmp = mkdtempSync(path.join(os.tmpdir(), 'call-'));
-const callable = steps.filter(s => lang.names.test(s.call));
 const finish = code => { try { rmSync(tmp, {recursive: true, force: true}); } catch {} process.exit(code); };
 
-const built = lang.build({abs, module, steps: callable, tmp});
+const built = lang.build({abs, module, steps, tmp});
 if (built.load) { emit({load: false, error: built.load, stack: ''}); emit({done: true}); finish(0); }
 
 // The saved results: each one's JSON, and the worker's own value (kept in
@@ -290,8 +284,8 @@ const first = await next();
 if (first?.load === false) emit({load: false, error: String(first.error ?? ''), stack: String(first.stack ?? '')});
 else if (first?.loaded === true) {
   for (const [i, s] of steps.entries()) {
-    const missing = !lang.names.test(s.call) ? '' : built.missing.get(s.call);
-    if (!lang.names.test(s.call) || missing !== undefined) { emit({step: i, ok: false, missing: true, error: `${module} has no function ${s.call}${missing ? ` (${missing})` : ''}`, stack: ''}); continue; }
+    const missing = built.missing.get(s.call);
+    if (missing !== undefined) { emit({step: i, ok: false, missing: true, error: `${module} has no function ${s.call}${missing ? ` (${missing})` : ''}`, stack: ''}); continue; }
     if (built.unsupported.has(s.call)) { emit({step: i, ok: false, unsupported: true, error: built.unsupported.get(s.call), stack: ''}); continue; }
     const args = s.args.map(argOf);
     let text;
