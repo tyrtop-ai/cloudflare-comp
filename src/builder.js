@@ -37,7 +37,7 @@ export function builderWorld({files = new Map(), from = new Map(), glue = new Ma
 export const builderTools = () => TOOLS.builder;
 
 // ------------------------------------------------------------ the functions
-const paths = w => [...w.files.keys(), ...w.glue.keys()].sort();
+const paths = w => [...new Set([...w.files.keys(), ...w.glue.keys()])].sort();
 const textOf = (w, p) => w.files.has(p) ? w.files.get(p) : w.glue.get(p);
 // The place a path names in its world: '' when it names none (the top itself).
 const placeOf = a => isText(a.path) ? rootedPath(a.path) : '';
@@ -47,6 +47,8 @@ function readFile(w, a) {
   const path = placeOf(a);
   if (!path) return {error: 'path is the text of a relative path'};
   if (!w.files.has(path) && !w.glue.has(path)) return {error: MESSAGES.builder_no_file({path, paths: paths(w).join(', ')})};
+  // A delivered file and one of its own at one path: both.
+  if (w.files.has(path) && w.glue.has(path)) return {path, content: w.files.get(path), piece: w.from.get(path) || '', yours: w.glue.get(path)};
   return {path, content: textOf(w, path)};
 }
 function writeFile(w, a) {
@@ -55,7 +57,7 @@ function writeFile(w, a) {
   const path = placeOf(a);
   if (!path) return {error: 'path is the text of a relative path'};
   if (!isText(a.content)) return {error: 'content is the complete text of the file'};
-  if (w.files.has(path)) return {error: MESSAGES.builder_delivered({path, piece: w.from.get(path) || ''})};
+  if (w.files.has(path) && !w.glue.has(path)) return {error: MESSAGES.builder_delivered({path, piece: w.from.get(path) || ''})};
   if (w.held.has(path)) return {error: MESSAGES.builder_held({path})};
   if (w.glue.get(path) === a.content) { w.unchanged.push(path); return {unchanged: path, says: MESSAGES.unchanged({path})}; }
   w.glue.set(path, a.content);

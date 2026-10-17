@@ -94,6 +94,14 @@ test('what the room keeps of a session: each renamed file\'s text for the exact 
   assert.deepEqual(builderWork(changed, kept, p => textHash(p === 'report.js' ? REPORT + '\n' : STORE)), {renamed: {}, glue: {}}, 'a rename made for another text, and files it no longer has, are not kept');
 });
 
+test('a delivered file and one of the builder\'s own at one path are both in its world: read_file shows both, and its own stays its to write', () => {
+  const w = builderWorld({files: new Map([['wire.js', 'delivered\n']]), from: new Map([['wire.js', 'Ticket store']]), glue: new Map([['wire.js', 'mine\n']])});
+  assert.deepEqual(builderCall(w, 'read_file', {path: 'wire.js'}).result, {path: 'wire.js', content: 'delivered\n', piece: 'Ticket store', yours: 'mine\n'});
+  assert.deepEqual(builderCall(w, 'write_file', {path: 'wire.js', content: 'mine 2\n'}).result, {written: 'wire.js', characters: 7});
+  assert.equal(w.glue.get('wire.js'), 'mine 2\n');
+  assert.equal(w.files.get('wire.js'), 'delivered\n');
+});
+
 // ------------------------------------------------------------ package directories
 test('packageDirectory: p_<snake label>_<hash8>, a module name in every row, distinct per piece; v7 keeps branchDirectory', () => {
   const d = packageDirectory('Word counter (core)', 'root.1');

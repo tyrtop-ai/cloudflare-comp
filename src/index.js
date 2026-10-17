@@ -3759,8 +3759,9 @@ export class ControlRoom extends DurableObject {
         copy(place?f.path:home,await this.indexedContent(c.id,f.path),{owner:c.id,owner_path:f.path},place,c,home);
       }
     }
-    // The texts placed at each path: copies with one text are one file.
-    const texts=new Map();
+    // The texts placed at each path, the builder's own files among them: copies with one text are one file.
+    const work=bid?this.builtWork(bid):null,own=new Map(Object.entries(work?.glue||{})),texts=new Map();
+    for(const [p,t] of own)texts.set(p,new Set([t]));
     for(const x of copies)texts.set(x.at,(texts.get(x.at)||new Set()).add(x.content));
     const twice=[];
     for(const x of copies) {
@@ -3769,13 +3770,18 @@ export class ControlRoom extends DurableObject {
       files.set(at,x.content);by.set(at,x.child.id);if(x.o)origin.set(at,x.o);if(x.isPlaced&&!moved)placed.add(at);
     }
     const actor=bid||m;
-    if(twice.length)this.noteOnce(actor,'bundle_conflict',`Two pieces place a file at the same path, so each copy stands in its writer's own folder: ${twice.join(', ')}.`);
+    if(twice.length)this.noteOnce(actor,'bundle_conflict',`Two files are placed at the same path, so each delivered copy stands in its writer's own folder: ${twice.join(', ')}.`);
     this.addBase(m,files);
-    const raw=new Map(files),work=bid?this.builtWork(bid):null,glue=new Map(),left=[];
+    const raw=new Map(files),glue=new Map(),beside=[];
     for(const [p,r] of Object.entries(work?.renamed||{}))if(by.has(p)&&r?.base===textHash(files.get(p)))files.set(p,r.text);
-    const taken=new Set([...files.keys(),...(this.holdsBase(m)?this.passthroughPaths():[])]);
-    for(const [p,t] of Object.entries(work?.glue||{})){if(taken.has(p)){left.push(p);continue;}files.set(p,t);glue.set(p,t);}
-    if(left.length)this.noteOnce(actor,'bundle_conflict',`Left out: a file the builder wrote at a path that now holds a delivered or existing file: ${left.join(', ')}.`);
+    // The builder's own files stay its own (built:<builder>, its world), each in the bundle at its path (glue).
+    // One at a path where an existing file stands, or a delivered file with no folder of its own to stand in, is beside it in the builder's world.
+    const existing=this.holdsBase(m)?this.passthroughPaths():new Set();
+    for(const [p,t] of own) {
+      if(!files.has(p)&&!existing.has(p))files.set(p,t);
+      if(files.get(p)===t)glue.set(p,t);else beside.push(p);
+    }
+    if(beside.length)this.noteOnce(actor,'bundle_conflict',`The builder's own file stands beside an existing or delivered file at the same path, both in its world: ${beside.join(', ')}.`);
     return this.pieceBundle(m,files,origin,placed,by,glue,raw);
   }
   // What a builder made of its children's files: {renamed: {path: {base,
@@ -3851,8 +3857,10 @@ export class ControlRoom extends DurableObject {
     this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
     const seen=this.joinedInput(m),piece=await this.joinPiece(m,id),labels=new Map(this.children(m).map(c=>[c.id,c.label]));
     const from=new Map([...piece.by].map(([p,c])=>[p,labels.get(c)||c]));
-    const world=builderWorld({files:new Map([...piece.files].filter(([p])=>piece.by.has(p))),from,glue:piece.glue,
-      held:new Set([...[...piece.files.keys()].filter(p=>!piece.by.has(p)&&!piece.glue.has(p)),...(this.holdsBase(m)?this.passthroughPaths():[])])});
+    // Its world: the delivered files, its own files as it kept them, and the paths existing files hold.
+    const own=new Map(Object.entries(this.builtWork(id)?.glue||{}));
+    const world=builderWorld({files:new Map([...piece.files].filter(([p])=>piece.by.has(p))),from,glue:own,
+      held:new Set([...[...piece.files.keys()].filter(p=>!piece.by.has(p)),...(this.holdsBase(m)?this.passthroughPaths():[])].filter(p=>!own.has(p)))});
     this.event(id,'working',`Turn ${n.turn+1}; joining ${world.files.size} file(s) of ${this.node(m)?.label||m}'s children.`);
     const out=await builderSession(this.inferenceEnv('builder'),this.builderView(m,world),world);
     this.save(`built:${id}`,builderWork(world,this.builtWork(id)||{},p=>textHash(piece.raw.get(p))));
