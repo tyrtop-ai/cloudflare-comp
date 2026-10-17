@@ -88,8 +88,9 @@ const asker = () => leafOf({control: user => user.prompt.deliver.some(c => c.nam
 test('a stuck rebuild cycle (every rebuilt worker asks again for what no manager covers) ends at a room hold within a bounded number of turns and events; Continue gives it one more bounded cycle', {skip}, async () => {
   const r = await toolkit({leaf: asker(), clef: clefFor(undefined, {'^ask_parent$': 0.95}), budget: 60});
   const m = at(r.room), archived = () => r.room.allNodes().filter(n => n.status === 'archived').length;
-  assertHeld(r.room, 'end', ['split_failed']);
-  assert.deepEqual(holds(r.room), [['split_failed', m.Louder]]);
+  assert.equal(r.room.get('status'), 'paused', tail(r.room));
+  assert.deepEqual(holds(r.room), [], 'nothing is held: the splitter goes on');
+  assert.ok(r.room.splitterRows().filter(x => x.outcome === 'context').length > 1, 'a new session each turn, from what it declared');
   assert.equal(archived(), MAX_REBUILDS + 1, 'the asker and each of its rebuilds');
   assert.equal(events(r.room, 'escalated').filter(e => e.actor === m.Louder).length, 1, 'escalated once');
   const steps = Number(r.room.get('step')), count = events(r.room).length;
@@ -133,7 +134,7 @@ const REVERSED = [call('r1', ['reverse'], 'reverse', 'abc', 'cba'), call('r2', [
 const REVERSE_PY = 'def reverse(s):\n    return str(s)[::-1]\n';
 // The room's manager divides, so the extension's splitter proposes a division: two pieces of reverse, which Clef's review finds too small.
 const REVERSE_PIECES = [{label: 'Reverser', task: 'Write reverse', contracts: ['reverse']}, {label: 'Reverser of one letter', task: 'Write reverse for a word of one letter', contracts: ['reverse']}];
-test('a change whose extension cannot be stated holds the room, which never says complete, and the export never says passed for it; Continue gives the splitter fresh attempts, the change lands, and its prompt is done', {skip}, async () => {
+test('a change whose extension cannot be stated: its splitter goes on in a new session each turn until the room\'s budget ends, nothing is held, the room never says complete and the export never says passed for it; Continue gives it a fresh budget, the change lands, and its prompt is done', {skip}, async () => {
   let fail = true;
   const base = splitFor();
   const split = user => user.contracts_you_have ? (fail ? 'not json at all' : {contracts: [REVERSE], validations: REVERSED, pieces: REVERSE_PIECES}) : base(user);
@@ -144,14 +145,15 @@ test('a change whose extension cannot be stated holds the room, which never says
   await r.drain();
   assert.equal(out.status, 'running');
   const m = at(r.room);
-  assertHeld(r.room, 'after the change', ['split_failed']);
-  assert.deepEqual(holds(r.room), [['split_failed', m.Root]]);
+  assert.equal(r.room.get('status'), 'paused', tail(r.room));
+  assert.deepEqual(holds(r.room), [], 'nothing is held: the splitter goes on');
+  assert.ok(r.room.splitterRows().filter(x => x.outcome === 'context').length > 1, 'a new session each turn, from what it declared');
   assert.ok(!events(r.room, 'complete').some(e => e.id > events(r.room, 'amend_received').at(-1).id), 'never complete after the change');
   assert.notEqual(r.room.node(m.Root).status, 'done');
   const {app} = await exported(r.room);
   assert.equal(app.passed, false, 'the export does not say passed for the unapplied change');
   assert.match(app.note, /latest change/);
-  assert.equal(r.room.promptRows().at(-1).status, 'failed');
+  assert.notEqual(r.room.promptRows().at(-1).status, 'done');
   fail = false;
   await again(r, 40);
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
@@ -162,7 +164,7 @@ test('a change whose extension cannot be stated holds the room, which never says
   assert.equal(r.room.promptRows().at(-1).status, 'done', 'the change\'s prompt is this run\'s');
 });
 
-test('an ask in scope at a manager whose splitter cannot extend its level: the room holds, the asker waits with no answer, and the room never completes; Continue extends the level and answers the asker by name', {skip}, async () => {
+test('an ask in scope at a manager whose splitter cannot extend its level: its splitter goes on in a new session each turn until the room\'s budget ends, nothing is held, the asker waits with no answer, and the room never completes; Continue extends the level and answers the asker by name', {skip}, async () => {
   let fail = true;
   const base = splitFor();
   const split = user => user.contracts_you_have ? (fail ? 'not json at all' : {contracts: [{...REVERSE}], validations: REVERSED, pieces: []}) : base(user);
@@ -170,8 +172,9 @@ test('an ask in scope at a manager whose splitter cannot extend its level: the r
     control: (user, n) => user.prompt.deliver.some(c => c.name === 'loud') && !(user.world.answers || []).length ? {summary: 'need reverse', wait: true, ask: [{need: 'reverses a word', name: 'reverse'}]} : null});
   const r = await toolkit({split, leaf, clef: clefFor(undefined, {'^answer_': 0.1})});
   const m = at(r.room), worker = r.room.children(m.Louder).find(c => c.role === 'worker');
-  assertHeld(r.room, 'end', ['split_failed']);
-  assert.deepEqual(holds(r.room), [['split_failed', m.Louder]]);
+  assert.equal(r.room.get('status'), 'paused', tail(r.room));
+  assert.deepEqual(holds(r.room), [], 'nothing is held: the splitter goes on');
+  assert.ok(r.room.splitterRows().filter(x => x.outcome === 'context').length > 1, 'a new session each turn, from what it declared');
   assert.equal(r.room.node(worker.id).status, 'waiting');
   assert.deepEqual(r.room.read(`fn_answers:${worker.id}`, []), [], 'no answer reached the asker');
   assert.equal(r.room.planned(), false, 'v7\'s request machinery is not a v8 room\'s');

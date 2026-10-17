@@ -337,10 +337,13 @@ test('the injected fetch only ever receives the parsed URL href, and final_url i
 
 // Linear time is checked by growth, not by a wall-clock bound: eight times the
 // input must take under 24 times as long. Linear gives about 8x and a
-// quadratic path about 64x, so load from other processes (a busy CI runner
-// measured 8.1x on a 4x step) has a 3x margin either side. The best of five
-// runs is used for each size.
-const best = (f, s) => Math.min(...[0, 1, 2, 3, 4].map(() => { const t = performance.now(); f(s); return performance.now() - t; }));
+// quadratic path about 64x, a 3x margin either side. Time is the process's
+// CPU time, not the wall clock: on a loaded machine the longer run is the one
+// the scheduler interrupts (a busy CI runner measured a linear case at 8.1x
+// on a 4x step, and 24x on this one by the wall clock). The best of five runs
+// is used for each size.
+const cpuMs = () => { const u = process.cpuUsage(); return (u.user + u.system) / 1000; };
+const best = (f, s) => Math.min(...[0, 1, 2, 3, 4].map(() => { const t = cpuMs(); f(s); return cpuMs() - t; }));
 const grows = (f, make, n, name) => {
   f(make(n)); // warm up
   const a = best(f, make(n)), b = best(f, make(8 * n));
