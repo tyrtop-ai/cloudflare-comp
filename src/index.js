@@ -128,9 +128,6 @@ const isCompilerNode = n => roleOf(n) === 'compiler';
 const RUNTIME_GLUE = ['glue/index.js','package.json','glue/smoke.js'];
 // v7.15.5 review: new runner tests a run writes after its first, as start()'s methods change.
 const RUNNER_REWRITES = 2;
-// v8 M3 review (M1): a builder joins its children's work at most this many
-// times in one turn while that work keeps changing under it; then it joins on its next turn.
-const ASSEMBLE_TRIES = 6;
 // v8 M3 review (M4): the Worker's own syntax step for a row whose native
 // parser runs here (a row's native field names it; the box's syntax command
 // is the row's syntax field). v8 M3 review 2, v8 ship-verified (M2): in each
@@ -3937,8 +3934,6 @@ export class ControlRoom extends DurableObject {
     this.db().exec('UPDATE agents SET summary=? WHERE id=?',clip(out.end.summary,1100),id);
     this.event(id,'report',clip(out.end.summary,1100),m);
     const stored=await this.assemblePiece(id);
-    // The children's work kept changing while it was stored: it joins again on its next turn.
-    if(!stored){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);this.wake(id);return;}
     this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
     this.event(id,'piece_linked',`Stored the piece of ${this.node(m)?.label||m}: ${stored.files.size} file(s), ${Object.keys(this.builtWork(id)?.renamed||{}).length} renamed, ${stored.glue.size} of the builder's own.`);
     this.wake(m);
@@ -3954,11 +3949,12 @@ export class ControlRoom extends DurableObject {
   // (M1): compare and store. The piece's input and its owned digest are read
   // before the join, and the piece is stored, with those, only when both
   // read the same once it is joined and digested; when a child's work
-  // changed meanwhile it is joined again. null when the children kept
-  // changing (ASSEMBLE_TRIES joins).
+  // changed meanwhile it is joined again, until the two read the same: no
+  // count of joins ends it (a child's change is its turn, which the room's
+  // budget bounds).
   async assemblePiece(bid) {
     const m=this.node(bid).parent,start=Date.now();
-    for(let tries=0;tries<ASSEMBLE_TRIES;tries++) {
+    for(let tries=0;;tries++) {
       const input=this.pieceInput(m),owned=this.ownedDigest(m);
       const piece=await this.joinPiece(m,bid);
       const digest=await snapshotHash(piece.files);
@@ -3967,8 +3963,6 @@ export class ControlRoom extends DurableObject {
       this.span('piece','piece_link',start,Date.now(),{manager:m,builder:bid,depth:this.depthOf(m),files:piece.raw.size,glue:piece.glue.size,renamed:Object.keys(this.builtWork(bid)?.renamed||{}).length,...(tries?{joins:tries+1}:{})},m);
       return piece;
     }
-    this.event(bid,'piece_moving',`The work of ${this.node(m)?.label||m}'s children changed each time it was joined (${ASSEMBLE_TRIES} times); the builder joins it again on its next turn.`);
-    return null;
   }
   // One synchronous write: the piece's files and its record, for the input and owned digest it was joined from.
   storePiece(bid, piece, {input, owned, digest}) {
