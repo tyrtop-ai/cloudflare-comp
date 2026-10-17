@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {gzipSync, deflateSync} from 'node:zlib';
 import {createHash} from 'node:crypto';
 import {
-  DEFAULT_ALLOW, SOURCE_CLAUSE, chunkText, fetchGoalSources, fetchPolicy, fetchSource, goalUrls, htmlToText,
+  DEFAULT_ALLOW, LIMITS, SOURCE_CLAUSE, chunkText, fetchGoalSources, fetchPolicy, fetchSource, goalUrls, htmlToText,
   narrowAllow, parseAllow, quoteSource, redactText, renderSources, sanitizeText, sourceSummaries, urlRefusal
 } from '../src/fetcher.js';
 
@@ -186,25 +186,20 @@ test('a gzip bomb is decompressed as a stream and aborted at the decompressed ca
   assert.equal(r2.truncated, true);
 });
 
-test('slowloris: a body that stops sending, or headers that never come, time out', async () => {
-  let cancelled = false;
-  const slow = new ReadableStream({
-    start(c) { c.enqueue(new TextEncoder().encode('first bytes')); },
-    pull() { return new Promise(() => {}); },
-    cancel() { cancelled = true; }
-  });
-  const p = policy({timeoutMs: 80});
-  const fetch = fakeFetch({'https://example.com/slow': () => new Response(slow, {headers: {'content-type': 'text/plain'}}),
-    'https://example.com/hang': () => new Promise(() => {})});
-  const t0 = Date.now();
-  const r = await fetchSource('https://example.com/slow', 'https://example.com/slow', {fetch, policy: p});
-  assert.match(r.error, /timeout/);
-  assert.equal(r.text, '');
-  assert.ok(Date.now() - t0 < 2000);
-  assert.ok(cancelled, 'the body stream is cancelled');
-  assert.equal(fetch.calls[0].init.signal.aborted, true);
-  const h = await fetchSource('https://example.com/hang', 'https://example.com/hang', {fetch, policy: p});
-  assert.match(h.error, /timeout/);
+// Owner 2026-10-17 00:25 "I don't understand the need": no deadline is set on reading a linked page.
+test('a linked page is read whole with no deadline: a slow page is read to its end', async () => {
+  assert.equal('timeoutMs' in LIMITS, false);
+  const words = Array.from({length: 40}, (_, i) => `word${i}`);
+  // Each piece arrives 5 ms after the last, past a caller's timeoutMs, which is not read.
+  const slow = () => new Response(new ReadableStream({
+    async start(c) { for (const w of words) { await new Promise(r => setTimeout(r, 5)); c.enqueue(new TextEncoder().encode(w + ' ')); } c.close(); }
+  }), {headers: {'content-type': 'text/plain'}});
+  const fetch = fakeFetch({'https://example.com/slow': slow});
+  const r = await fetchSource('https://example.com/slow', 'https://example.com/slow', {fetch, policy: policy({timeoutMs: 20})});
+  assert.equal(r.error, null);
+  assert.equal(r.truncated, false);
+  assert.equal(r.text, words.join(' ') + ' ');
+  assert.equal('signal' in fetch.calls[0].init, false);
 });
 
 test('content types: wrong or missing types refused, text, JSON and GitHub raw types accepted', async () => {
@@ -443,12 +438,12 @@ test('deflate bombs and low-output gzip: capped early, and a bounded input retur
   assert.equal(r2.bytes, 512 * 1024);
   assert.ok(g.stats.pulled <= 4 * 1024, `compressed bytes pulled: ${g.stats.pulled}`);
   // 700 KB of empty gzip members after real text: stops at the input cap
-  // with the decoded text, instead of waiting for the deadline.
+  // with the decoded text, without reading the rest.
   const empty = gzipSync(Buffer.alloc(0));
   const many = Buffer.concat([gzipSync(Buffer.from('real text ')), ...Array(Math.ceil(700 * 1024 / empty.length)).fill(empty)]);
   const f3 = fakeFetch({'https://example.com/e': text(new Uint8Array(many))});
   const t0 = Date.now();
-  const r3 = await fetchSource('https://example.com/e', 'https://example.com/e', {fetch: f3, policy: policy({timeoutMs: 3000, maxBytes: 512 * 1024})});
+  const r3 = await fetchSource('https://example.com/e', 'https://example.com/e', {fetch: f3, policy: policy({maxBytes: 512 * 1024})});
   assert.equal(r3.error, null);
   assert.equal(r3.text, 'real text ');
   assert.equal(r3.truncated, true);

@@ -19,7 +19,6 @@ export const USER_AGENT = 'recursive-control-plane-fetcher/1 (+no-credentials)';
 // count or size is set on them. A caller that fetches something else (a
 // dataset, src/bench.js) passes its own maxBytes.
 export const LIMITS = Object.freeze({
-  timeoutMs: 10_000,        // whole fetch: every hop plus the body
   maxHops: 3                // redirects followed, each one rechecked
 });
 // Content types a source may have. Archives are only for the repo fetcher.
@@ -162,16 +161,8 @@ export function redactText(text) {
     .replace(/[A-Za-z0-9+/_-]{40,}={0,2}/g, '[redacted]');
 }
 
-// --- deadlines and capped streams -------------------------------------------
+// --- capped streams ----------------------------------------------------------
 
-function deadline(ms) {
-  const controller = new AbortController();
-  let fail;
-  const expired = new Promise((_, reject) => { fail = reject; });
-  expired.catch(() => {});
-  const timer = setTimeout(() => { controller.abort(); fail(new FetchRefused('timeout')); }, ms);
-  return {signal: controller.signal, race: p => Promise.race([p, expired]), clear: () => clearTimeout(timer)};
-}
 const toBytes = v => v instanceof Uint8Array ? v : typeof v === 'string' ? new TextEncoder().encode(v) : new Uint8Array(v);
 export function concatBytes(parts, n = parts.reduce((a, p) => a + p.length, 0)) {
   const out = new Uint8Array(n);
@@ -209,14 +200,14 @@ export async function plainBody(body, opts) {
     cancel(reason) { chunks.cancel(reason); }
   }, {highWaterMark: 0});
 }
-export async function plainChunks(body, {race = p => p, encoding = '', inputCap = Infinity, limit = Infinity, state = {}} = {}) {
+export async function plainChunks(body, {encoding = '', inputCap = Infinity, limit = Infinity, state = {}} = {}) {
   state.inputCapped = false;
   state.fed = 0;
   if (!body) return {views: false, read: async () => ({done: true}), cancel() {}};
   const reader = body.getReader();
   let head = new Uint8Array(0), ended = false;
   while (head.length < 2 && !ended) {
-    const r = await race(reader.read());
+    const r = await reader.read();
     if (r.done) ended = true; else head = concatBytes([head, toBytes(r.value)]);
   }
   state.fed = head.length;
@@ -229,7 +220,7 @@ export async function plainChunks(body, {race = p => p, encoding = '', inputCap 
       async read() {
         if (first) { const f = first; first = null; if (f.length) return {done: false, value: f}; }
         if (ended) return {done: true};
-        const r = await race(reader.read());
+        const r = await reader.read();
         if (r.done) { ended = true; return {done: true}; }
         const v = toBytes(r.value);
         state.fed += v.length;
@@ -252,7 +243,7 @@ export async function plainChunks(body, {race = p => p, encoding = '', inputCap 
         if (step.done) break;
         if (step.value) { produced += step.value.length; return {done: false, value: step.value}; }
         if (state.fed >= inputCap) { state.inputCapped = true; break; }
-        const r = await race(reader.read());
+        const r = await reader.read();
         if (r.done) { io.ended = true; continue; }
         const v = toBytes(r.value), keep = Math.max(0, io.pos - 8);
         io.buf = concatBytes([io.buf.subarray(keep), v]);
@@ -267,12 +258,12 @@ export async function plainChunks(body, {race = p => p, encoding = '', inputCap 
 }
 
 // Read at most maxBytes; the stream is cancelled at the cap.
-export async function readCapped(stream, maxBytes, race = p => p) {
+export async function readCapped(stream, maxBytes) {
   const reader = stream.getReader(), parts = [];
   let n = 0, truncated = false;
   try {
     for (;;) {
-      const {done, value} = await race(reader.read());
+      const {done, value} = await reader.read();
       if (done) break;
       const chunk = toBytes(value);
       if (n + chunk.length > maxBytes) { parts.push(chunk.subarray(0, maxBytes - n)); n = maxBytes; truncated = true; break; }
@@ -293,17 +284,17 @@ const cancelBody = res => { try { res.body?.cancel?.().catch?.(() => {}); } catc
 // string, so the checked host is the host connected to. The request
 // carries a fixed User-Agent and Accept only: no Authorization, no Cookie,
 // no Referer. Returns {response, final_url, hops}.
-export async function guardedFetch(url, {fetch, policy, accept = '*/*', race = p => p, signal} = {}) {
+export async function guardedFetch(url, {fetch, policy, accept = '*/*'} = {}) {
   if (typeof fetch !== 'function') throw new FetchRefused('no fetch function was given');
   let u;
   try { u = new URL(String(url)); } catch { throw new FetchRefused('not a URL'); }
   for (let hop = 0; ; hop++) {
     const why = urlRefusal(u.href, policy);
     if (why) throw new FetchRefused(hop ? `redirect refused: ${why}` : why);
-    const response = await race(fetch(u.href, {
-      method: 'GET', redirect: 'manual', signal,
+    const response = await fetch(u.href, {
+      method: 'GET', redirect: 'manual',
       headers: {'User-Agent': USER_AGENT, 'Accept': accept}
-    }));
+    });
     if (!REDIRECTS.has(response.status)) return {response, final_url: u.href, hops: hop};
     cancelBody(response);
     const location = response.headers?.get?.('location');
@@ -581,9 +572,9 @@ export async function fetchSource(goal, url, {fetch, policy = fetchPolicy(), max
   if (!(urls || goalUrls(goal, Infinity)).includes(result.url)) return {...result, error: 'source_refused: only URLs written in the goal are fetched'};
   const why = urlRefusal(url, policy);
   if (why) return {...result, error: `source_refused: ${why}`};
-  const clock = deadline(policy.timeoutMs), state = {fed: 0};
+  const state = {fed: 0};
   try {
-    const {response, final_url} = await guardedFetch(url, {fetch, policy: {...policy, archive: false}, race: clock.race, signal: clock.signal,
+    const {response, final_url} = await guardedFetch(url, {fetch, policy: {...policy, archive: false},
       accept: 'text/html, text/markdown, text/plain, application/json;q=0.9, text/*;q=0.8'});
     Object.assign(result, {final_url, status: response.status, content_type: mediaType(response)});
     if (response.status < 200 || response.status > 299) { cancelBody(response); throw new FetchRefused(`http ${response.status}`); }
@@ -592,9 +583,9 @@ export async function fetchSource(goal, url, {fetch, policy = fetchPolicy(), max
       throw new FetchRefused(`content type ${result.content_type || '(none)'} is not fetched`);
     }
     const cap = Math.max(0, maxBytes);
-    const body = await plainBody(response.body, {race: clock.race, inputCap: inputCapFor(cap), limit: cap + 1, state,
+    const body = await plainBody(response.body, {inputCap: inputCapFor(cap), limit: cap + 1, state,
       encoding: response.headers?.get?.('content-encoding') || ''});
-    const read = await readCapped(body, cap, clock.race);
+    const read = await readCapped(body, cap);
     const {bytes} = read, truncated = read.truncated || state.inputCapped;
     if (bytes.subarray(0, 8192).includes(0)) throw new FetchRefused('binary content');
     // A cut body may end inside a UTF-8 sequence: streaming decode drops it.
@@ -606,7 +597,7 @@ export async function fetchSource(goal, url, {fetch, policy = fetchPolicy(), max
   } catch (e) {
     const message = e instanceof FetchRefused ? `source_refused: ${e.message}` : `fetch failed: ${e?.message || e}`;
     Object.assign(result, {text: '', title: '', bytes: 0, sha256: null, error: clip(redact(redactText(message)))});
-  } finally { clock.clear(); result.wire_bytes = state.fed; }
+  } finally { result.wire_bytes = state.fed; }
   return result;
 }
 
