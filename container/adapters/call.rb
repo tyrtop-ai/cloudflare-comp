@@ -17,8 +17,10 @@
 # top level (Ruby's functions), called with the step's arguments.
 #
 # KNOWN LIMIT: as call.py's. The worker runs bundle code, so that code
-# controls what the worker reports; the defence is that a requirement's
-# check is never shown to the agents that write the code (S4b).
+# controls what the worker reports. The worker that writes the code sees
+# each validation rendered as its examples, expected values included, so
+# code can return those values directly; the nonce only keeps it from
+# writing records past the supervisor or claiming the end.
 require 'json'
 
 def supervise

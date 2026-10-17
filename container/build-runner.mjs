@@ -416,9 +416,11 @@ export async function verifyBuild(request,{runStage=run}={}) {
 // Forgery. A call check's expectations never reach the process: the runner
 // compares. The adapter attaches a per-run nonce the module cannot read (see
 // adapters/call.py, call.mjs, call-native.mjs), and the end counts only when the adapter's
-// done line arrives AND its process exits 0 by itself. A module that knows
-// the expected values can still return them; that is why the room must
-// never show a requirement's check to the workers (S4b).
+// done line arrives AND its process exits 0 by itself. The worker sees each
+// validation rendered as its examples, with the calls, arguments and
+// expected values (src/validations.js), so a module can return those values
+// directly; the protocol does not prevent that, and its guard does not rest
+// on the check being hidden.
 // ---------------------------------------------------------------------------
 // Time. No check, step, request or run has a time of its own (owner,
 // 2026-10-17 00:25 and 2026-10-15 23:16: no caps the runtime picked): each
@@ -687,24 +689,14 @@ const deepEqual=(a,b)=>{
   const ka=Object.keys(a),kb=Object.keys(b);
   return ka.length===kb.length&&ka.every(k=>Object.hasOwn(b,k)&&deepEqual(a[k],b[k]));
 };
-const escapeRe=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-// The runner's own paths never reach a detail or an output: each folder
-// (with or without a trailing slash, or as a file:// URL) becomes the
-// bundle-relative path or '.', and any other checks folder '<work>'.
-export function redactPaths(text,dirs,base) {
-  let out=String(text??'');
-  for(const d of [...new Set(dirs.filter(Boolean))].sort((a,b)=>b.length-a.length))
-    out=out.split('file://'+d+'/').join('').split(d+'/').join('').split(d).join('.');
-  if(base)out=out.replace(new RegExp(escapeRe(base.replace(/\/+$/,''))+'/checks-[A-Za-z0-9._-]*','g'),'<work>');
-  return out;
-}
 function framesOf(text,files,rows,root) {
   const out=[];
   for(const row of rows)for(const f of stackFrames(text,files,row,{root,innermostFirst:true}))if(!out.some(x=>x.path===f.path&&x.line===f.line))out.push(f);
   return out;
 }
-// A failure's detail: what failed, then each part of the observation that has text, whole.
-const observation=(head,parts)=>[head,...parts.filter(([,t])=>String(t??'').trim()).map(([name,t])=>`--- ${name}\n${String(t).replace(/\s+$/,'')}`)].join('\n');
+// A failure's detail: what failed, then each part of the observation that
+// has text, whole and unchanged, as the process printed it.
+const observation=(head,parts)=>[head,...parts.filter(([,t])=>String(t??'').trim()).map(([name,t])=>`--- ${name}\n${String(t)}`)].join('\n');
 
 function validateCheckPlan(raw) {
   const plan=raw&&typeof raw==='object'?raw:{};
@@ -737,9 +729,8 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
   let infrastructure_issue='',ns=null;
   const inventory={node:process.versions.node,python:null,sh:null,bash:null,chromium:null,playwright:null,network:'on',runs_network:'on',limits:null,hostname:null,hostname_ok:null,hostname_longest_label:null,hostname_status:null,getfqdn:null,executables:null};
   const env=checkEnvironment();
-  const redact=(text,...dirs)=>redactPaths(text,[...dirs,scratch],base);
-  const stage=async(name,fn)=>{const t=Date.now();const out=(await fn())||{};stages.push({name,passed:out.passed!==false,ms:Date.now()-t,...(out.detail?{detail:redact(out.detail)}:{})});};
-  const result=(c,passed,ms,detail='',extra={})=>{checks.push({id:c.id,kind:c.kind,passed,ms,detail:passed?'':redact(detail),frames:[],...extra});};
+  const stage=async(name,fn)=>{const t=Date.now();const out=(await fn())||{};stages.push({name,passed:out.passed!==false,ms:Date.now()-t,...(out.detail?{detail:out.detail}:{})});};
+  const result=(c,passed,ms,detail='',extra={})=>{checks.push({id:c.id,kind:c.kind,passed,ms,detail:passed?'':detail,frames:[],...extra});};
   // A check the time was spent before it started observed nothing.
   const notRun=c=>result(c,false,0,`not run: ${time} were spent before it started`,{infrastructure:true});
   // A fresh copy of the pristine bundle with its own temp and bytecode
@@ -790,7 +781,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
         const tree=path.join(scratch,String(row.install.tree||`packages-${row.id}`)),fill=a=>String(a).replaceAll('{scratch}',scratch).replaceAll('{tree}',tree);
         await mkdir(tree,{recursive:true});
         const r=await execCheck(row.install.argv.flatMap(a=>a==='{packages}'?names:[fill(a)]),{cwd:scratch,env,prefix:limitPrefix,ms:left()});
-        const out=redact(`${r.stdout}\n${r.stderr}`).trim(),passed=r.code===0&&!r.timedOut;
+        const out=[r.stdout,r.stderr].filter(t=>t.trim()).join('\n'),passed=r.code===0&&!r.timedOut;
         if(passed){for(const [k,v] of Object.entries(row.install.env||{}))env[k]=listed(String(v).replaceAll('{tree}',tree),env);await execCheck(['chmod','-R','a-w',tree],{cwd:scratch,env});}
         installed.push({toolchain:row.id,packages:names,passed,...(passed?{}:{detail:r.timedOut?`timed out after ${seconds(r.ms)}${out?`: ${out}`:''}`:`exit ${r.code}${out?`: ${out}`:''}`})});
         return passed?{detail:names.join(' ')}:{passed:false,detail:installed.at(-1).detail};
@@ -813,7 +804,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
           if(r.spawn_error){infrastructure_issue||=`the syntax step of ${row.id} could not start: ${r.stderr.trim()}`;return {passed:false,detail:'could not start'};}
           // Still compiling these files when the time ran out: what the compiler observed of them.
           const how=r.timedOut?`still running when ${time} ran out (after ${seconds(r.ms)})`:`exit ${r.code}`;
-          issues.push({files:names,toolchain:row.id,kind:'source',stage:'syntax',detail:observation(`${row.id} syntax: ${how}`,[['stdout',redact(r.stdout,box.dir,box.root)],['stderr',redact(r.stderr,box.dir,box.root)]])});
+          issues.push({files:names,toolchain:row.id,kind:'source',stage:'syntax',detail:observation(`${row.id} syntax: ${how}`,[['stdout',r.stdout],['stderr',r.stderr]])});
           return {passed:false,detail:how};
         } finally {await box.dispose();}
       });
@@ -832,17 +823,18 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
         }
         if(resolved.direct)await chmod(path.join(box.dir,resolved.direct),0o755);
         const r=await execCheck(resolved.argv,{cwd:box.dir,env:box.env,prefix:checkPrefix,ms:Math.max(1,left()),stdin:typeof c.stdin==='string'?c.stdin:''});
-        const stdout=redact(r.stdout,box.dir,box.root),stderr=redact(r.stderr,box.dir,box.root);
+        // What the process printed, as printed: each expectation is compared
+        // with it exactly, and the complaint carries it unchanged.
+        const {stdout,stderr}=r;
         const frames=framesOf(r.stderr+'\n'+r.stdout,files,rows,box.dir),e=c.expect&&typeof c.expect==='object'?c.expect:{};
         const strays=r.strays?`; ${r.strays} process(es) it left behind were killed`:'';
         const fail=(detail,extra={})=>result(c,false,r.ms,observation(`${label}: ${detail}${strays}`,[['stdout',stdout],['stderr',stderr]]),{frames,...extra});
         if(r.spawn_error)return fail('could not start');
         if(r.timedOut)return fail(`still running when ${time} ran out (after ${seconds(r.ms)})`);
-        const norm=s=>String(s).replace(/\r\n/g,'\n').trimEnd();
         // Only what the check states: an exit when it names one (the
         // validation names exit 0 for a check that states nothing).
         if(Number.isInteger(e.exit)&&r.code!==e.exit)return fail(`exit ${r.code}, expected ${e.exit}`);
-        if(typeof e.stdout==='string'&&norm(stdout)!==norm(e.stdout))return fail(`printed ${show(norm(stdout))}, expected ${show(norm(e.stdout))}`);
+        if(typeof e.stdout==='string'&&stdout!==e.stdout)return fail(`printed ${show(stdout)}, expected ${show(e.stdout)}`);
         for(const s of Array.isArray(e.stdout_has)?e.stdout_has:[])if(!stdout.includes(String(s)))return fail(`output lacks ${show(String(s))}`);
         for(const s of Array.isArray(e.stderr_has)?e.stderr_has:[])if(!stderr.includes(String(s)))return fail(`stderr lacks ${show(String(s))}`);
         // Live 2 review: stderr:true asks for a message on stderr, whatever its wording.
@@ -912,7 +904,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
       if(!w.ready) {
         await sleep(50);
         // Whether it exited by itself, read before the runner stops it.
-        const out=redact(p.log(),box.dir,box.root),frames=framesOf(p.log(),files,rows,box.dir),gone=p.exited(),code=gone?.code;
+        const out=p.log(),frames=framesOf(p.log(),files,rows,box.dir),gone=p.exited(),code=gone?.code;
         p.stop();await box.dispose();
         return gone
           ?{id:spec.id,error:observation(`${label} exited (code ${code}) before it answered GET ${ready}`,[['output',out]]),frames}
@@ -961,10 +953,10 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
         const load=records.find(x=>x.load===false),worker=records.find(x=>Number.isInteger(x.worker_exit)),byStep=new Map(records.filter(x=>Number.isInteger(x.step)).map(x=>[x.step,x]));
         // The end: the adapter's done line, then its own normal exit.
         const done=records.some(x=>x.done===true)&&r.code===0&&!r.timedOut&&!r.signal&&!worker;
-        const stderr=redact(r.stderr,box.dir,box.root),exitText=`exit ${worker?worker.worker_exit:r.code}${r.signal?`, ${r.signal}`:''}`;
+        const stderr=r.stderr,exitText=`exit ${worker?worker.worker_exit:r.code}${r.signal?`, ${r.signal}`:''}`;
         // What it raised, with its stack (read by the call's own language first), and what it wrote to stderr, whole.
-        const fail=(detail,stack='',extra={})=>result(c,false,r.ms,observation(detail,[['stack',redact(stack,box.dir,box.root)],['stderr',stderr]]),{frames:framesOf(stack||r.stderr,files,[row,...rows.filter(x=>x!==row)],box.dir),...extra});
-        if(load)return fail(`${module} does not load: ${redact(load.error,box.dir,box.root)}`,load.stack);
+        const fail=(detail,stack='',extra={})=>result(c,false,r.ms,observation(detail,[['stack',stack],['stderr',stderr]]),{frames:framesOf(stack||r.stderr,files,[row,...rows.filter(x=>x!==row)],box.dir),...extra});
+        if(load)return fail(`${module} does not load: ${load.error}`,load.stack);
         for(const [i,s] of steps.entries()) {
           const rec=byStep.get(i),call=`${s.call}(${(Array.isArray(s.args)?s.args:[]).map(a=>show(a)).join(', ')})`;
           if(!rec) {
@@ -972,9 +964,9 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
             return fail(`the process ended before ${call} in ${module} returned (${exitText})`);
           }
           // A name the file does not give, or a step the adapter cannot make (a parameter type the file gives it that its language has no way to build from JSON, in the compiler's words): what this check observed.
-          if(rec.missing||rec.unsupported)return fail(redact(rec.error,box.dir,box.root));
+          if(rec.missing||rec.unsupported)return fail(rec.error);
           if(s.throws===true){if(rec.ok)return fail(`${call} in ${module} returned ${show(rec.value)}, expected it to raise an error`);continue;}
-          if(!rec.ok)return fail(`${call} in ${module} raised ${redact(rec.error,box.dir,box.root)}`,rec.stack);
+          if(!rec.ok)return fail(`${call} in ${module} raised ${rec.error}`,rec.stack);
           if(Object.hasOwn(s,'expect')&&!deepEqual(rec.value,s.expect))return fail(`${call} in ${module} returned ${show(rec.value)}, expected ${show(s.expect)}`);
           if(typeof s.expect_has==='string'&&!JSON.stringify(rec.value??null).includes(s.expect_has))return fail(`${call} in ${module} returned ${show(rec.value)}, which lacks ${show(s.expect_has)}`);
         }
@@ -994,7 +986,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
       const r=await execCheck(['node',HTTP_CHECK],{cwd:scratch,env,prefix:enter(),stdin:JSON.stringify({base_url:run.base_url,steps:Array.isArray(c.steps)?c.steps:[],deadline_ms:Math.max(0,left())})});
       let x=null;try{x=JSON.parse(r.stdout.trim().split('\n').at(-1));}catch{}
       if(x?.passed)return result(c,true,Date.now()-t);
-      const log=run.process?.log()||'',frames=framesOf(log,files,rows,run.box?.dir),server=['server output',run.runner?'':redact(log,run.box?.dir,run.box?.root)];
+      const log=run.process?.log()||'',frames=framesOf(log,files,rows,run.box?.dir),server=['server output',run.runner?'':log];
       // The runner's HTTP client reported nothing: the box's failure.
       if(!x)return result(c,false,Date.now()-t,observation(`the HTTP client failed (exit ${r.code})`,[['stderr',r.stderr],server]),{frames,infrastructure:true});
       return result(c,false,Date.now()-t,observation(`step ${x.step} ${x.label}: ${x.reason}${run.process?.exited()?' (the server exited)':''}`,[['response',x.body],server]),{frames});
@@ -1039,7 +1031,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
               // target was not there), the page's text, every console error and
               // blocked request, and the server's output, whole.
               const frames=(x.frames||[]).filter(f=>Object.hasOwn(files,f.path));
-              result(c,false,x.ms,observation(x.detail||'failed',[['page text',x.body_text],['console errors',(x.console_errors||[]).join('\n')],['server output',run.process&&run.box&&!run.runner?redact(run.process.log(),run.box.dir,run.box.root):'']]),{frames,
+              result(c,false,x.ms,observation(x.detail||'failed',[['page text',x.body_text],['console errors',(x.console_errors||[]).join('\n')],['server output',run.process&&run.box&&!run.runner?run.process.log():'']]),{frames,
                 ...(x.failed_step?{step:x.failed_step}:{}),...(x.infrastructure?{infrastructure:true}:{})});
             }
           }

@@ -344,7 +344,7 @@ test('a worker\'s file at a path another piece\'s contract places is its own: it
 // Owner 2026-10-15 05:16: "Any code type". A command contract in another language runs by its row's run_file.
 test('checkPlan: a command contract in Go or Ruby runs by its row\'s run_file, and the plan carries that row; the box runs it',async()=>{
   const spec={contracts:[{name:'serve',kind:'command',path:'main.go'},{name:'greet',kind:'command',path:'greet.rb'}],
-    validations:[{id:'V1',check:{kind:'command',argv:['greet','Ann'],expect:{stdout:'hello Ann'}}},{id:'V2',check:{kind:'command',argv:['serve'],expect:{exit:0}}}]};
+    validations:[{id:'V1',check:{kind:'command',argv:['greet','Ann'],expect:{stdout:'hello Ann\n'}}},{id:'V2',check:{kind:'command',argv:['serve'],expect:{exit:0}}}]};
   const files=new Map([['main.go','package main\nfunc main() {}\n'],['greet.rb','puts "hello #{ARGV[0]}"\n']]);
   const {plan,toolchains}=checkPlan(spec,files,{rows:TOOLCHAINS});
   assert.deepEqual(plan.commands,{serve:['go','run','main.go'],greet:['ruby','greet.rb']});

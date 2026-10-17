@@ -19,9 +19,10 @@
 # KNOWN LIMIT. The worker runs bundle code, so that code controls what the
 # worker reports: a module that already knows a step's expected value can
 # hard-code it, or patch the worker's reporting to claim it. No adapter can
-# stop that; the defence is that a requirement's check (its args, expected
-# values and steps) is never shown to the agents that write the code, only
-# the contract's own examples (S4b). What the split does guarantee: the
+# stop that. The worker that writes the code sees each validation it is
+# compiled against rendered as its examples, with the calls, their arguments
+# and their expected values (src/validations.js), so code can return those
+# values directly, and nothing here prevents it. What the split does guarantee: the
 # module cannot read the nonce (it is never in the worker's memory, and the
 # file is gone before the worker starts), so it cannot write records past
 # the supervisor or claim the end, and an early exit is always a failure.

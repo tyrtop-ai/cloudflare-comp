@@ -17,8 +17,10 @@
 // A function is the name the file defines it by: a function it declares.
 //
 // KNOWN LIMIT: as call.mjs's. The file runs in this process, so it controls
-// the values it returns; the defence is that a requirement's check is never
-// shown to the agents that write the code (S4b).
+// the values it returns. The worker that writes the code sees each
+// validation rendered as its examples, expected values included, so code
+// can return those values directly; the nonce and the exit rule only keep
+// it from writing records under the nonce by printing or claiming the end.
 //
 // Everything below runs inside one closure, so the adapter holds no global
 // a loaded file could read, and the file loads in a closure of its own.

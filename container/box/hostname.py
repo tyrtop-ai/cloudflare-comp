@@ -23,9 +23,9 @@
 # a box's inventory reports runs_network 'off' only where they are. When
 # unshare is refused, the command still runs, under the platform's host
 # name, and BOX_HOSTNAME_STATUS says why: the runner reports it in its
-# inventory (hostname, hostname_status, getfqdn), and the room classifies a
-# check that failed in such a box as the box's (compile_infrastructure),
-# never as the code's.
+# inventory (hostname, hostname_status, getfqdn). That report is all: a
+# check that fails in such a box is filed as what it observed, like any
+# other, and nothing reclassifies it from the host name.
 import ctypes, errno, os, re, socket, sys
 
 CLONE_NEWNS = 0x00020000

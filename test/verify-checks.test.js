@@ -34,9 +34,12 @@ const hasPython=spawnSync('python3',['--version']).status===0;
 const run=async(files,plan,extra={})=>verifyChecks({mode:'checks',fingerprint:'f',snapshot_hash:await snapshotHash(files),files,toolchains:ROWS,plan,limits:{total_ms:120_000},...extra});
 const byId=report=>Object.fromEntries(report.checks.map(c=>[c.id,c]));
 // A failure's detail is the whole observation, as the box observed it (owner,
-// 2026-10-16 19:41: the worker gets it whole): nothing clips or excerpts it,
-// and it names bundle paths, never the runner's folder.
-const short=c=>{if(process.env.SHOW_DETAILS)console.log(`[${c.id}] ${c.detail}`);assert.ok(!c.detail.includes(tmpdir()+'/checks-'),c.detail);assert.ok(!('output' in c)&&!('observed' in c),'the detail is the one observation');};
+// 2026-10-16 19:41: the worker gets it whole): nothing clips, excerpts or
+// rewrites it, so the paths in it are the ones the process printed (owner,
+// 2026-10-16 05:39 and 20:38).
+const short=c=>{if(process.env.SHOW_DETAILS)console.log(`[${c.id}] ${c.detail}`);assert.ok(!('output' in c)&&!('observed' in c),'the detail is the one observation');};
+// A path as a process in the check's fresh copy prints it: the copy's folder, then the bundle path.
+const AT=String.raw`(?:file://)?/\S*/bundle/`;
 
 test('file checks: exists, non-empty, has each string, parses as JSON; failures name the file',async()=>{
   const files={'README.md':'# Word count\n\nUsage: python3 wc.py < file\n','data/config.json':'{"top": 3}','bad.json':'{"top": 3,}','empty.txt':' \n'};
@@ -89,32 +92,38 @@ print(ratio(sys.stdin.read()))
 `;
 
 test('command checks: a Python CLI reads stdin, prints, exits; fixtures beside it; failures name the file and the line',{skip:!hasPython&&'python3 is not installed'},async()=>{
-  const files={'wc.py':WC_PY,'ratio.py':CRASH_PY,'notes.md':'# notes\n'};
+  const files={'wc.py':WC_PY,'ratio.py':CRASH_PY,'notes.md':'# notes\n','crlf.py':'import sys\nsys.stdout.write("ok \\r\\n")\n'};
   const report=await run(files,{
     syntax:[{toolchain:'python',files:['wc.py','ratio.py']}],
     commands:{wordcount:['python3','wc.py']},
     checks:[
-      {id:'R1',kind:'command',run:'python3 wc.py',stdin:'a b c\n',expect:{exit:0,stdout:'3'}},
+      {id:'R1',kind:'command',run:'python3 wc.py',stdin:'a b c\n',expect:{exit:0,stdout:'3\n'}},
       {id:'R2',kind:'command',run:'wordcount --top 1',stdin:'x y x\n',expect:{stdout_has:['x 2']}},
       {id:'R3',kind:'command',run:'wc.py --bogus',expect:{exit:2,stderr_has:['usage']}},
-      {id:'R4',kind:'command',run:'python3 wc.py',stdin:'one two\n',expect:{stdout:'3'}},
+      {id:'R4',kind:'command',run:'python3 wc.py',stdin:'one two\n',expect:{stdout:'3\n'}},
       {id:'R5',kind:'command',run:'ratio.py',stdin:'',expect:{exit:0}},
-      {id:'R6',kind:'command',run:"python3 -c \"print(open('in.txt').read().upper())\"",files:{'in.txt':'hello'},expect:{stdout:'HELLO'}},
+      {id:'R6',kind:'command',run:"python3 -c \"print(open('in.txt').read().upper())\"",files:{'in.txt':'hello'},expect:{stdout:'HELLO\n'}},
+      // Exactly as written (owner, 2026-10-16 20:38): no line end, trailing
+      // space or CRLF is normalised away before the comparison.
+      {id:'R10',kind:'command',run:'python3 wc.py',stdin:'a b c\n',expect:{stdout:'3'}},
+      {id:'R11',kind:'command',run:'python3 crlf.py',expect:{stdout:'ok\n'}},
       {id:'R7',kind:'command',run:'no-such-tool-here --x',expect:{exit:0}},
       {id:'R9',kind:'command',run:'python3 wc.py',files:{'wc.py':'print(1)'},expect:{exit:0}}]},
     {isolation:[]});
   const c=byId(report);
   assert.equal(report.stages.find(s=>s.name==='syntax:python')?.passed,true,JSON.stringify(report.stages));
   for(const id of ['R1','R2','R3','R6'])assert.equal(c[id].passed,true,`${id}: ${c[id].detail}`);
-  assert.equal(c.R4.detail,'python3 wc.py: printed "2", expected "3"\n--- stdout\n2');
+  assert.equal(c.R4.detail,'python3 wc.py: printed "2\\n", expected "3\\n"\n--- stdout\n2\n');
+  assert.equal(c.R10.detail,'python3 wc.py: printed "3\\n", expected "3"\n--- stdout\n3\n');
+  assert.equal(c.R11.detail,'python3 crlf.py: printed "ok \\r\\n", expected "ok\\n"\n--- stdout\nok \r\n');
   // The whole of what it wrote: the traceback, every frame of it, as Python printed it.
-  assert.match(c.R5.detail,/^ratio\.py: exit 1, expected 0\n--- stderr\nTraceback \(most recent call last\):\n  File "ratio\.py", line 7, in <module>\n[\s\S]*  File "ratio\.py", line 5, in ratio\n[\s\S]*ZeroDivisionError: division by zero$/);
+  assert.match(c.R5.detail,new RegExp(String.raw`^ratio\.py: exit 1, expected 0\n--- stderr\nTraceback \(most recent call last\):\n  File "${AT}ratio\.py", line 7, in <module>\n[\s\S]*  File "${AT}ratio\.py", line 5, in ratio\n[\s\S]*ZeroDivisionError: division by zero\n$`));
   assert.deepEqual(c.R5.frames,[{path:'ratio.py',line:5,fn:'ratio'},{path:'ratio.py',line:7,fn:'<module>'}],'the raising frame first');
   assert.match(c.R7.detail,/^no-such-tool-here --x: [\s\S]*(ENOENT|No such file)/,'what the box does not have, the run observes');
   // A check that never ends runs until the verification's time runs out: a failure, with what it printed.
   const slow=byId(await run(files,{checks:[{id:'R8',kind:'command',run:'python3 -c "import time; print(1, flush=True); time.sleep(30)"',expect:{exit:0}}]},{limits:{total_ms:4000},isolation:[]}));
   stopped(slow.R8,'python3 -c "import time; print(1, flush=True); time.sleep(30)": ');
-  assert.match(slow.R8.detail,/\n--- stdout\n1$/);
+  assert.match(slow.R8.detail,/\n--- stdout\n1\n$/);
   assert.equal(c.R9.detail,"fixture wc.py would replace the bundle's wc.py");
   for(const x of report.checks.filter(x=>!x.passed))short(x);
 });
@@ -230,7 +239,7 @@ test('call checks: JavaScript functions in one process, saved results read by la
   assert.equal(c.R1.passed,true,c.R1.detail);
   assert.equal(c.R2.passed,true,c.R2.detail);
   // The whole stack, as Node printed it: the adapter's frames under the module's too.
-  assert.match(c.R3.detail,/^toggle\(99\) in components\/todos\/todos\.mjs raised Error: no todo 99\n--- stack\nError: no todo 99\n    at toggle \(components\/todos\/todos\.mjs:11:17\)\n[\s\S]*adapters\/call\.mjs/);
+  assert.match(c.R3.detail,new RegExp(String.raw`^toggle\(99\) in components/todos/todos\.mjs raised Error: no todo 99\n--- stack\nError: no todo 99\n    at toggle \(${AT}components/todos/todos\.mjs:11:17\)\n[\s\S]*adapters/call\.mjs`));
   assert.deepEqual(c.R3.frames[0],{path:'components/todos/todos.mjs',line:11,fn:'toggle'});
   assert.equal(c.R4.detail,'components/todos/todos.mjs has no function remove (it exports: add, list, toggle)');
   assert.equal(c.R5.detail,'list() in components/todos/todos.mjs returned [{"id":1,"title":"a","done":false}], expected []');
@@ -266,7 +275,7 @@ test('call checks: Python functions keep a saved object across steps, await coro
     {id:'R5',kind:'call',adapter:'python',module:'components/counter/count.py',steps:[{call:'count_words',args:['a']}]}]},{isolation:[]});
   const c=byId(report);
   assert.equal(c.R1.passed,true,c.R1.detail);
-  assert.match(c.R2.detail,/^boom\(0\) in components\/counter\/count\.py raised ZeroDivisionError: integer division or modulo by zero\n--- stack\nTraceback \(most recent call last\):\n[\s\S]*call\.py[\s\S]*  File "components\/counter\/count\.py", line 30, in boom\n    return helper\(x\)\n(?: *[~^]+\n)?  File "components\/counter\/count\.py", line 34, in helper\n[\s\S]*ZeroDivisionError: integer division or modulo by zero$/,'the whole traceback, as Python printed it (with the markers newer Pythons print under a frame): the adapter\'s frames too');
+  assert.match(c.R2.detail,new RegExp(String.raw`^boom\(0\) in components/counter/count\.py raised ZeroDivisionError: integer division or modulo by zero\n--- stack\nTraceback \(most recent call last\):\n[\s\S]*call\.py[\s\S]*  File "${AT}components/counter/count\.py", line 30, in boom\n    return helper\(x\)\n(?: *[~^]+\n)?  File "${AT}components/counter/count\.py", line 34, in helper\n[\s\S]*ZeroDivisionError: integer division or modulo by zero\n$`),'the whole traceback, as Python printed it (with the markers newer Pythons print under a frame): the adapter\'s frames too');
   assert.deepEqual(c.R2.frames,[{path:'components/counter/count.py',line:34,fn:'helper'},{path:'components/counter/count.py',line:30,fn:'boom'}],'the raising frame first; the adapter\'s own frames are left out');
   assert.equal(c.R3.detail,'add_words("$c", "x y") in components/counter/count.py returned 2, expected 3');
   assert.match(c.R4.detail,/^components\/counter\/broken\.py does not load: SyntaxError: /);
@@ -296,19 +305,19 @@ test('call checks: TypeScript, Ruby and PHP functions run through their own call
   const c=byId(report);
   assert.equal(c.T1.passed,true,c.T1.detail);
   // The stack as Node gives it (its own frame limit), with the whole message: nothing cut at 4000 characters.
-  assert.match(c.T2.detail,new RegExp(`^down\\(300\\) in lib/deep\\.ts raised Error: ${'bottom '.repeat(1000).trimEnd()} ?\\n--- stack\\nError: ${'bottom '.repeat(1000).trimEnd()} ?\\n    at down \\(lib/deep\\.ts:1:`));
+  assert.match(c.T2.detail,new RegExp(`^down\\(300\\) in lib/deep\\.ts raised Error: ${'bottom '.repeat(1000).trimEnd()} ?\\n--- stack\\nError: ${'bottom '.repeat(1000).trimEnd()} ?\\n    at down \\(${AT}lib/deep\\.ts:1:`));
   assert.ok(c.T2.detail.length>14_000,`${c.T2.detail.length} characters`);
   // Every function the file exports, not twelve of them.
   assert.equal(c.T3.detail,`lib/deep.ts has no function missing (it exports: ${['down',...Array.from({length:20},(_,i)=>`f${i}`)].sort().join(', ')})`);
   if(hasRuby) {
     assert.equal(c.R1.passed,true,c.R1.detail);
-    assert.match(c.R2.detail,/^boom\(1\) in lib\/words\.rb raised ArgumentError: bad 1\n--- stack\nlib\/words\.rb:6:in /);
+    assert.match(c.R2.detail,new RegExp(String.raw`^boom\(1\) in lib/words\.rb raised ArgumentError: bad 1\n--- stack\n${AT}lib/words\.rb:6:in `));
     assert.deepEqual(c.R2.frames[0],{path:'lib/words.rb',line:6,fn:'boom'});
     assert.match(c.R3.detail,/^lib\/words\.rb has no function nope \(it defines: (shout, boom|boom, shout)\)$/,'the names Ruby lists, in the order it lists them');
   }
   if(hasPhp) {
     assert.equal(c.P1.passed,true,c.P1.detail);
-    assert.match(c.P2.detail,/^fail_with\("no"\) in lib\/calc\.php raised RuntimeException: no\n--- stack\nRuntimeException: no in lib\/calc\.php:3\nStack trace:\n#0 /);
+    assert.match(c.P2.detail,new RegExp(String.raw`^fail_with\("no"\) in lib/calc\.php raised RuntimeException: no\n--- stack\nRuntimeException: no in ${AT}lib/calc\.php:3\nStack trace:\n#0 `));
   }
   for(const x of report.checks.filter(x=>!x.passed))short(x);
 });
@@ -684,7 +693,7 @@ test('isolation: each check gets a fresh copy written from memory and its own TM
   // A rewrites every sibling folder it can find two levels up, its own copy and a temp file; B must see none of it.
   const files={'a.py':`import glob, os, tempfile\nopen(os.path.join(tempfile.gettempdir(), 'mark'), 'w').write('from A')\nfor d in glob.glob(os.path.join(os.getcwd(), '..', '..', '*')) + glob.glob(os.path.join(os.getcwd(), '..', '..', '*', '*')):\n    p = os.path.join(d, 'b.py')\n    if os.path.isdir(d) and os.access(d, os.W_OK):\n        open(p, 'w').write('print("B rewritten by A")')\nopen('b.py', 'w').write('print("B rewritten by A")')\nprint('ok')\n`,
     'b.py':`import os, tempfile\nprint('original b', os.path.exists(os.path.join(tempfile.gettempdir(), 'mark')))\n`};
-  const report=await run(files,{checks:[{id:'A',kind:'command',run:'a.py',expect:{exit:0}},{id:'B',kind:'command',run:'b.py',expect:{stdout:'original b False'}}]},{isolation:[]});
+  const report=await run(files,{checks:[{id:'A',kind:'command',run:'a.py',expect:{exit:0}},{id:'B',kind:'command',run:'b.py',expect:{stdout:'original b False\n'}}]},{isolation:[]});
   assert.deepEqual(report.checks.map(c=>[c.id,c.passed,c.detail]),[['A',true,''],['B',true,'']]);
 });
 
@@ -693,7 +702,7 @@ test('process trees: a setsid() daemon holding stdout neither stalls the check n
   const files={'d.py':`import os, sys, time\nif os.fork() == 0:\n    os.setsid()\n    open(${JSON.stringify(pidFile)}, 'w').write(str(os.getpid()))\n    time.sleep(30)\n    os._exit(0)\ntime.sleep(0.2)\nprint('parent done')\n`,
     'slow.py':'import time\ntime.sleep(30)\n'};
   const t=Date.now();
-  const report=await run(files,{checks:[{id:'R1',kind:'command',run:'d.py',expect:{stdout:'parent done'}},{id:'R2',kind:'command',run:'slow.py'}]},{limits:{total_ms:6000},isolation:[]});
+  const report=await run(files,{checks:[{id:'R1',kind:'command',run:'d.py',expect:{stdout:'parent done\n'}},{id:'R2',kind:'command',run:'slow.py'}]},{limits:{total_ms:6000},isolation:[]});
   assert.ok(Date.now()-t<12_000,`took ${Date.now()-t} ms`);
   assert.equal(byId(report).R1.passed,true,byId(report).R1.detail);
   assert.ok(byId(report).R1.ms<1500,`R1 waited ${byId(report).R1.ms} ms on the daemon's pipe`);
@@ -712,12 +721,12 @@ test('forgery: a module that patches the adapter\'s globals or walks its frames,
   const steps=[{call:'add',args:[2,3],expect:5}];
   const report=await run(files,{checks:[{id:'R1',kind:'call',module:'patch.js',steps},{id:'R2',kind:'call',module:'walk.py',steps},{id:'R3',kind:'call',module:'early.mjs',steps}]},{isolation:[]});
   const c=byId(report);
-  assert.match(c.R1.detail,/^add\(2, 3\) in patch\.js raised Error: not implemented\n--- stack\nError: not implemented\n    at add \(patch\.js:3:31\)\n/);
+  assert.match(c.R1.detail,new RegExp(String.raw`^add\(2, 3\) in patch\.js raised Error: not implemented\n--- stack\nError: not implemented\n    at add \(${AT}patch\.js:3:31\)\n`));
   assert.match(c.R2.detail,/^walk\.py does not load: AttributeError: 'NoneType' object has no attribute 'f_locals'/);
   assert.match(c.R3.detail,/^the process ended before add\(2, 3\) in early\.mjs returned \(exit 0\)/);
 });
 
-test('error cases and redaction: stderr_has without exit asserts no exit; details carry no runner folder, and a stack is whole (the adapter\'s frames too)',{skip:!hasPython&&'python3 is not installed'},async()=>{
+test('error cases and observed output: stderr_has without exit asserts no exit; what a process printed reaches the detail as printed, its paths too, and a stack is whole (the adapter\'s frames too)',{skip:!hasPython&&'python3 is not installed'},async()=>{
   const files={'cli.py':'import sys\nprint("usage: cli.py N", file=sys.stderr)\nsys.exit(0)\n','cwd.py':'import os, sys, tempfile\nprint(os.getcwd(), tempfile.gettempdir(), file=sys.stderr)\nraise SystemExit(3)\n',
     'm.py':'def f(x):\n    return 1 / x\n','bad.py':'import nosuchmod\n'};
   const report=await run(files,{checks:[{id:'R1',kind:'command',run:'cli.py x',expect:{stderr_has:['usage']}},{id:'R2',kind:'command',run:'cwd.py',expect:{exit:0}},
@@ -725,10 +734,10 @@ test('error cases and redaction: stderr_has without exit asserts no exit; detail
   const c=byId(report);
   // The check states only what stderr holds: the exit is observed, not asserted (owner, 2026-10-16 05:49).
   assert.equal(c.R1.passed,true,c.R1.detail);
-  assert.equal(c.R2.detail,'cwd.py: exit 3, expected 0\n--- stderr\n. tmp');
-  for(const x of report.checks)assert.ok(!x.detail.includes(tmpdir()+'/checks-'),`${x.id} names the runner's folder: ${x.detail}`);
+  // What the process printed, as printed (owner, 2026-10-16 05:39 and 20:38): the box rewrites none of its paths.
+  assert.match(c.R2.detail,new RegExp(String.raw`^cwd\.py: exit 3, expected 0\n--- stderr\n${tmpdir()}/checks-\S+/bundle ${tmpdir()}/checks-\S+/tmp\n$`));
   // Owner 2026-10-16 19:41: the observation whole, as Python printed it: no frame line is taken out.
-  assert.match(c.R3.detail,/adapters\/call\.py[\s\S]*File "m\.py", line 2, in f/);
+  assert.match(c.R3.detail,new RegExp(String.raw`adapters/call\.py[\s\S]*File "${AT}m\.py", line 2, in f`));
   assert.match(c.R4.detail,/importlib/);
 });
 
@@ -745,7 +754,7 @@ test('project checks run first as commands that must exit 0; the time budget mar
   const c=byId(report);
   assert.deepEqual(report.checks.map(x=>x.id),['P1','P2','R1']);
   assert.equal(c.P1.passed,true);
-  assert.equal(c.P2.detail,'python3 fail.py: exit 1, expected 0\n--- stdout\n1 failed, 2 passed');
+  assert.equal(c.P2.detail,'python3 fail.py: exit 1, expected 0\n--- stdout\n1 failed, 2 passed\n');
   assert.equal(report.stages.find(s=>s.name==='project').passed,false);
   // The first check still running at the end of the room's time is a failure; one the time was spent before observed nothing: not run.
   const late=await run({'a.py':'import time\ntime.sleep(5)\n'},{checks:[{id:'R1',kind:'command',run:'a.py'},{id:'R2',kind:'command',run:'a.py'}]},{limits:{total_ms:1000},isolation:[]});
@@ -758,8 +767,8 @@ test('project checks run first as commands that must exit 0; the time budget mar
 test('any code type: a bundle file no row runs runs by its #! line; a command is any executable the box has',async()=>{
   const files={'tool':'#!/bin/sh\necho "tool says $1"\n','notes.txt':'plain\n'};
   const c=byId(await run(files,{checks:[
-    {id:'R1',kind:'command',run:'tool hi',expect:{stdout:'tool says hi'}},
-    {id:'R2',kind:'command',run:'sh -c "echo shell"',expect:{stdout:'shell'}},
+    {id:'R1',kind:'command',run:'tool hi',expect:{stdout:'tool says hi\n'}},
+    {id:'R2',kind:'command',run:'sh -c "echo shell"',expect:{stdout:'shell\n'}},
     {id:'R3',kind:'command',run:'notes.txt',expect:{exit:0}}]},{isolation:[]}));
   assert.equal(c.R1.passed,true,c.R1.detail);
   assert.equal(c.R2.passed,true,c.R2.detail);
@@ -771,7 +780,7 @@ const hasGcc=spawnSync('gcc',['--version']).status===0;
 test('any code type: a compiled language\'s file runs by its row\'s run_file, built in the check\'s own folder',{skip:!hasGcc&&'gcc is not installed'},async()=>{
   const {COMPILE_ROWS}=await import('../src/toolchains.js');
   const files={'hello.c':'#include <stdio.h>\nint main(int argc, char **argv) { printf("hello %s\\n", argc > 1 ? argv[1] : "nobody"); return 0; }\n'};
-  const c=byId(await run(files,{checks:[{id:'R1',kind:'command',run:'hello.c box',expect:{stdout:'hello box'}}]},{toolchains:[...ROWS,...JSON.parse(JSON.stringify(COMPILE_ROWS))],isolation:[]}));
+  const c=byId(await run(files,{checks:[{id:'R1',kind:'command',run:'hello.c box',expect:{stdout:'hello box\n'}}]},{toolchains:[...ROWS,...JSON.parse(JSON.stringify(COMPILE_ROWS))],isolation:[]}));
   assert.equal(c.R1.passed,true,c.R1.detail);
 });
 
@@ -792,17 +801,17 @@ test('install: the box installs the packages a plan lists, by the row\'s install
   fake.install.argv=['env','T={tree}',...fake.install.argv];
   const files={'app.py':'import fakepkg\nprint(fakepkg.NAME)\n','scribble.py':'import fakepkg, os\nopen(os.path.join(os.path.dirname(fakepkg.__file__), "x.py"), "w").write("")\n'};
   const report=await run(files,{install:[{toolchain:'python',packages:['fakepkg']}],checks:[
-    {id:'R1',kind:'command',run:'python3 app.py',expect:{stdout:'fakepkg'}},
+    {id:'R1',kind:'command',run:'python3 app.py',expect:{stdout:'fakepkg\n'}},
     {id:'R2',kind:'command',run:'python3 scribble.py',expect:{exit:0}}]},{toolchains:[fake],isolation:[]});
   assert.deepEqual(report.installed,[{toolchain:'python',packages:['fakepkg'],passed:true}]);
   assert.equal(report.stages.find(s=>s.name==='install:python')?.passed,true);
   const c=byId(report);
   assert.equal(c.R1.passed,true,c.R1.detail);
   if(process.getuid?.()!==0)assert.equal(c.R2.passed,false,'the installed tree is read-only to a check');
-  const failed=await run(files,{install:[{toolchain:'python',packages:['fakepkg']}],checks:[{id:'R1',kind:'command',run:'python3 app.py',expect:{stdout:'fakepkg'}}]},
+  const failed=await run(files,{install:[{toolchain:'python',packages:['fakepkg']}],checks:[{id:'R1',kind:'command',run:'python3 app.py',expect:{stdout:'fakepkg\n'}}]},
     {toolchains:[{...fake,install:{argv:['sh','-c','echo "no such package: $1" >&2; exit 1','sh','{packages}'],tree:'python-packages',env:{PYTHONPATH:'{tree}'}}}],isolation:[]});
   assert.equal(failed.installed[0].passed,false);
-  assert.match(failed.installed[0].detail,/^exit 1: no such package: fakepkg$/);
+  assert.match(failed.installed[0].detail,/^exit 1: no such package: fakepkg\n$/);
   assert.match(byId(failed).R1.detail,/ModuleNotFoundError: No module named 'fakepkg'/,'the checks run on, and say what they saw');
   // A language whose row has no install command: the box reports it, as observed.
   const none=await run(files,{install:[{toolchain:'python',packages:['fakepkg']}],checks:[]},{toolchains:[{...fake,install:undefined}],isolation:[]});
@@ -832,12 +841,12 @@ test('install: a C package is the system\'s library, unpacked into the tree the 
   try {
     const rows=[...ROWS,...JSON.parse(JSON.stringify(COMPILE_ROWS))];
     const files={'hello.c':'#include <stdio.h>\n#include <greet.h>\nint main(void) { printf("%s\\n", greet()); return 0; }\n'};
-    const report=await run(files,{install:[{toolchain:'c',packages:['libgreet-dev']}],syntax:[{toolchain:'c',files:['hello.c']}],checks:[{id:'R1',kind:'command',run:'hello.c',expect:{stdout:'greetings'}}]},{toolchains:rows,isolation:[]});
+    const report=await run(files,{install:[{toolchain:'c',packages:['libgreet-dev']}],syntax:[{toolchain:'c',files:['hello.c']}],checks:[{id:'R1',kind:'command',run:'hello.c',expect:{stdout:'greetings\n'}}]},{toolchains:rows,isolation:[]});
     assert.deepEqual(report.installed,[{toolchain:'c',packages:['libgreet-dev'],passed:true}],JSON.stringify(report.stages));
     assert.equal(report.stages.find(s=>s.name==='syntax:c')?.passed,true,JSON.stringify(report.stages));
     assert.equal(byId(report).R1.passed,true,byId(report).R1.detail);
     assert.equal(report.passed,true);
-    const missing=await run(files,{install:[{toolchain:'c',packages:['libnothing-dev']}],checks:[{id:'R1',kind:'command',run:'hello.c',expect:{stdout:'greetings'}}]},{toolchains:rows,isolation:[]});
+    const missing=await run(files,{install:[{toolchain:'c',packages:['libnothing-dev']}],checks:[{id:'R1',kind:'command',run:'hello.c',expect:{stdout:'greetings\n'}}]},{toolchains:rows,isolation:[]});
     assert.equal(missing.installed[0].passed,false);
     assert.match(missing.installed[0].detail,/^exit 100: E: Unable to locate package libnothing-dev/);
     assert.equal(missing.passed,false,'a package not installed fails the verification');
