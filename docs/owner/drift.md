@@ -2,7 +2,7 @@
 
 Findings from the prompt red team (`.claude/workflows/prompt-redteam.js`): three agents read `prompts.md`, hunt places where the code doesn't follow the owner, and confirm findings and fixes by 2-of-3 quorum. Claude fixes each confirmed finding and moves it to "Fixed, awaiting recheck" with the commit, or to "Disputed" with its evidence. The next round rechecks both. An item closes only when 2 of 3 agree. The loop ends when a round confirms nothing new and closes every item.
 
-Full text of each round's findings and votes: the round's section below; the workflow journal holds the raw votes.
+Every finding of every round, with each judge's vote and reason: `redteam-findings.md`.
 
 ## Open
 
