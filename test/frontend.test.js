@@ -374,10 +374,10 @@ test('v7.15.1: a v7 compiler and a v8 level\'s compiler have their own states an
   assert.match(v8.detail(),/<b class="mono">splitter-3333333333333333<\/b> · Splitter · attempt 1 · <span class="onode-role">splitter<\/span> · done<\/div>.*<p class="faint">done · admitted · 8\.5 s<\/p>/);
   // v8: each link reader is a node, joined to the manager the room created, its notes' reader; running until it ends.
   const rd=treePage({agents:[{id:m,parent:null,role:'manager',label:'Styles',phase:'manager',status:'running',task:'goal',depth:0,seq:1}],room_manager:m,
-    readers:[{id:'reader-S1-1',ref:'S1#1',role:'source_gist',started_at:1000,ended_at:3000,noted:true,rounds:1},{id:'reader-S1',ref:'S1',role:'source_summary',started_at:3000,ended_at:null,noted:false,rounds:0}]});
-  assert.match(rd.tree(),/class="gnode role-reader done" data-node="reader-S1-1"[^>]*><title>Link reader · S1#1 · reader · done<\/title><rect /);
-  assert.match(rd.tree(),/class="gnode role-reader running" data-node="reader-S1"/);
-  rd.click('hierarchy','reader-S1-1');
+    readers:[{id:'reader-5555555555555555',ref:'S1#1',role:'source_gist',started_at:1000,ended_at:3000,noted:true,rounds:1},{id:'reader-4444444444444444',ref:'S1',role:'source_summary',started_at:3000,ended_at:null,noted:false,rounds:0}]});
+  assert.match(rd.tree(),/class="gnode role-reader done" data-node="reader-5555555555555555"[^>]*><title>Link reader · S1#1 · reader · done<\/title><rect /);
+  assert.match(rd.tree(),/class="gnode role-reader running" data-node="reader-4444444444444444"/);
+  rd.click('hierarchy','reader-5555555555555555');
   assert.match(rd.detail(),/<span class="onode-role">reader<\/span> · done<\/div><p>Read part S1#1 of a linked page and note what it says\.<\/p>.*talks to <button type="button" class="peer mono" data-node="manager-0123456789abcdef">.*<p class="faint">noted · 1 model call · 2\.0 s<\/p>/);
 });
 

@@ -3,9 +3,10 @@
 // of a benchmark run (grading, outcomes, aggregates, comparison).
 //
 // Pure: `fetch` is injected and the module never sees the Worker's bindings
-// or secrets. Datasets are read through src/fetcher.js (guardedFetch: the
-// owner's allowlist narrowed to the dataset hosts, https only, manual and
-// rechecked redirects, no credentials, decompressed bodies), whole.
+// or secrets. Datasets are read through src/fetcher.js (guardedFetch: any
+// host the owner's FETCH_ALLOW allows, this deployment's own hosts refused,
+// https only, manual and rechecked redirects, no credentials, decompressed
+// bodies), whole.
 //
 // A task room is an ordinary room started from the task's prompt, as the
 // benchmark wrote it: the runtime adds no language, path, library or

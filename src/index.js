@@ -696,11 +696,12 @@ export class ControlRoom extends DurableObject {
     // Every host this deployment answers on (the request's and SELF_HOSTS) is refused.
     const selfHosts=[...this.read('fetch_self_hosts',[]),...selfHostsOf(this.env)];
     // Each reader's model calls count against the run's budget, as a manager's do; the readings go on while the budget lasts.
-    // Each reader is an agent of the room: recorded as it starts and as it
-    // ends (source_readers), so the dashboard draws it with the others.
+    // Each reader is an agent of the room, named reader-<hex16> as every row
+    // is (rowId): recorded as it starts and as it ends (source_readers), so
+    // the dashboard draws it with the others.
     let calls=0;
-    const readers=[],read=sourceModel(this.inferenceEnv('compiler')),note=async args=>{
-      const x={id:`reader-${String(args.ref).replace('#','-')}`,ref:args.ref,role:args.role,started_at:Date.now(),ended_at:null,noted:false,rounds:0};
+    const room=this.get('room_id',''),readers=[],read=sourceModel(this.inferenceEnv('compiler')),note=async args=>{
+      const x={id:await rowId(room,readers.length+1,'reader'),ref:args.ref,role:args.role,started_at:Date.now(),ended_at:null,noted:false,rounds:0};
       readers.push(x);this.save('source_readers',readers);
       try {const r=await read(args);calls+=r.rounds;Object.assign(x,{noted:!!r.noted,rounds:r.rounds});return r.noted;}
       finally {x.ended_at=Date.now();this.save('source_readers',readers);}

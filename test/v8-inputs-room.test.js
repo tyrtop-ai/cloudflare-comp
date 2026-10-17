@@ -247,9 +247,13 @@ test('links in the prompt: fetched once with the owner\'s allowlist, stored and 
   const shown = room.snapshot().sources;
   assert.deepEqual(shown.map(s => [s.id, s.title, s.bytes, s.truncated, !!s.error]), [['S1', s1.title, s1.bytes, false, false], ['S2', '', 0, false, true], ['S3', '', 0, false, true]]);
   assert.equal((await room.exportHead()).sources[0].summary.outline.length, 3);
-  // Each link reader is an agent of the room, in the snapshot the graph draws: a part's reader each, then the page's.
-  assert.deepEqual(room.snapshot().readers.map(r => [r.id, r.ref, r.role, r.noted, !!r.ended_at]), [['reader-S1-1', 'S1#1', 'source_gist', true, true],
-    ['reader-S1-2', 'S1#2', 'source_gist', true, true], ['reader-S1-3', 'S1#3', 'source_gist', true, true], ['reader-S1', 'S1', 'source_summary', true, true]]);
+  // Each link reader is an agent of the room, in the snapshot the graph draws: a part's reader each, then the page's,
+  // each named reader-<hex16> as every row is <role>-<hex16> (owner 2026-10-16 05:08).
+  const readers = room.snapshot().readers;
+  assert.deepEqual(readers.map(r => [r.ref, r.role, r.noted, !!r.ended_at]), [['S1#1', 'source_gist', true, true],
+    ['S1#2', 'source_gist', true, true], ['S1#3', 'source_gist', true, true], ['S1', 'source_summary', true, true]]);
+  for (const r of readers) assert.match(r.id, /^reader-[0-9a-f]{16}$/);
+  assert.equal(new Set(readers.map(r => r.id)).size, readers.length);
   assert.deepEqual(lintRequests(room, calls), []);
 });
 

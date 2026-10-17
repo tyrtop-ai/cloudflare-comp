@@ -26,8 +26,8 @@
 // again once the run is no longer running.
 //
 // No secret reaches src/bench.js: the dataset is fetched with the global
-// fetch and the fetcher's policy (the owner's FETCH_ALLOW narrowed to the
-// dataset hosts; this deployment's own host refused), never with a token.
+// fetch and the fetcher's policy (any host the owner's FETCH_ALLOW allows;
+// this deployment's own host refused), never with a token.
 // Results hold room ids, outcomes, times and counts: no repository names,
 // remote URLs or account ids.
 import { DurableObject } from 'cloudflare:workers';
