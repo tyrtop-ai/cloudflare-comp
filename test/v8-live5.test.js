@@ -15,7 +15,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {levelRoom, again, deliver, events} from './helpers/levels.js';
 import {levelCalls} from './helpers/room.js';
-import {CLEF, RETRY, clefText} from '../src/prompts.js';
+import {CLEF, RETRY} from '../src/prompts.js';
 import {gateLine} from '../src/contracts.js';
 // After the room helper registered the cloudflare: loader.
 const {DEFAULT_ROOM_SETTINGS, normalizeRoomSettings, SPLIT_ATTEMPTS} = await import('../src/index.js');
@@ -106,7 +106,7 @@ test('live 5: the pre-grade reads the assignment and the row\'s contracts, one l
   assert.equal(passed(room), 9);
 });
 
-test('live 5: a lower manager\'s splitter receives its row\'s contracts, and Clef reviews a proposal in one call: validity, size, each piece\'s scope and each validation', async () => {
+test('live 5: a lower manager\'s splitter receives its row\'s contracts, and Clef reviews a proposal in one call with the owner\'s two questions: validity and size', async () => {
   const lowerPre = state => state.assignment === GOAL || state.assignment === 'Write FAQ.md and TIPS.md' ? 0.6 : 0.05;
   // The lower manager's pre-grade lets it divide too, so its splitter proposes a division of its own.
   const {room, calls, seen} = await room5({pre: lowerPre, review: [{valid: 0.81, size: 0.77}], lower: () => [piece('Questions', [FAQ]), piece('Tips', [TIPS])]});
@@ -117,22 +117,18 @@ test('live 5: a lower manager\'s splitter receives its row\'s contracts, and Cle
   assert.deepEqual(seen.review.map(r => r.state.assignment), [GOAL, 'Write FAQ.md and TIPS.md'], 'one review call for each proposal');
   assert.deepEqual(seen.review[1].state.pieces.map(p => [p.label, p.contracts]), [['Questions', ['FAQ.md']], ['Tips', ['TIPS.md']]]);
   const r = seen.review[0];
-  assert.deepEqual(Object.keys(r.questions).slice(0, 4), ['split_valid', 'split_size', 'within_0', 'within_1']);
-  assert.deepEqual(Object.keys(r.questions).slice(4, 6), ['exercises_0', 'implementable_0']);
-  assert.equal(Object.keys(r.questions).length, 4 + 2 * VALIDATIONS.length);
+  assert.deepEqual(Object.keys(r.questions), ['split_valid', 'split_size'], 'no scope question per piece, no question about any validation');
   assert.equal(r.questions.split_valid.instructions, CLEF.split_valid);
   assert.equal(r.questions.split_size.instructions, CLEF.split_size);
-  assert.equal(r.questions.within_1.instructions, clefText('scope', {i: 1}));
   assert.equal(r.state.assignment, GOAL);
   assert.deepEqual(r.state.pieces.map(p => [p.label, p.contracts]), [['Guide', ['GUIDE.md']], ['Questions and tips', ['FAQ.md', 'TIPS.md']]]);
-  // YES admits the pieces; no second scope call is made for them.
-  assert.equal(calls.clef.filter(c => Object.keys(c.questions).some(k => k.startsWith('within_')) && !c.questions.split_valid).length, 0);
+  assert.ok(!('validations' in r.state), 'the original and the pieces');
   assert.deepEqual(kids(room).map(c => [c.label, c.role]), [['Guide', 'manager'], ['Questions and tips', 'manager']]);
   // The span carries the attempt for tuning, and so does split_attempts in the export.
   const span = room.spans(0, 100000).find(s => s.name === 'reviewLevel' && s.attrs.pieces === 2);
-  assert.deepEqual([span.attrs.attempt, span.attrs.pieces, span.attrs.valid_p, span.attrs.size_p, span.attrs.scope_ps], [1, 2, 0.81, 0.77, [0.9, 0.9]]);
+  assert.deepEqual([span.attrs.attempt, span.attrs.pieces, span.attrs.valid_p, span.attrs.size_p], [1, 2, 0.81, 0.77]);
   assert.deepEqual(attemptsOf(room), [{attempt: 0, p: 0.6, floor: 0.1, caught: false},
-    {attempt: 1, job: 'split:', splitter: room.splitterRows()[0].id, pieces: 2, valid_p: 0.81, size_p: 0.77, scope_ps: [0.9, 0.9], valid_bar: 0.5, size_bar: 0.5, outcome: 'admitted'}]);
+    {attempt: 1, job: 'split:', splitter: room.splitterRows()[0].id, pieces: 2, valid_p: 0.81, size_p: 0.77, valid_bar: 0.5, size_bar: 0.5, outcome: 'admitted'}]);
   assert.equal(passed(room), 9);
 });
 
@@ -217,6 +213,42 @@ test('live 5: three NOs hand the level down to one worker; a too-small NO on two
   assert.equal(passed(two.room), 9);
 });
 
+// ------------------------------------------------------------ the bound the splitter is told is what the room can create
+test('live 5: max_pieces is what the room\'s agent limit can create, each piece with a worker of its own, so a division within it is created and nothing holds', async () => {
+  // The splitter divides as finely as it is told it may: three pieces when it may, else two.
+  const fine = user => user.max_pieces >= 3 ? THREE : TWO;
+  // max_agents 5: the room's manager and four slots, room for two pieces and their workers.
+  const tight = await room5({pieces: fine, settings: {max_agents: 5}});
+  assert.equal(tight.calls.split[0].max_pieces, 2);
+  assert.equal(tight.room.get('status'), 'complete', tail(tight.room));
+  assert.deepEqual(tight.room.roomHolds(), []);
+  assert.equal(events(tight.room, 'split_capacity').length, 0);
+  assert.deepEqual(kids(tight.room).map(c => c.label), ['Guide', 'Questions and tips']);
+  // max_agents 9: room for four; the room's max_children bounds it otherwise.
+  const wider = await room5({pieces: fine, settings: {max_agents: 9}});
+  assert.equal(wider.calls.split[0].max_pieces, 4);
+  assert.deepEqual(kids(wider.room).map(c => c.label), ['Guide', 'Questions', 'Tips']);
+  assert.equal(wider.room.get('status'), 'complete', tail(wider.room));
+  // Each admission releases what its session was offered; an offer held by another manager's session is room no one else is told of.
+  const {room} = wider, top = room.roomManager(), other = kids(room)[0].id;
+  assert.equal(room.offeredSlots(), 0);
+  const before = room.piecesRoom(other);
+  room.offerPieces(top, 1);
+  assert.equal(room.piecesRoom(other), Math.max(0, before - 1));
+  assert.equal(room.piecesRoom(top), before, 'its own offer is its own');
+  room.offerPieces(top, 0);
+  assert.equal(room.offeredSlots(), 0);
+});
+
+// ------------------------------------------------------------ every split attempt is kept
+test('live 5: every split attempt of the row\'s task is kept, so its pre-grade and its attempt count never drop out', async () => {
+  const {room} = await room5({});
+  const id = room.roomManager(), had = room.splitAttempts(id).length;
+  for (let i = 0; i < 40; i++) room.recordAttempt(id, {attempt: 1, job: `rebuild:${i}`, pieces: 0, outcome: 'admitted'});
+  assert.equal(room.splitAttempts(id).length, had + 40);
+  assert.equal(room.splitAttempts(id).find(a => a.attempt === 0).caught, false, 'the pre-grade stays');
+});
+
 // ------------------------------------------------------------ the bars and the floor are settings
 test('live 5: the floor and both bars come from the room\'s settings; every manager\'s split meets the same valid bar, at every depth', async () => {
   assert.deepEqual([DEFAULT_ROOM_SETTINGS.split_floor, DEFAULT_ROOM_SETTINGS.split_valid_bar, DEFAULT_ROOM_SETTINGS.split_size_bar], [0.1, 0.5, 0.5]);
@@ -248,8 +280,8 @@ test('a file check runs as the splitter wrote it: its text across lines is not t
   assert.equal(fileResult({path: 'styles.css', has: ['#todo-list {\n  list-style: none;\n}']}, files).passed, true);
 });
 
-// ------------------------------------------------------------ a doubted validation that keeps failing
-test('live 5: a validation Clef doubted that keeps failing stays with its marks: the repairs go on until the room\'s budget ends, with no hold; Continue keeps it, and nothing is deleted', async () => {
+// ------------------------------------------------------------ a validation that keeps failing
+test('live 5: a validation that keeps failing stays: the repairs go on until the room\'s budget ends, with no hold; Continue keeps it, nothing is deleted, and Clef is asked nothing about it', async () => {
   const plain = deliver({'GUIDE.md': FILES['GUIDE.md'].replace('80 degrees', 'hot')});
   let kept = false;
   const leaf = () => kept ? deliver({'GUIDE.md': FILES['GUIDE.md']}) : plain;
@@ -259,13 +291,14 @@ test('live 5: a validation Clef doubted that keeps failing stays with its marks:
   assert.equal(room.get('status'), 'paused', tail(room));
   assert.deepEqual(room.roomHolds(), [], 'nothing holds: the budget ended the run');
   assert.ok(events(room, 'complaint_routed').length >= 3, 'its complaint went back to the worker round after round');
-  assert.match(events(room, 'validations_doubtful')[0].body, /^Clef doubts v1 \(exercises p=0\.143\); each is kept, marked\.$/i);
+  assert.equal(events(room, 'validations_doubtful').length, 0);
+  assert.ok(!r.calls.clef.some(c => Object.keys(c.questions).some(k => /^(?:exercises|implementable|internal|within)_/.test(k))), 'no doubt question');
+  assert.ok(!room.spans(0, 100000).some(s => s.name === 'reviewLevel'), 'a hand-down has no pieces to review');
   assert.equal(room.validationRows().length, 3, 'never deleted');
   // Continue keeps it: the repairs go on, and here the worker meets it.
   kept = true;
   await again(r, 20);
   assert.equal(room.get('status'), 'complete', tail(room));
-  assert.equal(room.validationRows().find(v => v.id === 'V1').notes.exercises, 0.143, 'its mark stays');
   assert.equal(passed(room), 3);
 });
 

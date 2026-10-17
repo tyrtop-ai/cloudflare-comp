@@ -560,8 +560,9 @@ test('Save as SVG draws the ownership graph as a standalone image',()=>{
 
 // v8: the Pipeline toggle and the Levels panel.
 const LEVELS={room_manager:'root',
-  validations:[{id:'V1',level:'root',held:'root.2',serves:['USAGE.md'],kind:'judge',check:'judge USAGE.md: Does it show how to run it?',notes:{exercises:0.9,implementable:0.9}},
-    {id:'V2',level:'root',held:'root.1',serves:['hello'],kind:'command',check:'command hello <Ada>',notes:{exercises:0.9,implementable:0.12}},
+  validations:[{id:'V1',level:'root',held:'root.2',serves:['USAGE.md'],kind:'judge',check:'judge USAGE.md: Does it show how to run it?'},
+    {id:'V2',level:'root',held:'root.1',serves:['hello'],kind:'command',check:'command hello <Ada>'},
+    // A room saved before the split review stopped grading validations still holds Clef's marks: none is shown.
     {id:'V3',level:'root',held:'root.1',serves:['hello'],kind:'file',check:'file hello.js contains "function greet"',notes:{exercises:0.9,implementable:0.9,internal:0.2}}],
   splitters:[{id:'splitter-0123456789abcdef',manager:'root',kind:'split',attempt:1,spawned_at:1,ended_at:2,outcome:'done'}]};
 test('v8 S3: the Pipeline toggle follows the room and is sent with the settings',()=>{
@@ -572,7 +573,7 @@ test('v8 S3: the Pipeline toggle follows the room and is sent with the settings'
   assert.match(script,/pipeline:\$\('pipeline'\)\?\.value\|\|'v7'/,'sent on Start and Continue');
   assert.equal(renderWithPage(true,{settings:{parallel:4,max_agents:64,max_depth:10}}).get('pipeline').value,'v7','a room saved before the setting is v7');
 });
-test('v8: the Levels panel lists each validation with its result, its check, what it serves, where it is held and Clef\'s marks; then the splitter steps',()=>{
+test('v8: the Levels panel lists each validation with its result, its check, what it serves and where it is held; then the splitter steps',()=>{
   // A check that could not run (passed null) reads as untested; one from before the files changed is stale.
   const elements=renderWithPage(true,{settings:{pipeline:'v8'},...LEVELS,validation_status:{V2:{passed:false,detail:'exit 1'},V3:{passed:null,detail:'not run: the box did not start'},V1:{passed:true,stale:true}},
     pause:{kind:'checks_failed',text:'No part of the level delivered a file to check.'},status:'paused'});
@@ -581,9 +582,9 @@ test('v8: the Levels panel lists each validation with its result, its check, wha
   assert.match(panel,/<span class="event-type">checks_failed<\/span> No part of the level delivered a file to check\./);
   assert.match(panel,/<span class="req-chip stale">stale<\/span> <b class="mono">V1<\/b> judge USAGE\.md: Does it show how to run it\? <span class="faint">· serves USAGE\.md · held by root\.2<\/span><\/li>/);
   assert.match(panel,/<span class="req-chip fail" title="exit 1">fail<\/span> <b class="mono">V2<\/b> command hello &lt;Ada&gt;/,'escaped');
-  // Clef's marks below the bar are shown beside the validation; nothing it doubts is removed.
-  assert.match(panel,/V2<\/b>.*<span class="req-chip doubtful" title="Clef doubted it \(implementable\)">implementable p=0\.12<\/span>/);
-  assert.match(panel,/<span class="req-chip untested" title="not run: the box did not start">untested<\/span> <b class="mono">V3<\/b>.*internal p=0\.20/);
+  // Clef grades no validation: no doubt is shown beside one.
+  assert.doesNotMatch(panel,/doubtful|internal p=/);
+  assert.match(panel,/<span class="req-chip untested" title="not run: the box did not start">untested<\/span> <b class="mono">V3<\/b>/);
   assert.match(panel,/<span class="mono">splitter-0123456789abcdef<\/span> <span class="faint">· root · split attempt 1 · done<\/span>/);
   assert.equal(elements.get('levels-verdict').textContent,'3 validations · 0 pass · 1 fail · 1 untested · 1 stale');
   const v7=renderWithPage(true,{settings:{}});

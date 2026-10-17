@@ -135,13 +135,9 @@ const toolTexts = (role, list) => Object.fromEntries(list.flatMap(t => [[`TOOLS.
 export const CLEF = Object.freeze({
   // The pre-grade reads the assignment and its row's contracts (gateLine): none when the level states its own.
   split: 'The contracts listed, if any, are agreed in advance. Can different makers produce this assignment as two or more pieces at the same time, so that together they deliver the whole of it? Answer NO if it is one indivisible piece of work, or if dividing it would only create steps one maker must take in order.',
-  // Each attempt of a splitter is reviewed in one call: split_valid, split_size, each piece's scope and, per validation, exercises, implementable and internal.
+  // Each division a splitter proposes is reviewed in one call: given the original and the pieces, split_valid and split_size.
   split_valid: 'Is this a valid division of the original: do the pieces together deliver all of it, each one something a different maker can produce at the same time against the contracts listed? Answer NO if a piece repeats another, only plans or discusses, or must wait for another piece to be written first.',
   split_size: 'Is every piece large enough to be worth a maker of its own? Answer NO if a piece is only a single small function, a constant, or a few lines that belong with another piece.',
-  scope: 'Does proposed piece {i} produce part of what the assignment asks for? Answer NO if it belongs to something else, or if it produces only discussion, plans or decisions instead of part of a deliverable.',
-  exercises: 'Does validation {i} exercise what the contracts it serves state, the way their user meets it? Answer NO if it only shows that a file exists.',
-  implementable: 'Knowing only the contracts validation {i} serves, could someone write what passes it, apart from computing values and exact wording? Answer NO if it needs something those contracts do not state, such as an exit status or the stream a message goes to.',
-  internal: 'Does validation {i} test something a user of the result meets, rather than an internal detail of the code such as a class name, an import or the first line of a script? Answer NO if it looks only at such a detail.',
   // A manager's choice: each function it may call on an ask, a complaint or a change is one option, and the highest is called.
   answer: 'Does contract {j} give what the request needs, so the requester can use it instead of making its own? Answer NO if it does something else or only part of it. Judge by what it does, not by its name.',
   grant: 'Does package {j} give what the request needs, so the requester can use it instead of making its own? Answer NO if it does something else or only part of it.',

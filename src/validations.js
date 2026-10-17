@@ -13,7 +13,6 @@
 // leniently, resolves a name written inexactly or repairs a form: a check
 // that is not one of the forms is refused, with why.
 // No room, no model.
-import { toolchainOf } from './toolchains.js';
 import { kindOf } from './contracts.js';
 import { isPath } from './protocol.js';
 import { rootedPath } from '../container/build-path.mjs';
@@ -363,10 +362,6 @@ export function contractExamples(contract, validations) {
   }
   return out;
 }
-
-// A file check that looks for texts inside a file of a code row: Clef is
-// asked whether it tests what a user meets rather than an internal detail.
-export const internalCandidate = check => check?.kind === 'file' && Array.isArray(check.has) && check.has.length > 0 && !!toolchainOf(String(check.path || '')) && toolchainOf(String(check.path)).id !== 'text';
 
 // ------------------------------------------------------------ words
 // A check in words, for Clef and the event log: its kind and the whole check.

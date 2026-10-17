@@ -152,8 +152,8 @@ test('F7 (v8 live 6): Clef reads the original and the pieces as written; a divis
   assert.ok(!events(r.room, 'split_defects').length, 'the runtime rejected nothing');
   const reviews = r.calls.clef.filter(c => 'split_valid' in (c.questions || {}) && c.state?.assignment?.startsWith(GOAL));
   assert.equal(reviews.length, 2);
-  // No facts the runtime worked out: the assignment, the contracts' lines, the pieces as declared, the validations.
-  for (const r of reviews) assert.deepEqual(Object.keys(r.state), ['assignment', 'contracts', 'pieces', 'validations']);
+  // No facts the runtime worked out: the assignment, the contracts' lines, the pieces as declared.
+  for (const r of reviews) assert.deepEqual(Object.keys(r.state), ['assignment', 'contracts', 'pieces']);
   assert.deepEqual(reviews[0].state.pieces.map(p => Object.keys(p)), flat.map(() => ['slot', 'label', 'task', 'contracts']));
   assert.equal(reviews[0].state.contracts.filter(l => / in words\.py/.test(l)).length, 2, 'the contracts\' lines say where each is placed');
   assert.match(events(r.room, 'split_review').find(e => e.actor === m.Root).body, /NO, so its splitter tries again/);

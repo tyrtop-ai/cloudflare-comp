@@ -141,35 +141,24 @@ test('v8 live 5: the pre-grade asks CLEF.split over {assignment, contracts}, wit
   assert.deepEqual(asked[1].state,{assigned_behavior:'x'});
 });
 
-test('v8: Clef reviews a splitter\'s attempt in one batched call: split_valid, split_size, each piece\'s scope, and each validation\'s marks; it annotates, never removes', async () => {
-  const {reviewLevel} = await import('../src/model.js'), {CLEF, clefText} = await import('../src/prompts.js');
+test('v8: Clef reviews a division in one call with only the owner\'s two questions: given the original and the pieces, is it valid, and are the pieces not too small', async () => {
+  const {reviewLevel} = await import('../src/model.js'), {CLEF} = await import('../src/prompts.js');
   const asked = [], spans = [];
-  const env = {PIPELINE: 'v8', TRACE: r => spans.push(r), AI: {run: async (_name, input) => { asked.push(input); return {answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'split_size' ? 0.42 : k.startsWith('internal') ? 0.2 : 0.8}]))}; }}};
+  const env = {PIPELINE: 'v8', TRACE: r => spans.push(r), AI: {run: async (_name, input) => { asked.push(input); return {answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'split_size' ? 0.42 : 0.8}]))}; }}};
   const contracts = [{name: 'index.html', kind: 'page', path: 'index.html', does: 'lists the items'}, {name: 'GET /items', kind: 'route', does: 'answers the items'}];
   const pieces = [{label: 'Page', task: 'Write the page.', contracts: ['index.html']}, {label: 'Server', task: 'Write the server.', contracts: ['GET /items']}];
-  const validations = [{id: 'V1', serves: ['index.html'], check: {kind: 'file', path: 'list.js', has: ['class ItemList']}},
-    {id: 'V2', serves: ['GET /items'], check: {kind: 'http', serve: 'GET /items', steps: [{method: 'GET', path: '/items', expect: {status: 200}}]}}];
-  const r = await reviewLevel(env, {assignment: 'A list of items', contracts, pieces, validations, attempt: 2, retry: 'different'});
-  assert.equal(asked.length, 1, 'one batched call');
-  assert.deepEqual([r.valid, r.size, r.scope], [0.8, 0.42, [0.8, 0.8]]);
-  assert.deepEqual(r.notes, [{exercises: 0.8, implementable: 0.8, internal: 0.2}, {exercises: 0.8, implementable: 0.8}]);
+  const r = await reviewLevel(env, {assignment: 'A list of items', contracts, pieces, attempt: 2, retry: 'different'});
+  assert.equal(asked.length, 1, 'one call');
+  assert.deepEqual(r, {valid: 0.8, size: 0.42});
+  assert.deepEqual(Object.keys(asked[0].questions), ['split_valid', 'split_size'], 'no scope question per piece, no question about any validation');
   assert.equal(asked[0].questions.split_valid.instructions, CLEF.split_valid);
-  assert.equal(asked[0].questions.within_1.instructions, clefText('scope', {i: 1}));
-  assert.equal(asked[0].questions.exercises_0.instructions, clefText('exercises', {i: 0}));
-  assert.equal(asked[0].questions.implementable_1.instructions, clefText('implementable', {i: 1}));
-  assert.equal(asked[0].questions.internal_0.instructions, clefText('internal', {i: 0}));
-  assert.ok(!('internal_1' in asked[0].questions), 'only a file check that looks for texts in code is asked whether it is internal');
+  assert.equal(asked[0].questions.split_size.instructions, CLEF.split_size);
   assert.deepEqual(asked[0].state.pieces.map(p => p.contracts), [['index.html'], ['GET /items']]);
-  assert.deepEqual(asked[0].state.validations.map(v => v.slot), [0, 1]);
   assert.deepEqual((({attempt, pieces: n, retry, valid_p, size_p}) => ({attempt, n, retry, valid_p, size_p}))(spans[0]), {attempt: 2, n: 2, retry: 'different', valid_p: 0.8, size_p: 0.42});
-  // A level with no pieces asks only about its validations.
-  const one = await reviewLevel(env, {assignment: 'A list of items', contracts, pieces: [], validations});
-  assert.ok(!('split_valid' in asked[1].questions));
-  assert.deepEqual([one.valid, one.size, one.scope], [1, 1, []]);
-  await assert.rejects(reviewLevel({PIPELINE: 'v8', AI: {run: async () => ({answers: {split_valid: {noul: 0.5}}})}}, {pieces, validations}), /no valid review/);
+  await assert.rejects(reviewLevel({PIPELINE: 'v8', AI: {run: async () => ({answers: {split_valid: {noul: 0.5}}})}}, {pieces}), /no valid review/);
 });
 
-test('v8: Clef grades the original as written: the pre-grade, the review, the base-change and the reach questions carry the assignment, every piece\'s label and task, every contract and every validation, unclipped', async () => {
+test('v8: Clef grades the original as written: the pre-grade, the review, the base-change and the reach questions carry the assignment, every piece\'s label and task and every contract, unclipped', async () => {
   const {reviewLevel, vetBaseChanges, pieceReach} = await import('../src/model.js');
   const asked = [], env = {PIPELINE: 'v8', AI: {run: async (_name, input) => { asked.push(input); return {answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: 0.8}]))}; }}};
   const assignment = 'Build the whole tracker: '.repeat(400).trim();
@@ -180,16 +169,13 @@ test('v8: Clef grades the original as written: the pre-grade, the review, the ba
   const pieces = [{label: 'The first piece, named in more than seventy characters for this test', task: 'Write it. '.repeat(300).trim(), contracts: contracts.slice(0, 15).map(c => c.name)},
     {label: 'The second piece, named in more than seventy characters for this test too', task: 'Write that. '.repeat(300).trim(), contracts: contracts.slice(15).map(c => c.name)}];
   const validations = contracts.map((c, i) => ({id: `v${i}`, serves: [c.name], says: 'what it says '.repeat(40).trim(), check: {kind: 'call', steps: [{call: c.name, args: ['a'.repeat(400)], expect: 'b'.repeat(400)}]}}));
-  await reviewLevel(env, {assignment, contracts, pieces, validations});
+  await reviewLevel(env, {assignment, contracts, pieces});
   const st = asked[1].state;
   assert.equal(st.assignment, assignment);
   assert.equal(st.contracts.length, 30);
   assert.deepEqual(st.pieces.map(p => [p.label, p.task]), pieces.map(p => [p.label, p.task]));
-  assert.equal(st.validations.length, 30);
-  assert.equal(st.validations[29].says, validations[29].says);
-  assert.ok(st.validations[29].check.includes('b'.repeat(400)), 'the whole check, in words');
-  // The original, the pieces and the validations: the runtime works out nothing about the division for Clef.
-  assert.deepEqual(Object.keys(st), ['assignment', 'contracts', 'pieces', 'validations']);
+  // The original and the pieces: the runtime works out nothing about the division for Clef.
+  assert.deepEqual(Object.keys(st), ['assignment', 'contracts', 'pieces']);
   assert.deepEqual(st.pieces.map(p => Object.keys(p)), pieces.map(() => ['slot', 'label', 'task', 'contracts']));
   // Every existing file a contract names is asked about, with the whole assignment.
   asked.length = 0;
