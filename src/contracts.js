@@ -266,21 +266,6 @@ const identifierError = (row, name) => {
   if (row.id === 'javascript' && PROTECTED_NAMES.has(name)) return 'reserved';
   return '';
 };
-// v8: why a function's name is not one its own language accepts, or '':
-// the identifier rule and reserved words of the row its path is written in
-// (rows: the installed toolchain rows), read without the length bound the
-// rows carry for v7. A function in a language with no name rule, or with no
-// path, is stored as written.
-// JavaScript (ECMAScript IdentifierName) and Python (PEP 3131) identifiers.
-const OWN_IDENTIFIER = Object.freeze({javascript: /^[\p{ID_Start}$_][\p{ID_Continue}$\u200C\u200D]*$/u, python: /^[\p{XID_Start}_][\p{XID_Continue}]*$/u});
-export function ownNameError(c, rows) {
-  const row = c?.path ? rowsWithNames({rows}).find(r => (r.extensions || []).includes(extOf(c.path))) : null, name = String(c?.name ?? '');
-  if (!row) return '';
-  // Each language's own identifier rule, Unicode as the language has it (v7's rows keep their ASCII patterns).
-  const re = OWN_IDENTIFIER[row.id];
-  if (re && !re.test(name)) return `"${name}" is not a valid ${row.id} function name`;
-  return reservedOf(row).has(name) ? `"${name}" is not a valid ${row.id} function name (a reserved word)` : '';
-}
 // Why a contract's name or path breaks its kind's rule, or ''.
 export function nameError(c, facts = null) {
   const kind = kindOf(c), name = String(c?.name ?? '');

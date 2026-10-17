@@ -4,9 +4,9 @@
 // piece is one call, stored as written or refused with the exact reason.
 // This module holds what those functions check and render: whether a check
 // can run as written (executability only: a command is the argument list
-// the splitter gives, its program one the box has, and the box's exec runs
-// it as given; a selector is kept as written for the page's locator to read;
-// a check names what it runs by; a file's path names the place it does in
+// the splitter gives, kept as written, whatever program it names; a
+// selector is kept as written for the page's locator to read; a check names
+// what it runs by; a file's path names the place it does in
 // the files, as a rooted file system reads it, and a request's path is sent
 // as written, the box keeping each on its own folder and origin), how a
 // contract is started, and a validation as the examples a worker reads, one
@@ -18,15 +18,11 @@ import { kindOf } from './contracts.js';
 import { isPath } from './protocol.js';
 import { rootedPath } from '../container/build-path.mjs';
 import { MESSAGES } from './prompts.js';
-import { callRowOf, CALL_EXTENSIONS } from './toolchains.js';
 
 export const VALIDATION_KINDS = Object.freeze(['file', 'judge', 'command', 'call', 'http', 'browser']);
 export const EXAMPLES_PER_CONTRACT = 3;
 // The owner's rule: the three examples are owed by contracts that are called or run.
 export const EXAMPLE_KINDS = new Set(['function', 'command', 'route']);
-// Why no check can call a function of the file at path, or '': the box has
-// no call adapter for its language (CALL_EXTENSIONS lists the files it has one for).
-export const uncallable = path => !path || callRowOf(path) ? '' : `the box has no call adapter for ${path}'s language, so no check can call a function of it (it calls functions in files of ${CALL_EXTENSIONS.join(', ')})`;
 
 const plain = v => v && typeof v === 'object' && !Array.isArray(v);
 const json = v => { try { const s = JSON.stringify(v); return s !== undefined ? {ok: true, v: JSON.parse(s)} : {ok: false}; } catch { return {ok: false}; } };
@@ -35,8 +31,7 @@ const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
 // ------------------------------------------------------------ commands
 // A command as the splitter gives it: its argument list, the program then
-// each argument, every one a text, passed to the box's exec as written (no
-// shell reads it). {argv} or {error}.
+// each argument, every one a text, kept as written. {argv} or {error}.
 const argvOf = (v, what) => Array.isArray(v) && v.length && v.every(a => typeof a === 'string') ? {argv: [...v]} : {error: `${what} is the command's argument list: the program, then each argument, each a text`};
 // A command's argument list as a line a reader sees: each argument as it is,
 // or quoted (JSON) when it is empty or holds a space, a quote or a backslash.
@@ -65,9 +60,8 @@ const text = (v, what) => typeof v !== 'string' || !v.trim() ? {error: `${what} 
 // The world a level's checks run in: ctx.paths (the paths its contracts
 // place, and the existing project's), ctx.functions (function contract
 // names), ctx.functionPaths (name → path), ctx.served (contract names that
-// state how they run), ctx.commands (command contract names), ctx.executables
-// (the installed rows' programs). One check, as written, held to what it
-// takes to run: {check} or {error}.
+// state how they run). One check, as written, held to the level's declared
+// names: {check} or {error}.
 export function readCheck(c, ctx) {
   if (!plain(c)) return {error: 'the check is not an object'};
   const kind = c.kind;
@@ -89,8 +83,6 @@ export function readCheck(c, ctx) {
   if (kind === 'command') {
     const parsed = argvOf(c.run, 'its run');
     if (parsed.error) return {error: `the command check: ${parsed.error}`};
-    const [first] = parsed.argv;
-    if (!ctx.commands.has(first) && !ctx.executables.has(first)) return {error: `the command check runs "${first.slice(0, 80)}", which is neither a command contract declared so far nor a program the box has (${[...ctx.executables].join(', ') || 'none'})`};
     if (c.stdin !== undefined && typeof c.stdin !== 'string') return {error: 'the command check: stdin is a text'};
     let files = null;
     if (c.files !== undefined) {
@@ -140,7 +132,6 @@ export function readCheck(c, ctx) {
     // One call check runs in one process over the one file that defines its functions.
     const files = [...new Set(steps.map(st => ctx.functionPaths?.get(st.call)).filter(Boolean))];
     if (files.length > 1) return {error: `the call check calls functions of different files (${files.join(', ')}); one call check runs the functions of one file`};
-    if (uncallable(files[0])) return {error: `the call check calls ${steps[0].call}: ${uncallable(files[0])}`};
     return {check: {kind, steps}};
   }
   // http or browser
@@ -218,15 +209,14 @@ function browserStep(s) {
 // ------------------------------------------------------------ how a contract runs
 // Only a page, a route or a command is started, and only by the run its
 // contract states: {static: true} serves its files as they are; {run,
-// ready?} is a command's argument list (a command contract or a program the
-// box has, then its arguments), kept as argv, and the path it answers at
-// once it is up. A contract
-// that states no run has none. It serves on the port the box gives it
-// ({port: true, ready}) only when something serves it (servedRun): a route
+// ready?} is a command's argument list (a program or a command contract,
+// then its arguments), kept as argv as written, and the path it answers at
+// once it is up. A contract that states no run has none. It serves on the
+// port the box gives it ({port: true, ready}) only when something serves it (servedRun): a route
 // always, a page or a command once a level's http or browser check serves
-// it. world: {commands, executables}. {run} | {error}.
+// it. {run} | {error}.
 export const RUN_KINDS = new Set(['page', 'route', 'command']);
-export function runOf(raw, contract, world) {
+export function runOf(raw, contract) {
   const kind = kindOf(contract);
   if (!RUN_KINDS.has(kind)) return {error: `a ${kind} contract is not started, so it states no run`};
   if (!plain(raw)) return {error: 'run is an object: static true, or run (the command\'s argument list) with ready (a path)'};
@@ -235,8 +225,6 @@ export function runOf(raw, contract, world) {
   if (x) return {error: x};
   const parsed = argvOf(raw.run, 'its run');
   if (parsed.error) return {error: parsed.error};
-  const [first] = parsed.argv;
-  if (!world.commands.has(first) && !world.executables.has(first)) return {error: `its run starts "${first.slice(0, 80)}", which is neither a command contract declared so far nor a program the box has (${[...world.executables].join(', ') || 'none'})`};
   if (raw.ready !== undefined && typeof raw.ready !== 'string') return {error: 'its ready path is a path'};
   return {run: {argv: parsed.argv, ...(raw.ready !== undefined ? {ready: raw.ready} : {})}};
 }

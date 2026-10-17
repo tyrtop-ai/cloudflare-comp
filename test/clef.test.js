@@ -224,7 +224,7 @@ test('v8: the splitter is ROLE.splitter + FORMAT.splitter with its functions, it
   const answers = [{response: JSON.stringify({contracts: [page], validations: [], pieces: []})}, {tool_calls: [{name: 'contract', arguments: page}, {name: 'contract', arguments: notes},
     {name: 'piece', arguments: {label: 'Page', task: 'Write the page.', contracts: ['index.html']}}, {name: 'piece', arguments: {label: 'Notes', task: 'Write the notes.', contracts: ['NOTES.md']}}, {name: 'done', arguments: {}}]}];
   const env = {PIPELINE: 'v8', MODEL_NAME: '@cf/qwen/qwen3-30b-a3b-fp8', AI: {run: async (_name, args) => { calls.push(JSON.parse(JSON.stringify(args))); return answers[calls.length - 1]; }}};
-  const request = {assignment: 'A one-page site', box: {programs: ['node'], toolchains: [{id: 'text', extensions: ['.html']}]}, max_pieces: 4};
+  const request = {assignment: 'A one-page site', max_pieces: 4};
   const out = await splitLevel(env, request);
   assert.deepEqual(out.level.contracts.map(c => c.name), ['index.html', 'NOTES.md']);
   assert.deepEqual(out.level.pieces.map(p => p.label), ['Page', 'Notes']);
