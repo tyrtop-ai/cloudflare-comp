@@ -415,7 +415,7 @@ export async function verifyBuild(request,{runStage=run}={}) {
 //
 // Forgery. A call check's expectations never reach the process: the runner
 // compares. The adapter attaches a per-run nonce the module cannot read (see
-// adapters/call.py, call.mjs), and the end counts only when the adapter's
+// adapters/call.py, call.mjs, call-native.mjs), and the end counts only when the adapter's
 // done line arrives AND its process exits 0 by itself. A module that knows
 // the expected values can still return them; that is why the room must
 // never show a requirement's check to the workers (S4b).
@@ -950,8 +950,8 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
         // The end: the adapter's done line, then its own normal exit.
         const done=records.some(x=>x.done===true)&&r.code===0&&!r.timedOut&&!r.signal&&!worker;
         const stderr=redact(r.stderr,box.dir,box.root),exitText=`exit ${worker?worker.worker_exit:r.code}${r.signal?`, ${r.signal}`:''}`;
-        // What it raised, with its stack, and what it wrote to stderr, whole.
-        const fail=(detail,stack='',extra={})=>result(c,false,r.ms,observation(detail,[['stack',redact(stack,box.dir,box.root)],['stderr',stderr]]),{frames:framesOf(stack||r.stderr,files,rows,box.dir),...extra});
+        // What it raised, with its stack (read by the call's own language first), and what it wrote to stderr, whole.
+        const fail=(detail,stack='',extra={})=>result(c,false,r.ms,observation(detail,[['stack',redact(stack,box.dir,box.root)],['stderr',stderr]]),{frames:framesOf(stack||r.stderr,files,[row,...rows.filter(x=>x!==row)],box.dir),...extra});
         if(load)return fail(`${module} does not load: ${redact(load.error,box.dir,box.root)}`,load.stack);
         for(const [i,s] of steps.entries()) {
           const rec=byStep.get(i),call=`${s.call}(${(Array.isArray(s.args)?s.args:[]).map(a=>show(a)).join(', ')})`;
@@ -960,6 +960,8 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
             return fail(`the process ended before ${call} in ${module} returned (${exitText})`);
           }
           if(rec.missing)return fail(redact(rec.error,box.dir,box.root));
+          // A step the adapter cannot make (a parameter type its language gives no way to build from JSON): the runtime's limit.
+          if(rec.unsupported)return fail(redact(rec.error,box.dir,box.root),'',{infrastructure:true});
           if(s.throws===true){if(rec.ok)return fail(`${call} in ${module} returned ${show(rec.value)}, expected it to raise an error`);continue;}
           if(!rec.ok)return fail(`${call} in ${module} raised ${redact(rec.error,box.dir,box.root)}`,rec.stack);
           if(Object.hasOwn(s,'expect')&&!deepEqual(rec.value,s.expect))return fail(`${call} in ${module} returned ${show(rec.value)}, expected ${show(s.expect)}`);

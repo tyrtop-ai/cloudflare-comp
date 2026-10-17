@@ -186,6 +186,7 @@ export const COMPILE_ROWS = Object.freeze([
   // the C row's (APT_INSTALL), found on the PATH the install puts first.
   Object.freeze({ id:'shell', name:'shell', extensions:['.sh','.bash'], shebang:['sh','dash','bash'], requires:{sh:'',bash:''},
     install:{argv:['sh','-c',APT_INSTALL,'{tree}','{packages}'], tree:'shell-packages', env:{PATH:'{tree}/usr/bin:{tree}/bin:{$PATH}',LD_LIBRARY_PATH:'{tree}/lib-arch:{tree}/usr/lib:{$LD_LIBRARY_PATH}'}},
+    call_adapter:['node','/opt/adapters/call-native.mjs','shell'],
     syntax:['sh','-c',SH_SYNTAX,'sh','{files}'] }),
   // Owner 2026-10-15 05:16 ("Any code type"): the other languages the box
   // image installs (container/Dockerfile.box), each compiled by its own
@@ -198,27 +199,34 @@ export const COMPILE_ROWS = Object.freeze([
   // the install writes in the folder above every fresh copy requires (go run
   // finds it there), with the module cache as the tree.
   Object.freeze({ id:'go', name:'Go', extensions:['.go'], requires:{gofmt:''}, run_file:['go','run','{path}'],
+    call_adapter:['node','/opt/adapters/call-native.mjs','go'], stack:'go',
     install:{argv:['sh','-c','cd "$0" && export GOMODCACHE="$1" && shift && go mod init checks && go get "$@"','{scratch}','{tree}','{packages}'], tree:'go-modules', env:{GOMODCACHE:'{tree}'}},
     syntax:['sh','-c','gofmt -e "$@" >/dev/null','sh','{files}'] }),
   // Rust's packages are crates: the install builds them in a Cargo library
   // of its own (the tree) and lists, for rustc, each one it asked for
   // (externs: --extern name=its library, and where their dependencies are).
   Object.freeze({ id:'rust', name:'Rust', extensions:['.rs'], requires:{rustfmt:''}, run_file:['sh','-c','d=$(mktemp -d) && rustc --edition 2021 $(cat "${RUST_EXTERNS:-/dev/null}") -o "$d/main" "$0" && exec "$d/main" "$@"','{path}'],
+    call_adapter:['node','/opt/adapters/call-native.mjs','rust'], stack:'rust',
     install:{argv:['sh','-c','cd "$0" && py="$1" && shift && cargo init -q --lib --vcs none --name checks_deps . && cargo add -q "$@" && cargo build -q --message-format=json > build.json && python3 -c "$py" > externs','{tree}',RUST_EXTERNS,'{packages}'], tree:'rust-crates', env:{RUST_EXTERNS:'{tree}/externs'}},
     syntax:['sh','-c','for f do rustfmt --edition 2021 --emit stdout "./$f" >/dev/null || s=1; done; exit ${s:-0}','sh','{files}'] }),
   // C's and C++'s packages are the system's libraries (APT_INSTALL): the
   // compiler finds their headers and libraries in the tree (CPATH,
   // LIBRARY_PATH), links each one the tree's link file lists (C_LINK,
   // CXX_LINK), and the program loads them from there (LD_LIBRARY_PATH).
+  // Their call checks build with g++ (C's driver is C++ too, over the
+  // prototypes gcc writes for the file).
   Object.freeze({ id:'c', name:'C', extensions:['.c','.h'], requires:{gcc:''}, run_file:['sh','-c','d=$(mktemp -d) && gcc -o "$d/main" "$0" $(cat "${C_LINK:-/dev/null}") && exec "$d/main" "$@"','{path}'],
     install:{argv:['sh','-c',APT_INSTALL,'{tree}','{packages}'], tree:'c-packages', env:{CPATH:'{tree}/usr/include:{tree}/include-arch:{$CPATH}',LIBRARY_PATH:'{tree}/lib-arch:{tree}/usr/lib:{$LIBRARY_PATH}',LD_LIBRARY_PATH:'{tree}/lib-arch:{tree}/usr/lib:{$LD_LIBRARY_PATH}',C_LINK:'{tree}/link'}},
-    syntax:['gcc','-fsyntax-only','{files}'] }),
+    syntax:['gcc','-fsyntax-only','{files}'],
+    call_adapter:['node','/opt/adapters/call-native.mjs','c'] }),
   Object.freeze({ id:'cpp', name:'C++', extensions:['.cc','.cpp','.cxx','.hpp','.hh'], requires:{'g++':''}, run_file:['sh','-c','d=$(mktemp -d) && g++ -o "$d/main" "$0" $(cat "${CXX_LINK:-/dev/null}") && exec "$d/main" "$@"','{path}'],
     install:{argv:['sh','-c',APT_INSTALL,'{tree}','{packages}'], tree:'cpp-packages', env:{CPATH:'{tree}/usr/include:{tree}/include-arch:{$CPATH}',LIBRARY_PATH:'{tree}/lib-arch:{tree}/usr/lib:{$LIBRARY_PATH}',LD_LIBRARY_PATH:'{tree}/lib-arch:{tree}/usr/lib:{$LD_LIBRARY_PATH}',CXX_LINK:'{tree}/link'}},
-    syntax:['g++','-fsyntax-only','{files}'] }),
+    syntax:['g++','-fsyntax-only','{files}'],
+    call_adapter:['node','/opt/adapters/call-native.mjs','cpp'] }),
   // Java's packages are Maven artifacts (group:artifact:version), copied as
   // jars into the tree, which CLASSPATH names to javac and java.
   Object.freeze({ id:'java', name:'Java', extensions:['.java'], requires:{javac:''}, run_file:['java','{path}'],
+    call_adapter:['node','/opt/adapters/call-native.mjs','java'], stack:'java',
     install:{argv:['sh','-c','for p do mvn -q -B dependency:copy -Dartifact="$p" -DoutputDirectory="$0" || exit 1; done','{tree}','{packages}'], tree:'java-packages', env:{CLASSPATH:'{tree}/*'}},
     syntax:['sh','-c','d=$(mktemp -d) && javac -d "$d" "$@"; s=$?; rm -rf "$d"; exit $s','sh','{files}'] }),
   Object.freeze({ id:'ruby', name:'Ruby', extensions:['.rb'], shebang:['ruby'], requires:{ruby:''}, run_file:['ruby','{path}'],
