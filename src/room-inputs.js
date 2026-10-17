@@ -170,7 +170,7 @@ export async function loadSources(goal, {fetch, allow, selfHosts = [], note, mor
   try { summaries = await sourceSummaries(fetched, {note, more, chunkChars: CHUNK_CHARS}); } catch {}
   const chunks = [];
   for (const s of fetched) if (!s.error && s.text) for (const [i, text] of chunkText(s.text, CHUNK_CHARS).entries()) chunks.push({ref: `${s.id}#${i + 1}`, source: s.id, n: i + 1, text});
-  const rows = fetched.map(s => ({id: s.id, url: clip(s.url, 2000), final_url: s.final_url ? clip(s.final_url, 2000) : null, title: clip(s.title, 200),
+  const rows = fetched.map(s => ({id: s.id, url: s.url, final_url: s.final_url ?? null, title: s.title,
     sha256: s.sha256 ?? null, bytes: s.bytes || 0, truncated: !!s.truncated, error: s.error ? clip(s.error, 300) : (s.text ? null : 'no text'),
     status: s.status ?? null, content_type: s.content_type ?? null, summary: summaries.find(c => c.id === s.id) || null}));
   return {rows, chunks};

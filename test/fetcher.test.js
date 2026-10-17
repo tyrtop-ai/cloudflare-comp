@@ -239,6 +239,15 @@ test('HTML is reduced to text with its title', async () => {
   const r = await fetchSource('https://example.com/page', 'https://example.com/page', {fetch, policy: policy()});
   assert.equal(r.title, 'Spec & Guide');
   assert.match(r.sha256, /^[0-9a-f]{64}$/);
+  // Owner 2026-10-16 19:41 "this is the place where i WANT worker context": a long title and URL are kept and quoted whole.
+  const name = 'T'.repeat(5000), href = `https://example.com/${'p'.repeat(3000)}`;
+  const longPage = await fetchSource(href, href, {fetch: fakeFetch({[href]: text(`<title>${name}</title><p>x</p>`, 'text/html')}), policy: policy()});
+  assert.equal(longPage.title, name);
+  const md = '# ' + 'M'.repeat(900) + '\nbody';
+  assert.equal((await fetchSource(href, href, {fetch: fakeFetch({[href]: text(md, 'text/markdown')}), policy: policy()})).title, 'M'.repeat(900));
+  const q = quoteSource({id: 'S1', url: href, title: name, text: 'x'});
+  assert.equal(q.title, name);
+  assert.equal(q.url, href);
 });
 
 test('sanitiser strips invisible characters and escapes runtime envelopes', () => {

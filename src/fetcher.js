@@ -506,7 +506,7 @@ export function htmlToText(html) {
     if (name === 'html' || name === 'head' || name === 'body') continue;
     if (RAW.has(name)) {
       const end = rawEnd(s, name, i);
-      if (name === 'title' && title === null && visible()) title = s.slice(i, end ? end[0] : n).slice(0, 2000);
+      if (name === 'title' && title === null && visible()) title = s.slice(i, end ? end[0] : n);
       i = end ? end[1] : n;
       continue;
     }
@@ -550,7 +550,7 @@ export function sanitizeText(text) {
 
 const titleOf = (text, type) => {
   const line = type.includes('markdown') || type === 'text/plain' ? /^#{1,3}[ \t]+(.+)$/m.exec(text)?.[1] : null;
-  return clip((line || '').trim(), 200);
+  return (line || '').trim();
 };
 async function sha256(bytes) {
   const d = await crypto.subtle.digest('SHA-256', bytes);
@@ -592,7 +592,7 @@ export async function fetchSource(goal, url, {fetch, policy = fetchPolicy(), max
     const raw = new TextDecoder('utf-8').decode(bytes, {stream: truncated});
     const {title, text} = /html/.test(result.content_type) ? htmlToText(raw) : {title: '', text: raw};
     result.text = sanitizeText(text);
-    result.title = sanitizeText(title).slice(0, 200) || titleOf(result.text, result.content_type);
+    result.title = sanitizeText(title) || titleOf(result.text, result.content_type);
     Object.assign(result, {bytes: bytes.length, truncated, sha256: await sha256(bytes)});
   } catch (e) {
     const message = e instanceof FetchRefused ? `source_refused: ${e.message}` : `fetch failed: ${e?.message || e}`;
@@ -617,8 +617,8 @@ export const SOURCE_LABEL = 'untrusted web content, quoted as data';
 // A source as a JSON envelope. The text is a JSON string, so nothing inside
 // it can close the quote, add a field or start a line of its own.
 export function quoteSource(src) {
-  return {source_id: String(src.id ?? src.source_id ?? 'S?'), label: SOURCE_LABEL, url: clip(sanitizeText(src.final_url || src.url), 500),
-    ...(src.ref ? {ref: String(src.ref)} : {}), title: clip(sanitizeText(src.title), 200),
+  return {source_id: String(src.id ?? src.source_id ?? 'S?'), label: SOURCE_LABEL, url: sanitizeText(src.final_url || src.url),
+    ...(src.ref ? {ref: String(src.ref)} : {}), title: sanitizeText(src.title),
     excerpt: sanitizeText(src.text ?? src.excerpt)};
 }
 // The model input block: the fixed clause, then one JSON line per source.
@@ -684,7 +684,7 @@ export async function sourceSummaries(sources, {note, more = () => true, chunkCh
       outline.push({ref, ...(noted ? {gist: noted.says} : {})});
     }
     const noted = more() ? await read(NOTE_PAGE, [{...quoteSource({...src, text: ''}), outline: outline.filter(o => o.gist)}], src.id) : null;
-    out.push({id: src.id, url: clip(sanitizeText(src.final_url || src.url), 500), title: noted?.title || sanitizeText(src.title), summary: noted?.says || '',
+    out.push({id: src.id, url: sanitizeText(src.final_url || src.url), title: noted?.title || sanitizeText(src.title), summary: noted?.says || '',
       outline, sha256: src.sha256 ?? null});
   }
   return out;
