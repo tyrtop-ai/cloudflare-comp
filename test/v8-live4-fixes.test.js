@@ -94,7 +94,7 @@ test('H2 (owner, 2026-10-16 20:43): a worker\'s ask by any name its world does n
 
 test('H2: the manager is the interface for what exists: a package its row holds is one of its functions on an ask (grant), Clef scores it, and a grant goes down the asker\'s line; a manager without it hands the ask up', async () => {
   const REQUESTS = {name: 'requests', language: 'python', provides: 'HTTP client'};
-  const {room} = liveRoom({clef: usualClef({'^grant_\\d+$': 0.95, '^ask_parent$': 0.6, '^extend$': 0.1})});
+  const {room} = liveRoom({clef: usualClef({'^grant_\\d+$': 0.95, '^ask_parent$': 0.6})});
   room.save('settings', {...room.settings(), pipeline: 'v8'});
   await room.provision(TOP, null, 'Root objective', 'a tracker', [], [], [PYTEST, REQUESTS], 'manager', {seq: 1});
   await room.provision(BACKEND, TOP, 'Backend', 'the backend', [], [], [PYTEST], 'manager', {seq: 1});
@@ -103,7 +103,7 @@ test('H2: the manager is the interface for what exists: a package its row holds 
   // Its manager holds pytest: grant(pytest) is among its functions, and the highest.
   assert.deepEqual(await room.workerAsk(SERVER, {need: 'a test runner', name: 'pytest'}), {sent: true, says: MESSAGES.ask_sent()});
   await room.routeHeld(BACKEND);
-  assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for pytest: grant\(pytest\) p=0\.950; the others: extend\(need\) p=0\.100, ask_parent\(need\) p=0\.600\.$/);
+  assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for pytest: grant\(pytest\) p=0\.950; the others: ask_parent\(need\) p=0\.600\.$/);
   assert.deepEqual(room.packagesOf(SERVER).map(p => p.name), ['pytest']);
   const granted = MESSAGES.package_granted({need: 'a test runner', names: 'pytest (tests)', many: false});
   assert.deepEqual(room.read(`fn_answers:${SERVER}`, []).map(a => [a.key, a.kind, a.text]), [['fn pytest', 'provided', granted]]);
