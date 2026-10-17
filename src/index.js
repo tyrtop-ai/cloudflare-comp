@@ -1455,7 +1455,7 @@ export class ControlRoom extends DurableObject {
     const v8=this.v8(),name = v8?await this.repoName(id):`rc-${crypto.randomUUID().replaceAll('-','').slice(0,20)}-${id.replaceAll('.','-')}`;
     const repo = await this.timed('git','repo_create',()=>this.store().create(name, `Recursive agent ${id}: ${label}`),{child:id});
     this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses,packages,role,depth,seq) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\',?,?,?,?,?,?)',
-      id, parent, clip(label,70), clip(task,parent&&!isHandler(parent)?2000:GOAL_LIMIT+Math.max(1+GOAL_START_REQUIREMENT.length,task.length-stripStartRequirement(task).length)), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces,this.contractOpts())), JSON.stringify(normalizeUses(uses,{v8})),
+      id, parent, v8?String(label??''):clip(label,70), v8?String(task??''):clip(task,parent&&!isHandler(parent)?2000:GOAL_LIMIT+Math.max(1+GOAL_START_REQUIREMENT.length,task.length-stripStartRequirement(task).length)), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces,this.contractOpts())), JSON.stringify(normalizeUses(uses,{v8})),
       JSON.stringify(v8?normalizePackages(packages):[]),role,v8?(parent?this.depthOf(parent)+1:0):null,v8?seq:null);
     if (role && role!=='manager') this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
     this.save('queue', addLast(this.read('queue',[]), id));
@@ -8714,7 +8714,7 @@ export class ControlRoom extends DurableObject {
     const said=`Clef's review of ${pieces.length} pieces (attempt ${attempt} of ${SPLIT_ATTEMPTS}${retry?`, retried with ${retry==='fewer'?'fewer pieces':'a different division'}`:''}): split_valid p=${review.valid.toFixed(3)} (bar ${validBar}), split_size p=${review.size.toFixed(3)} (bar ${sizeBar})`;
     if(ok){this.event(id,'split_review',`${said}: YES, the pieces are admitted.`);return this.admitLevel(id,level,{job,scope:review.scope});}
     if(stop){this.event(id,'split_review',`${said}: NO ${stop}, so the level goes to one worker.`);return this.admitLevel(id,{...level,pieces:[]},{job,why:`${said}: NO ${stop}.`});}
-    const shown=pieces.map(c=>({label:c.label,task:clip(c.task,300),contracts:c.contracts}));
+    const shown=pieces.map(c=>({label:c.label,task:c.task,contracts:c.contracts}));
     this.save(`split_feedback:${id}`,next==='fewer'?{kind:'too_small',retry:'fewer',reason:RETRY.too_small(pieces.length,bound),bound,rejected:shown}:{kind:'invalid',retry:'different',reason:RETRY.different,rejected:shown});
     this.event(id,'split_review',`${said}: NO, so its splitter tries again with ${next==='fewer'?`fewer, larger pieces (at most ${bound})`:'a different division along its contracts'}.`);
     this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
@@ -8733,7 +8733,7 @@ export class ControlRoom extends DurableObject {
     const job=kind==='split'?null:this.read(`level_job:${id}`,null),calls=[...this.callableOf(id),...this.namedContracts(id,job?.uses||[])].filter((c,i,a)=>a.findIndex(x=>x.name===c.name)===i&&!own.some(o=>o.name===c.name)&&!have.some(o=>o.name===c.name));
     this.db().exec("INSERT INTO splitters(id,manager,kind,attempt,spawned_at,ended_at,outcome,output) VALUES (?,?,?,?,?,NULL,'','{}')",sid,id,kind,attempt,Date.now());
     const max=divide?feedback?.retry==='fewer'&&Number.isInteger(feedback.bound)?Math.min(feedback.bound,this.maxChildren()):this.maxChildren():0;
-    const request={assignment:clipEnds(assignment,4000),
+    const request={assignment,
       ...(own.length?{contracts_you_deliver:own.map(({serves:_,...c})=>c)}:{}),
       ...(held.length?{validations_you_have:held.map(v=>({serves:v.serves,check:v.check}))}:{}),
       ...(have.length?{contracts_you_have:have.map(({serves:_,...c})=>c)}:{}),
@@ -8786,7 +8786,7 @@ export class ControlRoom extends DurableObject {
     if(!batch){this.reserveValidations(id,0);return void this.escalate(id,'split_capacity',`"${n.label}" could not create its ${specs.length} children (the room's agent or depth limit); raise the limit and Continue.`);}
     // Its level file: the level's contracts, its children (their ids follow from the reservation), its validations, added to the file as it stands when it is written.
     const made=await this.batchIds(id,batch),added=normalizeInterfaces(contracts,this.contractOpts());
-    const entry=(s,i)=>({id:made[i],role:roleOf(s)||'manager',label:clip(s.label,70),prompt:clip(s.task,2000),delivers:(s.interfaces||[]).map(c=>c.name),calls:normalizeUses(s.uses||[],{v8:true})});
+    const entry=(s,i)=>({id:made[i],role:roleOf(s)||'manager',label:s.label,prompt:s.task,delivers:(s.interfaces||[]).map(c=>c.name),calls:normalizeUses(s.uses||[],{v8:true})});
     const entries=specs.map(entry),written=level.validations.map(v=>({id:ids.get(v.id),serves:v.serves,check:v.check,...(v.says?{says:v.says}:{}),notes:v.notes||{}}));
     // A commit that fails leaves the level as it was: its reservations are released (a restart's are, by the next admission).
     let landed=false;

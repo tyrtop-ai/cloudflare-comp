@@ -690,7 +690,7 @@ const at=frames=>frames.length?` (at ${frames[0].path}:${frames[0].line})`:'';
 function validateCheckPlan(raw) {
   const plan=raw&&typeof raw==='object'?raw:{};
   const list=v=>Array.isArray(v)?v:[];
-  const checks=list(plan.checks).filter(c=>c&&typeof c==='object'&&typeof c.id==='string'&&c.id).slice(0,MAX_CHECKS);
+  const checks=list(plan.checks).filter(c=>c&&typeof c==='object'&&typeof c.id==='string'&&c.id);
   const runs=list(plan.runs).filter(r=>r&&typeof r.id==='string'&&(r.static===true||typeof r.run==='string'||Array.isArray(r.run)||Array.isArray(r.argv)));
   const commands=plan.commands&&typeof plan.commands==='object'?plan.commands:{};
   // v8 S5: the module path the bundle's runtime glue needs: a *PATH variable
@@ -915,8 +915,8 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
     async function callCheck(c) {
       if(left()<=0)return notRun(c);
       const module=String(c.module||''),row=rows.find(r=>r.id===c.adapter)||rowOfPath(module,rows);
-      const steps=(Array.isArray(c.steps)?c.steps:[]).filter(s=>s&&typeof s.call==='string').slice(0,MAX_CALL_STEPS);
-      if(!Object.hasOwn(files,module))return result(c,false,0,`${clip(module||'(no module)',80)} is not in the bundle`,{observed:{what:'setup',note:`${clip(module||'(no module)',80)} is not in the project`}});
+      const steps=(Array.isArray(c.steps)?c.steps:[]).filter(s=>s&&typeof s.call==='string');
+      if(!Object.hasOwn(files,module))return result(c,false,0,`${module||'(no module)'} is not in the bundle`,{observed:{what:'setup',note:`${module||'(no module)'} is not in the project`}});
       if(!row?.call_adapter)return result(c,false,0,`no call adapter for ${module}`,{observed:{what:'setup',note:`no call adapter for ${module}`}});
       if(!steps.length)return result(c,false,0,'a call check without steps',{observed:{what:'setup',note:'a call check without steps'}});
       const box=await fresh('check'),nonce=randomBytes(16).toString('hex'),nonceFile=path.join(box.root,'nonce');

@@ -55,10 +55,25 @@ test('S2: without v8 every v8 field is ignored as ef7eebf did; with v8 they are 
   assert.deepEqual(normalizeContract({name:'parse',params:[{name:'text'}],kind:'route'}),{name:'parse',does:'',params:[]},'v7: object params dropped, kind ignored');
   const f=N1(raw);
   assert.deepEqual(f,{name:'count_words',does:'counts the words in a text',params:['text'],inputs:[{name:'text',is:'the text to count'}],returns:'the number of words',effects:'none',
-    examples:[{given:['a b'],expect:2},{given:['x'],expect:1},{given:[''],expect:0},{given:['a  b'],expect:2}],path:'counter.py',serves:['R1','R2'],operation:'count words'});
+    examples:[{given:['a b'],expect:2},{given:['x'],expect:1},{given:[''],expect:0},{given:['a  b'],expect:2},{given:['c'],expect:1}],path:'counter.py',serves:['R1','R2'],operation:'count words'});
   assert.deepEqual(N([f]),[f]);
   assert.equal(normalizeContract(raw,{v8:true}).serves,undefined,'a model\'s serves is dropped unless the runtime asks to keep it');
-  assert.deepEqual(N1({name:'f',kind:'widget',examples:[{given:1},{expect:2},{given:'x'.repeat(400),expect:1},{given:{a:'y'.repeat(400)},expect:1}]}),{name:'f',does:'',params:[],examples:[{given:'x'.repeat(300),expect:1}]});
+  // Each example as given: no count, no length.
+  assert.deepEqual(N1({name:'f',kind:'widget',examples:[{given:1},{expect:2},{given:'x'.repeat(400),expect:1},{given:{a:'y'.repeat(400)},expect:1}]}),{name:'f',does:'',params:[],examples:[{given:'x'.repeat(400),expect:1},{given:{a:'y'.repeat(400)},expect:1}]});
+});
+
+test('v8: a level\'s contracts are kept whole and every one of them: no count of contracts, inputs or serves, and no text clipped; v7 keeps its 8 and its lengths',()=>{
+  const long=t=>`${t} `.repeat(60).trim();
+  const many=Array.from({length:12},(_,i)=>({name:`f${i}`,kind:'function',path:`f${i}.py`,does:long('does'),outputs:long('the value'),effects:long('changes'),
+    inputs:Array.from({length:9},(_,j)=>({name:`a${j}`,is:long('is')})),serves:Array.from({length:40},(_,k)=>`V${k+1}`),run:undefined}));
+  const out=normalizeContracts(many,{v8:true,serves:true});
+  assert.equal(out.length,12);
+  for(const c of out){assert.equal(c.does,long('does'));assert.equal(c.returns,long('the value'));assert.equal(c.effects,long('changes'));assert.equal(c.inputs.length,9);assert.equal(c.inputs[8].is,long('is'));assert.equal(c.serves.length,40);}
+  const cmd=N1({name:'serve',kind:'command',path:'serve.py',run:{run:long('serve --flag'),argv:long('arg').split(' '),port:true,ready:`/${'r'.repeat(300)}`}});
+  assert.deepEqual(cmd.run,{run:long('serve --flag'),argv:long('arg').split(' '),port:true,ready:`/${'r'.repeat(300)}`});
+  // v7 reads as it always did.
+  assert.equal(normalizeContracts(many.map(({name,does})=>({name,does}))).length,8);
+  assert.ok(normalizeContracts([{name:'f',does:long('does')}])[0].does.length<=160);
 });
 
 test('S2: other kinds (v8): a file, page, doc or data contract is named by its path; outputs are kept as written',()=>{

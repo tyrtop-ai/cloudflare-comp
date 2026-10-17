@@ -37,7 +37,7 @@
 import {readFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
 
-const MAX_STEPS = 20, BODY_CHARS = 1500;
+const BODY_CHARS = 1500;
 const require = createRequire(import.meta.url);
 const print = record => process.stdout.write(JSON.stringify(record) + '\n');
 const raw = JSON.parse(readFileSync(0, 'utf8') || '{}');
@@ -309,7 +309,7 @@ async function launch() {
 
 async function runCheck(check) {
   const began = Date.now(), base = String(check.base_url || '');
-  const steps = Array.isArray(check.steps) ? check.steps.slice(0, MAX_STEPS) : [];
+  const steps = Array.isArray(check.steps) ? check.steps : [];
   const state = {index: -1, step: null, page: null};
   const errors = [], blocked = [];
   let context;
@@ -358,7 +358,6 @@ async function runCheck(check) {
         return failure(i, step, reason);
       }
     }
-    if (check.steps?.length > MAX_STEPS) return {id: check.id, passed: false, ms: Date.now() - began, detail: `more than ${MAX_STEPS} steps; ${check.steps.length - MAX_STEPS} not run`};
     return {id: check.id, passed: true, ms: Date.now() - began};
   };
   try {

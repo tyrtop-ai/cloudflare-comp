@@ -9,7 +9,6 @@ import {request as httpRequest} from 'node:http';
 import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 
-const MAX_HTTP_STEPS = 20;
 const clip = (s, n) => { const t = String(s ?? ''); return t.length > n ? t.slice(0, n - 1) + '…' : t; };
 const show = (v, n = 60) => { let t; try { t = JSON.stringify(v); } catch { t = String(v); } return clip(t === undefined ? 'undefined' : t, n); };
 export const deepEqual = (a, b) => {
@@ -75,7 +74,7 @@ export async function pollReady(url, ms) {
 
 export async function runHttpSteps({base_url, steps, step_ms = 5000, check_ms = 20000}) {
   const t = Date.now(), end = t + check_ms, saved = new Map(), origin = new URL(base_url).origin;
-  const list = (Array.isArray(steps) ? steps : []).slice(0, MAX_HTTP_STEPS);
+  const list = Array.isArray(steps) ? steps : [];
   for (const [i, s] of list.entries()) {
     const method = String(s?.method || 'GET').toUpperCase(), p = String(substituteSaved(String(s?.path || '/'), saved)), e = s?.expect && typeof s.expect === 'object' ? s.expect : {};
     // v8 S4b review: the status a server answered rides apart from the reason (which names the expected one).

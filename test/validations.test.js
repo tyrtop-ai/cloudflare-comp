@@ -22,7 +22,8 @@ test('commandArgv: words split by spaces, quotes group, nothing is shell syntax;
   assert.match(commandArgv('a\\b').error, /backslash outside quotes/);
   assert.match(commandArgv('a "b').error, /unclosed quote/);
   assert.equal(commandArgv('   ').error, 'it runs nothing');
-  assert.match(commandArgv(Array.from({length: 41}, () => 'a').join(' ')).error, /more than 40 arguments/);
+  // No count of arguments: a command line has as many as it is written with.
+  assert.equal(commandArgv(Array.from({length: 120}, () => 'a').join(' ')).argv.length, 120);
 });
 
 test('urlPathError: a path on the served site is one "/" and a plain name', () => {

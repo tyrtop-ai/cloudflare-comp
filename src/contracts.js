@@ -23,9 +23,9 @@ const KINDS = new Set(CONTRACT_KINDS);
 export const PLACED_KINDS = new Set(['file', 'page', 'doc', 'data', 'command']);
 // Kinds named by their path.
 const PATH_NAMED = new Set(['file', 'page', 'doc', 'data']);
-// C3: at most this many contracts per piece; normalize keeps 8 so C3 still fires.
+// C3 (v7): at most this many contracts per piece; v7's normalize keeps 8 so C3 still fires.
 export const MAX_CONTRACTS = 5;
-const KEEP = 8, MAX_INPUTS = 6, MAX_EXAMPLES = 4, MAX_SERVES = 32;
+const KEEP = 8, MAX_SERVES = 32;
 // Paths the runtime owns or keeps for itself; no contract places a file there.
 export const RUNTIME_PREFIXES = Object.freeze(['components/', 'memory/', '.recursive/', 'glue/']);
 export const ROUTE_NAME = /^(?:GET|POST|PUT|PATCH|DELETE) \/\S*$/;
@@ -45,7 +45,8 @@ export const DEFAULT_ROW = Object.freeze({id: 'javascript', extensions: ['.js', 
 export const EXAMPLE = /^(?:(?:other)?functionName|fnName|name|listedName|camelCaseIdentifier|example\w*|foo|bar)$/i;
 // The splitter prompt's example does, params and returns, copied: no hint at all.
 const FILLER = /^(?:one line|what it does|optional hint|argument|what it returns|what a call returns(?:, in a few words)?)$/i;
-// Review: the filler is read past a final stop ("What it returns.").
+// Review: the filler is read past a final stop ("What it returns."). v7
+// clips each text to n; a v8 contract keeps it whole (no n).
 const text = (v, n) => typeof v === 'string' && !FILLER.test(v.trim().replace(/[.\s]+$/, '')) ? v.trim().slice(0, n) : '';
 const stop = s => s.replace(/[.\s]+$/, '');
 const plain = v => v && typeof v === 'object' && !Array.isArray(v);
@@ -61,11 +62,10 @@ export const otherName = v => {
   return s && (ROUTE_NAME.test(s) || COMMAND_NAME.test(s) || isPath(s) && /\.[A-Za-z0-9]+$/.test(s) && s.length <= 200) ? s : '';
 };
 
-// An example: {given, expect}, each JSON or a string, each at most 300
-// characters as JSON. A string is clipped; a larger value is dropped.
+// An example: {given, expect}, each JSON or a string, as given.
 const exampleValue = v => {
-  if (typeof v === 'string') return {ok: true, v: v.slice(0, 300)};
-  try { const s = JSON.stringify(v); return s !== undefined && s.length <= 300 ? {ok: true, v: JSON.parse(s)} : {ok: false}; } catch { return {ok: false}; }
+  if (typeof v === 'string') return {ok: true, v};
+  try { const s = JSON.stringify(v); return s !== undefined ? {ok: true, v: JSON.parse(s)} : {ok: false}; } catch { return {ok: false}; }
 };
 function examplesOf(raw) {
   const out = [];
@@ -73,11 +73,10 @@ function examplesOf(raw) {
     if (!plain(e) || !('given' in e) || !('expect' in e)) continue;
     const g = exampleValue(e.given), x = exampleValue(e.expect);
     if (g.ok && x.ok) out.push({given: g.v, expect: x.v});
-    if (out.length >= MAX_EXAMPLES) break;
   }
   return out;
 }
-const servesOf = raw => [...new Set((Array.isArray(raw) ? raw : []).filter(s => typeof s === 'string' && s.trim()).map(s => s.trim().slice(0, 40)))].slice(0, MAX_SERVES);
+const servesOf = raw => [...new Set((Array.isArray(raw) ? raw : []).filter(s => typeof s === 'string' && s.trim()).map(s => s.trim()))];
 // How a page, route or command runs, in the form src/validations.js runOf
 // reads it: {static: true}, {run, argv}, or, when something serves it,
 // {run, argv, port: true, ready}. A run nothing serves keeps no port.
@@ -85,13 +84,13 @@ const runField = raw => {
   if (!plain(raw)) return null;
   if (raw.static === true) return {static: true};
   if (!(typeof raw.run === 'string' && Array.isArray(raw.argv) && raw.argv.every(a => typeof a === 'string'))) return null;
-  const run = {run: raw.run.slice(0, 300), argv: raw.argv.slice(0, 40)};
-  return raw.port === true ? {...run, port: true, ready: typeof raw.ready === 'string' ? raw.ready.slice(0, 200) : '/'} : run;
+  const run = {run: raw.run, argv: raw.argv};
+  return raw.port === true ? {...run, port: true, ready: typeof raw.ready === 'string' ? raw.ready : '/'} : run;
 };
 // Inputs: [{name, is}] or names; params, the v7 spelling, an array or "a, b".
 function inputsOf(o) {
   const list = Array.isArray(o.inputs) && o.inputs.length ? o.inputs : Array.isArray(o.params) ? o.params : typeof o.params === 'string' ? o.params.split(',') : [];
-  return list.map(x => plain(x) ? {name: text(x.name, 40), is: text(x.is ?? x.does ?? x.description, 80)} : {name: text(x, 40), is: ''}).filter(x => x.name);
+  return list.map(x => plain(x) ? {name: text(x.name), is: text(x.is ?? x.does ?? x.description)} : {name: text(x), is: ''}).filter(x => x.name);
 }
 
 // v7's promise item, exactly as ef7eebf read it: an object, or a string such
@@ -121,29 +120,26 @@ const pathLike = s => isPath(s) && (/\.[A-Za-z0-9]+$/.test(s) || s.includes('/')
 // only when an input says what it is.
 function contractItem(o, keepServes) {
   const kind = typeof o.kind === 'string' && KINDS.has(o.kind.trim().toLowerCase()) ? o.kind.trim().toLowerCase() : 'function';
-  let name = o.name.trim().replace(/^`+|`+$/g, ''), inputs = inputsOf(o), does = text(o.does, 160);
-  let out = stop(text([o.returns, o.outputs].find(v => text(v, 120)) ?? '', 120));
+  let name = o.name.trim().replace(/^`+|`+$/g, ''), inputs = inputsOf(o), does = text(o.does);
+  let out = stop(text([o.returns, o.outputs].find(v => text(v)) ?? ''));
   let path = typeof o.path === 'string' && isPath(o.path.trim()) ? o.path.trim() : '';
   if (kind === 'function') {
     out = out.replace(/^\W*(?:it |this |the (?:function|method|call) )?returns?\s+/i, '');
     if (out && noValue(out)) out = 'nothing';
     const call = /^([^(]*)\(([^)]*)\)?[\s;.]*$/.exec(name) || /^([A-Za-z_$][\w$]*)`?\s*(?:\(([^)]*)\)`?)?(?:\s*:|\s+-+|\s+[–—])\s*([\s\S]*)$/.exec(name);
-    if (call) { name = call[1].trim(); if (!inputs.length) inputs = inputsOf({params: (call[2] || '').split(',')}); if (!does) does = text(call[3], 160); }
-    name = name.slice(0, 64);
+    if (call) { name = call[1].trim(); if (!inputs.length) inputs = inputsOf({params: (call[2] || '').split(',')}); if (!does) does = text(call[3]); }
   } else {
     if (PATH_NAMED.has(kind)) {
       const tail = /^(\S+?):\s+(.+)$/.exec(name);
-      if (tail && pathLike(tail[1])) { name = tail[1]; if (!does) does = text(tail[2], 160); }
+      if (tail && pathLike(tail[1])) { name = tail[1]; if (!does) does = text(tail[2]); }
       // Named by its path: a valid path given renames it; a path-like name gives the path.
       if (path) name = path;
       else if (pathLike(name)) path = name;
     }
-    name = name.slice(0, 200);
   }
   if (!name) return null;
-  inputs = inputs.slice(0, MAX_INPUTS);
-  const operation = kind === 'function' ? text(o.operation, 80) : '';
-  const effects = stop(text(o.effects, 120)), examples = examplesOf(o.examples), serves = keepServes ? servesOf(o.serves) : [], run = runField(o.run);
+  const operation = kind === 'function' ? text(o.operation) : '';
+  const effects = stop(text(o.effects)), examples = examplesOf(o.examples), serves = keepServes ? servesOf(o.serves) : [], run = runField(o.run);
   return {
     name, ...(kind === 'function' ? {} : {kind}), does: stop(does), params: inputs.map(x => x.name),
     ...(operation ? {operation} : {}),
@@ -160,23 +156,24 @@ export function normalizeContract(raw, {v8 = false, serves = false} = {}) {
   if (!o || typeof o.name !== 'string') return null;
   return v8 ? contractItem(o, serves) : promiseItem(o);
 }
-// Cleaned and merged by name; at most 8 kept so the more-than-five check
-// still fires. normalizeInterfaces (src/interfaces.js) is this, until S7.
-// Without opts.v8 it is ef7eebf's normalizeInterfaces byte for byte.
+// Cleaned and merged by name; v7 keeps at most 8 so the more-than-five
+// check still fires, and a v8 level keeps every one. normalizeInterfaces
+// (src/interfaces.js) is this, until S7. Without opts.v8 it is ef7eebf's
+// normalizeInterfaces byte for byte.
 export function normalizeContracts(raw, opts = {}) {
   const out = [];
   for (const r of Array.isArray(raw) ? raw : []) {
     const x = normalizeContract(r, opts);
     if (!x) continue;
     const prior = out.find(y => y.name === x.name);
-    if (!prior) { if (out.length < KEEP) out.push(x); continue; }
+    if (!prior) { if (opts.v8 || out.length < KEEP) out.push(x); continue; }
     if (!prior.does) prior.does = x.does;
     if (!prior.params.length) { prior.params = x.params; if (x.inputs) prior.inputs = x.inputs; }
     if (!prior.operation && x.operation) prior.operation = x.operation;
     if (!prior.returns && x.returns) prior.returns = x.returns;
     if (!opts.v8) continue;
     for (const k of ['outputs', 'effects', 'examples', 'path']) if (prior[k] === undefined && x[k] !== undefined) prior[k] = x[k];
-    if (x.serves) prior.serves = [...new Set([...prior.serves || [], ...x.serves])].slice(0, MAX_SERVES);
+    if (x.serves) prior.serves = [...new Set([...prior.serves || [], ...x.serves])];
     if (x.run && !prior.run) prior.run = x.run;
   }
   return out;

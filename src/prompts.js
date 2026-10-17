@@ -79,7 +79,7 @@ export const TOOLS = Object.freeze({
         kind: {type: 'string', enum: KIND_LIST, description: 'What the contract is.'},
         path: {type: 'string', description: 'The relative path of its file. A file, page, doc, data or command contract has one; a function may.'},
         does: {type: 'string', description: 'What it does, in one line.'},
-        inputs: {type: 'array', items: {type: 'object', properties: {name: {type: 'string'}, is: {type: 'string'}}, required: ['name']}, description: 'Up to 6 inputs, each with its name and what it is.'},
+        inputs: {type: 'array', items: {type: 'object', properties: {name: {type: 'string'}, is: {type: 'string'}}, required: ['name']}, description: 'Its inputs, each with its name and what it is.'},
         outputs: {type: 'string', description: 'In one line, what a call returns, a command prints, a route answers or a file holds.'},
         effects: {type: 'string', description: 'What it changes, or none.'},
         run: {type: 'object', properties: {static: {type: 'boolean'}, run: {type: 'string'}, ready: {type: 'string'}}, description: 'Only for a page, route or command: how it is started. static true serves its files as they are. run is a command line that starts with a command contract or a program the box has, and ready a path that answers once it is up; it serves on the port its environment gives. A contract that states no run is not started.'}

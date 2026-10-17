@@ -9,7 +9,7 @@
 // division is sound is Clef's review (src/model.js reviewLevel), as before.
 import { TOOLCHAINS, toolchainOf } from './toolchains.js';
 import { normalizeContract, kindOf, nameError, PLACED_KINDS, CONTRACT_KINDS } from './contracts.js';
-import { readCheck, CHECK_FIELDS, runOf, servedRun, runsOf, bundlePath, contractExamples, checkExamples, exerciseWords, divisionOf, LEVEL_LIMITS, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
+import { readCheck, CHECK_FIELDS, runOf, servedRun, runsOf, bundlePath, contractExamples, checkExamples, exerciseWords, divisionOf, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
 import { session } from './session.js';
 import { systemPrompt, TOOLS, CHECK_TOOL_KINDS } from './prompts.js';
 
@@ -50,7 +50,6 @@ const CONTRACT_FIELDS = ['name', 'kind', 'path', 'does', 'inputs', 'outputs', 'e
 function contract(s, a) {
   const unknown = Object.keys(a).filter(k => !CONTRACT_FIELDS.includes(k));
   if (unknown.length) return {error: `contract has no field ${unknown.map(k => `"${k.slice(0, 40)}"`).join(', ')}; its fields are ${CONTRACT_FIELDS.join(', ')}`};
-  if (levelContracts(s).length >= LEVEL_LIMITS.contracts) return {error: `this level holds at most ${LEVEL_LIMITS.contracts} contracts`};
   const name = typeof a.name === 'string' ? a.name : '', kind = a.kind;
   if (!name.trim()) return {error: 'name is required'};
   if (!CONTRACT_KINDS.includes(kind)) return {error: `kind ${JSON.stringify(kind ?? null).slice(0, 40)} is not one of ${CONTRACT_KINDS.join(', ')}`};
@@ -67,8 +66,8 @@ function contract(s, a) {
   const row = path ? toolchainOf(path) : null;
   if (row && row.id !== 'text' && !s.ids.has(row.id)) return {error: `${path} is written in ${row.id}, which the box does not run (it runs ${listed([...s.ids])})`};
   for (const k of ['does', 'outputs', 'effects']) if (a[k] !== undefined && typeof a[k] !== 'string') return {error: `${k} is a text`};
-  if (a.inputs !== undefined && (!Array.isArray(a.inputs) || a.inputs.length > 6 || !a.inputs.every(x => plain(x) && typeof x.name === 'string' && x.name && (x.is === undefined || typeof x.is === 'string'))))
-    return {error: 'inputs is a list of up to 6 inputs, each with a name and what it is'};
+  if (a.inputs !== undefined && (!Array.isArray(a.inputs) || !a.inputs.every(x => plain(x) && typeof x.name === 'string' && x.name && (x.is === undefined || typeof x.is === 'string'))))
+    return {error: 'inputs is a list of inputs, each with a name and what it is'};
   let run = null;
   if (a.run !== undefined) {
     const r = runOf(a.run, {kind}, {commands: new Set(present(s).filter(c => kindOf(c) === 'command').map(c => c.name)), executables: s.executables});
@@ -83,7 +82,6 @@ function contract(s, a) {
 function validation(s, a) {
   const unknown = Object.keys(a).filter(k => !['serves', 'check'].includes(k));
   if (unknown.length) return {error: `validation has no field ${unknown.map(k => `"${k.slice(0, 40)}"`).join(', ')}; its fields are serves, check`};
-  if (s.validations.length >= LEVEL_LIMITS.validations) return {error: `this level holds at most ${LEVEL_LIMITS.validations} validations`};
   const names = nameList(a.serves, 'serves');
   if (names.error) return {error: names.error};
   if (!names.list.length) return {error: 'serves names no contract'};
@@ -109,9 +107,9 @@ function piece(s, a) {
   const unknown = Object.keys(a).filter(k => !PIECE_FIELDS.includes(k));
   if (unknown.length) return {error: `piece has no field ${unknown.map(k => `"${k.slice(0, 40)}"`).join(', ')}; its fields are ${PIECE_FIELDS.join(', ')}`};
   if (s.pieces.length >= s.maxPieces) return {error: `this level holds at most ${s.maxPieces} pieces`};
-  if (typeof a.label !== 'string' || !a.label.trim() || a.label.length > 70) return {error: 'label is a text of at most 70 characters'};
+  if (typeof a.label !== 'string' || !a.label.trim()) return {error: 'label is a text'};
   if (s.pieces.some(p => p.label === a.label)) return {error: `a piece labelled "${a.label}" is already declared`};
-  if (typeof a.task !== 'string' || !a.task.trim() || a.task.length > 2000) return {error: 'task is a text of at most 2000 characters'};
+  if (typeof a.task !== 'string' || !a.task.trim()) return {error: 'task is a text'};
   const delivers = nameList(a.contracts, 'contracts');
   if (delivers.error) return {error: delivers.error};
   if (!delivers.list.length) return {error: 'contracts names nothing the piece delivers'};
