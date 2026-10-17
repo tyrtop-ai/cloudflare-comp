@@ -36,6 +36,7 @@ import { freshBox, compileBoxSpec } from './box.js';
 import { checkPlan, checkLimitsOf } from './checks.js';
 import { snapshotHash, validateBoxFiles } from './build-verification.js';
 import { TOOLCHAINS } from './toolchains.js';
+import { selfHostsOf } from './room-inputs.js';
 
 const query = (db, sql, ...args) => db.exec(sql, ...args).toArray();
 const parse = (v, otherwise) => { try { return v == null ? otherwise : JSON.parse(v); } catch { return otherwise; } };
@@ -94,7 +95,7 @@ export class BenchRun extends DurableObject {
     for (const [i, t] of loaded.tasks.entries())
       this.db().exec('INSERT INTO tasks(idx,task_id,format,language,entry,goal,grader,status,digest) VALUES (?,?,?,?,?,?,?,?,?)',
         i, t.id, t.format, t.language, t.entry, t.prompt, JSON.stringify(t.grader), 'queued', await taskDigest(t));
-    for (const [k, v] of Object.entries({id, label: clip(label, 80), created_at: now, status: 'running', settings, concurrency: pool, ...(pool < concurrency ? {concurrency_asked: concurrency} : {}),
+    for (const [k, v] of Object.entries({id, label: clip(label, 80), created_at: now, status: 'running', settings, self_hosts: selfHosts, concurrency: pool, ...(pool < concurrency ? {concurrency_asked: concurrency} : {}),
       executors: slots, budget, limit, poll_ms, keep_rooms: KEEP_ROOMS.includes(keep_rooms) ? keep_rooms : BENCH_DEFAULTS.keep_rooms,
       dataset: {source: loaded.source, digest: loaded.digest, rows: loaded.rows, bad: loaded.bad, formats: loaded.formats, skipped: loaded.skipped}}))
       this.set(k, v);
@@ -129,7 +130,7 @@ export class BenchRun extends DurableObject {
       if (result) { this.finish(t, result, s, now); continue; }
       this.record(t, s);
     }
-    const settings = this.get('settings', {}), budget = this.get('budget', BENCH_DEFAULTS.budget), concurrency = this.get('concurrency', BENCH_DEFAULTS.concurrency);
+    const settings = this.get('settings', {}), selfHosts = this.get('self_hosts', []), budget = this.get('budget', BENCH_DEFAULTS.budget), concurrency = this.get('concurrency', BENCH_DEFAULTS.concurrency);
     for (;;) {
       if (!this.running()) break;
       const busy = query(this.db(), "SELECT slot FROM tasks WHERE status='running'").map(r => r.slot);
@@ -143,7 +144,7 @@ export class BenchRun extends DurableObject {
       this.db().exec("UPDATE tasks SET status='running',room=?,slot=?,started_at=? WHERE idx=?", room, slot, started, t.idx);
       this.db().exec("INSERT INTO rooms(room,idx,state) VALUES (?,?,'running') ON CONFLICT(room) DO NOTHING", room, t.idx);
       let r;
-      try { r = await this.env.ROOMS.getByName(room).start(t.goal, budget, settings, room); }
+      try { r = await this.env.ROOMS.getByName(room).start(t.goal, budget, settings, room, {selfHosts}); }
       catch (e) { r = {error: clip(e?.message || e)}; }
       const now2 = this.row(t.idx), ours = now2?.status === 'running' && now2.room === room;
       if (!this.running() || !ours) {
@@ -392,7 +393,7 @@ export async function benchRoute(request, env, url, payload, {normalizeRoomSetti
       const format = typeof payload.format === 'string' && payload.format && payload.format !== 'auto' ? payload.format : null;
       const id = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
       const r = await run(id).begin({id, label: typeof payload.label === 'string' ? payload.label : '', dataset, limit, format, settings, concurrency, budget,
-        keep_rooms: payload.keep_rooms ?? BENCH_DEFAULTS.keep_rooms, allow: env.FETCH_ALLOW, selfHosts: [url.host]});
+        keep_rooms: payload.keep_rooms ?? BENCH_DEFAULTS.keep_rooms, allow: env.FETCH_ALLOW, selfHosts: [url.host, ...selfHostsOf(env)]});
       return json(r, r?.error ? 400 : 200);
     }
     if (path === '/api/bench/compare' && method === 'GET') {

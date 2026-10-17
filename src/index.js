@@ -39,7 +39,7 @@ import { inheritServes, otherName, kindOf as contractKind, contractLine, gateLin
 import { branchDirectory, packageDirectory, packagePath, partsRoot, PARTS_ROOT } from './assembly.js';
 import { placeChecks, checkUses, textHash } from './piece.js';
 import { zipFiles } from './zip.js';
-import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, namedIn, existingFiles, baseFileRead } from './room-inputs.js';
+import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, namedIn, existingFiles, baseFileRead, selfHostsOf } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
 import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, nextHeld, viewAnswer } from './broker.js';
 import { normalizePackages, installedPackages, stdlibRow, piecePackages, packageLine } from './packages.js';
@@ -699,11 +699,13 @@ export class ControlRoom extends DurableObject {
     // Each reader is an agent of the room, named reader-<hex16> as every row
     // is (rowId): recorded as it starts and as it ends (source_readers), so
     // the dashboard draws it with the others.
-    let calls=0;
+    let calls=0,named=0;
     const room=this.get('room_id',''),readers=[],read=sourceModel(this.inferenceEnv('compiler')),note=async args=>{
-      const x={id:await rowId(room,readers.length+1,'reader'),ref:args.ref,role:args.role,started_at:Date.now(),ended_at:null,noted:false,rounds:0};
+      // The readers run at the same time: each takes its number, and counts its first model call, before any await.
+      calls++;
+      const n=++named,x={id:await rowId(room,n,'reader'),ref:args.ref,role:args.role,started_at:Date.now(),ended_at:null,noted:false,rounds:0};
       readers.push(x);this.save('source_readers',readers);
-      try {const r=await read(args);calls+=r.rounds;Object.assign(x,{noted:!!r.noted,rounds:r.rounds});return r.noted;}
+      try {const r=await read(args);calls+=Math.max(0,r.rounds-1);Object.assign(x,{noted:!!r.noted,rounds:r.rounds});return r.noted;}
       finally {x.ended_at=Date.now();this.save('source_readers',readers);}
     };
     const {rows,chunks}=await loadSources(goal,{fetch:this.fetcher(),allow:report?report.allow:given,selfHosts,note,more:()=>calls<budget});
@@ -7850,7 +7852,7 @@ export class ControlRoom extends DurableObject {
     this.queuedAt.clear();
     this.configure(settings);
     if (roomId) this.set('room_id',roomId);
-    this.save('fetch_self_hosts',(Array.isArray(selfHosts)?selfHosts:[selfHosts]).filter(h=>typeof h==='string'&&h).slice(0,8));
+    this.save('fetch_self_hosts',(Array.isArray(selfHosts)?selfHosts:[selfHosts]).filter(h=>typeof h==='string'&&h));
     if(Array.isArray(grants)&&grants.length){const given=[...new Set(grants.filter(p=>typeof p==='string'&&isPath(p)))];this.save('base_approved',given);if(given.length)this.event('system','base_granted',clip(`The person granted changing ${given.join(', ')} at Start.`,500));}
     if(loaded) {
       for(const [path,content] of loaded.files)this.db().exec('INSERT INTO base_files(path,content,sha256,mode) VALUES (?,?,?,?)',path,content,await sha256(content),loaded.modes?.get(path)??0o644);
@@ -9334,10 +9336,6 @@ export class ControlRoom extends DurableObject {
 // events and spans a page (EXPORT_PAGE rows, one RPC) at a time up to the
 // last id when the export began. The head is fetched first, so its errors
 // are an ordinary JSON error response.
-// v8 S8b review: every host this deployment answers on, from SELF_HOSTS (a
-// comma list, e.g. the custom domain beside the workers.dev host), so a
-// goal's link can never reach this deployment through another of its names.
-export const selfHostsOf = env => String(env?.SELF_HOSTS ?? '').split(/[,\s]+/).map(h => h.trim().replace(/^[a-z]+:\/\//i, '').replace(/[/?#].*$/, '')).filter(Boolean).slice(0, 16);
 export async function exportResponse(stub) {
   const head=await stub.exportHead(),{cursors={},...rest}=head||{};
   const encoder=new TextEncoder(),text=JSON.stringify(rest);

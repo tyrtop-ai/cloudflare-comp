@@ -299,7 +299,8 @@ test('source summaries: each part and the page read through note, quoted data in
   assert.equal(c1.title, 'Doc title');
   assert.equal(c1.summary, page, 'the page as noted, whole');
   assert.equal(c2.summary, page);
-  assert.deepEqual(calls.map(c => c.role), [...chunks.map(() => 'source_gist'), 'source_summary', 'source_gist', 'source_summary']);
+  // Every part of every page is read at the same time; each page's reader once its parts are noted.
+  assert.deepEqual(calls.map(c => c.role), [...chunks.map(() => 'source_gist'), 'source_gist', 'source_summary', 'source_summary']);
   for (const c of calls) {
     assert.ok(c.system.includes(SOURCE_CLAUSE));
     assert.ok(!c.system.includes('aaaa'), 'quoted text never enters the system prompt');
@@ -307,7 +308,8 @@ test('source summaries: each part and the page read through note, quoted data in
     assert.ok(Array.isArray(JSON.parse(c.user).sources));
   }
   assert.equal(JSON.parse(calls[0].user).sources[0].ref, 'S1#1');
-  assert.deepEqual(JSON.parse(calls[chunks.length].user).sources[0].outline.map(o => o.gist), chunks.map(() => part), 'the page reader reads every part\'s note');
+  const s1Page = calls.find(c => c.role === 'source_summary' && c.ref === 'S1');
+  assert.deepEqual(JSON.parse(s1Page.user).sources[0].outline.map(o => o.gist), chunks.map(() => part), 'the page reader reads every part\'s note');
   // The room's budget bounds the readings: a part not read is listed with no gist, and nothing is made up for it.
   let left = 2;
   const [b1, b2] = await sourceSummaries(sources, {note: async req => { left--; return note(req); }, more: () => left > 0});
@@ -320,6 +322,39 @@ test('source summaries: each part and the page read through note, quoted data in
   assert.deepEqual([silent[0].outline, silent[0].summary], [[{ref: 'S2#1'}], '']);
   const failing = await sourceSummaries([sources[1]], {note: async () => { throw new Error('model down'); }});
   assert.deepEqual(failing[0].outline, [{ref: 'S2#1'}]);
+});
+
+// R9-edges/chrono-2: independent readers do not wait on one another.
+test('the parts of a page, and the pages, are read at the same time; a page\'s reader starts once its own parts are noted', async () => {
+  const doc = ['# A', 'a'.repeat(5000), '# B', 'b'.repeat(5000), '# C', 'c'.repeat(5000)].join('\n');
+  const parts = chunkText(doc, 6000).length;
+  assert.ok(parts >= 3);
+  const sources = [{id: 'S1', url: 'https://example.com/one', title: 'One', text: doc}, {id: 'S2', url: 'https://example.com/two', title: 'Two', text: doc}];
+  let release;
+  const gate = new Promise(r => { release = r; });
+  const started = [], done = [];
+  const note = async req => { started.push(req.ref); if (req.role === 'source_gist') await gate; done.push(req.ref); return req.role === 'source_summary' ? {title: 't', says: 's'} : {says: 'g'}; };
+  const pending = sourceSummaries(sources, {note});
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal(started.length, 2 * parts, 'every part reader of both pages started before any finished');
+  assert.equal(done.length, 0);
+  release();
+  const out = await pending;
+  assert.deepEqual(out.map(o => o.summary), ['s', 's']);
+  for (const id of ['S1', 'S2']) assert.ok(done.indexOf(id) > Math.max(...done.filter(r => r.startsWith(`${id}#`)).map(r => done.indexOf(r))), `${id}'s page reader after its parts`);
+});
+
+test('the links of a goal are fetched at the same time, each keeping its id in the goal\'s order', async () => {
+  let release;
+  const gate = new Promise(r => { release = r; });
+  const seen = [];
+  const fetch = async url => { seen.push(url); await gate; return new Response(`page ${url}`, {headers: {'content-type': 'text/plain'}}); };
+  const pending = fetchGoalSources('read https://example.com/1 https://example.com/2 https://example.com/3', {fetch, policy: policy()});
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal(seen.length, 3, 'every link requested before any answered');
+  release();
+  const out = await pending;
+  assert.deepEqual(out.map(s => [s.id, s.url, s.text]), [1, 2, 3].map(i => [`S${i}`, `https://example.com/${i}`, `page https://example.com/${i}`]));
 });
 
 test('the source reader is a session whose one function is note: its arguments are what is stored, and a reply with no call is answered with the function', async () => {
@@ -358,7 +393,8 @@ test('the injected fetch only ever receives the parsed URL href, and final_url i
   const out = await fetchGoalSources(goal, {fetch: recording, policy: policy()});
   assert.equal(out.length, 3);
   for (const u of seen) assert.equal(u, new URL(u).href, 'the fetched string is already canonical');
-  assert.deepEqual(seen, ['https://example.com/@evil.example.net/x', 'https://example.com/A%7e', 'https://example.org/c%20d', 'https://example.org./b?q=1']);
+  // The links are fetched at the same time, so the redirect's hop comes after the three first requests.
+  assert.deepEqual(seen, ['https://example.com/@evil.example.net/x', 'https://example.com/A%7e', 'https://example.org./b?q=1', 'https://example.org/c%20d']);
   assert.equal(out[0].final_url, 'https://example.com/@evil.example.net/x');
   assert.equal(out[1].final_url, 'https://example.org/c%20d');
   assert.ok(seen.every(u => !u.includes('\\')));
