@@ -1,14 +1,13 @@
 // v8 §4.5: the toolchain table is data, and its helpers are pure.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {TOOLCHAINS,STACKS,OTHER_MANIFESTS,toolchainOf,toolchainById,installed,extractSurface,stackFrames,validIdentifier,manifestOf} from '../src/toolchains.js';
+import {TOOLCHAINS,COMPILE_ROWS,OTHER_MANIFESTS,toolchainOf,toolchainById,installed,extractSurface,validIdentifier,manifestOf} from '../src/toolchains.js';
 
 test('the phase-1 rows: javascript, python and text, frozen, each extension in one row',()=>{
   assert.deepEqual(TOOLCHAINS.map(t=>t.id),['javascript','python','text']);
   assert.ok(Object.isFrozen(TOOLCHAINS)&&TOOLCHAINS.every(Object.isFrozen));
   const all=TOOLCHAINS.flatMap(t=>t.extensions);
   assert.equal(new Set(all).size,all.length);
-  for(const t of TOOLCHAINS)if(t.stack)assert.ok(STACKS[t.stack],t.id);
 });
 
 test('toolchainOf reads the extension, case-folded; a dotfile or an unknown language has no row',()=>{
@@ -45,24 +44,8 @@ test('extractSurface: Acorn for JavaScript, the line regexes for Python (private
   assert.deepEqual(extractSurface('main.go','package main'),{toolchain:null,names:[]});
 });
 
-test('stackFrames maps a trace to bundle paths, the longest match first; frames outside the bundle are left out',()=>{
-  const files=['count.py','components/p_count_ab12cd34/count.py','cli.py'];
-  const py=`Traceback (most recent call last):
-  File "/work/build-x/cli.py", line 12, in <module>
-    main()
-  File "/work/build-x/components/p_count_ab12cd34/count.py", line 4, in count_words
-    return len(text.split(None))
-  File "/usr/lib/python3.12/re/__init__.py", line 9, in compile
-TypeError: boom`;
-  assert.deepEqual(stackFrames(py,files,toolchainById('python')),[
-    {path:'cli.py',line:12,fn:'<module>'},{path:'components/p_count_ab12cd34/count.py',line:4,fn:'count_words'}]);
-  const v8=`TypeError: x is not a function
-    at addTodo (/work/build-1/components/store-1/store.js:7:11)
-    at file:///work/build-1/app.js:3:5
-    at node:internal/modules/run_main:1:1`;
-  assert.deepEqual(stackFrames(v8,new Map([['app.js',''],['components/store-1/store.js','']]),toolchainById('javascript')),[
-    {path:'components/store-1/store.js',line:7,fn:'addTodo'},{path:'app.js',line:3,fn:null}]);
-  assert.deepEqual(stackFrames(v8,{},toolchainById('text')),[]);
+test('v8 runs no language: no row holds a syntax step, a parser, a stack reader or a toolchain the box installs',()=>{
+  for(const t of [...TOOLCHAINS,...COMPILE_ROWS])for(const k of ['syntax','native','stack','parse_mode','page_scripts','shebang','toolchain'])assert.ok(!(k in t),`${t.id}.${k}`);
 });
 
 test('manifestOf: every row\'s manifests and the other toolchains\', at any depth, without case; a directory entry covers what lies under it',()=>{

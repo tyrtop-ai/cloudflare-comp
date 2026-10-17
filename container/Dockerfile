@@ -11,9 +11,8 @@ RUN npm install -g playwright && playwright install --with-deps --only-shell chr
  && rm -rf /root/.npm /root/.cache /var/lib/apt/lists/* \
  && mkdir -p /opt/toolchain && python3 -c "import sys;print('\n'.join(sorted(sys.stdlib_module_names)))" > /opt/toolchain/python-stdlib.txt
 RUN command -v timeout && command -v unshare && command -v nsenter && command -v prlimit && useradd --create-home --uid 10001 builder
-COPY build-runner.mjs build-path.mjs stack-frames.mjs /opt/
-COPY adapters/ /opt/adapters/
-RUN chmod 0444 /opt/build-runner.mjs /opt/build-path.mjs /opt/stack-frames.mjs && chmod -R a+rX /opt/adapters /opt/toolchain /ms-playwright \
+COPY build-runner.mjs build-path.mjs /opt/
+RUN chmod 0444 /opt/build-runner.mjs /opt/build-path.mjs && chmod -R a+rX /opt/toolchain /ms-playwright \
  && mkdir -p /work && chown builder:builder /work
 USER builder
 WORKDIR /work

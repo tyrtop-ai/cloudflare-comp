@@ -14,10 +14,6 @@ export const INACTIVITY_TIMEOUT_MS=120_000;
 export const WARM_GRACE_MS=60_000;
 // The two options the build runner reads (container/build-runner.mjs buildOptions); anything else is dropped.
 export const buildRequestOptions=o=>o&&typeof o==='object'?{...(o.describe_api===true?{describe_api:true}:{}),...(o.prechecked===true?{prechecked:true}:{})}:{};
-// v8 S4a: a verification of a level's validations (container/build-runner.mjs
-// verifyChecks) adds mode 'checks', the toolchain rows it uses, its plan, its limits and the bundle's symbolic links (links: path to target) to the
-// same one exec; any other request is the v7 build, unchanged.
-export const checksRequestFields=({mode,plan,toolchains,limits,links}={})=>mode==='checks'?{mode:'checks',plan:plan&&typeof plan==='object'?plan:{},toolchains:Array.isArray(toolchains)?toolchains:[],...(limits&&typeof limits==='object'?{limits}:{}),...(links&&typeof links==='object'?{links}:{})}:{};
 
 function isTransientStartupFailure(error) {
   return /starting|startup|not running|not ready|not started|stopped|unavailable|not available|connecting|connection refused|try again|temporarily/i.test(String(error?.message||error));
@@ -104,14 +100,14 @@ export class BuildExecutor extends DurableObject {
       catch(error) {console.warn('Unable to configure Container inactivity timeout:',String(error?.message||error));}
     }
   }
-  async build({fingerprint,files,options,mode,plan,toolchains,limits}) {
+  async build({fingerprint,files,options}) {
     this.building=(this.building||0)+1;
     try {
       await this.ctx.storage.put?.('build_began',Date.now());
-      return await this.runBuild({fingerprint,files,options,mode,plan,toolchains,limits});
+      return await this.runBuild({fingerprint,files,options});
     } finally {this.building--;}
   }
-  async runBuild({fingerprint,files,options,...checks}) {
+  async runBuild({fingerprint,files,options}) {
     if(typeof fingerprint!=='string'||fingerprint.length>240)throw new Error('Invalid build fingerprint');
     const entries=validateBuildFiles(files);
     const snapshot_hash=await snapshotHash(entries);
@@ -125,7 +121,7 @@ export class BuildExecutor extends DurableObject {
     if(cold)await container.start();
     const started=Date.now();
     await this.keepWarm(container);
-    const input=JSON.stringify({fingerprint,snapshot_hash,files:Object.fromEntries(entries),options:buildRequestOptions(options),...checksRequestFields(checks)});
+    const input=JSON.stringify({fingerprint,snapshot_hash,files:Object.fromEntries(entries),options:buildRequestOptions(options)});
     let retries=0;
     const process=await execAfterStartup(container,BUILD_COMMAND,{stdin:'pipe',stdout:'pipe',stderr:'pipe'},{onRetry:()=>{retries++;}});
     const output=await waitForBuildOutput(process,(async()=>{
