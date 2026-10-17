@@ -8982,6 +8982,8 @@ export class ControlRoom extends DurableObject {
       if(p.kind==='escalation'){this.escalate(id,p.facts.kind||p.stage,p.detail,p.facts.origin||p.source);continue;}
       if(p.kind==='change'){await this.routeChange(id,p.facts.text||p.detail,p.flags||{});continue;}
       if(p.kind==='ask'){await this.routeAsk(id,p.facts);continue;}
+      // A walk an earlier version held here (Clef could not answer it) is the same ask, at this manager.
+      if(p.kind==='walk'){const a=p.facts.ask||{};await this.routeAsk(id,{worker:p.facts.worker,key:a.key,need:a.question||'',name:a.name||'',request_id:''});continue;}
       await this.routeComplaint(id,{kind:p.kind,parties:p.parties,detail:p.detail,facts:p.facts},p.flags||{});
     }
   }
@@ -9287,6 +9289,8 @@ export class ControlRoom extends DurableObject {
   async levelWorkerTurn(id) {
     const n=this.node(id);
     let saved=query(this.db(),'SELECT payload,cursor FROM pending_turns WHERE agent=?',id)[0],plan;
+    // A turn an earlier version left as a parsed answer (its action) is not this one's: the turn runs again as a session.
+    if(saved&&!('end' in (parse(saved.payload,null)||{}))){this.db().exec('DELETE FROM pending_turns WHERE agent=?',id);this.event(id,'retry','An interrupted turn of an earlier version runs again as a session.');saved=null;}
     if(saved) {
       plan=parse(saved.payload,null);
       if(!plan)throw new Error('Invalid persisted action for '+id);

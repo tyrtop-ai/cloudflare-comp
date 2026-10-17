@@ -373,3 +373,19 @@ The first live runs on function calling worked end to end: each splitter declare
   - `no file gives <name> to a call`.
 
   The to-do page's worker had a `script.js` that defines `addTask` without exporting it. It was told no file defined it, and it answered, correctly, that the function exists.
+
+## The worker and the managers work through functions
+
+Owner, binding: "every model should work that way … not parsing the models output, but functions exposed to the models. for every model. For every interaction." This slice does it for the worker and for the managers (Clef).
+
+- **The worker's turn is one session of functions** (`src/worker.js`, `TOOLS.worker`):
+  - `read_file({path})`: a file's text, or that there is no such file, with the paths there are;
+  - `write_file({path, content})`: stores the whole file, staged for the turn's one commit. A path that is not a relative path inside its files says why. The same bytes again say `unchanged: … is already exactly this text`, so there is no silent drop.
+  - `run_examples()`: runs the validations that serve its contracts on its own files as they stand, in a fresh box with the internet off, the way its compiler runs them (syntax steps, file checks, documents judged by Clef). Each comes back as the examples it renders and what was observed: `pass`, or the compiler's own words. It never shows a validation's id, kind or steps, and it never changes a validation's status.
+  - `ask({need, name?})`: answered at once when its world holds the name (the broker), when it is its own contract, or when it was asked and answered before. Otherwise the ask goes to its manager, and the answer arrives at the start of its next turn.
+  - `done({summary})` and `wait({summary})`: the turn ends as the function says.
+
+  The session's user message holds its prompt (as before), its files' paths, the complaints routed to it (verbatim), and its world with the answers it has. A session that ends with neither `done` nor `wait` (its context window full) is a failed turn, `session_unfinished`. Three in a row are its stuck hold.
+- **A manager's turn is a choice among its functions.** For each ask, complaint or change it holds, every function call it may make is one typed option: `answer(contract)` for each contract its other children deliver, `route_to(child)` for each live child, `extend` (to its splitter), and `ask_parent`. Clef scores each with one noul question over the manager's files (`chooseCall`), and the runtime calls the highest. A walk up the tree is a chain of `ask_parent` calls. At the room, an ask no manager holds archives the asker, and the rebuild replaces it. Every choice is a `manager_choice` event with Clef's p for the chosen call and for the others.
+- **A manager reads its level files only** (`managerView`: its entry in its parent's level file and its own level file's live children), never the rows' `interfaces` copies. `levelContracts` and the rebuild read the files too.
+- **Gone:** for the v8 worker, the file-block and control-block reading (`decideV8`), its format fallbacks and retry (`RETRY.worker`), `code_retry`, `rewriteFile`, `ROLE.file`, `FORMAT.file`, `singleFileText`, `missing_deliverable`, `wrote_before_answer`, the ask limit, `turn_notes` and the notes in `MESSAGES` that served them. For the managers, `askUp`'s loop, `resolveAsk`'s name and Clef match, the runtime's owner, serves and fallback routing in `routeComplaint`, the yes/no-per-child `routeChange`, and `routeAmong`, `inScope`, `matchContracts` and their CLEF questions (`owner`, `change`, `owns_need`, `match`). v7 is unchanged.
