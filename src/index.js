@@ -293,8 +293,8 @@ export const DEFAULT_ROOM_SETTINGS = Object.freeze({
   // v8 live 5: the split's three tunable numbers. split_floor: a pre-grade p at
   // or below it means Clef is very certain no split is needed, and the manager
   // writes its assignment with no splitter call. split_valid_bar: the bar
-  // Clef's split_valid p must reach (rising with depth, as splitBar does).
-  // split_size_bar: the bar Clef's split_size p must reach.
+  // Clef's split_valid p must reach, the same for every manager at every
+  // depth. split_size_bar: the bar Clef's split_size p must reach.
   split_floor: 0.1, split_valid_bar: 0.5, split_size_bar: 0.5
 });
 // v8 live 5: a level's split is reviewed by Clef up to this many times (the
@@ -842,7 +842,6 @@ export class ControlRoom extends DurableObject {
   maxChildren() { return this.settings().max_children ?? DEFAULT_ROOM_SETTINGS.max_children; }
   // v7.15.16 (run25): the split gate's bar rises with depth into the headroom left below 0.95: threshold + (0.95 - threshold) x min(depth - 1, H) / H, H = min(max_depth, 10) (0.7: 0.725 at depth 2, 0.75 at 3, 0.925 at 10, 0.95 below). Root and its children keep the room's threshold. run25 (0.45) went ten deep on YES answers of p 0.57-0.74.
   // v7.15.16 review: over a fixed horizon, min(max_depth, 10) levels, so raising max_depth (what split_capacity_blocked advises) never flattens it.
-  // v8 live 5: the same rise over split_valid_bar for Clef's split_valid p (t).
   splitBar(id, t=this.settings().split_threshold) {const {max_depth:m}=this.settings(),d=this.depthOf(id),h=Math.max(1,Math.min(m||10,10));return d<=1?t:Math.round((t+(0.95-t)*Math.min(d-1,h)/h)*1000)/1000;}
   // role: 'manager' (the default; splits, decisions, linking), 'worker' (a
   // leaf writing code) or 'compiler' (the API coverage mapping and the
@@ -8718,7 +8717,7 @@ export class ControlRoom extends DurableObject {
       this.recordAttempt(id,{attempt,job:key,splitter:out.sid,pieces:pieces.length,outcome:'admitted',ms:Date.now()-started});
       return this.admitLevel(id,{...level,pieces:[]},{job,why:divide?`Its splitter proposed ${pieces.length?'one piece':'no pieces'}, so the level goes to one worker.`:'The level goes to one worker.'});
     }
-    const validBar=this.splitBar(id,cfg.valid_bar),sizeBar=cfg.size_bar,ok=review.valid>=validBar&&review.size>=sizeBar,next=ok?'':review.size<sizeBar?'fewer':'different',bound=pieces.length-1;
+    const validBar=cfg.valid_bar,sizeBar=cfg.size_bar,ok=review.valid>=validBar&&review.size>=sizeBar,next=ok?'':review.size<sizeBar?'fewer':'different',bound=pieces.length-1;
     const stop=ok?'':attempt>=SPLIT_ATTEMPTS?`on attempt ${attempt} of ${SPLIT_ATTEMPTS}`:next==='fewer'&&bound<2?`with pieces too small at ${pieces.length}, and fewer than two is no division`:'';
     this.recordAttempt(id,{attempt,job:key,splitter:out.sid,pieces:pieces.length,valid_p:r3(review.valid),size_p:r3(review.size),scope_ps:review.scope.map(r3),valid_bar:validBar,size_bar:sizeBar,
       ...(retry?{retry}:{}),outcome:ok?'admitted':stop?'handed down':`retry ${next}`,ms:Date.now()-started});

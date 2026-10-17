@@ -26,7 +26,8 @@ const TIPS = {name: 'TIPS.md', kind: 'doc', path: 'TIPS.md', does: 'tips for a b
 const FILES = {
   'GUIDE.md': '# Brewing green tea\n\nHeat the water to 80 degrees.\nSteep the leaves for 2 minutes.\n',
   'FAQ.md': '# Questions\n\nDoes green tea hold caffeine? A cup holds some caffeine.\nCan I brew it twice? Yes.\n',
-  'TIPS.md': '# Tips\n\nSteep for 2 minutes.\nUse soft water.\n'};
+  'TIPS.md': '# Tips\n\nSteep for 2 minutes.\nUse soft water.\n',
+  'NOTES.md': '# Notes\n\nKeep the lid on.\nUse a timer.\n'};
 // Three file validations per contract: three different examples each.
 const has = (id, path, text) => ({id, serves: [path], check: {kind: 'file', path, has: [text]}});
 const VALIDATIONS = [
@@ -35,6 +36,16 @@ const VALIDATIONS = [
   has('t1', 'TIPS.md', 'minutes'), has('t2', 'TIPS.md', 'soft water'), has('t3', 'TIPS.md', '# Tips')];
 const piece = (label, contracts, task = `Write ${contracts.map(c => c.path).join(' and ')}`) => ({label, task, contracts: contracts.map(c => c.name)});
 const TWO = [piece('Guide', [GUIDE]), piece('Questions and tips', [FAQ, TIPS])];
+// Four contracts, divided three levels deep: the room's manager into Big and Notes, Big into Mid and Tips, Mid into Guide and Questions.
+const GOAL4 = 'Write a short guide to brewing green tea, a page of common questions, tips and brewing notes.';
+const NOTES = {name: 'NOTES.md', kind: 'doc', path: 'NOTES.md', does: 'notes on brewing'};
+const deepSplit = user => {
+  if (!user.contracts_you_deliver) return {contracts: [GUIDE, FAQ, TIPS, NOTES], validations: [...VALIDATIONS, has('n1', 'NOTES.md', 'lid'), has('n2', 'NOTES.md', 'timer'), has('n3', 'NOTES.md', '# Notes')],
+    pieces: [piece('Big', [GUIDE, FAQ, TIPS]), piece('Notes', [NOTES])]};
+  const mine = user.contracts_you_deliver.map(c => c.name).sort().join(',');
+  const pieces = mine === 'FAQ.md,GUIDE.md,TIPS.md' ? [piece('Mid', [GUIDE, FAQ]), piece('Tips', [TIPS])] : mine === 'FAQ.md,GUIDE.md' ? [piece('Guide', [GUIDE]), piece('Questions', [FAQ])] : [];
+  return {contracts: user.contracts_you_deliver, validations: [], pieces};
+};
 const THREE = [piece('Guide', [GUIDE]), piece('Questions', [FAQ]), piece('Tips', [TIPS])];
 // The room's manager states the level; a manager whose contracts were given restates them, with no pieces of its own.
 const splitWith = (pieces = () => TWO) => (user, n) => user.contracts_you_deliver
@@ -190,7 +201,7 @@ test('live 5: three NOs hand the level down to one worker; too small at two piec
 });
 
 // ------------------------------------------------------------ the bars and the floor are settings
-test('live 5: the floor and both bars come from the room\'s settings; the valid bar rises with depth', async () => {
+test('live 5: the floor and both bars come from the room\'s settings; every manager\'s split meets the same valid bar, at every depth', async () => {
   assert.deepEqual([DEFAULT_ROOM_SETTINGS.split_floor, DEFAULT_ROOM_SETTINGS.split_valid_bar, DEFAULT_ROOM_SETTINGS.split_size_bar], [0.1, 0.5, 0.5]);
   assert.throws(() => normalizeRoomSettings({split_floor: 0.7}), /Invalid split_floor/);
   assert.throws(() => normalizeRoomSettings({split_size_bar: 1}), /Invalid split_size_bar/);
@@ -202,11 +213,14 @@ test('live 5: the floor and both bars come from the room\'s settings; the valid 
   // Bars of 0.85 and 0.3: valid 0.8 is a NO, size 0.35 a YES.
   const barred = await room5({review: [{valid: 0.8, size: 0.35}, {valid: 0.9, size: 0.35}], pieces: (_u, n) => n === 1 ? THREE : TWO, settings: {split_valid_bar: 0.85, split_size_bar: 0.3}});
   assert.deepEqual(barred.room.splitAttempts(barred.room.roomManager()).filter(a => a.attempt > 0).map(a => [a.valid_bar, a.size_bar, a.outcome]), [[0.85, 0.3, 'retry different'], [0.85, 0.3, 'admitted']]);
-  // The valid bar rises with depth: the room's manager's children keep it, a level below rises.
-  const [child] = kids(barred.room), [grandchild] = kids(barred.room, child.id);
-  assert.deepEqual([barred.room.depthOf(child.id), barred.room.depthOf(grandchild.id)], [1, 2]);
-  assert.equal(barred.room.splitBar(child.id, 0.5), 0.5);
-  assert.equal(barred.room.splitBar(grandchild.id, 0.5), 0.545);
+  // Every manager is judged the same way: a split two levels down meets the room's valid bar, whatever its depth.
+  const deep = await levelRoom({prompt: GOAL4, split: deepSplit, leaf: leafWith(), budget: 60, settings: {split_valid_bar: 0.85},
+    clef: clefFor({pre: state => state.assignment === GOAL4 || state.contracts.length >= 2 ? 0.6 : 0.05, review: [{valid: 0.855, size: 0.9}]}).answer});
+  assert.equal(deep.room.get('status'), 'complete', tail(deep.room));
+  const splitters = deep.room.allNodes().filter(n => n.role === 'manager' && deep.room.splitAttempts(n.id).some(a => a.attempt > 0 && a.pieces >= 2));
+  assert.deepEqual(splitters.map(n => deep.room.depthOf(n.id)).sort(), [0, 1, 2]);
+  for (const n of splitters) assert.deepEqual(deep.room.splitAttempts(n.id).filter(a => a.attempt > 0).map(a => [a.valid_bar, a.outcome]), [[0.85, 'admitted']], n.label);
+  assert.equal(passed(deep.room), 12);
 });
 
 // ------------------------------------------------------------ a file check matches modulo whitespace runs
