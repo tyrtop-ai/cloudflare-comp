@@ -2170,3 +2170,9 @@ when they find drift, they submit it to you, you fix it, they run again until fi
 ````text
 continue until the red team reaches quorum on the entire codebase. Let me know when that's complete
 ````
+
+## 2026-10-17 01:53
+
+````text
+keep a list of their findings in a another document.
+````
