@@ -8273,7 +8273,9 @@ export class ControlRoom extends DurableObject {
   // wrote it at and a copy parsed from it, keyed by that commit. The file is
   // the source: a copy whose commit is not the file's is read again from the
   // file. A worker's prompt, and where the builder places each file, are
-  // read from it; the manager writes it and routes without reading it.
+  // read from it. The manager writes it and routes on its children in it
+  // (their labels and the contracts each delivers, the interfaces it owns);
+  // it does not read the piece prompts, which the builder and workers read.
   levelIndex(id) { return this.read(`level:${id}`,null); }
   levelDesign(id) {
     const index=this.levelIndex(id);
