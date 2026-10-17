@@ -232,6 +232,8 @@ test('a splitter session: the system text and the request go first with the func
   assert.deepEqual(out.level.contracts.map(c => c.name), ['convert']);
   assert.deepEqual(out.level.validations.map(v => v.id), ['v1', 'v2', 'v3']);
   assert.deepEqual(out.transcript.map(t => t.name), ['contract', 'command_check', 'contract', 'command_check', 'command_check', 'command_check', 'done']);
+  // Each answer may take what the model's context window leaves: no output cap of the runtime's own.
+  for (const r of m.requests) assert.ok(r.max_tokens > 8192 && r.max_tokens < 32768, String(r.max_tokens));
 });
 
 test('a splitter session that never completes ends when its context window is full, with no level', async () => {
