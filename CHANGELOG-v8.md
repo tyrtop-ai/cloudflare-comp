@@ -477,3 +477,12 @@ Round 7 rechecked round 6's 31 fixes (25 closed, 6 reopened) and confirmed 14 ne
 - **Call checks.** No name pattern decides that a function is missing; the compiler's answer does, and JavaScript and Python names follow their languages' Unicode rules. The Go, Rust, C, C++ and Java adapters build the file's own types from JSON (C via gcc's debug information, Rust via rustc's, interfaces as their single implementation).
 - **Edges.** A linked page's title and URL reach every agent whole. Bench datasets come from any host `FETCH_ALLOW` allows; task ids are used as written; every skipped row is listed; bench.js clips nothing.
 - **Waiting on the owner:** the runner's ready poll without a network namespace and the browser check's own network blocking (both refused by the session's permission check as weakening security); where an adapter's real limit goes (today a worker complaint); languages outside the box image.
+
+## Round 8 of the owner's red team
+
+Round 8 rechecked round 7's 11 fixes (10 closed, 1 reopened) and confirmed 17 new findings; four fixers took them.
+
+- **Splitter and worker.** A browser check's selector runs as written, read by the page's locator (no runtime selector grammar). A command (`command_check.run`, a contract's `run.run`) is its argument list, stored as argv and run by the box's exec as given; the runtime's quoting grammar is gone. A worker sees every package its row lists. A rebuild's pieces get only the packages, uses and refs the splitter named for them.
+- **Edges.** Link readers are named `reader-<hex16>` like every other agent. Bench comments say a dataset comes from any host `FETCH_ALLOW` allows.
+- **Records.** The level-file comments, rulings, how-it-works and the changelog say what writes a level file (an admission, a serves join, an archive); README and INSTALL say the box runs its image's fixed set of languages; the dashboard says the manager's splitter states its level.
+- **Waiting on the owner** (refused by the session's permission check as weakening security): the box's path and origin rules on HTTP steps and ready paths; the read-only package tree; fetching links written in follow-up prompts (a patch is ready); the fetcher's suffix lists over `FETCH_ALLOW` and its 3-redirect count. Also waiting: a representation for a base repo's symbolic links.

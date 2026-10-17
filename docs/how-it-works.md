@@ -407,7 +407,7 @@ v8 is a room setting: **Pipeline** in the dashboard, or `settings.pipeline: "v8"
    |---|---|
    | `file` | Reads a file and looks for texts in it, each exactly as written; optionally, the file parses as JSON |
    | `judge` | Clef reads one file and answers a yes-or-no question about it |
-   | `command` | Runs a command line in a fresh box, with optional stdin and input files, and observes its exit code and output |
+   | `command` | Runs a command, given as its argument list (the program, then each argument, passed as written with no shell), in a fresh box, with optional stdin and input files, and observes its exit code and output |
    | `call` | Calls declared function contracts of one file, in order, in one process, in any language the box has a call adapter for (JavaScript, TypeScript, Python, Ruby, PHP, Go, Rust, C, C++, Java and shell; each language's own compiler or reflection builds the arguments, the file's own structs, classes, enums and single-implementation interfaces included; what JSON cannot give, such as a function or an interface several types implement, is the check's observed failure), with saved results passed on |
    | `http` | Starts a declared contract that states how it runs, and sends it web requests in order |
    | `browser` | Starts the contract and drives it in headless Chromium: go to, fill, click, press, expect a text, a count or an element |
