@@ -335,15 +335,16 @@ test('the injected fetch only ever receives the parsed URL href, and final_url i
   assert.ok(seen.every(u => !u.includes('\\')));
 });
 
-// Linear time is checked by growth, not by a wall-clock bound: four times the
-// input must take well under eight times as long (linear gives about 4x, a
-// quadratic path about 16x, so load from other processes has room either
-// side). The best of three runs is used for each size.
-const best = (f, s) => Math.min(...[0, 1, 2].map(() => { const t = performance.now(); f(s); return performance.now() - t; }));
+// Linear time is checked by growth, not by a wall-clock bound: eight times the
+// input must take under 24 times as long. Linear gives about 8x and a
+// quadratic path about 64x, so load from other processes (a busy CI runner
+// measured 8.1x on a 4x step) has a 3x margin either side. The best of five
+// runs is used for each size.
+const best = (f, s) => Math.min(...[0, 1, 2, 3, 4].map(() => { const t = performance.now(); f(s); return performance.now() - t; }));
 const grows = (f, make, n, name) => {
   f(make(n)); // warm up
-  const a = best(f, make(n)), b = best(f, make(4 * n));
-  assert.ok(b < 8 * Math.max(a, 1), `${name}: ${a.toFixed(1)} ms at n, ${b.toFixed(1)} ms at 4n`);
+  const a = best(f, make(n)), b = best(f, make(8 * n));
+  assert.ok(b < 24 * Math.max(a, 1), `${name}: ${a.toFixed(1)} ms at n, ${b.toFixed(1)} ms at 8n`);
 };
 
 test('htmlToText is linear: the review\'s pathological inputs finish within a time bound', () => {
