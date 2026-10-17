@@ -35,11 +35,13 @@ export function goalView(goal, changes = [], limit) {
   return [head, tail].filter(Boolean).join('\n\n').slice(0, n);
 }
 
-// A prompt's text as the queue and /api/amend take it: trimmed, at least
-// 8 characters (as a goal), and as long as the person writes it. {text} or {error}.
+// A prompt's text as the queue and /api/amend take it: trimmed, and as
+// short or as long as the person writes it. An empty one (nothing but
+// whitespace) has no change in it to queue or apply, so it gets {error};
+// any other text gets {text}.
 export function promptText(raw) {
   const text = typeof raw === 'string' ? raw.trim() : '';
-  if (text.length < 8) return {error: 'A prompt must have at least 8 characters'};
+  if (!text) return {error: 'An empty prompt has nothing to apply'};
   return {text};
 }
 

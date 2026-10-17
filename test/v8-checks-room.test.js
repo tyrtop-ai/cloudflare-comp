@@ -214,9 +214,9 @@ test('repairs go on: validations that keep failing go back to the worker every r
 test('a package granted to a worker is listed up its line, and the compiler\'s box installs it: the plan carries it, and the box opens with the internet for its install',{skip:!hasPython&&'python3 is not installed'},async()=>{
   const requests=[];let room;
   const executor={build:async req=>{requests.push(req);return verifyChecks({...req,plan:{...req.plan,install:[]},snapshot_hash:await snapshotHash(req.files)},{isolation:[]});}};
-  // The top of the line grants flask new (its manager's function on the worker's ask), as Clef's choice would.
+  // The worker's manager grants flask new on the worker's ask, as Clef's choice would (any manager on the asker's line has that function).
   let granted=false;
-  const ask=()=>{const w=room.agentRows().find(r=>r.role==='worker'&&r.interfaces.some(c=>c.name==='temp'));if(!granted&&(granted=true))room.grantPackage(room.roomManager(),{worker:w.id,key:'fn flask',need:'a web framework',name:'flask'},{name:'flask',language:'python'},{fresh:true});return wrote('temp.py',RIGHT_TEMP);};
+  const ask=()=>{const w=room.agentRows().find(r=>r.role==='worker'&&r.interfaces.some(c=>c.name==='temp'));if(!granted&&(granted=true))room.grantPackage(w.parent,{worker:w.id,key:'fn flask',need:'a web framework',name:'flask'},{name:'flask',language:'python'},{fresh:true});return wrote('temp.py',RIGHT_TEMP);};
   const made=v8Room({level:TEMP_LEVEL,splitWhen:t=>t.startsWith(TEMP_GOAL),executor,answers:{temp:[ask],'USAGE.md':[wrote('USAGE.md',USAGE_MD)]}});
   room=made.room;
   await room.start(TEMP_GOAL,30,{pipeline:'v8'});

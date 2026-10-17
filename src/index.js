@@ -7958,10 +7958,9 @@ export class ControlRoom extends DurableObject {
   // v7: the room-wide repair ceiling across its repair waves (roundsLeft).
   roomRoundCap() { return Math.min(80,2*this.roundCap()); }
   // What the dashboard shows of the prompts, in the snapshot and every delta
-  // alike: each prompt whole, as the person wrote and edited it.
+  // alike: every prompt, each whole, as the person wrote and edited it.
   promptsHead() {
-    const rows=this.promptRows().slice(-60);
-    return {prompts:rows.map(r=>({id:r.id,text:r.text,status:r.status,kind:r.kind,budget:r.budget,goal_rev:r.goal_rev,outcome:r.outcome,created:r.created,started:r.started,finished:r.finished,edited:r.edited,version:r.version??0})),
+    return {prompts:this.promptRows().map(r=>({id:r.id,text:r.text,status:r.status,kind:r.kind,budget:r.budget,goal_rev:r.goal_rev,outcome:r.outcome,created:r.created,started:r.started,finished:r.finished,edited:r.edited,version:r.version??0})),
       goal_rev:this.goalRev()};
   }
   // Where a new prompt goes: after the last one (queued), or, for one applied
@@ -8170,8 +8169,10 @@ export class ControlRoom extends DurableObject {
   // The room creates one manager from the person's prompt and observes it:
   // it is done when the compiler of that manager has every validation of its
   // subtree passing on its exact bundle (levelPassed). No agent knows it is
-  // that manager; anything an agent sends to its parent goes to the room when
-  // its parent is the room (escalate), where it is a hold for the person.
+  // that manager. An escalation from an agent whose parent is the room goes
+  // to the room (escalate), where it is a hold for the person; an ask that
+  // no manager up to the room holds archives the asker (routeAsk), and the
+  // compensating controls rebuild what it delivered.
   // Every manager is the same:
   //  - its split step: Clef pre-grades the assignment (the runtime's catch at
   //    split_floor); its splitter (a short-lived session, table splitters)

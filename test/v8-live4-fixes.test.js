@@ -124,7 +124,7 @@ test('H2: the manager is the interface for what exists: a package its row holds,
   assert.ok(room.packagesOf(BACKEND).some(p => p.name === 'requests') && room.packagesOf(SERVER).some(p => p.name === 'requests'));
   assert.match(events(room, 'package_granted').at(-1).body, /^"Root objective" granted requests to "Server"\.$/);
   assert.equal(events(room, 'package_relayed').length, 0, 'no walk of the runtime\'s own');
-  // A manager below the top grants a name no row lists, new, as the top would (every manager has the same functions); it is listed on the whole line, so each level's box installs it.
+  // A manager with a manager above it grants a name no row lists, new (every manager has the same functions); it is listed on the whole line, so each level's box installs it.
   await room.workerAsk(SERVER, {need: 'a web framework', name: 'flask'});
   await room.routeHeld(BACKEND);
   assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for flask: grant\(flask, Python\) p=0\.950/);

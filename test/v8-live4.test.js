@@ -6,9 +6,10 @@
 //     failed on the import. Packages are listed on each agent's row, as
 //     contracts are: the room's manager holds the installed set; a split
 //     gives each piece a part of its parent's; an ask for a package goes up
-//     the asker's line (granted from a row that holds it, or, packages being
-//     allowed, granted from the top as asked); the compiler's box installs
-//     what the rows list.
+//     the asker's line, and any manager on that line may grant it, as its
+//     row holds it or, packages being allowed, new as asked (every manager
+//     has the same functions); the compiler's box installs what the rows
+//     list.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
@@ -133,7 +134,7 @@ test('2: a package a piece needs is asked of its manager, whose functions grant 
   // No name shape decides what a package is: a Go module path is granted as any other name.
   assert.deepEqual(calls(BACKEND, 'github.com/gorilla/mux'), ['grant(pytest)', ...fresh('github.com/gorilla/mux'), 'ask_parent(need)']);
   assert.deepEqual(calls(TOP, 'requests'), ['grant(pytest)', 'grant(requests)', 'ask_parent(need)'], 'a name its row holds is granted as held');
-  // The top's grant of a new name: listed on every row of the line, the top's too; the box installs it.
+  // A manager's grant of a new name (here the one with no manager above it, which does not know that): listed on every row of the line, the granter's too; the box installs it.
   const ask = {worker: SERVER, key: 'fn httpx', need: 'an HTTP client', name: 'httpx', request_id: 'r1'};
   await room.grantPackage(TOP, ask, {name: 'httpx', language: 'python'});
   for (const row of [TOP, BACKEND, SERVER]) assert.ok(room.packagesOf(row).some(p => p.name === 'httpx' && p.language === 'python'), row);
@@ -143,7 +144,7 @@ test('2: a package a piece needs is asked of its manager, whose functions grant 
   // A manager's grant of what its row holds: listed on the rows below it (those above hold it already).
   await room.grantPackage(BACKEND, {...ask, key: 'fn pytest', name: 'pytest'}, pytest);
   assert.ok(room.packagesOf(SERVER).some(p => p.name === 'pytest'));
-  // A manager below the top grants a new name as the top does: listed on the whole line, so each level's box installs it.
+  // A manager with a manager above it grants a new name the same way: listed on the whole line, so each level's box installs it.
   await room.grantPackage(BACKEND, {...ask, key: 'fn mux', name: 'github.com/gorilla/mux'}, {name: 'github.com/gorilla/mux', language: 'go'});
   for (const row of [TOP, BACKEND, SERVER]) assert.ok(room.packagesOf(row).some(p => p.name === 'github.com/gorilla/mux' && p.language === 'go'), row);
   assert.deepEqual(room.packageInstalls(TOP), [{toolchain: 'python', packages: ['requests', 'httpx']}, {toolchain: 'go', packages: ['github.com/gorilla/mux']}]);
