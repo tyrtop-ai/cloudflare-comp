@@ -176,9 +176,7 @@ test('a tree four deep: depth, descent, subtrees, leaves, the split bar, the dep
   assert.deepEqual(room.liveSubtree(top.id).sort(), [top, a, b, a1, a11, w, bw].map(x => x.id).sort());
   assert.deepEqual(room.pieceLeaves(a.id).map(x => x.id), [w.id]);
   assert.deepEqual(room.pieceLeaves(top.id).map(x => x.id).sort(), [w.id, bw.id].sort());
-  // The split bar rises with depth (0.5 at depth 1, 0.5 + 0.45 x 2/10 at depth 3).
-  assert.equal(room.splitBar(a.id, 0.5), 0.5);
-  assert.equal(room.splitBar(a11.id, 0.5), 0.59);
+  // Depth bounds only where a row may still have children (below); every manager's split meets the same valid bar at any depth (test/v8-live5.test.js).
   // The depth limit: at max_depth 4, a11 (depth 3) may still have a child, a worker at depth 4 may not.
   room.configure({max_depth: 4});
   assert.equal(room.canSplit(a11.id), true);

@@ -13,13 +13,13 @@ export { BenchRun } from './bench-run.js';
 import { benchRoute } from './bench-run.js';
 import { INFRA_ERROR } from './bench.js';
 import { clip, isId, isRowId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, judgeRequirement, JUDGE_PARTS, JUDGE_CHARS, sourceModel, vetBaseChanges, pieceReach, PIECE_REACH_BAR, reviewLevel, chooseCall } from './model.js';
+import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, judgeRequirement, sourceModel, vetBaseChanges, pieceReach, PIECE_REACH_BAR, reviewLevel, chooseCall } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
 import { toolchainById, toolchainOf, TOOLCHAINS, COMPILE_ROWS, installed as installedRows, browserProject, parseModeOf, scopeManifestOf, codeRowOf, pageScripts, pageModes } from './toolchains.js';
 // v8 S9: amendments and the prompt queue.
-import { effectiveGoal, goalView, clipEnds, promptText, reorderError, EFFECTIVE_GOAL_LIMIT, MAX_QUEUED, QUEUE_ON_FAIL } from './amend.js';
+import { effectiveGoal, goalView, promptText, reorderError, EFFECTIVE_GOAL_LIMIT, MAX_QUEUED, QUEUE_ON_FAIL } from './amend.js';
 import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS } from './checks.js';
 import { getArtifactStore } from './artifact-store.js';
 import { RETRY, MESSAGES, BASE_LABEL, CLEF, clefText } from './prompts.js';
@@ -62,7 +62,7 @@ const query = (db, sql, ...args) => db.exec(sql, ...args).toArray();
 export const JUDGE_RETRY_MS = [500, 2000], CHECK_RETRY_MS = [30_000, 120_000, 600_000];
 // v8 S9: the queue's next prompt is applied by the alarm this long after the room finished;
 // a room held at one of these ended where only the user can go on (the queue's failure).
-export const PROMPT_ALARM_MS = 1000, FAIL_HOLDS = ['checks_exhausted', 'checks_failed', 'split_failed'];
+export const PROMPT_ALARM_MS = 1000, FAIL_HOLDS = ['checks_failed', 'split_failed'];
 // What a v8 room made before levels says to Continue, a change and a queued prompt.
 export const EARLIER_ROOM = 'This room was made by an earlier version, before level files, and does not run under this one. Its result can still be exported: start a new room, from this room\'s result if you like.';
 // U10: an anchored requirement's key: its id and a hash of what it says.
@@ -293,8 +293,8 @@ export const DEFAULT_ROOM_SETTINGS = Object.freeze({
   // v8 live 5: the split's three tunable numbers. split_floor: a pre-grade p at
   // or below it means Clef is very certain no split is needed, and the manager
   // writes its assignment with no splitter call. split_valid_bar: the bar
-  // Clef's split_valid p must reach (rising with depth, as splitBar does).
-  // split_size_bar: the bar Clef's split_size p must reach.
+  // Clef's split_valid p must reach, the same for every manager at every
+  // depth. split_size_bar: the bar Clef's split_size p must reach.
   split_floor: 0.1, split_valid_bar: 0.5, split_size_bar: 0.5
 });
 // v8 live 5: a level's split is reviewed by Clef up to this many times (the
@@ -306,9 +306,6 @@ export const splitterRecord = out => JSON.stringify({reason: out.reason, rounds:
 // v8: a Clef mark below this reads as a doubt about a validation: shown
 // beside it, and first in a hold's text; the validation is never removed.
 export const VALIDATION_DOUBT_BAR = 0.5;
-// v8: the reports a level's compiler sends down before the level escalates,
-// and the rebuilds its splitter makes of what no live child delivers.
-export const MAX_LEVEL_ROUNDS = 6, MAX_REBUILDS = 3;
 // v8: the turns a run may take in a row that call no model (managers,
 // builders, compilers: none spends the budget), per live row and in all
 // beyond that; past it the room holds (turns_without_model) with the rows
@@ -758,8 +755,8 @@ export class ControlRoom extends DurableObject {
     return langs.length?all.filter(p=>!p.language||langs.includes(p.language)):all;
   }
   // v8: a room held at a stop only Continue moves on: what an agent sent up
-  // its line reached the room (escalate: checks_failed, checks_exhausted,
-  // split_failed, ...), the checks could not run (checks_blocked), or Clef
+  // its line reached the room (escalate: checks_failed, split_failed,
+  // ...), the checks could not run (checks_blocked), or Clef
   // could not answer (clef_blocked). The room records every hold that
   // reached it (room_holds), one per row it names (extra.agent: the row it
   // came from, which Continue wakes), and Continue answers them all; the
@@ -841,7 +838,6 @@ export class ControlRoom extends DurableObject {
   maxChildren() { return this.settings().max_children ?? DEFAULT_ROOM_SETTINGS.max_children; }
   // v7.15.16 (run25): the split gate's bar rises with depth into the headroom left below 0.95: threshold + (0.95 - threshold) x min(depth - 1, H) / H, H = min(max_depth, 10) (0.7: 0.725 at depth 2, 0.75 at 3, 0.925 at 10, 0.95 below). Root and its children keep the room's threshold. run25 (0.45) went ten deep on YES answers of p 0.57-0.74.
   // v7.15.16 review: over a fixed horizon, min(max_depth, 10) levels, so raising max_depth (what split_capacity_blocked advises) never flattens it.
-  // v8 live 5: the same rise over split_valid_bar for Clef's split_valid p (t).
   splitBar(id, t=this.settings().split_threshold) {const {max_depth:m}=this.settings(),d=this.depthOf(id),h=Math.max(1,Math.min(m||10,10));return d<=1?t:Math.round((t+(0.95-t)*Math.min(d-1,h)/h)*1000)/1000;}
   // role: 'manager' (the default; splits, decisions, linking), 'worker' (a
   // leaf writing code) or 'compiler' (the API coverage mapping and the
@@ -1461,7 +1457,7 @@ export class ControlRoom extends DurableObject {
     const v8=this.v8(),name = v8?await this.repoName(id):`rc-${crypto.randomUUID().replaceAll('-','').slice(0,20)}-${id.replaceAll('.','-')}`;
     const repo = await this.timed('git','repo_create',()=>this.store().create(name, `Recursive agent ${id}: ${label}`),{child:id});
     this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses,packages,role,depth,seq) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\',?,?,?,?,?,?)',
-      id, parent, clip(label,70), clip(task,parent&&!isHandler(parent)?2000:GOAL_LIMIT+Math.max(1+GOAL_START_REQUIREMENT.length,task.length-stripStartRequirement(task).length)), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces,this.contractOpts())), JSON.stringify(normalizeUses(uses,{v8})),
+      id, parent, v8?String(label??''):clip(label,70), v8?String(task??''):clip(task,parent&&!isHandler(parent)?2000:GOAL_LIMIT+Math.max(1+GOAL_START_REQUIREMENT.length,task.length-stripStartRequirement(task).length)), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces,this.contractOpts())), JSON.stringify(normalizeUses(uses,{v8})),
       JSON.stringify(v8?normalizePackages(packages):[]),role,v8?(parent?this.depthOf(parent)+1:0):null,v8?seq:null);
     if (role && role!=='manager') this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
     this.save('queue', addLast(this.read('queue',[]), id));
@@ -1507,7 +1503,7 @@ export class ControlRoom extends DurableObject {
   // its own row's contracts, one line each (gateLine), each with the ids of
   // the validations it serves, as the row holds them.
   gateContracts(id) {
-    return this.promisedOf(id).map(c=>gateLine(c)).filter(Boolean).slice(0,16);
+    return this.promisedOf(id).map(c=>gateLine(c)).filter(Boolean);
   }
   // A room whose Root promises start (live, started under v7.15) answers
   // function requests from promises; MOCK and v7.14 rooms route as v7.14.
@@ -2803,7 +2799,7 @@ export class ControlRoom extends DurableObject {
   insertProblem(p) {
     const now=Date.now(),id=crypto.randomUUID();
     this.db().exec('INSERT INTO problems(id,holder,status,outcome,kind,stage,source,source_input,signature,parties,detail,facts,evidence,directive,flags,assignee,trail,created,updated) VALUES (?,?,\'open\',\'\',?,?,?,?,?,?,?,?,?,\'\',?,\'\',\'[]\',?,?)',
-      id,p.holder,p.kind,p.stage,p.source,String(p.input??''),problemSignature(p.kind,p.parties,p.detail),JSON.stringify(p.parties),clip(p.detail,950),
+      id,p.holder,p.kind,p.stage,p.source,String(p.input??''),problemSignature(p.kind,p.parties,p.detail),JSON.stringify(p.parties),this.v8()?String(p.detail??''):clip(p.detail,950),
       JSON.stringify(p.facts||{}),JSON.stringify(p.evidence||[]),JSON.stringify(p.flags||{}),now,now);
     return id;
   }
@@ -4188,16 +4184,9 @@ export class ControlRoom extends DurableObject {
     }
     return out;
   }
-  // The validation table in a sentence, for a hold's or an escalation's text (the dashboard's; no worker reads it).
-  checksSummary(head, list=this.validationRows()) {
-    const status=this.read('validation_status',{});
-    const pass=list.filter(v=>status[v.id]?.passed===true),fail=list.filter(v=>status[v.id]?.passed===false),untested=list.length-pass.length-fail.length;
-    return clip(`${head} ${pass.length} of ${list.length} validation${list.length===1?'':'s'} pass${fail.length?`; failing: ${fail.map(v=>`${v.id} (${clip(checkSummary(v.check),80)}): ${clip(status[v.id].detail,160)}`).join('; ')}`:''}${untested?`; ${untested} untested`:''}.`,1050);
-  }
   // The room holds at the validations: the agent that ran them waits on the
   // hold (the hold names it), and the run ends paused with the validation
-  // table (Continue runs them again). When repairs ran out, the failing
-  // validations Clef marked doubtful come first; the person decides about them.
+  // table (Continue runs them again).
   holdChecks(id, kind, head, again='Continue runs the checks again.') {
     this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
     this.holdRoom(kind,`${head} ${again}`,{agent:id});
@@ -4206,7 +4195,7 @@ export class ControlRoom extends DurableObject {
   // What a hold for failing validations tells the person first: those that
   // keep failing which Clef doubted, with its marks (they stay; the person decides).
   doubtNote(kind) {
-    if(!['checks_exhausted','checks_failed'].includes(kind))return '';
+    if(kind!=='checks_failed')return '';
     const status=this.read('validation_status',{}),marks=v=>Object.entries(v.notes||{}).filter(([,p])=>typeof p==='number'&&p<VALIDATION_DOUBT_BAR);
     const doubted=this.validationRows().filter(v=>marks(v).length&&status[v.id]?.passed===false);
     return doubted.length?`These validations keep failing and Clef doubted them: ${doubted.map(v=>`${v.id} (${marks(v).map(([k,p])=>`${k} p=${p.toFixed(3)}`).join(', ')})`).join('; ')}. Change them with a follow-up prompt, or Continue. `:'';
@@ -4380,9 +4369,9 @@ export class ControlRoom extends DurableObject {
     for(const p of fresh) {
       const s=this.syntaxOf(p,files);
       if(!s?.row||s.box)continue;
-      if(s.mode.split('+').includes('invalid')){const at=scopeManifestOf(p,files,s.row);issues.push({path:at,kind:'source',stage:'syntax',detail:clip(`${s.row.id} syntax: ${at} does not parse as JSON, so ${s.row.name} cannot tell how to read ${p}.`,400)});continue;}
+      if(s.mode.split('+').includes('invalid')){const at=scopeManifestOf(p,files,s.row);issues.push({path:at,kind:'source',stage:'syntax',detail:`${s.row.id} syntax: ${at} does not parse as JSON, so ${s.row.name} cannot tell how to read ${p}.`});continue;}
       const error=s.parse(p,files.get(p),s.mode,s.row);
-      if(error)issues.push({path:p,kind:'source',stage:'syntax',detail:clip(`${s.row.id} syntax: ${error}`,400)});
+      if(error)issues.push({path:p,kind:'source',stage:'syntax',detail:`${s.row.id} syntax: ${error}`});
       else clean.push(this.syntaxKey(s.row,files.get(p),s.mode));
     }
     return {issues,clean};
@@ -5790,7 +5779,7 @@ export class ControlRoom extends DurableObject {
   // Peek without acknowledging. A failed inference or failed Artifacts write must
   // not consume the messages that the agent needs on its next attempt.
   receive(id) {
-    return query(this.db(),'SELECT id,sender,body FROM messages WHERE recipient=? AND delivered=0 ORDER BY id LIMIT 12',id)
+    return query(this.db(),`SELECT id,sender,body FROM messages WHERE recipient=? AND delivered=0 ORDER BY id${this.v8()?'':' LIMIT 12'}`,id)
       .map(x => ({ id: x.id, from:x.sender, body:x.body }));
   }
   acknowledge(id, inbox) {
@@ -6493,7 +6482,7 @@ export class ControlRoom extends DurableObject {
     answer||=noneAnswer({id:req.id,name:ask.name||c.name,catalogue:cat});
     if(message)this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:broker',id,'[route:broker] '+JSON.stringify({id:req.id,key:ask.key,kind:answer.kind,status:answer.status}));
     this.recordAnswer(id,{key:ask.key,kind:'broker',text:viewAnswer(answer)});
-    this.event(id,'broker_answer',clip(answer.status==='answered'?`${answer.name}: ${answer.kind}, ${answer.value.length} characters${answer.facts?.clipped?` of ${answer.facts.chars}`:''}, labelled "${answer.label}".`:`${answer.name}: no catalogue entry; answered with the names available.`,400));
+    this.event(id,'broker_answer',clip(answer.status==='answered'?`${answer.name}: ${answer.kind}, ${answer.value.length} characters, labelled "${answer.label}".`:`${answer.name}: no catalogue entry; answered with the names available.`,400));
     return true;
   }
   // v8 live 4 (review): a package ask by name, resolved against what
@@ -6563,11 +6552,11 @@ export class ControlRoom extends DurableObject {
     this.event(id,'package_answer',clip(`${answer.name}: ${a.how==='yours'?'in its own packages':a.how==='granted'?`granted ${a.names.join(', ')}`:`its language provides ${a.names.join(', ')}`}.`,400));
     return a;
   }
-  // The answers a worker got to its function requests, newest kept, one per
-  // topic; later turns read them as answered_requests.
+  // The answers a worker got to its function requests, one per topic;
+  // later turns read them as answered_requests (v7 keeps the newest 8).
   recordAnswer(worker, answer) {
-    const key=`fn_answers:${worker}`;
-    this.save(key,[...this.read(key,[]).filter(a=>a.key!==answer.key),answer].slice(-8));
+    const key=`fn_answers:${worker}`,all=[...this.read(key,[]).filter(a=>a.key!==answer.key),answer];
+    this.save(key,this.v8()?all:all.slice(-8));
   }
   // v7.15 §5.12a, a planned worker's fresh action before the code gates:
   // every new ask waits, and a file importing a name it asks for waits for
@@ -8494,7 +8483,7 @@ export class ControlRoom extends DurableObject {
     const held=this.v8()?this.roomHolds().filter(h=>h.kind!=='base_confirm'&&h.agent).map(h=>h.agent):[];
     if(this.v8())this.saveHolds(this.roomHolds().filter(h=>h.kind==='base_confirm'&&this.read('base_pending',[]).length));else this.save('paused_state',null);
     for(const id of held)if(this.node(id))this.wake(id);
-    this.db().exec("DELETE FROM meta WHERE key LIKE 'level_rounds:%' OR key LIKE 'rebuilds:%' OR key LIKE 'escalated:%' OR key LIKE 'compile_reported:%' OR key LIKE 'compile_blocked:%' OR key LIKE 'compile_infrastructure:%' OR key LIKE 'checks_retries:%'");
+    this.db().exec("DELETE FROM meta WHERE key LIKE 'escalated:%' OR key LIKE 'compile_reported:%' OR key LIKE 'compile_blocked:%' OR key LIKE 'compile_infrastructure:%' OR key LIKE 'checks_retries:%'");
     for(const n of this.allNodes().filter(x=>x.status==='failed'&&!isRuntimeNode(x))) {
       this.set(`failure_reason:${n.id}`,'');
       const worker=!this.manager(n.id),files=worker&&this.deliveredOf(n.id).length>0;
@@ -8699,7 +8688,7 @@ export class ControlRoom extends DurableObject {
     const n=this.node(id),given=this.designOf(id),own=job?job.own||[]:given.contracts,cfg=this.splitConfig(),started=Date.now(),r3=x=>Math.round(x*1000)/1000;
     this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
     if(!job&&!this.splitAttempts(id).some(a=>a.attempt===0)) {
-      const pre=await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:cfg.floor,SPLIT_FLOOR:cfg.floor},clipEnds(given.prompt,2600),null,this.gateContracts(id)),caught=pre.probability<=cfg.floor;
+      const pre=await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:cfg.floor,SPLIT_FLOOR:cfg.floor},given.prompt,null,this.gateContracts(id)),caught=pre.probability<=cfg.floor;
       this.recordAttempt(id,{attempt:0,p:r3(pre.probability),floor:cfg.floor,caught,ms:Date.now()-started});
       this.event(id,'split_gate',caught?`Clef's pre-grade p=${pre.probability.toFixed(3)} is at or below the floor ${cfg.floor}: no division is tried (${Date.now()-started} ms).`:`Clef's pre-grade p=${pre.probability.toFixed(3)} is above the floor ${cfg.floor}: the splitter proposes and Clef reviews (${Date.now()-started} ms).`);
     }
@@ -8725,7 +8714,7 @@ export class ControlRoom extends DurableObject {
     }
     // With piece offered, done completes only a division (two or more pieces), and Clef's review alone admits it, retries it or hands the level down.
     const pieces=level.pieces,retry=feedback?.retry||'';
-    const review=await reviewLevel(this.inferenceEnv(),{assignment:clipEnds(job?.text||given.prompt,2600),contracts:level.contracts,pieces,validations:level.validations,division:level.division,attempt,retry});
+    const review=await reviewLevel(this.inferenceEnv(),{assignment:job?.text||given.prompt,contracts:level.contracts,pieces,validations:level.validations,division:level.division,attempt,retry});
     level.validations=level.validations.map((v,j)=>({...v,notes:review.notes[j]||{}}));
     const doubted=level.validations.filter(v=>Object.values(v.notes).some(p=>typeof p==='number'&&p<VALIDATION_DOUBT_BAR));
     if(doubted.length)this.event(id,'validations_doubtful',clip(`Clef doubts ${doubted.map(v=>`${v.id} (${Object.entries(v.notes).filter(([,p])=>p<VALIDATION_DOUBT_BAR).map(([k,p])=>`${k} p=${p.toFixed(3)}`).join(', ')})`).join('; ')}; each is kept, marked.`,900));
@@ -8733,14 +8722,14 @@ export class ControlRoom extends DurableObject {
       this.recordAttempt(id,{attempt,job:key,splitter:out.sid,pieces:0,outcome:'admitted',ms:Date.now()-started});
       return this.admitLevel(id,{...level,pieces:[]},{job,why:'The level goes to one worker.'});
     }
-    const validBar=this.splitBar(id,cfg.valid_bar),sizeBar=cfg.size_bar,ok=review.valid>=validBar&&review.size>=sizeBar,next=ok?'':review.size<sizeBar?'fewer':'different',bound=pieces.length-1;
+    const validBar=cfg.valid_bar,sizeBar=cfg.size_bar,ok=review.valid>=validBar&&review.size>=sizeBar,next=ok?'':review.size<sizeBar?'fewer':'different',bound=pieces.length-1;
     const stop=ok?'':attempt>=SPLIT_ATTEMPTS?`on attempt ${attempt} of ${SPLIT_ATTEMPTS}`:next==='fewer'&&bound<2?`with pieces too small at ${pieces.length}, and fewer than two is no division`:'';
     this.recordAttempt(id,{attempt,job:key,splitter:out.sid,pieces:pieces.length,valid_p:r3(review.valid),size_p:r3(review.size),scope_ps:review.scope.map(r3),valid_bar:validBar,size_bar:sizeBar,
       ...(retry?{retry}:{}),outcome:ok?'admitted':stop?'handed down':`retry ${next}`,ms:Date.now()-started});
     const said=`Clef's review of ${pieces.length} pieces (attempt ${attempt} of ${SPLIT_ATTEMPTS}${retry?`, retried with ${retry==='fewer'?'fewer pieces':'a different division'}`:''}): split_valid p=${review.valid.toFixed(3)} (bar ${validBar}), split_size p=${review.size.toFixed(3)} (bar ${sizeBar})`;
     if(ok){this.event(id,'split_review',`${said}: YES, the pieces are admitted.`);return this.admitLevel(id,level,{job,scope:review.scope});}
     if(stop){this.event(id,'split_review',`${said}: NO ${stop}, so the level goes to one worker.`);return this.admitLevel(id,{...level,pieces:[]},{job,why:`${said}: NO ${stop}.`});}
-    const shown=pieces.map(c=>({label:c.label,task:clip(c.task,300),contracts:c.contracts}));
+    const shown=pieces.map(c=>({label:c.label,task:c.task,contracts:c.contracts}));
     this.save(`split_feedback:${id}`,next==='fewer'?{kind:'too_small',retry:'fewer',reason:RETRY.too_small(pieces.length,bound),bound,rejected:shown}:{kind:'invalid',retry:'different',reason:RETRY.different,rejected:shown});
     this.event(id,'split_review',`${said}: NO, so its splitter tries again with ${next==='fewer'?`fewer, larger pieces (at most ${bound})`:'a different division along its contracts'}.`);
     this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
@@ -8759,7 +8748,7 @@ export class ControlRoom extends DurableObject {
     const job=kind==='split'?null:this.read(`level_job:${id}`,null),calls=[...this.callableOf(id),...this.namedContracts(id,job?.uses||[])].filter((c,i,a)=>a.findIndex(x=>x.name===c.name)===i&&!own.some(o=>o.name===c.name)&&!have.some(o=>o.name===c.name));
     this.db().exec("INSERT INTO splitters(id,manager,kind,attempt,spawned_at,ended_at,outcome,output) VALUES (?,?,?,?,?,NULL,'','{}')",sid,id,kind,attempt,Date.now());
     const max=divide?feedback?.retry==='fewer'&&Number.isInteger(feedback.bound)?Math.min(feedback.bound,this.maxChildren()):this.maxChildren():0;
-    const request={assignment:clipEnds(assignment,4000),
+    const request={assignment,
       ...(own.length?{contracts_you_deliver:own.map(({serves:_,...c})=>c)}:{}),
       ...(held.length?{validations_you_have:held.map(v=>({serves:v.serves,check:v.check}))}:{}),
       ...(have.length?{contracts_you_have:have.map(({serves:_,...c})=>c)}:{}),
@@ -8814,7 +8803,7 @@ export class ControlRoom extends DurableObject {
     if(!batch){this.reserveValidations(id,0);return void this.escalate(id,'split_capacity',`"${n.label}" could not create its ${specs.length} children (the room's agent or depth limit); raise the limit and Continue.`);}
     // Its level file: the level's contracts, its children (their ids follow from the reservation), its validations, added to the file as it stands when it is written.
     const made=await this.batchIds(id,batch),added=normalizeInterfaces(contracts,this.contractOpts());
-    const entry=(s,i)=>({id:made[i],role:roleOf(s)||'manager',label:clip(s.label,70),prompt:clip(s.task,2000),delivers:(s.interfaces||[]).map(c=>c.name),calls:normalizeUses(s.uses||[],{v8:true})});
+    const entry=(s,i)=>({id:made[i],role:roleOf(s)||'manager',label:s.label,prompt:s.task,delivers:(s.interfaces||[]).map(c=>c.name),calls:normalizeUses(s.uses||[],{v8:true})});
     const entries=specs.map(entry),written=level.validations.map(v=>({id:ids.get(v.id),serves:v.serves,check:v.check,...(v.says?{says:v.says}:{}),notes:v.notes||{}}));
     // A commit that fails leaves the level as it was: its reservations are released (a restart's are, by the next admission).
     let landed=false;
@@ -8890,8 +8879,7 @@ export class ControlRoom extends DurableObject {
   // wait for the next Continue; otherwise Continue answers every hold that
   // reached the room: checks_untested accepts the files that ship unchecked,
   // and each other hold (the validations, a split, an escalation, Clef) gives
-  // the row it names a fresh set of repair rounds, rebuilds and split
-  // attempts, and wakes it. The alarm's retry (autoResume) answers only the
+  // the row it names a fresh set of split attempts, and wakes it. The alarm's retry (autoResume) answers only the
   // checks_blocked holds.
   continueHold({grants=null}={}) {
     const all=this.roomHolds();
@@ -8905,9 +8893,9 @@ export class ControlRoom extends DurableObject {
       if(files){this.set('unchecked_accepted',files);this.save('unchecked_pending','');this.event('room','unchecked_accepted',clip(`The person accepted the project with the files that ship unchecked, as the hold listed them: ${accept.text||''}`,900));}
     }
     const rows=[...new Set(list.map(h=>h.agent||this.roomManager()||'').filter(Boolean))];
-    if(this.autoResume)for(const id of rows)this.db().exec("DELETE FROM meta WHERE key IN (?,?,?,?)",`compile_reported:${id}`,`level_rounds:${id}`,`rebuilds:${id}`,`escalated:${id}`);
+    if(this.autoResume)for(const id of rows)this.db().exec("DELETE FROM meta WHERE key IN (?,?)",`compile_reported:${id}`,`escalated:${id}`);
     else {
-      this.db().exec("DELETE FROM meta WHERE key LIKE 'compile_reported:%' OR key LIKE 'level_rounds:%' OR key LIKE 'rebuilds:%' OR key LIKE 'escalated:%' OR key LIKE 'checks_retries:%'");
+      this.db().exec("DELETE FROM meta WHERE key LIKE 'compile_reported:%' OR key LIKE 'escalated:%' OR key LIKE 'checks_retries:%'");
       this.save('checks_retry',null);
       this.revivePrompt();
     }
@@ -8916,7 +8904,7 @@ export class ControlRoom extends DurableObject {
       if(!agent)continue;
       if(hold.kind==='split_failed')this.save(`split_attempts:${agent.id}`,this.splitAttempts(agent.id).filter(a=>a.attempt===0));
       if(['waiting','ready'].includes(agent.status)) {
-        this.event('room','hold_continue',`Continue: "${agent.label}" goes on after ${hold.kind}, with a fresh set of repair rounds.`,agent.id);
+        this.event('room','hold_continue',`Continue: "${agent.label}" goes on after ${hold.kind}.`,agent.id);
         this.wake(agent.id);
       }
     }
@@ -8954,7 +8942,7 @@ export class ControlRoom extends DurableObject {
     if(!m||!this.node(m))return {error:'Start a run first: a change applies to a run that exists.'};
     const rev=this.goalRev()+1;
     this.recordGoal(rev,id,text,effectiveGoal(this.baseGoal(),[...this.goalChanges(),text]));
-    this.insertProblem({holder:m,kind:'change',stage:'change',source:'room',input:id,parties:[],detail:clip(text,950),facts:{text:clip(text,4000)},flags:{change:id}});
+    this.insertProblem({holder:m,kind:'change',stage:'change',source:'room',input:id,parties:[],detail:text,facts:{text},flags:{change:id}});
     this.event('room','change_given',clip(`The change goes to "${this.node(m).label}" as a change on its row: ${text}`,900),m);
     this.wake(m);
     return {goal_rev:rev,to:m};
@@ -9056,13 +9044,13 @@ export class ControlRoom extends DurableObject {
   async managerChoice(m, item, held) {
     const view=this.managerView(m),options=this.managerOptions(m,item,view);
     if(!options.length)return null;
-    const lines=cs=>cs.map(contractLine).slice(0,24),named=n=>{const c=view.contracts.find(x=>x.name===n);return c?contractLine(c):n;};
+    const lines=cs=>cs.map(contractLine),named=n=>{const c=view.contracts.find(x=>x.name===n);return c?contractLine(c):n;};
     const wrote=c=>[...new Set((item.parties||[]).filter(x=>x.owner&&this.within(x.owner,c.id)).map(x=>x.owner_path||x.path).filter(Boolean))];
     const offered=options.filter(o=>o.fn==='answer');
-    const state={item:item.kind==='ask'?{kind:'ask',need:clip(item.need,300),expected_name:item.name||''}:{kind:item.kind,text:clip(item.text,1800),
+    const state={item:item.kind==='ask'?{kind:'ask',need:item.need,expected_name:item.name||''}:{kind:item.kind,text:item.text,
         ...(item.kind==='complaint'?{concerns:{contracts:(item.serves||[]).map(named),files:[...new Set((item.parties||[]).map(x=>x.owner_path||x.path).filter(Boolean))]}}:{})},
-      assignment:clip(view.assignment,1800),my_contracts:lines(view.mine),
-      children:view.children.map((c,i)=>({slot:i,label:c.label,task:clip(c.task,700),contracts:lines(c.contracts),...(item.kind==='complaint'?{wrote:wrote(c)}:{})})),
+      assignment:view.assignment,my_contracts:lines(view.mine),
+      children:view.children.map((c,i)=>({slot:i,label:c.label,task:c.task,contracts:lines(c.contracts),...(item.kind==='complaint'?{wrote:wrote(c)}:{})})),
       ...(offered.length?{contracts_offered:offered.map((o,j)=>({slot:j,contract:contractLine(o.contract)}))}:{}),
       options:options.map(o=>o.call)};
     const what=item.kind==='ask'?`the ask for ${item.name||`"${clip(item.need,120)}"`}`:`the ${item.kind}`;
@@ -9098,7 +9086,7 @@ export class ControlRoom extends DurableObject {
       // The worker's record of it (its files the complaint names come first in its request); the complaint itself is the message.
       const pid=this.insertProblem({holder:from,kind:item.kind,stage:'complaint',source,input:flags.input||'',parties:item.parties||[],detail:item.detail,facts:item.facts||{},flags});
       this.db().exec("UPDATE problems SET status='assigned',assignee=? WHERE id=?",child.id,pid);
-      this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:complaint',child.id,`[complaint] ${clip(item.detail,1600)}`);
+      this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:complaint',child.id,`[complaint] ${item.detail}`);
       this.event(from,'complaint_routed',clip(`To "${child.label}": ${item.detail}`,900),child.id);
       return void this.wake(child.id);
     }
@@ -9195,8 +9183,8 @@ export class ControlRoom extends DurableObject {
     }
     const value=text||MESSAGES.provided({contract:contractLine(c),reference:this.referenceLine(c.name,c,n.id)});
     this.db().exec('DELETE FROM route_workers WHERE worker=? AND topic=?',n.id,ask.key);
-    this.recordAnswer(n.id,{key:ask.key,kind:'provided',text:clip(value,600)});
-    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:route',n.id,'[route:provided] '+JSON.stringify({id:ask.request_id||crypto.randomUUID(),key:ask.key,value:clip(value,1400)}));
+    this.recordAnswer(n.id,{key:ask.key,kind:'provided',text:value});
+    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:route',n.id,'[route:provided] '+JSON.stringify({id:ask.request_id||crypto.randomUUID(),key:ask.key,value}));
     this.event(n.id,'ask_answered',clip(`${c.name}: ${value}`,500));
     if(!query(this.db(),'SELECT request_id FROM route_workers WHERE worker=?',n.id).length)this.wake(n.id);
   }
@@ -9223,9 +9211,9 @@ export class ControlRoom extends DurableObject {
   }
   // The contracts of m's level that no live child delivers (an archived
   // child's, or one a complaint named): m's splitter rebuilds them, a new
-  // piece and worker with the same contracts and validations. True when a
-  // rebuild is under way; past MAX_REBUILDS, m escalates once and waits
-  // (false: nothing is under way, and nothing queues it again).
+  // piece and worker with the same contracts and validations, as often as
+  // they are orphaned (the room's budget bounds it). True when a rebuild is
+  // under way.
   async rebuildOrphans(m) {
     if(!this.levelIndex(m))return false;
     // What its level file says each child delivers.
@@ -9234,21 +9222,16 @@ export class ControlRoom extends DurableObject {
     const orphans=[...new Map([...gone.flatMap(delivers),...this.levelContracts(m).filter(c=>named.has(c.name))].filter(c=>!carried(c.name)).map(c=>[c.name,c])).values()];
     this.set(`orphans:${m}`,'[]');
     if(!orphans.length)return false;
-    const n=Number(this.get(`rebuilds:${m}`,'0'));
-    if(n>=MAX_REBUILDS) {
-      if(!this.escalatedRow(m))this.escalate(m,'split_failed',clip(`"${this.node(m)?.label||m}" rebuilt ${orphans.map(c=>c.name).join(', ')} ${MAX_REBUILDS} times, and no live child delivers ${orphans.length>1?'them':'it'}.`,900));
-      // The orphans stay named for the rebuild Continue allows.
-      this.set(`orphans:${m}`,JSON.stringify(orphans.map(c=>c.name)));
-      return false;
-    }
-    this.set(`rebuilds:${m}`,String(n+1));
-    const tasks=gone.filter(k=>delivers(k).some(f=>orphans.some(o=>o.name===f.name)));
+    // The rows it replaces: for each orphan, the last archived child that delivered it (an earlier one was replaced already).
+    const last=new Map();
+    for(const k of gone)for(const f of delivers(k))if(orphans.some(o=>o.name===f.name))last.set(f.name,k);
+    const tasks=[...new Set(last.values())];
     // What the rows it replaces were handed (the names their entries call, their packages and refs) is handed to what rebuilds them.
     const from=tasks.length?tasks:[this.node(m)],names=new Set(orphans.map(c=>c.name));
     const uses=[...new Set(from.flatMap(k=>this.designOf(k.id).calls))].filter(x=>!names.has(x));
     const packages=[...new Set(from.flatMap(k=>this.packagesOf(k.id).map(p=>p.name)))],refs=[...new Set(from.flatMap(k=>this.sourceRefs(k.id)))];
-    this.save(`level_job:${m}`,{kind:'rebuild',key:`${n+1}`,text:tasks.map(k=>this.designOf(k.id).prompt).join('\n\n')||this.designOf(m).prompt,label:tasks[0]?.label||this.node(m).label,own:orphans,uses,packages,refs});
-    this.event(m,'level_rebuild',clip(`No live child of "${this.node(m)?.label||m}" delivers ${orphans.map(c=>c.name).join(', ')}; its splitter rebuilds ${orphans.length>1?'them':'it'} (rebuild ${n+1} of ${MAX_REBUILDS}).`,600));
+    this.save(`level_job:${m}`,{kind:'rebuild',key:crypto.randomUUID(),text:tasks.map(k=>this.designOf(k.id).prompt).join('\n\n')||this.designOf(m).prompt,label:tasks[0]?.label||this.node(m).label,own:orphans,uses,packages,refs});
+    this.event(m,'level_rebuild',clip(`No live child of "${this.node(m)?.label||m}" delivers ${orphans.map(c=>c.name).join(', ')}; its splitter rebuilds ${orphans.length>1?'them':'it'}.`,600));
     return true;
   }
   // ---------- changes ----------
@@ -9258,8 +9241,8 @@ export class ControlRoom extends DurableObject {
   async routeChange(m, text, flags={}) {
     const n=this.node(m);
     // Before its level: the change joins its assignment, on its row and in its entry of its manager's level file.
-    if(!this.levelIndex(m)){const task=clip(`${n.task}\n\n${text}`,8000);this.db().exec('UPDATE agents SET task=? WHERE id=?',task,m);await this.amendEntry(m,()=>({prompt:this.node(m).task}));this.event(m,'change_taken','The change is part of its assignment, which its splitter reads.');return;}
-    const held={kind:'change',stage:'change',source:flags.change?'room':m,input:flags.change||'',parties:[],detail:clip(text,950),facts:{text:clip(text,4000)},flags};
+    if(!this.levelIndex(m)){const task=`${n.task}\n\n${text}`;this.db().exec('UPDATE agents SET task=? WHERE id=?',task,m);await this.amendEntry(m,()=>({prompt:this.node(m).task}));this.event(m,'change_taken','The change is part of its assignment, which its splitter reads.');return;}
+    const held={kind:'change',stage:'change',source:flags.change?'room':m,input:flags.change||'',parties:[],detail:text,facts:{text},flags};
     const pick=await this.managerChoice(m,{kind:'change',text},held);
     if(!pick)return;
     if(pick.fn==='extend') {
@@ -9269,8 +9252,8 @@ export class ControlRoom extends DurableObject {
     }
     const c=this.node(pick.child.id);
     this.event(m,'change_routed',clip(`The change concerns "${c.label}": ${text}`,900),c.id);
-    if(this.isWorker(c)){this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:change',c.id,`[complaint] ${clip(text,1600)}`);this.wake(c.id);}
-    else {this.insertProblem({holder:c.id,kind:'change',stage:'change',source:m,input:'',parties:[],detail:clip(text,950),facts:{text:clip(text,4000)},flags});this.wake(c.id);}
+    if(this.isWorker(c)){this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:change',c.id,`[complaint] ${text}`);this.wake(c.id);}
+    else {this.insertProblem({holder:c.id,kind:'change',stage:'change',source:m,input:'',parties:[],detail:text,facts:{text},flags});this.wake(c.id);}
   }
   // ---------- the worker ----------
   // A worker's request: its prompt (its task, what it delivers under which
@@ -9366,7 +9349,7 @@ export class ControlRoom extends DurableObject {
     const key=requestKey({need,name}),answers=this.read(`fn_answers:${id}`,[]),known=answers.find(a=>a.key===key);
     if(known)return {answered:known.text,says:MESSAGES.answered_before()};
     if(query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND topic=?',id,key).length)return {sent:true,says:MESSAGES.ask_pending()};
-    const a={key,question:clip(need,300),...(name?{name}:{})};
+    const a={key,question:need,...(name?{name}:{})};
     if(this.brokerAnswer(id,a,{message:false}))return {answered:this.read(`fn_answers:${id}`,[]).find(x=>x.key===key)?.text??null};
     const own=name?this.designOf(id).contracts.find(f=>f.name===name):null;
     if(own) {
@@ -9377,7 +9360,7 @@ export class ControlRoom extends DurableObject {
     const up=this.agentAbove(id),request_id=crypto.randomUUID(),want=name?`${name} (${clip(need,200)})`:`"${clip(need,200)}"`;
     if(!up)return {error:'There is nowhere to send it.'};
     this.db().exec('INSERT INTO route_workers(worker,topic,request_id) VALUES (?,?,?) ON CONFLICT(worker,topic) DO NOTHING',id,key,request_id);
-    this.insertProblem({holder:up,kind:'ask',stage:'ask',source:id,input:request_id,parties:[],detail:clip(`${this.node(id)?.label||id} asks for ${want}.`,900),facts:{worker:id,key,need:clip(need,300),name,request_id}});
+    this.insertProblem({holder:up,kind:'ask',stage:'ask',source:id,input:request_id,parties:[],detail:clip(`${this.node(id)?.label||id} asks for ${want}.`,900),facts:{worker:id,key,need,name,request_id}});
     this.event(id,'ask_sent',clip(`Asked for ${want}.`,500),up);
     this.wake(up);
     return {sent:true,says:MESSAGES.ask_sent()};
@@ -9406,9 +9389,9 @@ export class ControlRoom extends DurableObject {
     if(run?.report?.inventory)this.save('toolchain_inventory',run.report.inventory);
     if(run&&!run.infrastructure)this.markCompiled(files,plan.syntax,run.report?.stages,parsed.clean);
     const shown=v=>{const out=[...new Set(contracts.flatMap(c=>checkExamples(v.check,c)))];return out.length?out:[renderExample(v.check)].filter(Boolean);};
-    const observed=v=>{const r=results.get(v.id);if(run?.infrastructure&&!r)return `not run: ${clip(run.infrastructure,300)}`;if(!r)return 'not run';if(r.infrastructure)return `not run: ${clip(r.detail,300)}`;return r.passed?'pass':clip(String(r.detail||'it did not hold'),900);};
+    const observed=v=>{const r=results.get(v.id);if(run?.infrastructure&&!r)return `not run: ${run.infrastructure}`;if(!r)return 'not run';if(r.infrastructure)return `not run: ${r.detail}`;return r.passed?'pass':String(r.detail||'it did not hold');};
     const examples=runs.map(v=>({examples:shown(v),observed:observed(v)}));
-    const issues=[...(run?.report?.issues||[]),...parsed.issues].filter(x=>x?.path).map(x=>({file:x.path,observed:clip(x.detail,900)}));
+    const issues=[...(run?.report?.issues||[]),...parsed.issues].filter(x=>x?.path).map(x=>({file:x.path,observed:x.detail}));
     const passed=examples.filter(e=>e.observed==='pass').length;
     this.span('worker','run_examples',started,Date.now(),{worker:id,validations:runs.length,passed,files:files.size,...(run?.infrastructure?{infrastructure:true}:{})},id);
     this.event(id,'examples_run',clip(`Ran its examples on its ${files.size} file(s): ${passed} of ${examples.length} pass${issues.length?`; ${issues.length} file(s) do not compile`:''}${run?.infrastructure?`; the box: ${clip(run.infrastructure,200)}`:''}.`,600));
@@ -9426,7 +9409,7 @@ export class ControlRoom extends DurableObject {
       for(let k=0;;k++) {
         try {
           const j=await judgeRequirement(this.inferenceEnv(),{says,question:v.check.question,path:v.check.path,content});
-          return [v.id,{id:v.id,kind:'judge',frames:[],passed:j.passed,p:j.p,detail:j.detail,observed:{what:'judge',p:j.p,...(j.over_cap?{note:`only the first ${JUDGE_PARTS*JUDGE_CHARS} characters of it were read`}:{})}}];
+          return [v.id,{id:v.id,kind:'judge',frames:[],passed:j.passed,p:j.p,detail:j.detail,observed:{what:'judge',p:j.p}}];
         } catch(e) {
           if(k>=JUDGE_RETRY_MS.length)return [v.id,{id:v.id,kind:'judge',frames:[],passed:false,infrastructure:true,detail:`Clef could not judge ${v.check.path} after ${k+1} tries: ${clip(e?.message||e,200)}`}];
           this.event(id,'judge_retry',clip(`Clef could not judge ${v.check.path} for ${v.id} (${clip(e?.message||e,160)}); asked again in ${JUDGE_RETRY_MS[k]} ms.`,400));
@@ -9504,8 +9487,6 @@ export class ControlRoom extends DurableObject {
     if(!runs.length&&!fresh.size&&!linkIssues.length&&!asks)return finish({ran:0});
     const input=`${digest}:${all.map(v=>v.id).join(',')}`;
     if(this.read(`compile_blocked:${id}`,null)?.input===input){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
-    // Unchanged since its complaints went down: the workers answered and left the files as they were.
-    if(this.read(`compile_reported:${id}`,null)?.input===input)return this.escalate(id,'checks_failed',clip(`The complaints the compiler of "${this.node(id)?.label||id}" sent down left its files as they were. ${this.checksSummary('Its validations:',all)}`,1100));
     if(!files.size)return this.escalate(id,'checks_failed',`No part of "${this.node(id)?.label||id}" delivered a file to check.`);
     if(runs.length)this.event(id,'checks_started',`Running ${runs.length} validation(s) on ${files.size} file(s) (snapshot ${digest.slice(0,14)}).`);
     else this.event(id,'piece_compiling',`Compiling ${fresh.size} of the ${files.size} file(s) of ${this.node(id)?.label||id}'s piece (snapshot ${digest.slice(0,14)}); no validation is due here.`);
@@ -9594,14 +9575,10 @@ export class ControlRoom extends DurableObject {
       this.event(id,'build_infrastructure',clip(why,950));
       return this.holdChecks(id,'checks_blocked',`The checks could not all run: ${clip(why,300)}.`,await this.scheduleCheckRetry(id));
     }
-    // Repair rounds: each report of this level is one; past the bound, the level escalates.
-    const rounds=Number(this.get(`level_rounds:${id}`,'0'))+1;
-    this.set(`level_rounds:${id}`,String(rounds));
-    if(rounds>MAX_LEVEL_ROUNDS)return this.escalate(id,'checks_exhausted',clip(`Repair rounds ran out at "${this.node(id)?.label||id}" (${MAX_LEVEL_ROUNDS}). ${this.checksSummary('Its validations:',all)}`,1100));
     const wave=crypto.randomUUID();
     this.db().exec("UPDATE problems SET status='closed',outcome='superseded',updated=? WHERE source=? AND status!='closed'",Date.now(),id);
     this.save(`compile_reported:${id}`,{input,wave,ts:Date.now()});
-    for(const item of items.slice(0,MAX_PROBLEMS_PER_REPORT))await this.routeComplaint(id,item,{wave,input,source:id});
+    for(const item of items)await this.routeComplaint(id,item,{wave,input,source:id});
     return {reported:true};
   }
   async clear() {

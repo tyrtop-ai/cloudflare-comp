@@ -23,11 +23,10 @@ export const VALIDATION_KINDS = Object.freeze(['file', 'judge', 'command', 'call
 export const EXAMPLES_PER_CONTRACT = 3;
 // The owner's rule: the three examples are owed by contracts that are called or run.
 export const EXAMPLE_KINDS = new Set(['function', 'command', 'route']);
-export const LEVEL_LIMITS = Object.freeze({contracts: 24, validations: 72, steps: 20, has: 8, fixtures: 8, command: 300, argv: 40, stdin: 4000, fixture: 20000, value: 1000, question: 300, text: 300});
 
 const plain = v => v && typeof v === 'object' && !Array.isArray(v);
-const json = (v, n = LEVEL_LIMITS.value) => { try { const s = JSON.stringify(v); return s !== undefined && s.length <= n ? {ok: true, v: JSON.parse(s)} : {ok: false}; } catch { return {ok: false}; } };
-const SAVE = /^[A-Za-z_]\w{0,31}$/;
+const json = v => { try { const s = JSON.stringify(v); return s !== undefined ? {ok: true, v: JSON.parse(s)} : {ok: false}; } catch { return {ok: false}; } };
+const SAVE = /^[A-Za-z_]\w*$/;
 const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const cleanPath = p => String(p ?? '').trim().replace(/^[`'"]+|[`'"]+$/g, '').replace(/\\/g, '/').replace(/^(?:\.\/)+/, '');
 
@@ -55,7 +54,6 @@ export function commandArgv(run) {
   if (quote) return {error: `"${s.slice(0, 80)}" has an unclosed quote`};
   if (word) argv.push(cur);
   if (!argv.length) return {error: 'it runs nothing'};
-  if (argv.length > LEVEL_LIMITS.argv) return {error: `"${s.slice(0, 80)}" has more than ${LEVEL_LIMITS.argv} arguments`};
   return {argv};
 }
 
@@ -82,13 +80,8 @@ const quoted = xs => xs.map(x => `"${x}"`).join(', ');
 // The fields of o that are not among those allowed: '' or why.
 const extra = (o, allowed, what) => { const k = Object.keys(o).filter(x => !allowed.includes(x)); return k.length ? `${what} has the field${k.length > 1 ? 's' : ''} ${quoted(k.map(x => x.slice(0, 40)))}; its fields are ${quoted(allowed)}` : ''; };
 // A list of texts as written: {list} or {error}.
-function texts(v, max, what) {
-  if (!Array.isArray(v) || v.some(x => typeof x !== 'string' || !x)) return {error: `${what} is a list of texts`};
-  if (v.length > max) return {error: `${what} lists ${v.length} texts; at most ${max}`};
-  const long = v.find(x => x.length > LEVEL_LIMITS.text);
-  return long ? {error: `${what} has a text longer than ${LEVEL_LIMITS.text} characters`} : {list: v};
-}
-const text = (v, n, what) => typeof v !== 'string' || !v.trim() ? {error: `${what} is a text`} : v.length > n ? {error: `${what} is longer than ${n} characters`} : {text: v};
+const texts = (v, what) => !Array.isArray(v) || v.some(x => typeof x !== 'string' || !x) ? {error: `${what} is a list of texts`} : {list: v};
+const text = (v, what) => typeof v !== 'string' || !v.trim() ? {error: `${what} is a text`} : {text: v};
 
 // The world a level's checks run in: ctx.paths (the paths its contracts
 // place, and the existing project's), ctx.functions (function contract
@@ -106,31 +99,29 @@ export function readCheck(c, ctx) {
     const path = typeof c.path === 'string' ? rootedPath(c.path) : '';
     if (!path || !ctx.paths.has(path)) return {error: `the ${kind} check reads ${path ? `"${path.slice(0, 200)}", which no declared contract places and the existing files do not hold` : 'no path'}`};
     if (kind === 'judge') {
-      const q = text(c.question, LEVEL_LIMITS.question, 'its question');
+      const q = text(c.question, 'its question');
       return q.error ? {error: `the judge check: ${q.error}`} : {check: {kind, path, question: q.text}};
     }
     let has = [];
-    if (c.has !== undefined) { const t = texts(c.has, LEVEL_LIMITS.has, 'has'); if (t.error) return {error: `the file check: ${t.error}`}; has = t.list; }
+    if (c.has !== undefined) { const t = texts(c.has, 'has'); if (t.error) return {error: `the file check: ${t.error}`}; has = t.list; }
     if (c.json !== undefined && typeof c.json !== 'boolean') return {error: 'the file check: json is true or false'};
     return {check: {kind, path, ...(has.length ? {has} : {}), ...(c.json === true ? {json: true} : {})}};
   }
   if (kind === 'command') {
-    const r = text(c.run, LEVEL_LIMITS.command, 'its run');
+    const r = text(c.run, 'its run');
     if (r.error) return {error: `the command check: ${r.error}`};
     const parsed = commandArgv(r.text);
     if (parsed.error) return {error: `the command check: ${parsed.error}`};
     const [first] = parsed.argv;
     if (!ctx.commands.has(first) && !ctx.executables.has(first)) return {error: `the command check runs "${first.slice(0, 80)}", which is neither a command contract declared so far nor a program the box has (${[...ctx.executables].join(', ') || 'none'})`};
-    if (c.stdin !== undefined && (typeof c.stdin !== 'string' || c.stdin.length > LEVEL_LIMITS.stdin)) return {error: `the command check: stdin is a text of at most ${LEVEL_LIMITS.stdin} characters`};
+    if (c.stdin !== undefined && typeof c.stdin !== 'string') return {error: 'the command check: stdin is a text'};
     let files = null;
     if (c.files !== undefined) {
       if (!plain(c.files)) return {error: 'the command check: files maps each input file\'s path to its text'};
-      const entries = Object.entries(c.files);
-      if (entries.length > LEVEL_LIMITS.fixtures) return {error: `the command check has ${entries.length} input files; at most ${LEVEL_LIMITS.fixtures}`};
       // Each input file at the place its path names beside the command.
       files = {};
-      for (const [p, t] of entries) {
-        if (!rootedPath(p) || typeof t !== 'string' || t.length > LEVEL_LIMITS.fixture) return {error: `the command check has an input file "${String(p).slice(0, 80)}" that is not a file's path with a text of at most ${LEVEL_LIMITS.fixture} characters`};
+      for (const [p, t] of Object.entries(c.files)) {
+        if (!rootedPath(p) || typeof t !== 'string') return {error: `the command check has an input file "${String(p).slice(0, 80)}" that is not a file's path with a text`};
         files[rootedPath(p)] = t;
       }
     }
@@ -141,9 +132,9 @@ export function readCheck(c, ctx) {
       const ex = extra(e, COMMAND_EXPECT, 'its expect');
       if (ex) return {error: `the command check: ${ex}`};
       if (e.exit !== undefined) { if (!Number.isInteger(e.exit) || e.exit < 0 || e.exit > 255) return {error: 'the command check: exit is a whole number from 0 to 255'}; expect.exit = e.exit; }
-      if (e.stdout !== undefined) { if (typeof e.stdout !== 'string' || e.stdout.length > LEVEL_LIMITS.stdin) return {error: `the command check: stdout is a text of at most ${LEVEL_LIMITS.stdin} characters`}; expect.stdout = e.stdout; }
+      if (e.stdout !== undefined) { if (typeof e.stdout !== 'string') return {error: 'the command check: stdout is a text'}; expect.stdout = e.stdout; }
       if (e.stderr !== undefined) { if (e.stderr !== true) return {error: 'the command check: stderr is true when it writes to its error output'}; expect.stderr = true; }
-      for (const k of ['stdout_has', 'stderr_has']) if (e[k] !== undefined) { const t = texts(e[k], LEVEL_LIMITS.has, k); if (t.error) return {error: `the command check: ${t.error}`}; expect[k] = t.list; }
+      for (const k of ['stdout_has', 'stderr_has']) if (e[k] !== undefined) { const t = texts(e[k], k); if (t.error) return {error: `the command check: ${t.error}`}; expect[k] = t.list; }
     }
     // A command check that states nothing it observes observes that it exits 0.
     if (!Object.keys(expect).length) expect.exit = 0;
@@ -151,7 +142,6 @@ export function readCheck(c, ctx) {
   }
   if (kind === 'call') {
     if (!Array.isArray(c.steps) || !c.steps.length) return {error: 'the call check has no steps'};
-    if (c.steps.length > LEVEL_LIMITS.steps) return {error: `the call check has ${c.steps.length} steps; at most ${LEVEL_LIMITS.steps}`};
     const steps = [];
     for (const [i, s] of c.steps.entries()) {
       const at = `step ${i + 1} of the call check`;
@@ -162,11 +152,11 @@ export function readCheck(c, ctx) {
       if (!ctx.functions.has(name)) return {error: `${at} calls ${JSON.stringify(s.call ?? null)?.slice(0, 80)}, which is not a function contract declared so far${ctx.functions.size ? ` (${[...ctx.functions].join(', ')})` : ''}`};
       if (s.args !== undefined && !Array.isArray(s.args)) return {error: `${at}: args is the list of arguments`};
       const args = json(s.args ?? []);
-      if (!args.ok) return {error: `${at}: its arguments are not small json values`};
+      if (!args.ok) return {error: `${at}: its arguments are not json values`};
       const step = {call: name, args: args.v};
       if (s.save !== undefined) { if (typeof s.save !== 'string' || !SAVE.test(s.save)) return {error: `${at}: save is a name of letters, digits and _`}; step.save = s.save; }
-      if ('expect' in s) { const x = json(s.expect); if (!x.ok) return {error: `${at} expects a value that is not a small json value`}; step.expect = x.v; }
-      if (s.expect_has !== undefined) { const t = text(s.expect_has, LEVEL_LIMITS.text, 'expect_has'); if (t.error) return {error: `${at}: ${t.error}`}; step.expect_has = t.text; }
+      if ('expect' in s) { const x = json(s.expect); if (!x.ok) return {error: `${at} expects a value that is not a json value`}; step.expect = x.v; }
+      if (s.expect_has !== undefined) { const t = text(s.expect_has, 'expect_has'); if (t.error) return {error: `${at}: ${t.error}`}; step.expect_has = t.text; }
       if (s.throws !== undefined) { if (typeof s.throws !== 'boolean') return {error: `${at}: throws is true or false`}; if (s.throws) step.throws = true; }
       steps.push(step);
     }
@@ -179,7 +169,6 @@ export function readCheck(c, ctx) {
   const serve = typeof c.serve === 'string' ? c.serve : '';
   if (!ctx.served.has(serve)) return {error: `the ${kind} check serves ${JSON.stringify(c.serve ?? null)?.slice(0, 80)}, which is not a declared contract that states how it runs${ctx.served.size ? ` (${[...ctx.served].join(', ')})` : ' (none states one yet)'}`};
   if (!Array.isArray(c.steps) || !c.steps.length) return {error: `the ${kind} check has no steps`};
-  if (c.steps.length > LEVEL_LIMITS.steps) return {error: `the ${kind} check has ${c.steps.length} steps; at most ${LEVEL_LIMITS.steps}`};
   const steps = [];
   for (const [i, s] of c.steps.entries()) {
     const step = kind === 'http' ? httpStep(s) : browserStep(s);
@@ -202,11 +191,11 @@ function httpStep(s) {
     const x = extra(e, HTTP_EXPECT, 'its expect');
     if (x) return {error: x};
     if (e.status !== undefined) { if (!Number.isInteger(e.status) || e.status < 100 || e.status > 599) return {error: 'its status is a whole number from 100 to 599'}; expect.status = e.status; }
-    if (e.body_has !== undefined) { const t = texts(e.body_has, LEVEL_LIMITS.has, 'body_has'); if (t.error) return {error: t.error}; expect.body_has = t.list; }
-    if ('json_has' in e) { const j = json(e.json_has); if (!j.ok) return {error: 'its json_has is not a small json value'}; expect.json_has = j.v; }
+    if (e.body_has !== undefined) { const t = texts(e.body_has, 'body_has'); if (t.error) return {error: t.error}; expect.body_has = t.list; }
+    if ('json_has' in e) { const j = json(e.json_has); if (!j.ok) return {error: 'its json_has is not a json value'}; expect.json_has = j.v; }
   }
   const step = {method, path: s.path, expect};
-  if ('body' in s) { const j = json(s.body); if (!j.ok) return {error: 'its body is not a small json value'}; step.body = j.v; }
+  if ('body' in s) { const j = json(s.body); if (!j.ok) return {error: 'its body is not a json value'}; step.body = j.v; }
   if (s.save !== undefined) { if (typeof s.save !== 'string' || !SAVE.test(s.save)) return {error: 'save is a name of letters, digits and _'}; step.save = s.save; }
   return {step};
 }
@@ -216,7 +205,7 @@ function locator(v, keys, what) {
   if (!plain(v)) return {error: `${what} is an object with any of ${quoted(keys)}`};
   const x = extra(v, keys, what);
   if (x) return {error: x};
-  for (const [k, t] of Object.entries(v)) if (k !== 'n' && (typeof t !== 'string' || !t || t.length > LEVEL_LIMITS.value)) return {error: `${what}: ${k} is a text`};
+  for (const [k, t] of Object.entries(v)) if (k !== 'n' && (typeof t !== 'string' || !t)) return {error: `${what}: ${k} is a text`};
   return {ok: true};
 }
 function browserStep(s) {
@@ -226,8 +215,8 @@ function browserStep(s) {
   const [k] = keys, v = s[k];
   if (k === 'goto') return typeof v === 'string' ? {step: {goto: v}} : {error: 'goto is a path'};
   if (k === 'reload') return v === true ? {step: {reload: true}} : {error: 'reload is true'};
-  if (k === 'press') return typeof v === 'string' && v && v.length <= 40 ? {step: {press: v}} : {error: 'press is a key name of at most 40 characters'};
-  if (k === 'expect_text' || k === 'expect_no_text') { const t = text(v, LEVEL_LIMITS.text, k); return t.error ? {error: t.error} : {step: {[k]: v}}; }
+  if (k === 'press') return typeof v === 'string' && v ? {step: {press: v}} : {error: 'press is a key name'};
+  if (k === 'expect_text' || k === 'expect_no_text') { const t = text(v, k); return t.error ? {error: t.error} : {step: {[k]: v}}; }
   if (k === 'fill') {
     const l = locator(v, [...LOCATOR.filter(x => x !== 'text'), 'text'], 'fill');
     if (l.error) return l;
@@ -244,8 +233,8 @@ function browserStep(s) {
   if (!plain(v) || typeof v.selector !== 'string') return {error: `${k} is an object with selector and, optionally, text`};
   const x = extra(v, ['selector', 'text'], k);
   if (x) return {error: x};
-  if (v.selector.length > 200 || !SELECTOR.test(v.selector)) return {error: `${k}: "${v.selector.slice(0, 80)}" is not a simple selector (a tag, then any of #id, .class, [attribute] and [attribute=value])`};
-  if (v.text !== undefined && (typeof v.text !== 'string' || !v.text || v.text.length > 200)) return {error: `${k}: text is a text of at most 200 characters`};
+  if (!SELECTOR.test(v.selector)) return {error: `${k}: "${v.selector.slice(0, 80)}" is not a simple selector (a tag, then any of #id, .class, [attribute] and [attribute=value])`};
+  if (v.text !== undefined && (typeof v.text !== 'string' || !v.text)) return {error: `${k}: text is a text`};
   return {step: {[k]: v}};
 }
 
@@ -267,7 +256,6 @@ export function runOf(raw, contract, world) {
   const x = extra(raw, ['run', 'ready'], 'run');
   if (x) return {error: x};
   if (typeof raw.run !== 'string' || !raw.run.trim()) return {error: 'run states static true, or a command line in run'};
-  if (raw.run.length > LEVEL_LIMITS.command) return {error: `its command line is longer than ${LEVEL_LIMITS.command} characters`};
   const parsed = commandArgv(raw.run);
   if (parsed.error) return {error: `its run: ${parsed.error}`};
   const [first] = parsed.argv;
@@ -341,7 +329,7 @@ export function renderExample(check) {
   if (c.kind === 'file') return `${c.path} ${c.has?.length ? `contains ${list(c.has.map(q))}` : 'exists'}${c.json ? ' and parses as JSON' : ''}`;
   if (c.kind === 'judge') return `a reader of ${c.path} answers yes to: ${c.question}`;
   if (c.kind === 'command') {
-    const with_ = [c.stdin ? `the input ${q(c.stdin)}` : '', c.files ? `the file${Object.keys(c.files).length > 1 ? 's' : ''} ${list(Object.entries(c.files).map(([p, t]) => `${p} holding ${q(String(t).slice(0, 120))}`))}` : ''].filter(Boolean);
+    const with_ = [c.stdin ? `the input ${q(c.stdin)}` : '', c.files ? `the file${Object.keys(c.files).length > 1 ? 's' : ''} ${list(Object.entries(c.files).map(([p, t]) => `${p} holding ${q(t)}`))}` : ''].filter(Boolean);
     return `${c.run}${with_.length ? ` with ${list(with_)}` : ''} → ${commandOutcome(c.expect) || 'it runs'}`;
   }
   if (c.kind === 'call') return (c.steps || []).map(callStep).join('; ');
@@ -451,9 +439,9 @@ export function divisionOf(contracts, pieces, have = []) {
 export const internalCandidate = check => check?.kind === 'file' && Array.isArray(check.has) && check.has.length > 0 && !!toolchainOf(String(check.path || '')) && toolchainOf(String(check.path)).id !== 'text';
 
 // ------------------------------------------------------------ words
-// A check in a few words, for Clef and the event log: its kind and target.
+// A check in words, for Clef and the event log: its kind and the whole check.
 export function checkSummary(check) {
   if (!check) return '';
-  if (check.kind === 'file' || check.kind === 'judge') return `${check.kind} ${check.path}${check.question ? `: ${check.question}` : check.has ? ` contains ${check.has.map(x => JSON.stringify(x)).join(', ')}` : ''}`.slice(0, 300);
-  return `${check.kind}: ${renderExample(check)}`.slice(0, 300);
+  if (check.kind === 'file' || check.kind === 'judge') return `${check.kind} ${check.path}${check.question ? `: ${check.question}` : check.has ? ` contains ${check.has.map(x => JSON.stringify(x)).join(', ')}` : ''}`;
+  return `${check.kind}: ${renderExample(check)}`;
 }

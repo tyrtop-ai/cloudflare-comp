@@ -27,7 +27,8 @@ const TIPS = {name: 'TIPS.md', kind: 'doc', path: 'TIPS.md', does: 'tips for a b
 const FILES = {
   'GUIDE.md': '# Brewing green tea\n\nHeat the water to 80 degrees.\nSteep the leaves for 2 minutes.\n',
   'FAQ.md': '# Questions\n\nDoes green tea hold caffeine? A cup holds some caffeine.\nCan I brew it twice? Yes.\n',
-  'TIPS.md': '# Tips\n\nSteep for 2 minutes.\nUse soft water.\n'};
+  'TIPS.md': '# Tips\n\nSteep for 2 minutes.\nUse soft water.\n',
+  'NOTES.md': '# Notes\n\nKeep the lid on.\nUse a timer.\n'};
 // Three file validations per contract: three different examples each.
 const has = (id, path, text) => ({id, serves: [path], check: {kind: 'file', path, has: [text]}});
 const VALIDATIONS = [
@@ -36,6 +37,16 @@ const VALIDATIONS = [
   has('t1', 'TIPS.md', 'minutes'), has('t2', 'TIPS.md', 'soft water'), has('t3', 'TIPS.md', '# Tips')];
 const piece = (label, contracts, task = `Write ${contracts.map(c => c.path).join(' and ')}`) => ({label, task, contracts: contracts.map(c => c.name)});
 const TWO = [piece('Guide', [GUIDE]), piece('Questions and tips', [FAQ, TIPS])];
+// Four contracts, divided three levels deep: the room's manager into Big and Notes, Big into Mid and Tips, Mid into Guide and Questions.
+const GOAL4 = 'Write a short guide to brewing green tea, a page of common questions, tips and brewing notes.';
+const NOTES = {name: 'NOTES.md', kind: 'doc', path: 'NOTES.md', does: 'notes on brewing'};
+const deepSplit = user => {
+  if (!user.contracts_you_deliver) return {contracts: [GUIDE, FAQ, TIPS, NOTES], validations: [...VALIDATIONS, has('n1', 'NOTES.md', 'lid'), has('n2', 'NOTES.md', 'timer'), has('n3', 'NOTES.md', '# Notes')],
+    pieces: [piece('Big', [GUIDE, FAQ, TIPS]), piece('Notes', [NOTES])]};
+  const mine = user.contracts_you_deliver.map(c => c.name).sort().join(',');
+  const pieces = mine === 'FAQ.md,GUIDE.md,TIPS.md' ? [piece('Mid', [GUIDE, FAQ]), piece('Tips', [TIPS])] : mine === 'FAQ.md,GUIDE.md' ? [piece('Guide', [GUIDE]), piece('Questions', [FAQ])] : [];
+  return {contracts: user.contracts_you_deliver, validations: [], pieces};
+};
 const THREE = [piece('Guide', [GUIDE]), piece('Questions', [FAQ]), piece('Tips', [TIPS])];
 // The room's manager states the level; a manager whose contracts were given restates them, with the pieces lower gives it.
 const splitWith = (pieces = () => TWO, lower = () => []) => (user, n) => user.contracts_you_deliver
@@ -205,7 +216,7 @@ test('live 5: three NOs hand the level down to one worker; too small at two piec
 });
 
 // ------------------------------------------------------------ the bars and the floor are settings
-test('live 5: the floor and both bars come from the room\'s settings; the valid bar rises with depth', async () => {
+test('live 5: the floor and both bars come from the room\'s settings; every manager\'s split meets the same valid bar, at every depth', async () => {
   assert.deepEqual([DEFAULT_ROOM_SETTINGS.split_floor, DEFAULT_ROOM_SETTINGS.split_valid_bar, DEFAULT_ROOM_SETTINGS.split_size_bar], [0.1, 0.5, 0.5]);
   assert.throws(() => normalizeRoomSettings({split_floor: 0.7}), /Invalid split_floor/);
   assert.throws(() => normalizeRoomSettings({split_size_bar: 1}), /Invalid split_size_bar/);
@@ -217,11 +228,14 @@ test('live 5: the floor and both bars come from the room\'s settings; the valid 
   // Bars of 0.85 and 0.3: valid 0.8 is a NO, size 0.35 a YES.
   const barred = await room5({review: [{valid: 0.8, size: 0.35}, {valid: 0.9, size: 0.35}], pieces: (_u, n) => n === 1 ? THREE : TWO, settings: {split_valid_bar: 0.85, split_size_bar: 0.3}});
   assert.deepEqual(barred.room.splitAttempts(barred.room.roomManager()).filter(a => a.attempt > 0).map(a => [a.valid_bar, a.size_bar, a.outcome]), [[0.85, 0.3, 'retry different'], [0.85, 0.3, 'admitted']]);
-  // The valid bar rises with depth: the room's manager's children keep it, a level below rises.
-  const [child] = kids(barred.room), [grandchild] = kids(barred.room, child.id);
-  assert.deepEqual([barred.room.depthOf(child.id), barred.room.depthOf(grandchild.id)], [1, 2]);
-  assert.equal(barred.room.splitBar(child.id, 0.5), 0.5);
-  assert.equal(barred.room.splitBar(grandchild.id, 0.5), 0.545);
+  // Every manager is judged the same way: a split two levels down meets the room's valid bar, whatever its depth.
+  const deep = await levelRoom({prompt: GOAL4, split: deepSplit, leaf: leafWith(), budget: 60, settings: {split_valid_bar: 0.85},
+    clef: clefFor({pre: state => state.assignment === GOAL4 || state.contracts.length >= 2 ? 0.6 : 0.05, review: [{valid: 0.855, size: 0.9}]}).answer});
+  assert.equal(deep.room.get('status'), 'complete', tail(deep.room));
+  const splitters = deep.room.allNodes().filter(n => n.role === 'manager' && deep.room.splitAttempts(n.id).some(a => a.attempt > 0 && a.pieces >= 2));
+  assert.deepEqual(splitters.map(n => deep.room.depthOf(n.id)).sort(), [0, 1, 2]);
+  for (const n of splitters) assert.deepEqual(deep.room.splitAttempts(n.id).filter(a => a.attempt > 0).map(a => [a.valid_bar, a.outcome]), [[0.85, 'admitted']], n.label);
+  assert.equal(passed(deep.room), 12);
 });
 
 // ------------------------------------------------------------ a file check matches modulo whitespace runs
@@ -233,16 +247,17 @@ test('live 5: a file check matches modulo whitespace runs on both sides; a run i
 });
 
 // ------------------------------------------------------------ a doubted validation that keeps failing
-test('live 5: a validation Clef doubted that keeps failing holds the room for the person with Clef\'s marks; Continue keeps it, and nothing is deleted', async () => {
+test('live 5: a validation Clef doubted that keeps failing stays with its marks: the repairs go on until the room\'s budget ends, with no hold; Continue keeps it, and nothing is deleted', async () => {
   const plain = deliver({'GUIDE.md': FILES['GUIDE.md'].replace('80 degrees', 'hot')});
   let kept = false;
   const leaf = () => kept ? deliver({'GUIDE.md': FILES['GUIDE.md']}) : plain;
   const level = {contracts: [GUIDE], validations: VALIDATIONS.slice(0, 3), pieces: []};
   const clef = input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? 0.05 : k === 'exercises_0' ? 0.143 : 0.9}]))});
-  const r = await levelRoom({prompt: 'Write a short guide to brewing green tea.', split: () => level, leaf, clef}), {room} = r;
-  const hold = room.snapshot().pause;
-  assert.ok(['checks_failed', 'checks_exhausted'].includes(hold?.kind), tail(room));
-  assert.match(hold.text, /^These validations keep failing and Clef doubted them: V1 \(exercises p=0\.143\)\. Change them with a follow-up prompt, or Continue\. /);
+  const r = await levelRoom({prompt: 'Write a short guide to brewing green tea.', split: () => level, leaf, clef, budget: 8}), {room} = r;
+  assert.equal(room.get('status'), 'paused', tail(room));
+  assert.deepEqual(room.roomHolds(), [], 'nothing holds: the budget ended the run');
+  assert.ok(events(room, 'complaint_routed').length >= 3, 'its complaint went back to the worker round after round');
+  assert.match(events(room, 'validations_doubtful')[0].body, /^Clef doubts v1 \(exercises p=0\.143\); each is kept, marked\.$/i);
   assert.equal(room.validationRows().length, 3, 'never deleted');
   // Continue keeps it: the repairs go on, and here the worker meets it.
   kept = true;
@@ -250,4 +265,37 @@ test('live 5: a validation Clef doubted that keeps failing holds the room for th
   assert.equal(room.get('status'), 'complete', tail(room));
   assert.equal(room.validationRows().find(v => v.id === 'V1').notes.exercises, 0.143, 'its mark stays');
   assert.equal(passed(room), 3);
+});
+
+// ------------------------------------------------------------ a report routes every complaint, whole
+test('live 5: a level\'s report sends every complaint down, however many, each as the compiler observed it; the worker reads them all in one turn', async () => {
+  const lines = Array.from({length: 15}, (_, i) => `Step ${i + 1}: ${'pour the water slowly and wait '.repeat(12).trim()}.`);
+  const level = {contracts: [GUIDE], validations: lines.map((t, i) => has(`l${i}`, 'GUIDE.md', t)), pieces: []};
+  const turns = [];
+  const leaf = user => { turns.push(user.complaints); return deliver({'GUIDE.md': turns.length === 1 ? '# Brewing green tea\n' : `# Brewing green tea\n\n${lines.join('\n')}\n`}); };
+  const clef = input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? 0.05 : 0.9}]))});
+  const {room} = await levelRoom({prompt: 'Write a step-by-step guide to brewing green tea.', split: () => level, leaf, clef});
+  assert.equal(room.get('status'), 'complete', tail(room));
+  assert.equal(turns.length, 2);
+  assert.equal(turns[1].length, 15, 'every complaint of the report, in one turn');
+  for (const [i, t] of lines.entries()) assert.ok(turns[1].some(c => c.includes(JSON.stringify(t))), `the complaint for step ${i + 1} quotes its whole text`);
+  assert.equal(passed(room), 15);
+});
+
+// ------------------------------------------------------------ a piece's label and task, as its splitter wrote them
+test('live 5: a piece\'s label and task reach its row, its level-file entry, its pre-grade and its worker as the splitter wrote them, however long', async () => {
+  const label = 'Questions and tips, a piece whose label runs past seventy characters on purpose';
+  const task = `Write FAQ.md and TIPS.md. ${'Answer each common question in a full sentence, and give each tip its reason. '.repeat(40).trim()}`;
+  const pieces = [piece('Guide', [GUIDE]), {label, task, contracts: [FAQ.name, TIPS.name]}];
+  const seen = [];
+  const leaf = user => { seen.push(user.prompt.task); return leafWith()(user); };
+  const c = clefFor({pre: topOnly(0.6)});
+  const {room} = await levelRoom({prompt: GOAL, split: splitWith(() => pieces), leaf, clef: c.answer});
+  assert.equal(room.get('status'), 'complete', tail(room));
+  const row = kids(room).find(k => k.label === label);
+  assert.ok(row, 'the row keeps the label whole');
+  assert.equal(row.task, task);
+  assert.equal(room.levelDesign(room.roomManager()).children.find(e => e.id === row.id).prompt, task);
+  assert.ok(c.seen.pre.some(x => x.state.assignment === task), 'its pre-grade reads the whole task');
+  assert.ok(seen.includes(task), 'its worker reads the whole task');
 });

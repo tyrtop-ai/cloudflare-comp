@@ -21,10 +21,6 @@ export const REQUEST_KINDS = Object.freeze(['contract', 'source', 'base', 'url',
 export const LIVE_KINDS = Object.freeze(['contract', 'source', 'base']);
 // A chunk of a linked page: S2#3, or S2 for the first chunk of S2 the agent holds.
 export const SOURCE_REF = /^S(\d+)(?:#(\d+))?$/;
-// What one answer carries at most, like one stored source chunk.
-export const ANSWER_CHARS = 6000;
-// How many catalogue names the answer for an absent name lists.
-export const NONE_NAMES = 6;
 
 // A name an ask carries beside a contract name (src/protocol.js normalizeAsk
 // keeps it under v8): a chunk ref, or a project path with no whitespace.
@@ -88,14 +84,12 @@ const has = (set, v) => set instanceof Set ? set.has(v) : Array.isArray(set) && 
 
 // A request as the broker keeps it (§5.2).
 export const brokerRequest = ({id = crypto.randomUUID(), from, kind, name, need = '', ts = Date.now()}) =>
-  ({id, from, kind, name: String(name ?? ''), need: String(need ?? '').slice(0, 300), ts});
+  ({id, from, kind, name: String(name ?? ''), need: String(need ?? ''), ts});
 
 // An answer (§5.2): {id, name, kind, status, label, value, facts?, next?},
-// its value clipped to ANSWER_CHARS (facts.clipped and facts.chars say so).
+// its value whole.
 export function shapeAnswer({id, name, kind, status = 'answered', label, value, facts = null, next = null}) {
-  const text = String(value ?? ''), clipped = text.length > ANSWER_CHARS;
-  const f = {...(facts || {}), ...(clipped ? {clipped: true, chars: text.length} : {})};
-  return {id, name: String(name ?? ''), kind, status, label, value: clipped ? text.slice(0, ANSWER_CHARS) : text, ...(Object.keys(f).length ? {facts: f} : {}), ...(next ? {next} : {})};
+  return {id, name: String(name ?? ''), kind, status, label, value: String(value ?? ''), ...(facts && Object.keys(facts).length ? {facts} : {}), ...(next ? {next} : {})};
 }
 // The held chunk after ref in the same source, by the catalogue, or null.
 export function nextHeld(cat, ref) {
@@ -112,11 +106,11 @@ export const sourceAnswer = ({id, ref, url, text, next = null}) =>
 export const baseAnswer = ({id, path, content, own = false}) =>
   shapeAnswer({id, name: path, kind: 'base', label: BROKER_LABEL.base, value: sanitizeText(content), facts: own ? {placed_when: 'now'} : null});
 // The answer for a name outside the catalogue: the one wording for absence,
-// listing up to NONE_NAMES catalogue names, those of the kind the name has first.
+// listing every catalogue name, those of the kind the name has first.
 export function noneText(name, cat = []) {
   const want = SOURCE_REF.test(String(name)) ? 'source' : 'base', rank = e => e.kind === want ? 0 : 1;
   // v8 live 4: packages are named by a package ask's own answer, never here.
-  const names = [...cat].filter(e => e.kind !== 'package').sort((a, b) => rank(a) - rank(b)).slice(0, NONE_NAMES).map(e => e.name);
+  const names = [...cat].filter(e => e.kind !== 'package').sort((a, b) => rank(a) - rank(b)).map(e => e.name);
   return MESSAGES.broker_none({name: String(name), names: names.join(', ')});
 }
 // v8 live 4: a package ask's answer (src/index.js packageAsk): what the asker's line holds for it.

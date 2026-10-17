@@ -154,32 +154,32 @@ const has = (id, text) => ({id, serves: ['GUIDE.md'], check: {kind: 'file', path
 const DOC_LEVEL = {contracts: [GUIDE], validations: [has('a', '80'), has('b', 'minutes'), has('c', '# Green tea')], pieces: []};
 const GUIDE_MD = '# Green tea\n\nHeat water to 80 degrees and steep for 2 minutes.\n';
 const CUPS = 'also say how many cups it makes';
-const DROP = 'drop the water temperature from the guide';
-// The worker writes the guide; with the cups change it adds a line; once told to drop the temperature it keeps it dropped.
+// The worker writes the guide; with the cups change it adds a line.
 function docRoom() {
-  let dropped = false;
-  const leaf = user => {
-    if (user.complaints.includes(DROP)) dropped = true;
-    if (user.complaints.includes(CUPS)) dropped = false;
-    const cups = user.complaints.includes(CUPS) || user.files.some(f => /cups/.test(f.content));
-    return deliver({'GUIDE.md': (dropped ? GUIDE_MD.replace('80 degrees', 'hot') : GUIDE_MD) + (cups ? '\nMakes 2 cups.\n' : '')});
-  };
+  const leaf = user => deliver({'GUIDE.md': GUIDE_MD + (user.complaints.includes(CUPS) ? '\nMakes 2 cups.\n' : '')});
   return queueRoom({split: () => DOC_LEVEL, leaf, clef: usualClef({'^should_split$': 0.05})});
 }
+
+// A v8 run fails only when the room ends failed: a splitter's session goes on until done and repairs
+// go on until the budget ends (R1-chrono-6, -13), so these tests end the running prompt's run failed.
+const failRun = async (room, id, seq) => {
+  room.db().exec("INSERT INTO prompts(id,seq,text,status,kind,budget,goal_rev,outcome,created) VALUES (?,?,'make the guide longer','running','queued',NULL,2,'{}',1)", id, seq);
+  const w = room.allNodes().find(n => n.role === 'worker');
+  room.failAgent(w.id, 'stuck'); room.set('status', 'failed');
+  await room.promptsAfterRun();
+};
 
 test('queue on failure: a prompt whose run fails holds the queue under stop, and Go on applies the next; under continue the next applies at once', async () => {
   for (const policy of ['stop', 'continue']) {
     const {room, drain, fire} = docRoom();
     assert.equal((await room.queuePolicy({queue_on_fail: policy})).queue_on_fail, policy);
     await room.start(DOC_GOAL, 30, {pipeline: 'v8'});
-    await room.addPrompt(DROP);
-    await room.addPrompt(CUPS);
     await drain();
-    assert.equal(room.get('status'), 'complete', tail(room));
-    await fire();
+    await room.addPrompt(CUPS);
+    room.db().exec("UPDATE prompts SET seq=5 WHERE status='queued'");
+    await failRun(room, 'p-running', 1);
     const s = room.snapshot();
     assert.equal(s.prompts[0].status, 'failed', tail(room));
-    assert.match(s.prompts[0].outcome.error, /left its files as they were/);
     if (policy === 'stop') {
       assert.equal(s.prompts[1].status, 'queued');
       assert.match(s.queue_stopped, /the queue waits/);
@@ -188,9 +188,9 @@ test('queue on failure: a prompt whose run fails holds the queue under stop, and
       await room.queuePolicy({resume: true});
       await fire();
     } else await fire();
+    assert.equal(room.get('status'), 'complete', tail(room));
     assert.deepEqual(states(room).map(x => x[1]), ['failed', 'done'], tail(room));
-    assert.equal(room.goalRev(), 3, 'each prompt applied is a revision');
-    assert.deepEqual(room.goalChanges(), [DROP, CUPS]);
+    assert.deepEqual(room.goalChanges(), [CUPS]);
   }
 });
 
@@ -222,12 +222,15 @@ test('queue on failure: a run that ends failed fails its running prompt, and the
 });
 
 test('two failed prompts in a row stop a continue queue', async () => {
-  const {room, drain, fire} = docRoom();
+  const {room, drain} = docRoom();
   await room.queuePolicy({queue_on_fail: 'continue'});
   await room.start(DOC_GOAL, 30, {pipeline: 'v8'});
-  for (const t of [DROP, 'drop it again, the water temperature', CUPS]) await room.addPrompt(t);
   await drain();
-  for (let i = 0; i < 6 && room.read('prompts_due', null); i++) await fire();
+  await room.addPrompt(CUPS);
+  room.db().exec("UPDATE prompts SET seq=5 WHERE status='queued'");
+  await failRun(room, 'p-1', 1);
+  assert.equal(room.get('queue_stopped') || '', '', 'one failure: a continue queue goes on');
+  await failRun(room, 'p-2', 2);
   assert.deepEqual(states(room).map(x => x[1]), ['failed', 'failed', 'queued'], tail(room));
   assert.match(room.get('queue_stopped'), /Two prompts in a row failed, so the queue waits even on continue/);
 });

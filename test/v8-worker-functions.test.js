@@ -286,6 +286,34 @@ test('a complaint is routed by the manager\'s choice: Clef scores route_to for e
   assert.match(events(room, 'manager_choice').at(-1).body, /^On the complaint: route_to\("Styles"\) \(the only function it may call\)\.$/);
 });
 
+test('what a manager\'s choice reads and what reaches the worker are whole: the complaint, its assignment, each child\'s task and every contract, unclipped; the worker reads every message it has, and keeps every answer', async () => {
+  const {asked, clef} = recorded({'^route_to_\\d+$': (k, state) => state.children[Number(k.split('_').pop())].label === 'Styles' ? 0.8 : 0.4});
+  const {room, top, b, wa, wb, PAGE, CSS} = await tree(clef);
+  const task = 'Style every element of the page, '.repeat(120).trim(), assignment = 'A page and its styles, described at length. '.repeat(120).trim();
+  const more = Array.from({length: 30}, (_, i) => ({name: `rule${i}.css`, kind: 'file', path: `rule${i}.css`, does: `the rule ${i}, ${'stated in full '.repeat(10).trim()}`}));
+  room.db().exec('UPDATE agents SET task=? WHERE id=?', assignment, top.id);
+  await room.updateLevel(top.id, l => ({...l, contracts: [...l.contracts, ...more], children: l.children.map(c => c.id === b.id ? {...c, prompt: task, delivers: [...c.delivers, ...more.map(x => x.name)]} : c)}));
+  const detail = `styles.css: the list is unstyled; ${'observed in full '.repeat(300).trim()}`;
+  await room.routeComplaint(top.id, {kind: 'run', parties: [], detail, facts: {validation: {serves: ['styles.css']}}});
+  const st = asked[0].state;
+  assert.equal(st.item.text, detail);
+  assert.equal(st.assignment, assignment);
+  assert.equal(st.children[1].task, task);
+  assert.equal(st.children[1].contracts.length, 31, 'every contract the child delivers');
+  // The complaint reaches the worker whole.
+  await room.routeHeld(b.id);
+  assert.deepEqual(room.receive(wb.id).map(x => x.body), [`[complaint] ${detail}`]);
+  // A worker reads every message it has in one turn, not the first twelve.
+  for (let i = 0; i < 20; i++) room.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)', 'runtime:complaint', wa.id, `[complaint] complaint ${i}`);
+  assert.equal(room.receive(wa.id).length, 20);
+  assert.equal(room.workerView(wa.id, room.receive(wa.id)).complaints.length, 20);
+  // Every answer it got stays with it.
+  for (let i = 0; i < 12; i++) room.recordAnswer(wa.id, {key: `fn n${i}`, kind: 'provided', text: `answer ${i} `.repeat(100).trim()});
+  assert.equal(room.read(`fn_answers:${wa.id}`, []).length, 12);
+  assert.equal(room.workerView(wa.id).world.answers.length, 12);
+  assert.ok(PAGE && CSS);
+});
+
 test('a manager reads its children and contracts from its level files only, never from the rows\' copies: a copy that says otherwise changes nothing it is shown or chooses', async () => {
   const {asked, clef} = recorded();
   const {room, top, a, b, wa, PAGE} = await tree(clef);

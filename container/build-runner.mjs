@@ -443,7 +443,7 @@ export function userThreads(uid=process.getuid?.()) {
 }
 const withThreadLimit=argv=>argv.includes(NPROC_ARG)?argv.map(a=>a===NPROC_ARG?`--nproc=${userThreads()+CHECK_RLIMITS.nproc}`:a):argv;
 const CHECK_KINDS=new Set(['file','command','call','http','browser']);
-const MAX_CHECKS=64,MAX_CALL_STEPS=20,READY_MS=10_000,DETAIL_CHARS=300;
+const READY_MS=10_000;
 const ADAPTER_DIR=fileURLToPath(new URL('./adapters/',import.meta.url));
 const HTTP_CHECK=path.join(ADAPTER_DIR,'http-check.mjs');
 // A row names its adapter at its image path (/opt/adapters/…); outside the
@@ -455,8 +455,9 @@ export function checkLimits(raw) {
   // The total stays inside the exec's 240 s timeout, with room to report.
   return {total_ms:clamp(o.total_ms,1000,220_000,CHECK_LIMITS.total_ms),check_ms:clamp(o.check_ms,500,60_000,CHECK_LIMITS.check_ms),step_ms:clamp(o.step_ms,200,30_000,CHECK_LIMITS.step_ms)};
 }
-const clip=(s,n=DETAIL_CHARS)=>{const t=String(s??'');return t.length>n?t.slice(0,n-1)+'…':t;};
-const show=(v,n=60)=>{let t;try{t=JSON.stringify(v);}catch{t=String(v);}return clip(t===undefined?'undefined':t,n);};
+const clip=(s,n)=>{const t=String(s??'');return t.length>n?t.slice(0,n-1)+'…':t;};
+// A value as a check's detail shows it: whole.
+const show=v=>{let t;try{t=JSON.stringify(v);}catch{t=String(v);}return t===undefined?'undefined':t;};
 const seconds=ms=>`${Math.round(ms/100)/10} s`;
 // v8 S4b review: what a check observed, apart from what it expected. A
 // failed check carries observed (what the deliverable did: its exit, an
@@ -660,7 +661,7 @@ export function resolveCommand(run,{files,rows,commands={}}) {
   return {error:`${first} is neither a command deliverable, a bundle file nor an installed executable`};
 }
 const freePort=()=>new Promise((resolve,reject)=>{const s=createNetServer();s.unref();s.on('error',reject);s.listen(0,'127.0.0.1',()=>{const {port}=s.address();s.close(()=>resolve(port));});});
-const commandText=run=>clip(Array.isArray(run)?run.join(' '):String(run||''),80);
+const commandText=run=>Array.isArray(run)?run.join(' '):String(run||'');
 
 const deepEqual=(a,b)=>{
   if(a===b)return true;
@@ -712,7 +713,7 @@ const at=frames=>frames.length?` (at ${frames[0].path}:${frames[0].line})`:'';
 function validateCheckPlan(raw) {
   const plan=raw&&typeof raw==='object'?raw:{};
   const list=v=>Array.isArray(v)?v:[];
-  const checks=list(plan.checks).filter(c=>c&&typeof c==='object'&&typeof c.id==='string'&&c.id).slice(0,MAX_CHECKS);
+  const checks=list(plan.checks).filter(c=>c&&typeof c==='object'&&typeof c.id==='string'&&c.id);
   const runs=list(plan.runs).filter(r=>r&&typeof r.id==='string'&&(r.static===true||typeof r.run==='string'||Array.isArray(r.run)||Array.isArray(r.argv)));
   const commands=plan.commands&&typeof plan.commands==='object'?plan.commands:{};
   // v8 S5: the module path the bundle's runtime glue needs: a *PATH variable
@@ -746,7 +747,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
   const env=checkEnvironment();
   const redact=(text,...dirs)=>stripAdapterFrames(redactPaths(text,[...dirs,scratch],base));
   const stage=async(name,fn)=>{const t=Date.now();const out=(await fn())||{};stages.push({name,passed:out.passed!==false,ms:Date.now()-t,...(out.detail?{detail:clip(redact(out.detail),600)}:{})});};
-  const result=(c,passed,ms,detail='',extra={})=>{checks.push({id:c.id,kind:c.kind,passed,ms,detail:passed?'':clip(redact(detail)),output:'',frames:[],...extra});};
+  const result=(c,passed,ms,detail='',extra={})=>{checks.push({id:c.id,kind:c.kind,passed,ms,detail:passed?'':redact(detail),output:'',frames:[],...extra});};
   const notRun=c=>result(c,false,0,`not run: the verification's ${Math.round(limits.total_ms/1000)} s budget was spent`,{infrastructure:true});
   // A fresh copy of the pristine bundle with its own temp and bytecode
   // folders beside it; dispose() deletes all three.
@@ -785,7 +786,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
         const box=await fresh('syntax');
         try {
           let rest=names,count=0,bad=0,timedOut=false,read=false;
-          while(rest.length&&count<12&&left()>0) {
+          while(rest.length&&left()>0) {
             count++;
             const r=await execCheck(row.syntax.flatMap(x=>x==='{files}'?rest:[x]),{cwd:box.dir,env:box.env,prefix:checkPrefix,ms:Math.max(1000,Math.min(60_000,left()))});
             if(r.code===0&&!r.timedOut){read=true;break;}
@@ -793,7 +794,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
             const out=redact(r.stdout+r.stderr,box.dir,box.root),hits=sourcePaths(out,Object.fromEntries(rest.map(n=>[n,1])));
             for(const p of hits.length?hits:rest.slice(0,1)) {
               const from=Math.max(0,out.indexOf(p)),next=hits.map(h=>out.indexOf(h,from+p.length)).filter(i=>i>from).sort((a,b)=>a-b)[0];
-              issues.push({path:p,kind:'source',stage:'syntax',detail:clip(`${row.id} syntax: ${out.slice(from,next??from+400).trim().replace(/\s*\n\s*/g,' | ')}`,400)});
+              issues.push({path:p,kind:'source',stage:'syntax',detail:`${row.id} syntax: ${out.slice(from,next).trim().replace(/\s*\n\s*/g,' | ')}`});
               bad++;
             }
             if(!hits.length||r.timedOut)break;
@@ -819,7 +820,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
       const box=await fresh('check');
       try {
         for(const [name,content] of Object.entries(c.files&&typeof c.files==='object'?c.files:{})) {
-          if(boxPathError(name)||typeof content!=='string')return result(c,false,0,`fixture ${clip(name,60)} is not a safe relative path`,{observed:{what:'setup',note:'an input file of the check is not a safe relative path'}});
+          if(boxPathError(name)||typeof content!=='string')return result(c,false,0,`fixture ${name} is not a safe relative path`,{observed:{what:'setup',note:'an input file of the check is not a safe relative path'}});
           if(Object.hasOwn(files,name))return result(c,false,0,`fixture ${name} would replace the bundle's ${name}`,{observed:{what:'setup',note:`an input file of the check would replace the project's ${name}`}});
           const target=path.join(box.dir,name);await mkdir(path.dirname(target),{recursive:true});await writeFile(target,content,'utf8');
         }
@@ -829,18 +830,18 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
         const frames=framesOf(r.stderr+'\n'+r.stdout,files,rows,box.dir),e=c.expect&&typeof c.expect==='object'?c.expect:{};
         const seen={exit:r.code,stdout:excerpt(stdout,600),stderr:excerpt(stderr,600),...(frames[0]?{at:`${frames[0].path}:${frames[0].line}`}:{})};
         const fail=(detail,what)=>result(c,false,r.ms,`${label}: ${detail}${at(frames)}`,{output,frames,observed:{what,...seen},expected:{...e}});
-        if(r.spawn_error)return fail(`could not start: ${clip(stderr,160)}`,'start');
+        if(r.spawn_error)return fail(`could not start: ${stderr}`,'start');
         if(r.timedOut)return fail(`timed out after ${seconds(r.ms)}`,'timeout');
         const norm=s=>String(s).replace(/\r\n/g,'\n').trimEnd();
         // No exit named: 0, or any non-zero exit when the check reads
         // stderr (an error case); a check names exit:0 when it means it.
         const errorCase=Array.isArray(e.stderr_has)&&e.stderr_has.length>0||e.stderr===true;
-        if(Number.isInteger(e.exit)){if(r.code!==e.exit)return fail(`exit ${r.code}, expected ${e.exit}${lastLines(stderr)?`; stderr: ${clip(lastLines(stderr),160)}`:''}`,'exit');}
+        if(Number.isInteger(e.exit)){if(r.code!==e.exit)return fail(`exit ${r.code}, expected ${e.exit}${lastLines(stderr)?`; stderr: ${lastLines(stderr)}`:''}`,'exit');}
         else if(errorCase){if(r.code===0)return fail('exit 0, expected a failure exit (non-zero)','exit');}
-        else if(r.code!==0)return fail(`exit ${r.code}, expected 0${lastLines(stderr)?`; stderr: ${clip(lastLines(stderr),160)}`:''}`,'exit');
-        if(typeof e.stdout==='string'&&norm(stdout)!==norm(e.stdout))return fail(`printed ${show(norm(stdout),80)}, expected ${show(norm(e.stdout),80)}`,'stdout');
-        for(const s of Array.isArray(e.stdout_has)?e.stdout_has:[])if(!stdout.includes(String(s)))return fail(`output lacks ${show(String(s))}; printed ${show(norm(stdout),80)}`,'stdout_has');
-        for(const s of Array.isArray(e.stderr_has)?e.stderr_has:[])if(!stderr.includes(String(s)))return fail(`stderr lacks ${show(String(s))}; stderr was ${show(norm(stderr),80)}`,'stderr_has');
+        else if(r.code!==0)return fail(`exit ${r.code}, expected 0${lastLines(stderr)?`; stderr: ${lastLines(stderr)}`:''}`,'exit');
+        if(typeof e.stdout==='string'&&norm(stdout)!==norm(e.stdout))return fail(`printed ${show(norm(stdout))}, expected ${show(norm(e.stdout))}`,'stdout');
+        for(const s of Array.isArray(e.stdout_has)?e.stdout_has:[])if(!stdout.includes(String(s)))return fail(`output lacks ${show(String(s))}; printed ${show(norm(stdout))}`,'stdout_has');
+        for(const s of Array.isArray(e.stderr_has)?e.stderr_has:[])if(!stderr.includes(String(s)))return fail(`stderr lacks ${show(String(s))}; stderr was ${show(norm(stderr))}`,'stderr_has');
         // Live 2 review: stderr:true asks for a message on stderr, whatever its wording.
         if(e.stderr===true&&!stderr.trim())return fail('wrote nothing to stderr, expected a message there','stderr');
         return result(c,true,r.ms);
@@ -891,7 +892,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
         const p=startProcess([...enter(),'node',path.join(ADAPTER_DIR,'static-server.mjs'),box.dir,'0'],{cwd:box.dir,env:box.env});
         let port=0;
         while(!port&&Date.now()<until+5000&&!p.exited()){const m=p.log().match(/^\{"port":(\d+)\}/m);if(m)port=Number(m[1]);else await sleep(25);}
-        if(!port){p.stop();await box.dispose();return {id:spec.id,error:`the static server did not start: ${clip(lastLines(p.log()),160)}`};}
+        if(!port){p.stop();await box.dispose();return {id:spec.id,error:`the static server did not start: ${lastLines(p.log())}`};}
         return {id:spec.id,base_url:`http://127.0.0.1:${port}/`,process:p,box,ms:Date.now()-t};
       }
       const run=spec.argv??spec.run,resolved=resolveCommand(run,{files,rows,commands:plan.commands});
@@ -908,8 +909,8 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
         const out=redact(p.log(),box.dir,box.root),frames=framesOf(p.log(),files,rows,box.dir),code=p.exited()?.code;
         p.stop();await box.dispose();
         return w.exited||p.exited()
-          ?{id:spec.id,error:`${label} exited (code ${code}) before it answered GET ${ready}${at(frames)}: ${clip(lastLines(out),160)}`,log:out,frames}
-          :{id:spec.id,error:`${label} did not answer GET ${ready} within ${seconds(Date.now()-t)}${lastLines(out)?`: ${clip(lastLines(out),160)}`:''}`,log:out};
+          ?{id:spec.id,error:`${label} exited (code ${code}) before it answered GET ${ready}${at(frames)}: ${lastLines(out)}`,log:out,frames}
+          :{id:spec.id,error:`${label} did not answer GET ${ready} within ${seconds(Date.now()-t)}${lastLines(out)?`: ${lastLines(out)}`:''}`,log:out};
       }
       return {id:spec.id,base_url,process:p,box,ms:Date.now()-t};
     }
@@ -920,7 +921,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
       const n=checks.length;
       for(const c of ordered) {
         if(c.kind==='judge')continue; // Clef, in the Worker (§4.3)
-        if(!CHECK_KINDS.has(c.kind)){result(c,false,0,`unknown check kind ${clip(c.kind,20)}`);continue;}
+        if(!CHECK_KINDS.has(c.kind)){result(c,false,0,`unknown check kind ${c.kind}`);continue;}
         if(c.kind==='file')fileCheck(c);
         else if(c.kind==='command')await runCommand(c);
         else if(c.kind==='call')await callCheck(c);
@@ -930,17 +931,17 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
     });
     function fileCheck(c) {
       const p=String(c.path||''),text=files[p];
-      if(typeof text!=='string')return result(c,false,0,`${clip(p,80)} is missing`);
+      if(typeof text!=='string')return result(c,false,0,`${p} is missing`);
       if(!text.trim())return result(c,false,0,`${p} is empty`);
       for(const s of Array.isArray(c.has)?c.has:[])if(!text.includes(String(s)))return result(c,false,0,`${p} does not contain ${show(String(s))}`);
-      if(c.json===true){try{JSON.parse(text);}catch(e){return result(c,false,0,`${p} is not valid JSON: ${clip(e.message,120)}`);}}
+      if(c.json===true){try{JSON.parse(text);}catch(e){return result(c,false,0,`${p} is not valid JSON: ${e.message}`);}}
       return result(c,true,0);
     }
     async function callCheck(c) {
       if(left()<=0)return notRun(c);
       const module=String(c.module||''),row=rows.find(r=>r.id===c.adapter)||rowOfPath(module,rows);
-      const steps=(Array.isArray(c.steps)?c.steps:[]).filter(s=>s&&typeof s.call==='string').slice(0,MAX_CALL_STEPS);
-      if(!Object.hasOwn(files,module))return result(c,false,0,`${clip(module||'(no module)',80)} is not in the bundle`,{observed:{what:'setup',note:`${clip(module||'(no module)',80)} is not in the project`}});
+      const steps=(Array.isArray(c.steps)?c.steps:[]).filter(s=>s&&typeof s.call==='string');
+      if(!Object.hasOwn(files,module))return result(c,false,0,`${module||'(no module)'} is not in the bundle`,{observed:{what:'setup',note:`${module||'(no module)'} is not in the project`}});
       if(!row?.call_adapter)return result(c,false,0,`no call adapter for ${module}`,{observed:{what:'setup',note:`no call adapter for ${module}`}});
       if(!steps.length)return result(c,false,0,'a call check without steps',{observed:{what:'setup',note:'a call check without steps'}});
       const box=await fresh('check'),nonce=randomBytes(16).toString('hex'),nonceFile=path.join(box.root,'nonce');
@@ -962,19 +963,19 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
           return result(c,false,r.ms,detail+at(frames),{output:clip([text.trim()&&`--- stack\n${text}`,stderr.trim()&&`--- stderr\n${stderr.slice(-1500)}`].filter(Boolean).join('\n'),4000),frames,
             observed:{module,...seen,...(frames[0]?{at:`${frames[0].path}:${frames[0].line}`}:{})},expected});
         };
-        if(load)return fail(`${module} does not load: ${clip(redact(load.error,box.dir,box.root),160)}`,load.stack,{what:'load',error:excerpt(redact(load.error,box.dir,box.root),400,{tail:false})});
+        if(load)return fail(`${module} does not load: ${redact(load.error,box.dir,box.root)}`,load.stack,{what:'load',error:excerpt(redact(load.error,box.dir,box.root),400,{tail:false})});
         for(const [i,s] of steps.entries()) {
-          const rec=byStep.get(i),call=`${s.call}(${(Array.isArray(s.args)?s.args:[]).map(a=>show(a,40)).join(', ')})`,step={step:i+1,op:s.call};
+          const rec=byStep.get(i),call=`${s.call}(${(Array.isArray(s.args)?s.args:[]).map(a=>show(a)).join(', ')})`,step={step:i+1,op:s.call};
           const want={...(Object.hasOwn(s,'expect')?{value:s.expect}:{}),...(typeof s.expect_has==='string'?{has:s.expect_has}:{}),...(s.throws===true?{throws:true}:{})};
           if(!rec) {
             if(r.timedOut)return fail(`${call} in ${module} did not return within ${seconds(r.ms)}`,'',{what:'timeout',...step},want);
-            return fail(`the process ended before ${call} in ${module} returned (${exitText})${lastLines(stderr)?`: ${clip(lastLines(stderr),120)}`:''}`,'',{what:'ended',...step,exit:worker?worker.worker_exit:r.code,stderr:excerpt(stderr,400)},want);
+            return fail(`the process ended before ${call} in ${module} returned (${exitText})${lastLines(stderr)?`: ${lastLines(stderr)}`:''}`,'',{what:'ended',...step,exit:worker?worker.worker_exit:r.code,stderr:excerpt(stderr,400)},want);
           }
-          if(rec.missing)return fail(clip(redact(rec.error,box.dir,box.root),200),'',{what:'missing',...step,error:excerpt(redact(rec.error,box.dir,box.root),300,{tail:false})},want);
+          if(rec.missing)return fail(redact(rec.error,box.dir,box.root),'',{what:'missing',...step,error:excerpt(redact(rec.error,box.dir,box.root),300,{tail:false})},want);
           if(s.throws===true){if(rec.ok)return fail(`${call} in ${module} returned ${show(rec.value)}, expected it to raise an error`,'',{what:'returned',...step,value:excerpt(valueText(rec.value),400,{tail:false})},want);continue;}
-          if(!rec.ok)return fail(`${call} in ${module} raised ${clip(redact(rec.error,box.dir,box.root),140)}`,rec.stack,{what:'raised',...step,error:excerpt(redact(rec.error,box.dir,box.root),400,{tail:false})},want);
-          if(Object.hasOwn(s,'expect')&&!deepEqual(rec.value,s.expect))return fail(`${call} in ${module} returned ${show(rec.value,80)}, expected ${show(s.expect,80)}`,'',{what:'returned',...step,value:excerpt(valueText(rec.value),400,{tail:false})},want);
-          if(typeof s.expect_has==='string'&&!JSON.stringify(rec.value??null).includes(s.expect_has))return fail(`${call} in ${module} returned ${show(rec.value,80)}, which lacks ${show(s.expect_has)}`,'',{what:'returned',...step,value:excerpt(valueText(rec.value),400,{tail:false})},want);
+          if(!rec.ok)return fail(`${call} in ${module} raised ${redact(rec.error,box.dir,box.root)}`,rec.stack,{what:'raised',...step,error:excerpt(redact(rec.error,box.dir,box.root),400,{tail:false})},want);
+          if(Object.hasOwn(s,'expect')&&!deepEqual(rec.value,s.expect))return fail(`${call} in ${module} returned ${show(rec.value)}, expected ${show(s.expect)}`,'',{what:'returned',...step,value:excerpt(valueText(rec.value),400,{tail:false})},want);
+          if(typeof s.expect_has==='string'&&!JSON.stringify(rec.value??null).includes(s.expect_has))return fail(`${call} in ${module} returned ${show(rec.value)}, which lacks ${show(s.expect_has)}`,'',{what:'returned',...step,value:excerpt(valueText(rec.value),400,{tail:false})},want);
         }
         // Every step answered: the adapter must also have finished and
         // exited by itself, which a module that exits the process never lets it do.
@@ -985,7 +986,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
     async function httpCheck(c) {
       if(left()<=0)return notRun(c);
       const run=runs.get(c.serve),t=Date.now();
-      if(!run)return result(c,false,0,`no run named ${clip(c.serve,40)}`,{observed:{what:'setup',note:`no run named ${clip(c.serve,40)}`}});
+      if(!run)return result(c,false,0,`no run named ${c.serve}`,{observed:{what:'setup',note:`no run named ${c.serve}`}});
       if(run.error)return result(c,false,0,`run ${run.id}: ${run.error}`,{output:clip(run.log||'',3000),frames:run.frames||[],observed:{what:'run',note:`run ${run.id}: ${run.error}`}});
       const ms=Math.max(200,Math.min(limits.check_ms,left()));
       const r=await execCheck(['node',HTTP_CHECK],{cwd:scratch,env,ms:ms+2000,prefix:enter(),stdin:JSON.stringify({base_url:run.base_url,steps:Array.isArray(c.steps)?c.steps:[],step_ms:limits.step_ms,check_ms:ms})});
@@ -993,7 +994,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
       if(x?.passed)return result(c,true,Date.now()-t);
       const log=run.process?.log()||'',frames=framesOf(log,files,rows,run.box?.dir);
       const output=clip(`${x?.body?`--- response\n${x.body}\n`:''}--- server output\n${redact(log,run.box?.dir,run.box?.root).slice(-2000)}`,4000);
-      if(!x)return result(c,false,Date.now()-t,r.timedOut?`did not finish within ${seconds(r.ms)}`:`the HTTP client failed (exit ${r.code}): ${clip(lastLines(r.stderr),120)}`,{output,frames,infrastructure:!r.timedOut});
+      if(!x)return result(c,false,Date.now()-t,r.timedOut?`did not finish within ${seconds(r.ms)}`:`the HTTP client failed (exit ${r.code}): ${lastLines(r.stderr)}`,{output,frames,infrastructure:!r.timedOut});
       const st=(Array.isArray(c.steps)?c.steps:[])[x.step-1]||{};
       return result(c,false,Date.now()-t,`step ${x.step} ${x.label}: ${x.reason}${run.process?.exited()?' (the server exited)':''}${at(frames)}`,{output,frames,
         observed:{what:x.what||'step',step:x.step,op:String(st.method||'GET').toUpperCase(),...(Number.isInteger(x.status)?{status:x.status}:{}),body:excerpt(x.body||'',400,{tail:false}),...(run.process?.exited()?{server_exited:true}:{}),...(frames[0]?{at:`${frames[0].path}:${frames[0].line}`}:{})},
@@ -1008,7 +1009,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
       for(const c of browserChecks) {
         const run=runs.get(c.serve);
         if(left()<=0)notRun(c);
-        else if(!run)result(c,false,0,`no run named ${clip(c.serve,40)}`,{observed:{what:'setup',note:`no run named ${clip(c.serve,40)}`}});
+        else if(!run)result(c,false,0,`no run named ${c.serve}`,{observed:{what:'setup',note:`no run named ${c.serve}`}});
         else if(run.error)result(c,false,0,`run ${run.id}: ${run.error}`,{output:clip(run.log||'',3000),frames:run.frames||[],observed:{what:'run',note:`run ${run.id}: ${run.error}`}});
         else ready.push({c,run});
       }
@@ -1055,7 +1056,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
     // Checks in the plan's order (project checks first).
     const order=new Map([...plan.project.map(p=>String(p.id||'P')),...plan.checks.map(c=>c.id)].map((id,i)=>[id,i]));
     checks.sort((a,b)=>(order.get(a.id)??1e9)-(order.get(b.id)??1e9));
-    return {fingerprint:request.fingerprint,snapshot_hash:request.snapshot_hash,mode:'checks',passed,stages,checks,issues:issues.slice(0,12),infrastructure_issue,inventory,ms:Date.now()-began,
+    return {fingerprint:request.fingerprint,snapshot_hash:request.snapshot_hash,mode:'checks',passed,stages,checks,issues,infrastructure_issue,inventory,ms:Date.now()-began,
       log:[...stages.map(s=>`${s.name}: ${s.passed?'ok':'FAILED'}${s.detail?` (${s.detail})`:''}`),...checks.filter(c=>!c.passed).map(c=>`${c.id} ${c.kind}: ${c.detail}`)].join('\n').slice(-5000)};
   } finally {
     // 8. Stop the runs, their namespace and anything a check left behind.

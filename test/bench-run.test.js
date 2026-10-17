@@ -128,7 +128,7 @@ test('a run queues its tasks, starts at most `concurrency` rooms per tick, and k
   rooms.end(taskRoom(ID, 1, 0), fail);
   rooms.end(taskRoom(ID, 2, 0), {...pass, tokens: {calls: 3, prompt: 300, completion: 100, total: 400}, container_ms: 2500, last_event_at: 4000});
   await b.alarm();
-  rooms.end(taskRoom(ID, 3, 0), {status: 'paused', pause: {kind: 'checks_exhausted', text: 'repair rounds ran out'}});
+  rooms.end(taskRoom(ID, 3, 0), {status: 'paused', pause: {kind: 'split_failed', text: 'its splitter\'s session ended without done'}});
   rooms.end(taskRoom(ID, 4, 0), pass);
   const done = await b.alarm().then(() => b.status());
   assert.equal(rooms.peak(), 2, 'never more than two rooms at once');
@@ -139,7 +139,7 @@ test('a run queues its tasks, starts at most `concurrency` rooms per tick, and k
   assert.deepEqual(done.tasks.map(t => t.room_deleted), [true, false, true, false, true]);
   assert.deepEqual(done.tasks.map(t => t.outcome), ['pass', 'fail', 'pass', 'fail', 'pass']);
   assert.match(done.tasks[1].detail, /exit|BenchHarnessError|failed/i, 'the grader\'s observation');
-  assert.match(done.tasks[3].detail, /checks_exhausted/);
+  assert.match(done.tasks[3].detail, /split_failed/);
   assert.deepEqual(done.tasks.map(t => t.rounds), [1, 1, 1, 0, 1]);
   assert.deepEqual([done.tasks[2].tokens, done.tasks[2].prompt_tokens, done.tasks[2].completion_tokens, done.tasks[2].model_calls, done.tasks[2].container_ms, done.tasks[2].wall_ms], [400, 300, 100, 3, 2500, 3000]);
   assert.equal(done.aggregate.pass_at_1, 3 / 5);

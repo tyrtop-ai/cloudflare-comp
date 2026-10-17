@@ -26,8 +26,8 @@ const ROWS=JSON.parse(JSON.stringify(TOOLCHAINS));
 const hasPython=spawnSync('python3',['--version']).status===0;
 const run=async(files,plan,extra={})=>verifyChecks({mode:'checks',fingerprint:'f',snapshot_hash:await snapshotHash(files),files,toolchains:ROWS,plan,limits:{total_ms:120_000,check_ms:15_000,step_ms:4000},...extra});
 const byId=report=>Object.fromEntries(report.checks.map(c=>[c.id,c]));
-// A failure detail is one short line.
-const short=c=>{if(process.env.SHOW_DETAILS)console.log(`[${c.id}] ${c.detail}`);assert.ok(c.detail.length<=300,c.detail);assert.ok(!c.detail.includes('\n'),c.detail);};
+// A failure detail is one line (as the box observed it; nothing clips it).
+const short=c=>{if(process.env.SHOW_DETAILS)console.log(`[${c.id}] ${c.detail}`);assert.ok(!c.detail.includes('\n'),c.detail);};
 
 test('file checks: exists, non-empty, has each string, parses as JSON; failures name the file',async()=>{
   const files={'README.md':'# Word count\n\nUsage: python3 wc.py < file\n','data/config.json':'{"top": 3}','bad.json':'{"top": 3,}','empty.txt':' \n'};
@@ -192,6 +192,18 @@ test('call checks: JavaScript functions in one process, saved results read by la
   assert.equal(c.R4.detail,'components/todos/todos.mjs has no function remove (it exports: add, list, toggle)');
   assert.equal(c.R5.detail,'list() in components/todos/todos.mjs returned [{"id":1,"title":"a","done":false}], expected []');
   for(const x of report.checks.filter(x=>!x.passed))short(x);
+});
+
+test('no count and no clip in the box: every check of a plan runs, every step of a call check runs, and a failure states the whole of what it observed and expected',async()=>{
+  const long='z'.repeat(500);
+  const files={'lib/echo.js':'exports.echo=x=>x;\n','NOTES.md':'# Notes\n'};
+  const steps=[...Array.from({length:29},(_,i)=>({call:'echo',args:[i],expect:i})),{call:'echo',args:[long],expect:long+'!'}];
+  const report=await run(files,{checks:[{id:'C1',kind:'call',adapter:'javascript',module:'lib/echo.js',steps},...Array.from({length:70},(_,i)=>({id:`F${i}`,kind:'file',path:'NOTES.md',has:[i<69?'# Notes':long]}))]},{isolation:[]});
+  assert.equal(report.checks.length,71);
+  const c=byId(report);
+  assert.ok(Array.from({length:69},(_,i)=>c[`F${i}`].passed).every(Boolean));
+  assert.equal(c.F69.detail,`NOTES.md does not contain ${JSON.stringify(long)}`);
+  assert.equal(c.C1.detail,`echo(${JSON.stringify(long)}) in lib/echo.js returned ${JSON.stringify(long)}, expected ${JSON.stringify(long+'!')}`);
 });
 
 test('call checks: Python functions keep a saved object across steps, await coroutines, and name the raising line',{skip:!hasPython&&'python3 is not installed'},async()=>{

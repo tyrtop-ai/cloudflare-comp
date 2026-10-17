@@ -134,6 +134,26 @@ test('piece: delivers declared contracts of this level and uses what is declared
   assert.deepEqual(levelView(s).pieces, [{label: 'Converter', task: 'Write the converter.', contracts: ['to_f'], uses: ['log_line', 'had']}, {label: 'CLI', task: 'Write the command.', contracts: ['convert'], uses: [], packages: ['click']}]);
 });
 
+test('a level has no size caps but the room\'s bound on pieces: its contracts, validations, a contract\'s inputs and a piece\'s label and task are stored as given, however many or long', () => {
+  const s = splitterState({maxPieces: 2});
+  const docs = Array.from({length: 30}, (_, i) => ({name: `doc${i}.md`, kind: 'doc', path: `doc${i}.md`, does: 'd'.repeat(400)}));
+  for (const d of docs) assert.equal(splitterCall(s, 'contract', d).result.stored, d.name);
+  const inputs = Array.from({length: 9}, (_, i) => ({name: `a${i}`, is: `input ${i} of the conversion, ${'in full words '.repeat(10).trim()}`}));
+  assert.equal(splitterCall(s, 'contract', {...TO_F, inputs}).result.stored, 'to_f');
+  for (let i = 0; i < 80; i++) assert.ok(splitterCall(s, 'file_check', {serves: ['doc0.md'], path: 'doc0.md', has: [`line ${i}`]}).result.id, `validation ${i}`);
+  const label = 'A piece whose label says a great deal about what it makes '.repeat(3).trim(), task = 'Write every document of this level in full sentences. '.repeat(60).trim();
+  assert.deepEqual(splitterCall(s, 'piece', {label, task, contracts: docs.map(d => d.name)}).result, {stored: label, pieces: 1});
+  const level = levelOf(s);
+  assert.equal(level.contracts.length, 31);
+  assert.equal(level.validations.length, 80);
+  assert.deepEqual(level.contracts.find(c => c.name === 'to_f').inputs, inputs);
+  assert.equal(level.contracts[0].does, 'd'.repeat(400));
+  assert.deepEqual([level.pieces[0].label, level.pieces[0].task], [label, task]);
+  // The one bound is the owner's: the room's bound on pieces.
+  assert.deepEqual(splitterCall(s, 'piece', {label: 'Two', task: 'x', contracts: ['to_f']}).result, {stored: 'Two', pieces: 2});
+  assert.equal(splitterCall(s, 'piece', {label: 'Three', task: 'x', contracts: ['to_f']}).result.error, 'this level holds at most 2 pieces');
+});
+
 test('level shows everything declared so far; done reports what the level still lacks (three different examples per contract that is called or run) and keeps the session open, or completes it with the level', () => {
   const own = {...TO_F, serves: ['V7']}, held = [{id: 'V7', serves: ['to_f'], check: {kind: 'call', steps: [{call: 'to_f', args: [1], expect: 33.8}]}}];
   const s = splitterState({own: [own], held});
