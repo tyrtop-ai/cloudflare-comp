@@ -305,10 +305,9 @@ const pageRoom = async (files, start = {}) => {
 
 test('pagescript: a page\'s classic script is compiled as a browser reads it: export syntax there does not compile, and the run does not complete', async () => {
   const {room} = await pageRoom({'index.html': PAGE(), 'script.js': SCRIPT});
-  const top = await room.bundleFiles(room.roomManager());
-  assert.equal(room.syntaxOf('script.js', top.files).mode, 'classic+either');
-  assert.deepEqual([...room.uncompiled(top.files)], ['script.js']);
-  assert.match(events(room, 'checks_reported').at(-1)?.body || '', /1 file\(s\) do not compile/, tail(room));
+  // The worker answers the complaint with its files unchanged, so its splitter rebuilds the piece (owner, 2026-10-17):
+  // what the compile observed is in its report and the complaint, not in the bundle the run ends with.
+  assert.match(events(room, 'checks_reported').at(0)?.body || '', /1 file\(s\) do not compile/, tail(room));
   assert.match(JSON.stringify(room.problems('1=1').map(p => p.detail)), /script\.js: does not parse as JavaScript read as a classic script, as a page loads it/);
   assert.notEqual(room.get('status'), 'complete', tail(room));
   assert.equal(room.runFinished(), false);

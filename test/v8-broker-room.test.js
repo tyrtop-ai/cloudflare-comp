@@ -146,8 +146,11 @@ test('broker: a worker reads its granted file and a chunk it holds at once; a pa
   assert.equal(byName('package.json'), undefined);
   assert.equal(byName('S1#2'), undefined);
   assert.deepEqual(sent(notes.id).slice(0, 2), ['Asked for package.json (the project manifest).', 'Asked for S1#2 (the fields of the format).']);
-  // The broker answered what each world holds, with no hop up the line.
-  assert.deepEqual([...new Set(events(room, 'broker_answer').map(e => e.actor))].sort(), [notes.id, shout.id].sort());
+  // The broker answered what each world holds, with no hop up the line: the Shout keeper's and the Notes writer's
+  // workers, and a worker their splitters rebuilt after one answered a complaint with its files unchanged.
+  const answeredBy = [...new Set(events(room, 'broker_answer').map(e => e.actor))];
+  assert.ok([notes.id, shout.id].every(id => answeredBy.includes(id)), answeredBy.join(', '));
+  assert.ok(answeredBy.every(id => [notes.id, shout.id].map(w => room.agentAbove(w)).includes(room.agentAbove(id))), answeredBy.join(', '));
   // Each went to the asker's manager, whose choice answers it.
   assert.deepEqual(['bin/widget.js', 'package.json', 'S1#2'].map(n => events(room, 'manager_choice').some(e => e.body.startsWith(`On the ask for ${n}:`))), [true, true, true]);
 
