@@ -278,14 +278,14 @@ Benchmark runs have their own routes, behind the same token. They take no `room`
 
 | Route | Purpose |
 |---|---|
-| `POST /api/bench` | `{dataset, limit?, format?, settings?, concurrency?, budget?, label?, task_timeout_minutes?, keep_rooms?}`: start a benchmark run. `dataset` is a URL (a JSON lines file on `raw.githubusercontent.com`, or a `datasets-server.huggingface.co` rows URL) or the JSON lines themselves. `format` is `humaneval`, `mbpp`, `multipl-e` or `generic` (`{id, prompt, tests}`), detected when left out. `limit` defaults to 20 (at most 500), `concurrency` to 2 (at most 16, and never more than `BENCH_EXECUTORS`), `budget` to 60 turns per task, the task timeout to 30 minutes. `keep_rooms` is `failed` (default: keep the rooms that did not pass), `all` or `none`. Every task room runs the v8 pipeline whatever `settings` says. Returns the run's `id` |
+| `POST /api/bench` | `{dataset, limit?, format?, settings?, concurrency?, budget?, label?, task_timeout_minutes?, keep_rooms?, feedback?}`: start a benchmark run. `dataset` is a URL (a JSON lines file on `raw.githubusercontent.com`, or a `datasets-server.huggingface.co` rows URL) or the JSON lines themselves. `format` is `humaneval`, `mbpp`, `multipl-e` or `generic` (`{id, prompt, tests}`), detected when left out. `limit` defaults to 20 (at most 500), `concurrency` to 2 (at most 16, and never more than `BENCH_EXECUTORS`), `budget` to 60 turns per task, the task timeout to 30 minutes. `keep_rooms` is `failed` (default: keep the rooms that did not pass), `all` or `none`. `feedback` is `until_done` (default: a failed grading goes back to the task's room as a complaint, and the room goes on with the turns its budget has left, graded again each time it completes) or `once` (the first grading is the result and nothing goes back). Each room starts from the task's prompt exactly as the dataset has it; the grader finds the function in whichever file the room put it. Every task room runs the v8 pipeline whatever `settings` says. Returns the run's `id` |
 | `GET /api/bench` | The runs, and the deployment's executor slots |
-| `GET /api/bench?id=` | One run: progress, pass@1, cost and time, and one row per task (outcome, room id, wall time, tokens, Container time). It holds no remote URLs or account IDs |
+| `GET /api/bench?id=` | One run: progress, pass@1 (and, until done, the pass rate after the gradings went back), cost and time, and one row per task (outcome, first grading, gradings, room id, wall time, tokens, Container time). It holds no remote URLs or account IDs |
 | `GET /api/bench/compare?a=&b=` | Two runs on the tasks they share |
 | `POST /api/bench/stop`, `POST /api/bench/resume` | `{id}`: stop or resume a run |
 | `DELETE /api/bench/<id>` | Delete the run and the rooms it still keeps |
 
-pass@1 counts only scored tasks. A task that could not be scored for platform reasons (the Container could not run, a stop, a card hold) is an error and is left out. A task whose room ran out of turns counts as a failure.
+pass@1 is each task's first grading, over scored tasks only. A task that could not be scored for platform reasons (the Container could not run, a stop, a hold) is an error and is left out. A task whose room ran out of turns counts as a failure. A run with `feedback: until_done` also reports the share that passed once the grader's failures went back, and the mean gradings it took.
 
 ```bash
 URL=https://qwen-control-plane-v4.<your-subdomain>.workers.dev

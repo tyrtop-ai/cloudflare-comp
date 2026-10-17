@@ -9,15 +9,19 @@
 // the same call /api/run makes (ControlRoom.start), with the task's prompt.
 // The grader is outside the room: once the room completes on its own
 // validations, the run grades the bundle it ships (appFiles) in a fresh box
-// of its own with the internet off (gradeBundle). feedback: 'once' scores
-// that first grading (pass@1); 'until_done' sends a failed grading back to
-// the room's manager as a complaint, verbatim (ControlRoom.graderComplaint),
-// and grades again when the room completes again, up to MAX_GRADE_ROUNDS,
-// recording the rounds it took; both are reported, labelled. A slot (at most
-// BENCH_EXECUTORS) only caps how many rooms run at once. A scored room's
-// repositories and storage are deleted unless the run keeps it (keep_rooms:
-// 'failed', the default, keeps every room that did not pass; 'all';
-// 'none'). One more instance ('index') lists the runs for the dashboard.
+// of its own with the internet off (gradeBundle). feedback 'until_done' (the
+// default): a failed grading goes back to the room's manager as a complaint,
+// verbatim, like any other (ControlRoom.graderComplaint), the room goes on
+// with the turns its budget has left, and the run grades again each time it
+// completes, until a grading passes or the room ends otherwise (its budget
+// spent, a hold, the task's timeout); the task records its first grading
+// (pass@1) and the gradings it took. 'once': the first grading is the
+// task's result and nothing goes back (pass@1, comparable with published
+// scores). A slot (at most BENCH_EXECUTORS) only caps how many rooms run at
+// once. A scored room's repositories and storage are deleted unless the run
+// keeps it (keep_rooms: 'failed', the default, keeps every room that did not
+// pass; 'all'; 'none'). One more instance ('index') lists the runs for the
+// dashboard.
 //
 // Stop wins over a tick in flight: a room a tick started after Stop is
 // stopped at once and its task requeued, and a tick never sets the alarm
@@ -41,10 +45,8 @@ const clip = (v, n = 300) => String(v ?? '').slice(0, n);
 const json = (body, status = 200) => Response.json(body, {status, headers: {'cache-control': 'no-store'}});
 export const RUN_ID = /^[a-f0-9]{12}$/;
 export const KEEP_ROOMS = Object.freeze(['failed', 'all', 'none']);
-export const FEEDBACK = Object.freeze(['once', 'until_done']);
-export const BENCH_DEFAULTS = Object.freeze({limit: BENCH_LIMITS.defaultLimit, concurrency: 2, budget: 60, task_timeout_ms: 30 * 60_000, poll_ms: 10_000, executors: 4, keep_rooms: 'failed', feedback: 'once'});
-// feedback 'until_done': the gradings of one task, its first included.
-export const MAX_GRADE_ROUNDS = 5;
+export const FEEDBACK = Object.freeze(['until_done', 'once']);
+export const BENCH_DEFAULTS = Object.freeze({limit: BENCH_LIMITS.defaultLimit, concurrency: 2, budget: 60, task_timeout_ms: 30 * 60_000, poll_ms: 10_000, executors: 4, keep_rooms: 'failed', feedback: 'until_done'});
 const MAX_POLL_ERRORS = 5, MAX_PURGE_TRIES = 10;
 // How many task rooms run at once at most: BENCH_EXECUTORS, else 4. (Each
 // compile opens its own box; the durable_object policy has no max_instances.)
@@ -187,18 +189,20 @@ export class BenchRun extends DurableObject {
   // A room that completed: its shipped bundle graded. A pass (or, with
   // feedback 'once', any grading) settles the task; with 'until_done' a
   // failed grading goes back to the room's manager as a complaint and the
-  // room runs again, while rounds and the task's time are left.
+  // room runs again, with the turns its budget has left, while the task's
+  // time is left. A room that cannot take it (its budget spent) settles
+  // the task with that grading.
   async graded(t, s, now, timeout) {
     const g = gradeOutcome(await this.grade(t)), round = (t.rounds || 0) + 1, once = t.once || g.outcome;
     const row = this.row(t.idx);
     if (!row || row.status !== 'running' || row.room !== t.room) return;
     this.db().exec('UPDATE tasks SET rounds=?,once=? WHERE idx=?', round, once, t.idx);
-    const again = this.get('feedback', BENCH_DEFAULTS.feedback) === 'until_done' && g.outcome === 'fail' && round < MAX_GRADE_ROUNDS && now - t.started_at < timeout;
+    const again = this.get('feedback', BENCH_DEFAULTS.feedback) === 'until_done' && g.outcome === 'fail' && now - t.started_at < timeout;
     if (again) {
       let r;
-      try { r = await this.env.ROOMS.getByName(t.room).graderComplaint(g.detail, this.get('budget', BENCH_DEFAULTS.budget)); } catch (e) { r = {error: clip(e?.message || e)}; }
+      try { r = await this.env.ROOMS.getByName(t.room).graderComplaint(g.detail); } catch (e) { r = {error: clip(e?.message || e)}; }
       if (!r?.error) { this.record(t, s); return; }
-      return this.finish({...this.row(t.idx)}, {outcome: 'fail', detail: clip(`${g.detail} (the complaint could not reach the room: ${r.error})`)}, s, now);
+      return this.finish({...this.row(t.idx)}, {outcome: 'fail', detail: `the room could not take the grader's complaint (${r.error}): ${g.detail}`}, s, now);
     }
     this.finish({...this.row(t.idx)}, g, s, now);
   }
@@ -357,7 +361,7 @@ export async function gradeBundle(env, grader, files) {
     if (opened?.fresh !== true || opened?.internet !== false) return {infrastructure: 'the box did not confirm a fresh start with the internet off'};
     const r = classifyEnvironment(report), c = (r.checks || []).find(x => x?.id === grader.id);
     if (!c || c.infrastructure) return {infrastructure: clip(c?.detail || r.infrastructure_issue || 'the grader did not run')};
-    return {passed: !!c.passed, detail: clip(c.detail || '', 1500)};
+    return {passed: !!c.passed, detail: c.detail || ''};
   } catch (e) { return {infrastructure: clip(e?.message || e)}; }
 }
 

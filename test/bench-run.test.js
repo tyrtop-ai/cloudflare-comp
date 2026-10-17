@@ -2,13 +2,19 @@
 // Scheduling with fake task rooms: concurrency, alarms, stop and resume,
 // timeouts, results and aggregates, the index, and the API's auth. The
 // grader runs on what a completed room ships, in the real build runner
-// behind fake boxes: feedback 'once' scores that grading, 'until_done'
-// sends a failed one back to the room as a complaint and grades again.
+// behind fake boxes: feedback 'until_done' (the default) sends a failed one
+// back to the room as a complaint and grades again each time the room
+// completes, bounded by the room's own turn budget; 'once' scores that
+// first grading.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Sql } from './helpers/room.js';
+import { spawnSync } from 'node:child_process';
 import { fakeBoxes } from './helpers/boxes.js';
-const { BenchRun, taskRoom, RUN_ID, MAX_GRADE_ROUNDS } = await import('../src/bench-run.js');
+import { levelRoom, usualClef, deliver, callCheck, events } from './helpers/levels.js';
+import { HUMANEVAL } from './helpers/bench-fixtures.js';
+const { BenchRun, taskRoom, RUN_ID, BENCH_DEFAULTS, gradeBundle } = await import('../src/bench-run.js');
+const { taskFromRow } = await import('../src/bench.js');
 const { verifyChecks } = await import('../container/build-runner.mjs');
 const worker = (await import('../src/index.js')).default;
 
@@ -21,7 +27,8 @@ const taskOf = name => Number(String(name).split('-')[2]);
 
 // A fake task room: start/stop/benchSummary/appFiles/graderComplaint/purge,
 // its state set by the test. gate: a promise start() waits on (a slow
-// start, for the Stop race).
+// start, for the Stop race). left: the turns its budget has left; at 0 it
+// takes no grader's complaint, as ControlRoom.graderComplaint says.
 function fakeRooms() {
   const rooms = new Map(), log = [], executors = new Map();
   let live = 0, peak = 0, gate = null;
@@ -46,14 +53,18 @@ function fakeRooms() {
         stop: async () => { r.stopped++; log.push(['stop', name]); if (r.state?.status === 'running') { r.state = {...r.state, status: 'paused', busy: false}; live--; } return {status: 'stopping'}; },
         benchSummary: async () => { if (r.broken) throw new Error('room unreachable'); return r.state; },
         appFiles: async () => r.solution === null ? {status: 409, error: 'No application yet'} : {kind: 'levels', files: [{path: 'solution.py', content: r.solution}, {path: '.recursive/RUN.md', content: 'notes'}]},
-        graderComplaint: async (text, budget) => { r.complaints.push(text); log.push(['complaint', name]); r.state = {...r.state, status: 'running', busy: true}; live++; return {status: 'running'}; },
+        graderComplaint: async (...args) => {
+          if (r.left === 0) return {error: 'The room\'s turn budget is spent.'};
+          r.complaints.push(args); log.push(['complaint', name]); r.state = {...r.state, status: 'running', busy: true}; live++; return {status: 'running'};
+        },
         purge: async () => { if (r.state?.busy || r.purgeBusy) return {error: 'busy'}; r.purged = (r.purged || 0) + 1; log.push(['purge', name]); return {repos_deleted: 1, repos_failed: 0}; }
       };
     }
   };
   // End a running room: its state, and what it ships (pass: a right solution; fail: a wrong one).
   const end = (name, patch) => {
-    const r = room(name), {ships, ...state} = patch;
+    const r = room(name), {ships, left, ...state} = patch;
+    if (left !== undefined) r.left = left;
     if (r.state?.status === 'running') live--;
     r.state = {...r.state, busy: false, ...state};
     if (ships) r.solution = ships === 'right' ? RIGHT(taskOf(name)) : WRONG(taskOf(name));
@@ -81,7 +92,11 @@ function benchEnv(extra = {}) {
 const SETTINGS = {pipeline: 'v8', model: 'm', worker_model: 'w'};
 const begin = (b, extra = {}) => b.begin({id: ID, label: 'toy', dataset: {text: DATA(5)}, limit: 5, settings: SETTINGS, concurrency: 2, budget: 30, selfHosts: ['cp.test'], ...extra});
 const pass = {status: 'complete', ships: 'right'};
-const fail = {status: 'complete', ships: 'wrong'};
+// A room that completed on a wrong solution with its turn budget spent: the
+// grader's failure cannot go back, so the grading is the task's result.
+const fail = {status: 'complete', ships: 'wrong', left: 0};
+// One that completed on a wrong solution with turns left: the failure goes back.
+const wrong = {status: 'complete', ships: 'wrong'};
 
 
 test('a run queues its tasks, starts at most `concurrency` rooms per tick, and keeps the alarm set until every task ends', async () => {
@@ -128,8 +143,9 @@ test('a run queues its tasks, starts at most `concurrency` rooms per tick, and k
   assert.deepEqual(done.tasks.map(t => t.rounds), [1, 1, 1, 0, 1]);
   assert.deepEqual([done.tasks[2].tokens, done.tasks[2].prompt_tokens, done.tasks[2].completion_tokens, done.tasks[2].model_calls, done.tasks[2].container_ms, done.tasks[2].wall_ms], [400, 300, 100, 3, 2500, 3000]);
   assert.equal(done.aggregate.pass_at_1, 3 / 5);
-  assert.equal(done.aggregate.feedback, 'once');
-  assert.ok(!('until_done' in done.aggregate));
+  assert.equal(done.aggregate.feedback, 'until_done', 'the default: the grader\'s failures go back until done');
+  assert.deepEqual(done.aggregate.until_done, {scored: 5, pass: 3, pass_rate: 3 / 5, mean_rounds_to_done: 1});
+  assert.match(done.tasks[1].detail, /could not take the grader's complaint \(The room's turn budget is spent\.\)/);
   assert.equal(done.aggregate.tokens, 400);
   assert.equal(done.aggregate.container_s, 2.5);
   assert.ok(done.finished_at > 0);
@@ -415,63 +431,111 @@ test('wrangler.jsonc: BENCHES is bound to BenchRun (a sqlite export) and BENCH_E
 });
 
 // ------------------------------------------------------------------ feedback
-test('feedback "once": the grader runs once on what the completed room ships, in a fresh box with the internet off, and that grading is the task\'s pass@1', async () => {
-  const {rooms, boxes, run} = benchEnv(), b = run();
+test('feedback "until_done" is the default: a failed grading goes back to the room\'s manager as a complaint, verbatim, the room runs again, and the task records its first grading (pass@1) and the gradings it took to pass', async () => {
+  assert.equal(BENCH_DEFAULTS.feedback, 'until_done');
+  const {rooms, run} = benchEnv(), b = run();
   await begin(b, {concurrency: 2, limit: 2, dataset: {text: DATA(2)}});
   await b.alarm();
-  rooms.end(taskRoom(ID, 0, 0), pass); rooms.end(taskRoom(ID, 1, 0), fail);
-  const s = await b.alarm().then(() => b.status());
-  assert.equal(s.feedback, 'once');
-  assert.deepEqual(s.tasks.map(t => [t.outcome, t.once, t.rounds]), [['pass', 'pass', 1], ['fail', 'fail', 1]]);
-  assert.equal(rooms.log.filter(l => l[0] === 'complaint').length, 0, 'once never sends the grader\'s failure back');
-  assert.equal(s.aggregate.pass_at_1, 0.5);
-  // Each grading opened a box of its own, with the internet off.
-  assert.equal(boxes.boxes.length, 2);
-  assert.ok(boxes.boxes.every(x => x.container.options?.enableInternet === false));
-});
-
-test('feedback "until_done": a failed grading goes back to the room\'s manager as a complaint, the room runs again, and the task records its first grading (pass@1) and the rounds it took to pass', async () => {
-  const {rooms, run} = benchEnv(), b = run();
-  await begin(b, {concurrency: 2, limit: 2, dataset: {text: DATA(2)}, feedback: 'until_done'});
-  await b.alarm();
-  rooms.end(taskRoom(ID, 0, 0), fail); rooms.end(taskRoom(ID, 1, 0), pass);
+  rooms.end(taskRoom(ID, 0, 0), wrong); rooms.end(taskRoom(ID, 1, 0), pass);
   await b.alarm();
   let s = b.status();
   assert.equal(s.feedback, 'until_done');
   assert.deepEqual(s.tasks.map(t => [t.status, t.once, t.rounds]), [['running', 'fail', 1], ['done', 'pass', 1]]);
   const r0 = rooms.rooms.get(taskRoom(ID, 0, 0));
   assert.equal(r0.complaints.length, 1);
-  assert.match(r0.complaints[0], /BenchHarnessError|AssertionError|exit/, 'the grader\'s observation, verbatim');
-  assert.ok(!r0.complaints[0].includes('bench_nonce'), 'never the grader\'s input files');
+  assert.equal(r0.complaints[0].length, 1, 'the observation alone: the room\'s own budget bounds the run, the run gives it none');
+  const [said] = r0.complaints[0];
+  assert.match(said, /BenchHarnessError|AssertionError|exit/, 'the grader\'s observation, verbatim');
+  assert.ok(!said.includes('bench_nonce'), 'never the grader\'s input files');
   // The room fixes it and completes again: graded again, and it passes.
   rooms.end(taskRoom(ID, 0, 0), pass);
   s = await b.alarm().then(() => b.status());
   assert.equal(s.status, 'done');
   assert.deepEqual(s.tasks.map(t => [t.outcome, t.once, t.rounds]), [['pass', 'fail', 2], ['pass', 'pass', 1]]);
-  // Both reported, labelled: pass@1 from the first gradings, and the pass rate with feedback and its rounds.
+  // Both reported, labelled: pass@1 from the first gradings, and the pass rate with feedback and its gradings.
   assert.equal(s.aggregate.pass_at_1, 0.5);
   assert.deepEqual(s.aggregate.until_done, {scored: 2, pass: 2, pass_rate: 1, mean_rounds_to_done: 1.5});
 });
 
-test('feedback "until_done" stops at MAX_GRADE_ROUNDS gradings: the task fails with the last observation', async () => {
+test('feedback "until_done" has no round cap: the failure goes back each time the room completes, until the room\'s own turn budget is spent; then the task fails with the last observation', async () => {
   const {rooms, run} = benchEnv(), b = run();
-  await begin(b, {concurrency: 1, limit: 1, dataset: {text: DATA(1)}, feedback: 'until_done'});
+  await begin(b, {concurrency: 1, limit: 1, dataset: {text: DATA(1)}});
   await b.alarm();
-  for (let i = 0; i < MAX_GRADE_ROUNDS; i++) { rooms.end(taskRoom(ID, 0, 0), fail); await b.alarm(); }
-  const s = b.status();
-  assert.deepEqual([s.tasks[0].outcome, s.tasks[0].once, s.tasks[0].rounds], ['fail', 'fail', MAX_GRADE_ROUNDS]);
-  assert.equal(rooms.rooms.get(taskRoom(ID, 0, 0)).complaints.length, MAX_GRADE_ROUNDS - 1);
+  for (let i = 0; i < 9; i++) { rooms.end(taskRoom(ID, 0, 0), wrong); await b.alarm(); }
+  let s = b.status();
+  assert.deepEqual([s.tasks[0].status, s.tasks[0].once, s.tasks[0].rounds], ['running', 'fail', 9]);
+  assert.equal(rooms.rooms.get(taskRoom(ID, 0, 0)).complaints.length, 9);
+  // Its budget spent, the room takes no more: the grading is the task's result.
+  rooms.end(taskRoom(ID, 0, 0), fail);
+  s = await b.alarm().then(() => b.status());
+  assert.deepEqual([s.tasks[0].outcome, s.tasks[0].once, s.tasks[0].rounds], ['fail', 'fail', 10]);
+  assert.equal(rooms.rooms.get(taskRoom(ID, 0, 0)).complaints.length, 9);
+  assert.match(s.tasks[0].detail, /^the room could not take the grader's complaint \(The room's turn budget is spent\.\): python3 -I bench_check\.txt: exit 1/);
   assert.deepEqual(s.aggregate.until_done, {scored: 1, pass: 0, pass_rate: 0, mean_rounds_to_done: null});
 });
 
-test('/api/bench takes feedback once or until_done, and refuses anything else', async () => {
+test('feedback "once", when chosen: the grader runs once on what the completed room ships, in a fresh box with the internet off, that grading is the task\'s pass@1, and nothing goes back', async () => {
+  const {rooms, boxes, run} = benchEnv(), b = run();
+  await begin(b, {concurrency: 2, limit: 2, dataset: {text: DATA(2)}, feedback: 'once'});
+  await b.alarm();
+  rooms.end(taskRoom(ID, 0, 0), pass); rooms.end(taskRoom(ID, 1, 0), wrong);
+  const s = await b.alarm().then(() => b.status());
+  assert.equal(s.feedback, 'once');
+  assert.deepEqual(s.tasks.map(t => [t.outcome, t.once, t.rounds]), [['pass', 'pass', 1], ['fail', 'fail', 1]]);
+  assert.equal(rooms.log.filter(l => l[0] === 'complaint').length, 0, 'once never sends the grader\'s failure back');
+  assert.equal(s.aggregate.pass_at_1, 0.5);
+  assert.ok(!('until_done' in s.aggregate));
+  // Each grading opened a box of its own, with the internet off.
+  assert.equal(boxes.boxes.length, 2);
+  assert.ok(boxes.boxes.every(x => x.container.options?.enableInternet === false));
+});
+
+test('/api/bench takes feedback until_done (the default) or once, and refuses anything else', async () => {
   const {env} = benchEnv({APP_TOKEN, ASSETS: {fetch: () => new Response('asset')}});
   let res = await call(env, '/api/bench', {method: 'POST', body: {dataset: DATA(1), feedback: 'twice'}});
   assert.equal(res.status, 400);
-  assert.match((await res.json()).error, /Invalid feedback: expected once or until_done/);
-  res = await call(env, '/api/bench', {method: 'POST', body: {dataset: DATA(1), feedback: 'until_done'}});
+  assert.match((await res.json()).error, /Invalid feedback: expected until_done or once/);
+  res = await call(env, '/api/bench', {method: 'POST', body: {dataset: DATA(1), feedback: 'once'}});
   assert.equal(res.status, 200);
-  assert.equal((await res.json()).feedback, 'until_done');
-  res = await call(env, '/api/bench', {method: 'POST', body: {dataset: DATA(1)}});
   assert.equal((await res.json()).feedback, 'once');
+  res = await call(env, '/api/bench', {method: 'POST', body: {dataset: DATA(1)}});
+  assert.equal((await res.json()).feedback, 'until_done');
+});
+
+// ------------------------------------------------------------------ a task room, for real
+// The real room (scripted models) on a HumanEval task: its prompt is the
+// task's own; the room chooses where the function goes (sums.py); the
+// grader finds it there; until done, the grader's failure reaches the
+// worker as a complaint and the room goes on with the turns its budget has left.
+const hasPython = spawnSync('python3', ['--version']).status === 0;
+test('a task room starts from the task\'s prompt verbatim; the grader finds the function in the file the room chose; its failure goes back to the worker, verbatim, within the room\'s own budget', {skip: !hasPython && 'python3 is not installed'}, async () => {
+  const task = taskFromRow(HUMANEVAL[0], 0, {nonce: 'n0nce'});
+  assert.equal(task.prompt, HUMANEVAL[0].prompt);
+  const TOTAL = {name: 'total', kind: 'function', does: 'sums a list of integers', inputs: [{name: 'xs', is: 'a list of integers'}], outputs: 'their sum', path: 'sums.py'};
+  // The room's own validations pass on the first answer; the benchmark's tests do not.
+  const LEVEL = {contracts: [TOTAL], validations: [callCheck('a', ['total'], [['total', [[1, 2]], 3]]), callCheck('b', ['total'], [['total', [[2, 3]], 5]]), callCheck('c', ['total'], [['total', [[0, 7]], 7]])], pieces: []};
+  const FIRST = 'def total(xs):\n    return xs[0] + xs[1]\n', FIXED = 'def total(xs):\n    return sum(xs)\n';
+  const r = await levelRoom({prompt: task.prompt, split: () => LEVEL, leaf: user => deliver({'sums.py': user.complaints.length ? FIXED : FIRST}), clef: usualClef({'^should_split$': 0.02}), budget: 30, room_id: 'bench-room-test'});
+  const {room, calls} = r;
+  assert.equal(room.get('status'), 'complete');
+  assert.equal(calls.split[0].assignment, task.prompt, 'the room\'s manager reads the task\'s prompt as the benchmark wrote it');
+  const env = {BOXES: fakeBoxes({run: req => verifyChecks({...req}, {isolation: []})})};
+  const shipped = async () => new Map((await room.appFiles()).files.filter(f => !f.path.startsWith('.recursive/')).map(f => [f.path, f.content]));
+  assert.ok((await shipped()).has('sums.py'));
+  const first = await gradeBundle(env, task.grader, await shipped());
+  assert.equal(first.passed, false, 'graded where the room put it: sums.py');
+  assert.match(first.detail, /BenchHarnessError: failed/);
+  // Until done: the grader's observation goes to the room as a complaint, and the room goes on with what its budget left.
+  const left = Number(room.get('budget_left'));
+  assert.ok(left >= 1 && left < 30, String(left));
+  assert.deepEqual(room.graderComplaint(first.detail), {status: 'running'});
+  assert.match(events(room, 'resume').at(-1).body, new RegExp(`for up to ${left} turns`));
+  await r.drain();
+  assert.equal(room.get('status'), 'complete');
+  assert.ok(calls.leaf.at(-1).complaints.some(c => c.includes(first.detail)), 'the worker hears the grader\'s observation verbatim');
+  assert.equal((await gradeBundle(env, task.grader, await shipped())).passed, true);
+  // The room's budget bounds every round together: once it is spent, no complaint is taken.
+  assert.ok(Number(room.get('budget_left')) < left);
+  room.set('budget_left', '0');
+  assert.deepEqual(room.graderComplaint(first.detail), {error: 'The room\'s turn budget is spent.'});
 });
