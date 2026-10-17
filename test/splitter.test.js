@@ -112,8 +112,17 @@ test('a check function: serves names declared contracts exactly (the error lists
   calls(add, [['contract', {name: 'add', kind: 'function', path: 'add.js', does: 'adds'}], ['contract', {name: 'reset', kind: 'function', path: 'add.js', does: 'resets'}]]);
   const same = {call: 'add', args: [1, 1], expect: 2};
   assert.deepEqual(splitterCall(add, 'call_check', {serves: ['add'], steps: [same, same, same]}).result, {id: 'v1', examples: ['add(1, 1) → 2'], examples_so_far: {add: 1}});
-  assert.deepEqual(splitterCall(add, 'call_check', {serves: ['add'], steps: [{call: 'reset'}, same]}).result.examples_so_far, {add: 2}, 'reset() is new; add(1, 1) → 2 after it is not');
-  assert.ok(missingOf({...add, divide: false}).includes('add has 2 different examples of 3 from the validations that serve it.'));
+  assert.deepEqual(splitterCall(add, 'call_check', {serves: ['add'], steps: [{call: 'reset'}, same]}).result.examples_so_far, {add: 1}, 'reset() is no example of add, and add(1, 1) → 2 after it is the same example');
+  // The name a step's result is saved under is not what the example is: add(1, 1) → 2 saved as a, b and c is one example, and so is a step reading either of two saves of one call.
+  assert.deepEqual(splitterCall(add, 'call_check', {serves: ['add'], steps: [{...same, save: 'a'}, {...same, save: 'b'}, {...same, save: 'c'}]}).result.examples_so_far, {add: 1});
+  assert.deepEqual(splitterCall(add, 'call_check', {serves: ['add'], steps: [{call: 'add', args: [2, 2], save: 'a'}, {call: 'add', args: [2, 2], save: 'b'}, {call: 'add', args: ['$a', 1]}, {call: 'add', args: ['$b', 1]}]}).result.examples_so_far, {add: 3}, 'add(2, 2) and add(<add(2, 2)>, 1) are two more');
+  assert.ok(missingOf({...add, divide: false}).includes('reset has 0 different examples of 3 from the validations that serve it: steps that call it.'), 'reset serves nothing');
+  // A request is an example of the route it requests, not of every route its check serves.
+  const http = splitterState({divide: false});
+  calls(http, [...['GET /items', 'POST /items', 'DELETE /items/:id'].map(name => ['contract', {name, kind: 'route', run: {run: 'node app.js'}}])]);
+  assert.deepEqual(splitterCall(http, 'http_check', {serves: ['GET /items', 'POST /items', 'DELETE /items/:id'], serve: 'GET /items', steps: [{method: 'POST', path: '/items', body: {name: 'a'}, save: 't'}, {path: '/items'}, {method: 'DELETE', path: '/items/$t.id'}]}).result.examples_so_far,
+    {'GET /items': 1, 'POST /items': 1, 'DELETE /items/:id': 1});
+  assert.equal(splitterCall(http, 'done', {}).result.complete, false);
 });
 
 test('each check function stores a validation of its own kind from its fields at the top level; a field it does not take (a kind, a check wrapper) is refused with its own fields, and there is no validation function', () => {
@@ -196,8 +205,8 @@ test('level shows everything declared so far; done reports what the level still 
   assert.deepEqual(view.pieces, []);
   // A held validation counts for the given contract; a doc owes none. Piece is offered here, and no piece is declared yet.
   assert.deepEqual(splitterCall(s, 'done', {}), {result: {complete: false, missing: [
-    'to_f has 1 different example of 3 from the validations that serve it.',
-    'convert has 2 different examples of 3 from the validations that serve it.',
+    'to_f has 1 different example of 3 from the validations that serve it: steps that call it.',
+    'convert has 2 different examples of 3 from the validations that serve it: checks that run it.',
     'the division has 0 pieces of at least 2, each declared with piece.']}});
   calls(s, [run('-40 C', '-40'), callOf(0, 32), callOf(100, 212),
     ['piece', {label: 'A', task: 'Write to_f.', contracts: ['to_f', 'convert']}], ['piece', {label: 'B', task: 'Write convert.', contracts: ['convert', 'NOTES.md']}]]);

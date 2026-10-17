@@ -163,12 +163,14 @@ test('F7 (v8 live 6): Clef reads the original and the pieces as written; a divis
 
 // ------------------------------------------------------------------ F8
 // The owner (2026-10-16 05:49): "The example sohuld be built from the validation." Every validation the
-// splitter declares as serving a contract gives it its examples; the runtime matches no name, path or route.
-test('F8: a contract\'s examples come from every validation declared as serving it, as declared: loud("Yo"), declared as serving shout, is one of shout\'s', () => {
+// splitter declares as serving a contract gives its worker examples; (2026-10-16 05:50) "there must 3
+// different examples for each contract": the three are calls of that contract.
+test('F8: a contract\'s examples come from every validation declared as serving it, as declared: loud("Yo"), declared as serving shout, is one its worker reads, but not one of shout\'s three', () => {
   const shout = CONTRACTS[0], two = VALIDATIONS.filter(v => v.id !== 's3');
   assert.deepEqual(contractExamples(shout, two.filter(v => v.serves.includes('shout'))), ['shout("hi") → "HI!"', 'shout("a") → "A!"', 'loud("Yo") → "YO!YO!"']);
-  assert.deepEqual(stated({contracts: CONTRACTS, validations: two.filter(v => v.id !== 'l3'), pieces: PARTS.map(({kids: _, ...p}) => p)}).done, {complete: false, missing: ['shout has 2 different examples of 3 from the validations that serve it.', 'loud has 2 different examples of 3 from the validations that serve it.']});
-  assert.deepEqual(stated({contracts: CONTRACTS, validations: two, pieces: PARTS.map(({kids: _, ...p}) => p)}).done, {complete: true});
+  assert.deepEqual(stated({contracts: CONTRACTS, validations: two.filter(v => v.id !== 'l3'), pieces: PARTS.map(({kids: _, ...p}) => p)}).done, {complete: false, missing: ['shout has 2 different examples of 3 from the validations that serve it: steps that call it.', 'loud has 2 different examples of 3 from the validations that serve it: steps that call it.']});
+  assert.deepEqual(stated({contracts: CONTRACTS, validations: two, pieces: PARTS.map(({kids: _, ...p}) => p)}).done, {complete: false, missing: ['shout has 2 different examples of 3 from the validations that serve it: steps that call it.']}, 'loud("Yo") calls loud, not shout');
+  assert.deepEqual(stated({contracts: CONTRACTS, validations: VALIDATIONS, pieces: PARTS.map(({kids: _, ...p}) => p)}).done, {complete: true});
 });
 test('F8: the worker of shout reads the examples of every validation declared as serving shout', {skip}, async () => {
   const r = await toolkit({split: splitFor({validations: VALIDATIONS})});

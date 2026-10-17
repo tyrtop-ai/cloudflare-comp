@@ -243,6 +243,44 @@ test('live 5: max_pieces is what the room\'s agent limit can create, each piece 
   assert.deepEqual(room.read('split_taken', {}), {});
 });
 
+// R6-splitter/chrono-1: the rebuild the owner relies on (2026-10-16 05:39) never ends in a split_capacity hold: an
+// archived row holds no agent slot, and a manager that owes its level a worker (a rebuild or an extension) is owed it.
+test('live 5: in a room at its agent limit, a worker archived is rebuilt within the limit: the archived row holds no slot, its manager is owed the rebuild\'s worker, and nothing holds', async () => {
+  const tight = await room5({pieces: () => TWO, settings: {max_agents: 5}});
+  const {room} = tight;
+  assert.equal(room.get('status'), 'complete', tail(room));
+  assert.equal(room.productionNodeCount(), 5, 'the room is at its agent limit');
+  const [a, b] = kids(room).map(c => c.id), worker = kids(room, a).find(c => c.role === 'worker');
+  await room.archive(worker.id, 'a test archives it');
+  assert.equal(room.productionNodeCount(), 4, 'the archived row holds no slot');
+  assert.equal(room.owedSlots(b), 1, 'its manager is owed the worker that rebuilds what it delivered');
+  assert.equal(room.piecesRoom(b), 0, 'so no sibling can take that slot');
+  room.set('status', 'paused');
+  await again(tight);
+  assert.equal(room.get('status'), 'complete', tail(room));
+  assert.equal(events(room, 'split_capacity').length, 0, tail(room));
+  assert.deepEqual(room.roomHolds(), []);
+  assert.deepEqual(kids(room, a).map(c => [c.role, c.status]), [['worker', 'archived'], ['worker', 'done']]);
+  assert.equal(room.owedSlots(), 0);
+});
+
+// R6-splitter/chrono-3: a level handed down whole goes to its worker whole (the owner, 2026-10-16 05:16 and 05:49):
+// a contract one piece was to deliver for another, and the validations serving it, reach the worker as its examples.
+test('live 5: a lower level handed down on Clef\'s third NO gives its one worker every contract it declared, each with the examples of the validations serving it', async () => {
+  const lowerSplit = (user, n) => user.contracts_you_deliver
+    ? {contracts: [...user.contracts_you_deliver, NOTES], validations: [has('n1', 'NOTES.md', 'lid'), has('n2', 'NOTES.md', 'timer'), has('n3', 'NOTES.md', '# Notes')], pieces: [piece('Q', [FAQ, NOTES]), piece('T', [TIPS])]}
+    : {contracts: [GUIDE, FAQ, TIPS], validations: VALIDATIONS, pieces: TWO};
+  const c = clefFor({pre: state => [GOAL, 'Write FAQ.md and TIPS.md'].includes(state.assignment) ? 0.6 : 0.05, review: [{valid: 0.9, size: 0.9}, {valid: 0.1, size: 0.9}]});
+  const r = await levelRoom({prompt: GOAL, split: lowerSplit, leaf: leafWith(), clef: c.answer});
+  assert.equal(r.room.get('status'), 'complete', tail(r.room));
+  const qt = kids(r.room).find(k => k.label === 'Questions and tips'), [worker] = kids(r.room, qt.id);
+  assert.equal(worker.role, 'worker');
+  assert.deepEqual(r.room.designOf(worker.id).contracts.map(x => x.name), ['FAQ.md', 'TIPS.md', 'NOTES.md']);
+  const prompt = r.calls.leaf.map(u => u.prompt).find(p => p.deliver.some(d => d.name === 'NOTES.md'));
+  assert.deepEqual(prompt.deliver.find(d => d.name === 'NOTES.md').examples, ['NOTES.md contains "lid"', 'NOTES.md contains "timer"', 'NOTES.md contains "# Notes"']);
+  assert.deepEqual(r.room.promisedOf(qt.id).map(x => x.name), ['FAQ.md', 'TIPS.md'], 'its manager still delivers what it was given');
+});
+
 test('live 5: every manager below the room\'s manager may divide again; with the agent limit tight, no hand-down or division within the bound each splitter is told ever holds the room', async () => {
   // Four contracts: the room's manager divides them in two; each piece divides its two again when the bound it is told allows two pieces.
   const NOTES_V = [has('n1', 'NOTES.md', 'lid'), has('n2', 'NOTES.md', 'timer'), has('n3', 'NOTES.md', '# Notes')];

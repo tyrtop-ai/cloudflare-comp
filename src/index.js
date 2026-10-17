@@ -1506,6 +1506,8 @@ export class ControlRoom extends DurableObject {
     return query(this.db(),'SELECT parent,start_index,specs FROM spawn_batches').reduce((total,batch) => {
       const specs=parse(batch.specs,[]);
       let pending=0;
+      // v8: an archived manager's children that were not created yet never are.
+      if(this.v8()&&this.node(batch.parent)?.status==='archived')return total;
       for(let i=0;i<specs.length;i++) {
         if(!this.spawnedAt(batch.parent,batch.start_index+i) && !isRuntimeNode(specs[i])) pending++;
       }
@@ -1518,7 +1520,8 @@ export class ControlRoom extends DurableObject {
   // is the first 16 hex digits of the SHA-256 of its id and its run's nonce,
   // so each run of a room names repositories of its own.
   async repoName(id) { return `${await hex16([this.get('room_id',''),this.get('run_nonce','')])}-${id}`; }
-  productionNodeCount() {return this.allNodes().filter(n=>!isRuntimeNode(n)&&n.status!=='retired').length;}
+  // The rows that hold an agent slot: every one but a retired row, and under v8 an archived one (its subtree runs no more).
+  productionNodeCount() {return this.allNodes().filter(n=>!isRuntimeNode(n)&&n.status!=='retired'&&!(n.status==='archived'&&this.v8())).length;}
   // v7.15: a node's promise, the only accessor.
   promisedOf(id) {const n=this.node(id);return n?parse(n.interfaces,[]):[];}
   // v8 live 5: the split's floor and bars (room settings, each with its default).
@@ -1541,19 +1544,24 @@ export class ControlRoom extends DurableObject {
     return Math.max(0,Math.floor((this.settings().max_agents-this.productionNodeCount()-this.reservedSpawnSlots()-this.owedSlots(id))/2));
   }
   // v8: the agent slots owed to live managers other than except: the worker
-  // each manager with no level yet hands down to at the least (one; or,
-  // from its splitter's done until its level is admitted, the two for each
-  // piece of the division done took: split_taken {id: slots}), and the
-  // worker of each piece reserved and not created yet. An archived,
-  // retired or failed manager is owed nothing.
+  // each manager with no level yet, or that owes its level one (owesWorker),
+  // hands down to at the least (one; or, from its splitter's done until its
+  // level is admitted, the two for each piece of the division done took:
+  // split_taken {id: slots}), and the worker of each piece reserved and not
+  // created yet. An archived, retired or failed manager is owed nothing.
   owedSlots(except=null) {
     const taken=this.read('split_taken',{}),levelled=new Set(query(this.db(),"SELECT DISTINCT parent FROM spawn_batches WHERE batch_key LIKE 'level:%'").map(b=>b.parent));
-    const managers=query(this.db(),"SELECT id FROM agents WHERE role='manager' AND status NOT IN ('retired','archived','failed') AND id<>?",except??'').reduce((n,m)=>n+(taken[m.id]??(levelled.has(m.id)?0:1)),0);
-    return managers+query(this.db(),'SELECT parent,start_index,specs FROM spawn_batches').reduce((n,b)=>n+parse(b.specs,[]).filter((sp,i)=>roleOf(sp)==='manager'&&!this.spawnedAt(b.parent,b.start_index+i)).length,0);
+    const managers=query(this.db(),"SELECT id FROM agents WHERE role='manager' AND status NOT IN ('retired','archived','failed') AND id<>?",except??'').reduce((n,m)=>n+(taken[m.id]??(levelled.has(m.id)&&!this.owesWorker(m.id)?0:1)),0);
+    return managers+query(this.db(),'SELECT parent,start_index,specs FROM spawn_batches').reduce((n,b)=>this.node(b.parent)?.status==='archived'?n:n+parse(b.specs,[]).filter((sp,i)=>roleOf(sp)==='manager'&&!this.spawnedAt(b.parent,b.start_index+i)).length,0);
   }
   // v8: the division a splitter's done takes, synchronously, while it fits
   // (count pieces within piecesRoom): its slots are owed to it until its
   // level is admitted, or until Clef's review asks for another division.
+  // A levelled manager owes its level a worker while a job is pending (a
+  // rebuild or an extension not admitted yet), or while a contract of its
+  // level has no live child to deliver it (an archived child's, or one a
+  // complaint named), which its next turn's rebuild hands down.
+  owesWorker(id) { const j=this.read(`level_job:${id}`,null);return j?!j.admitted:!!this.levelIndex(id)&&this.orphansOf(id).orphans.length>0; }
   takePieces(id, count) { if(count>this.piecesRoom(id))return false;this.save('split_taken',{...this.read('split_taken',{}),[id]:2*count});return true; }
   releasePieces(id) { const t={...this.read('split_taken',{})};if(id in t){delete t[id];this.save('split_taken',t);} }
   // v8 live 5: what every manager's split gate reads beside its assignment:
@@ -4075,7 +4083,7 @@ export class ControlRoom extends DurableObject {
       ps=await pieceReach(this.inferenceEnv(),{name:n.label,contracts:this.promisedOf(id).map(contractLine),files:[...piece.files].map(([path,content])=>({path,content})),
         installed:[...this.packagesOf(id),...this.installedSet()].map(p=>p.name).filter((x,i,a)=>a.indexOf(x)===i),checks:ask}).catch(e=>ask.map(r=>({id:r.id,error:String(e?.message||e)})));
       const fresh=Object.fromEntries(ps.filter(x=>typeof x.p==='number').map(x=>[keyOf(due.find(r=>r.id===x.id)),x.p]));
-      if(Object.keys(fresh).length)this.save(`piece_reach:${id}`,Object.fromEntries(Object.entries({...kept,...fresh}).slice(-200)));
+      if(Object.keys(fresh).length)this.save(`piece_reach:${id}`,{...kept,...fresh});
     }
     const p=new Map(due.map(r=>[r.id,typeof kept[keyOf(r)]==='number'?kept[keyOf(r)]:ps.find(x=>x.id===r.id)?.p])),errors=new Map(ps.filter(x=>x.error).map(x=>[x.id,clip(x.error,200)]));
     const unjudged=due.filter(r=>typeof p.get(r.id)!=='number'),no=due.filter(r=>typeof p.get(r.id)==='number'&&p.get(r.id)<PIECE_REACH_BAR);
@@ -8504,13 +8512,14 @@ export class ControlRoom extends DurableObject {
     const mine=name=>contracts.find(c=>c.name===name);
     // A rebuild hands down what the rows it replaces were handed: their uses, packages and refs.
     const handed=job?.kind==='rebuild'?{uses:job.uses||[],packages:job.packages||[],refs:job.refs||[]}:null,refs=handed?handed.refs:this.sourceRefs(id);
-    const worker={label:job?.label||given.label,task:job?.text||given.prompt,interfaces:job||stated?contracts:own.map(c=>mine(c.name)||c),uses:handed?handed.uses:job?[]:given.calls,role:'worker',
+    // A level handed down whole goes to its worker whole: every contract it holds, so every validation of it serves what the worker delivers and reaches it as examples.
+    const worker={label:job?.label||given.label,task:job?.text||given.prompt,interfaces:contracts,uses:handed?handed.uses:job?[]:given.calls,role:'worker',
       ...(refs.length?{refs}:{}),...(handed?.packages.length?{packages:handed.packages}:{}),...(typeof this.heldDigest(id)==='string'?{base_digest:this.heldDigest(id)}:{})};
     const pieceUses=p=>[...new Set([...(p.uses||[]),...(handed?.uses||[])])].filter(x=>!p.contracts.includes(x));
     const specs=this.planPackages(id,pieces.length?pieces.map(p=>({label:p.label,task:p.task,interfaces:p.contracts.map(mine).filter(Boolean),...(pieceUses(p).length?{uses:pieceUses(p)}:{}),role:'manager',...(p.refs?{refs:p.refs}:handed?.refs.length?{refs:handed.refs}:{}),...(p.packages||handed?.packages.length?{packages:[...new Set([...(p.packages||[]),...(handed?.packages||[])])]}:{})})):[worker]);
     const key=`level:${id}:${this.levelBatches(id).length}`,batch=this.reserveSpawn(id,specs,key);
     this.releasePieces(id);
-    // No room for its children: the room's agent or depth limit is below what it already holds (the person lowered it, or a job adds a worker to a full room); nothing is admitted, and Continue tries the level again.
+    // No room for its children: the room's agent or depth limit is below what it already holds (the person lowered it, or an extension adds a worker to a room already at its agent limit); nothing is admitted, and Continue tries the level again.
     if(!batch){this.reserveValidations(id,0);return void this.escalate(id,'split_capacity',`"${n.label}" could not create its ${specs.length} children (the room's agent or depth limit); raise the limit and Continue.`);}
     // Its level file: the level's contracts, its children (their ids follow from the reservation), its validations, added to the file as it stands when it is written.
     const made=await this.batchIds(id,batch),added=normalizeInterfaces(contracts,this.contractOpts());
@@ -8927,12 +8936,15 @@ export class ControlRoom extends DurableObject {
   // piece and worker with the same contracts and validations, as often as
   // they are orphaned (the room's budget bounds it). True when a rebuild is
   // under way.
-  async rebuildOrphans(m) {
-    if(!this.levelIndex(m))return false;
-    // What its level file says each child delivers.
+  // The contracts of m's level that no live child delivers, by what its level file says each child delivers, and its archived children.
+  orphansOf(m) {
     const delivers=k=>this.designOf(k.id).contracts,live=this.liveChildren(m),carried=name=>live.some(k=>delivers(k).some(f=>f.name===name));
     const gone=this.children(m).filter(c=>c.status==='archived'&&!isRuntimeNode(c)),named=new Set(parse(this.get(`orphans:${m}`,'[]'),[]));
-    const orphans=[...new Map([...gone.flatMap(delivers),...this.levelContracts(m).filter(c=>named.has(c.name))].filter(c=>!carried(c.name)).map(c=>[c.name,c])).values()];
+    return {gone,orphans:[...new Map([...gone.flatMap(delivers),...this.levelContracts(m).filter(c=>named.has(c.name))].filter(c=>!carried(c.name)).map(c=>[c.name,c])).values()]};
+  }
+  async rebuildOrphans(m) {
+    if(!this.levelIndex(m))return false;
+    const delivers=k=>this.designOf(k.id).contracts,{gone,orphans}=this.orphansOf(m);
     this.set(`orphans:${m}`,'[]');
     if(!orphans.length)return false;
     // The rows it replaces: for each orphan, the last archived child that delivered it (an earlier one was replaced already).
