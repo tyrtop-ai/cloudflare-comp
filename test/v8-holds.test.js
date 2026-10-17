@@ -159,7 +159,7 @@ test('a change whose extension cannot be stated: its splitter goes on in a new s
   const after = await exported(r.room);
   assert.equal(after.app.passed, true);
   assert.equal(after.files.get('reverse.py'), REVERSE_PY);
-  assert.deepEqual(r.room.splitAttempts(m.Root).filter(a => String(a.job || '').startsWith('extend:') && a.pieces).map(a => [a.pieces, a.outcome]), [[2, 'handed down']], 'Clef\'s review decided the extension\'s division');
+  assert.deepEqual(r.room.splitAttempts(m.Root).filter(a => String(a.job || '').startsWith('extend:') && a.pieces).map(a => [a.pieces, a.outcome]), [[2, 'retry larger'], [2, 'retry larger'], [2, 'handed down']], 'Clef\'s review decided the extension\'s division: too small twice, then handed down on the third NO');
   assert.equal(r.room.promptRows().at(-1).status, 'done', 'the change\'s prompt is this run\'s');
 });
 
