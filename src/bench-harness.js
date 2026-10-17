@@ -1,8 +1,19 @@
 // Benchmark harnesses (B1): the grader a benchmark run (src/bench-run.js)
 // runs on a task room's shipped bundle, in a box of its own after the room
-// completes, as `python3 bench_check.txt` or `node bench_check.txt`, with the
-// benchmark's tests and a per-task nonce beside them as input files. Written
-// by the runtime; the room never sees it.
+// completes, as `python3 -I bench_check.txt` or `node -r ./bench_check.txt -e 0`,
+// with the benchmark's tests and a per-task nonce beside them as input files.
+// Written by the runtime; the room never sees it. Python runs it isolated, so
+// no file of the bundle is imported in its place (a json.py or secrets.py
+// the room ships); Node preloads it as CommonJS whatever package.json the
+// bundle has (a "type": "module" package would refuse a .txt main file).
+//
+// Neither is told where the solution is: the room's prompt is the task's own
+// prompt, so the room chose its files. The worker walks the bundle for the
+// files that define the entry (Python: a def or an assignment of it; Node,
+// .js, .mjs, .cjs and TypeScript: a file that names it) and loads each in
+// turn until one gives the entry. A Python file is imported by its dotted
+// name from the bundle's root first, with every folder down to it on the
+// path, so package-relative, absolute and sibling imports all resolve.
 //
 // Each harness is a supervisor that never loads the solution:
 //  1. It reads the nonce file's descriptor and unlinks it, and reads and
@@ -24,7 +35,7 @@ const fill = (template, values) => template.replace(/__([A-Z_]+)__/g, (m, k) => 
 const PY = String.raw`# Benchmark harness (supervisor), written by the runtime. See src/bench-harness.js:
 # a worker process without the nonce, counted assertions and a token-signed report.
 import os, sys, ast, json, secrets, subprocess, threading
-ENTRY, FIRST, CALL_CHECK = __ENTRY__, __PATH__, __CALL_CHECK__
+ENTRY, CALL_CHECK = __ENTRY__, __CALL_CHECK__
 NONCE, TESTS, PROMPT = __NONCE_FILE__, __TESTS_FILE__, __PROMPT_FILE__
 
 def verdict(code, word, detail=''):
@@ -53,35 +64,44 @@ def _run():
     _exec, _compile, _write, _exit, _dumps, _callable, _hasattr, _getattr = builtins.exec, builtins.compile, os.write, os._exit, json.dumps, builtins.callable, builtins.hasattr, builtins.getattr
     _tb = traceback.print_exc
     job = json.loads(sys.stdin.buffer.read().decode('utf-8')); sys.stdin.close()
-    tok, entry, first = job['token'], job['entry'], job['path']
+    tok, entry = job['token'], job['entry']
     def rep(**o):
         o['token'] = tok
         _write(fd, (_dumps(o) + '\n').encode())
     try:
         pat = re.compile(r'^\s*(?:async\s+)?def\s+' + re.escape(entry) + r'\s*\(|^' + re.escape(entry) + r'\s*=', re.M)
-        found = [first] if os.path.isfile(first) else []
+        found = []
         for root, dirs, files in os.walk('.'):
             dirs[:] = sorted(d for d in dirs if not d.startswith('.') and d not in ('__pycache__', 'node_modules'))
             for f in sorted(files):
                 p = os.path.normpath(os.path.join(root, f))
-                if f.endswith('.py') and p not in found:
+                if f.endswith('.py'):
                     try:
                         with open(p, encoding='utf-8') as h:
                             if pat.search(h.read()): found.append(p)
                     except Exception: pass
         mod, errors = None, []
-        for p in found:
-            d, stem = os.path.dirname(os.path.abspath(p)), os.path.splitext(os.path.basename(p))[0]
-            for x in (d, os.getcwd()):
-                if x not in sys.path: sys.path.insert(0, x)
+        def load(p):
+            parts = os.path.splitext(p)[0].split(os.sep)
+            for i in range(len(parts)):
+                d = os.path.abspath(os.path.join(os.curdir, *parts[:i]))
+                if d not in sys.path: sys.path.insert(0, d)
+            names = ['.'.join(parts[i:]) for i in range(len(parts)) if all(x.isidentifier() for x in parts[i:])]
+            err = None
+            for name in names:
+                try: m = importlib.import_module(name)
+                except Exception as e: err = err or e; continue
+                if _hasattr(m, entry): return m, None
             try:
-                m = importlib.import_module(stem)
-                if not _hasattr(m, entry):
-                    spec = importlib.util.spec_from_file_location('bench_solution', p)
-                    m = importlib.util.module_from_spec(spec); sys.modules['bench_solution'] = m; spec.loader.exec_module(m)
-                if _hasattr(m, entry): mod = m; break
-            except Exception as e:
-                errors.append('%s: %s: %s' % (p, type(e).__name__, str(e)[:200]))
+                spec = importlib.util.spec_from_file_location('bench_solution', p)
+                m = importlib.util.module_from_spec(spec); sys.modules['bench_solution'] = m; spec.loader.exec_module(m)
+                if _hasattr(m, entry): return m, None
+            except Exception as e: err = err or e
+            return None, err
+        for p in found:
+            mod, e = load(p)
+            if mod is not None: break
+            if e is not None: errors.append('%s: %s: %s' % (p, type(e).__name__, str(e)[:200]))
         if mod is None: rep(no_module=('; '.join(errors))[:600]); _exit(1)
         ns = {'__builtins__': dict(b0), '__name__': '__bench_tests__'}
         if job.get('prompt'):
@@ -92,7 +112,7 @@ def _run():
         count = [0]
         def counted(c, m):
             count[0] += 1
-            if not c: raise AssertionError(m() if _callable(m) else m)
+            if not c: raise AssertionError(m()) if _callable(m) else AssertionError()
         ns['__bench_assert__'], ns['candidate'] = counted, candidate
         _exec(_compile(job['tests'], 'tests', 'exec'), ns)
         if job.get('call_check') and _callable(ns.get('check')): ns['check'](candidate)
@@ -126,7 +146,7 @@ def main():
             if sum(len(x) for x in chunks) < (1 << 20): chunks.append(c)
     reader = threading.Thread(target=drain); reader.start()
     try:
-        child.stdin.write(json.dumps({'token': token, 'tests': code, 'prompt': prompt, 'entry': ENTRY, 'path': FIRST, 'call_check': CALL_CHECK}).encode('utf-8'))
+        child.stdin.write(json.dumps({'token': token, 'tests': code, 'prompt': prompt, 'entry': ENTRY, 'call_check': CALL_CHECK}).encode('utf-8'))
         child.stdin.close()
     except OSError: pass
     status = child.wait(); reader.join()
@@ -157,7 +177,7 @@ const JS = String.raw`// Benchmark harness (supervisor), written by the runtime.
 // a worker process without the nonce, counted assertions and a token-signed report.
 'use strict';
 const fs = require('fs'), cp = require('child_process'), crypto = require('crypto');
-const ENTRY = __ENTRY__, FIRST = __PATH__, NONCE = __NONCE_FILE__, TESTS = __TESTS_FILE__;
+const ENTRY = __ENTRY__, NONCE = __NONCE_FILE__, TESTS = __TESTS_FILE__;
 const verdict = (code, word, detail) => { process.stderr.write('\nBenchHarnessError: ' + word + (detail ? ': ' + detail : '') + '\n'); process.exit(code); };
 const take = f => { if (!fs.existsSync(f)) return ''; const t = fs.readFileSync(f, 'utf8'); fs.unlinkSync(f); return t; };
 function worker() {
@@ -175,11 +195,11 @@ function worker() {
   const testsRequire = name => /^(?:node:)?assert$/.test(name) ? A : /^(?:node:)?assert\/strict$/.test(name) ? S : req0(name);
   (async () => {
     const word = new RegExp('(^|[^\\w$])' + entry.replace(/\$/g, '\\$') + '(?![\\w$])');
-    const found = fs.existsSync(job.path) ? [job.path] : [];
+    const found = [];
     const walk = d => { for (const e of fs.readdirSync(d, {withFileTypes: true}).sort((a, b) => a.name < b.name ? -1 : 1)) {
       const f = p.join(d, e.name);
       if (e.isDirectory()) { if (!e.name.startsWith('.') && e.name !== 'node_modules') walk(f); }
-      else if (/\.(?:js|mjs|cjs)$/.test(e.name) && !found.includes(f) && word.test(fs.readFileSync(f, 'utf8'))) found.push(f);
+      else if (/\.[cm]?[jt]s$/.test(e.name) && word.test(fs.readFileSync(f, 'utf8'))) found.push(f);
     } };
     walk('.');
     let fn = null; const errors = [];
@@ -210,7 +230,7 @@ function main() {
   try { nfd = fs.openSync(NONCE, 'r'); fs.unlinkSync(NONCE); } catch (e) { verdict(6, 'protocol', 'the nonce file is missing'); }
   const tests = take(TESTS);
   const token = crypto.randomBytes(16).toString('hex');
-  const r = cp.spawnSync(process.execPath, ['-e', '(' + worker.toString() + ')()'], {input: JSON.stringify({token, tests, entry: ENTRY, path: FIRST}),
+  const r = cp.spawnSync(process.execPath, ['-e', '(' + worker.toString() + ')()'], {input: JSON.stringify({token, tests, entry: ENTRY}),
     stdio: ['pipe', 2, 2, 'pipe'], maxBuffer: 1 << 20});
   const records = [];
   for (const line of String((r.output && r.output[3]) || '').split('\n')) {
@@ -235,10 +255,10 @@ main();
 `;
 
 // files: the check's input-file names. passMark: the verdict word.
-export function pythonHarness({entry, path, callCheck = true, files, passMark}) {
+export function pythonHarness({entry, callCheck = true, files, passMark}) {
   const py = v => JSON.stringify(v); // a JSON string is a valid Python str literal for these values
-  return fill(PY, {ENTRY: py(entry), PATH: py(path), CALL_CHECK: callCheck ? 'True' : 'False', NONCE_FILE: py(files.nonce), TESTS_FILE: py(files.tests), PROMPT_FILE: py(files.prompt), PASS_MARK: passMark});
+  return fill(PY, {ENTRY: py(entry), CALL_CHECK: callCheck ? 'True' : 'False', NONCE_FILE: py(files.nonce), TESTS_FILE: py(files.tests), PROMPT_FILE: py(files.prompt), PASS_MARK: passMark});
 }
-export function javascriptHarness({entry, path, files, passMark}) {
-  return fill(JS, {ENTRY: JSON.stringify(entry), PATH: JSON.stringify(path), NONCE_FILE: JSON.stringify(files.nonce), TESTS_FILE: JSON.stringify(files.tests), PASS_MARK: passMark});
+export function javascriptHarness({entry, files, passMark}) {
+  return fill(JS, {ENTRY: JSON.stringify(entry), NONCE_FILE: JSON.stringify(files.nonce), TESTS_FILE: JSON.stringify(files.tests), PASS_MARK: passMark});
 }

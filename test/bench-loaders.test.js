@@ -18,7 +18,7 @@ const {snapshotHash} = await import('../src/build-verification.js');
 const {TOOLCHAINS} = await import('../src/toolchains.js');
 const bench = await import('../src/bench.js');
 const {GOAL_LIMIT} = await import('../src/model.js');
-const {parseRows, detectFormat, taskFromRow, loadTasks, loadDataset, fetchDataset, benchPolicy, roomOutcome, gradeOutcome, aggregate, compareRuns, BENCH_LIMITS, BENCH_HOSTS, FIXTURE, PASS_MARK, paramNames} = bench;
+const {parseRows, detectFormat, taskFromRow, loadTasks, loadDataset, fetchDataset, benchPolicy, roomOutcome, gradeOutcome, aggregate, compareRuns, BENCH_LIMITS, BENCH_HOSTS, FIXTURE, PASS_MARK} = bench;
 
 import { HUMANEVAL, MBPP, MULTIPLE_JS, GENERIC } from './helpers/bench-fixtures.js';
 const jsonl = rows => rows.map(r => JSON.stringify(r)).join('\n') + '\n';
@@ -43,19 +43,21 @@ test('detectFormat reads the format from the keys, never the URL', () => {
   for (const r of GENERIC) assert.equal(detectFormat(r), 'generic');
   assert.equal(detectFormat({question: 'x'}), null);
   assert.equal(detectFormat(null), null);
-  assert.deepEqual(paramNames('xs: List[int], *args, key: Dict[str, int] = {}, **kw'), ['xs', 'args', 'key', 'kw']);
-  assert.deepEqual(paramNames('self, a=1'), ['a']);
 });
 
 // ------------------------------------------------------------------ tasks and graders
 const ROWS = JSON.parse(JSON.stringify(TOOLCHAINS));
-function assertGrader(t, {language, entry, path}) {
+// The room's goal is the row's prompt as the benchmark wrote it: no language,
+// path, library or signature added (the owner: "there shouldn't be any
+// version pinning or code type pinning or specific prompt pinning").
+function assertGrader(t, {language, entry, prompt}) {
   assert.equal(t.language, language);
   assert.equal(t.entry, entry);
   assert.ok(!('card' in t));
+  assert.equal(t.prompt, prompt, `${t.id}: the goal is the row's prompt, verbatim`);
   const g = t.grader;
   assert.equal(g.check.kind, 'command');
-  assert.equal(g.check.run, `${language === 'python' ? 'python3' : 'node'} ${FIXTURE.harness}`);
+  assert.equal(g.check.run, language === 'python' ? `python3 -I ${FIXTURE.harness}` : `node -r ./${FIXTURE.harness} -e 0`);
   assert.deepEqual(g.check.expect, {exit: 0, stdout_has: [`${PASS_MARK} n0nce`]});
   for (const text of Object.values(g.check.files)) assert.ok(text.length <= BENCH_LIMITS.fixture);
   // The tests are in the grader's input files, never in the prompt the room starts from.
@@ -63,28 +65,26 @@ function assertGrader(t, {language, entry, path}) {
   assert.ok(tests.trim());
   for (const line of tests.split('\n').filter(l => l.trim().length > 12)) assert.ok(!t.prompt.includes(line.trim()), `${t.id}: the prompt quotes a test line: ${line}`);
   assert.ok(!t.prompt.includes('n0nce') && !t.prompt.includes(FIXTURE.harness));
-  assert.ok(t.prompt.includes(`in ${path}`), t.prompt);
   assert.ok(t.prompt.length <= GOAL_LIMIT);
+  // The harness is told no path: it finds the entry wherever the room put it.
+  assert.doesNotMatch(g.check.files[FIXTURE.harness], /solution\.(?:py|js)/);
 }
 
-test('HumanEval rows: the entry point, the prompt as the goal, the tests hidden in a command check', () => {
+test('HumanEval rows: the entry point, the prompt verbatim as the goal, the tests hidden in a command check', () => {
   const tasks = HUMANEVAL.map((r, i) => taskFromRow(r, i, {nonce: 'n0nce'}));
   assert.deepEqual(tasks.map(t => t.id), ['Toy/0', 'Toy/1', 'Toy/2']);
-  for (const t of tasks) assertGrader(t, {language: 'python', entry: HUMANEVAL[tasks.indexOf(t)].entry_point, path: 'solution.py'});
-  assert.match(tasks[0].prompt, /Deliver the Python function total\(xs\) in solution\.py/);
+  for (const [i, t] of tasks.entries()) assertGrader(t, {language: 'python', entry: HUMANEVAL[i].entry_point, prompt: HUMANEVAL[i].prompt});
   assert.ok(tasks[0].prompt.includes('>>> total([1, 2])'), 'the docstring examples are the prompt\'s own');
-  assert.match(tasks[1].prompt, /Deliver the Python function whisper\(s/);
   // The prompt rides along as an input file: its helpers (shout) are in scope for the tests, as in the official harness.
   assert.equal(tasks[1].grader.check.files[FIXTURE.prompt], HUMANEVAL[1].prompt);
 });
 
-test('MBPP rows: the function the asserts call, from the reference code\'s names only; the asserts stay hidden', () => {
+test('MBPP rows: the function the asserts call, from the reference code\'s names, for the grader only; the text alone is the goal; the asserts stay hidden', () => {
   const tasks = MBPP.map((r, i) => taskFromRow(r, i, {nonce: 'n0nce'}));
   assert.deepEqual(tasks.map(t => [t.id, t.entry]), [['MBPP/901', 'cube_it'], ['MBPP/902', 'dash_join'], ['MBPP/903', 'is_even']]);
-  for (const [i, t] of tasks.entries()) assertGrader(t, {language: 'python', entry: t.entry, path: 'solution.py'});
-  assert.match(tasks[0].prompt, /^Write a function to cube a number\.\n\nDeliver the Python function cube_it\(n\) in solution\.py/);
-  assert.ok(!tasks[0].prompt.includes('helper'), 'the reference code is never shown');
-  assert.match(tasks[1].prompt, /Deliver the Python function dash_join\(words, sep=…\)/);
+  for (const [i, t] of tasks.entries()) assertGrader(t, {language: 'python', entry: t.entry, prompt: MBPP[i].text || MBPP[i].prompt});
+  assert.equal(tasks[0].prompt, 'Write a function to cube a number.');
+  for (const t of tasks) assert.ok(!t.prompt.includes(t.entry), 'the reference code, its names and parameters are never shown');
   assert.match(tasks[1].grader.check.files[FIXTURE.tests], /^import math\nassert dash_join/);
   assert.match(tasks[2].grader.check.files[FIXTURE.tests], /^import os\nassert is_even\(4\)/);
   assert.equal(tasks[0].grader.check.files[FIXTURE.prompt], undefined);
@@ -93,20 +93,19 @@ test('MBPP rows: the function the asserts call, from the reference code\'s names
 test('MultiPL-E HumanEval-JS rows: the last function of the prompt; a language this version does not load is skipped', () => {
   const {tasks, skipped, formats} = loadTasks(MULTIPLE_JS, {limit: 10, nonce: 'n0nce'});
   assert.deepEqual(tasks.map(t => [t.id, t.entry]), [['Toy_0_add_two', 'add_two'], ['Toy_1_rev', 'rev'], ['Toy_2_neg', 'neg']]);
-  for (const t of tasks) assertGrader(t, {language: 'javascript', entry: t.entry, path: 'solution.js'});
+  for (const [i, t] of tasks.entries()) assertGrader(t, {language: 'javascript', entry: t.entry, prompt: MULTIPLE_JS[i].prompt});
   assert.deepEqual(formats, {'multipl-e': 3});
   assert.deepEqual(skipped, [{id: 'Toy_3_rs', reason: 'language rs is not loaded by this version (js and py are)'}]);
-  assert.match(tasks[0].prompt, /```javascript\n\/\/Add two numbers\.\n\/\/ >>> add_two\(1, 2\)\n\/\/ 3\nfunction add_two\(a, b\)\{\n```$/);
-  assert.match(tasks[0].prompt, /add_two\(a, b\)/);
+  assert.equal(tasks[0].prompt, '//Add two numbers.\n// >>> add_two(1, 2)\n// 3\nfunction add_two(a, b){\n');
 });
 
 test('generic {id, prompt, tests} rows: the entry from the row or the prompt, the language from the row or the prompt', () => {
   const {tasks, skipped} = loadTasks(GENERIC, {nonce: 'n0nce'});
   assert.deepEqual(tasks.map(t => [t.id, t.language, t.entry]), [['g-py', 'python', 'triple'], ['g-js', 'javascript', 'greet'], ['g-check', 'python', 'inc']]);
-  for (const t of tasks) assertGrader(t, {language: t.language, entry: t.entry, path: t.language === 'python' ? 'solution.py' : 'solution.js'});
+  for (const [i, t] of tasks.entries()) assertGrader(t, {language: t.language, entry: t.entry, prompt: GENERIC[i].prompt});
   assert.deepEqual(skipped.map(s => s.id), ['g-none']);
   assert.match(skipped[0].reason, /no language/);
-  assert.match(tasks[0].prompt, /^Write a function triple\(n\)[\s\S]*Deliver the Python function triple in solution\.py/);
+  assert.equal(tasks[0].prompt, 'Write a function triple(n) that returns three times n.');
   assert.match(tasks[2].grader.check.files[FIXTURE.tests], /^def check\(candidate\):\n    assert candidate\(1\) == 2$/);
 });
 
@@ -118,7 +117,7 @@ test('caps: the task limit, the check\'s input-file size, the goal size, duplica
   const big = {...HUMANEVAL[0], task_id: 'Toy/big', test: 'def check(candidate):\n' + '    assert candidate([1]) == 1\n'.repeat(1000)};
   assert.match(taskFromRow(big).skip, /tests \(\d+ characters\) exceed the check's 20000-character input file/);
   const long = {...HUMANEVAL[0], task_id: 'Toy/long', prompt: HUMANEVAL[0].prompt + '#'.repeat(GOAL_LIMIT)};
-  assert.match(taskFromRow(long).skip, /makes a goal of \d+ characters/);
+  assert.match(taskFromRow(long).skip, /its prompt \(\d+ characters\) is longer than a room's goal/);
   const dup = loadTasks([HUMANEVAL[0], HUMANEVAL[0]]);
   assert.equal(dup.tasks.length, 1);
   assert.match(dup.skipped[0].reason, /came earlier/);
@@ -143,6 +142,18 @@ test('Python graders in the Container\'s verifyChecks: a correct solution passes
   assert.equal((await verify(he0, {'solution.py': 'def total(xs):\n    return sum(xs)\n'})).passed, true);
   // Placed under a builder's directory, importing nothing the bundle lacks; the prompt's helper comes from the prompt.
   assert.equal((await verify(he1, {'components/root/whisper_impl.py': 'def whisper(s, times=1):\n    return s.lower()\n'})).passed, true);
+  // The room's prompt names no file, so the room lays out its own: the grader finds the function in any of these.
+  const add = 'def add(xs):\n    return sum(xs)\n';
+  for (const layout of [
+    {'sums.py': 'def total(xs):\n    return sum(xs)\n'},
+    {'sums/__init__.py': 'from .core import total\n', 'sums/core.py': 'from .helpers import add\n\ndef total(xs):\n    return add(xs)\n', 'sums/helpers.py': add},
+    {'src/sums/__init__.py': '', 'src/sums/core.py': 'from sums.helpers import add\n\ndef total(xs):\n    return add(xs)\n', 'src/sums/helpers.py': add},
+    {'app/core.py': 'from app.helpers import add\n\ndef total(xs):\n    return add(xs)\n', 'app/helpers.py': add},
+    {'lib/core.py': 'from helpers import add\n\ndef total(xs):\n    return add(xs)\n', 'lib/helpers.py': add},
+    {'my-app/main.py': 'def total(xs):\n    return sum(xs)\n\nif __name__ == "__main__":\n    print(total([1, 2]))\n'},
+    // A file named like a module the supervisor imports is not imported in its place.
+    {'json.py': 'def helper():\n    return 1\n', 'secrets.py': 'TOKEN = 1\n', 'sums.py': 'def total(xs):\n    return sum(xs)\n'}
+  ]) { const c = await verify(he0, layout); assert.equal(c.passed, true, `${Object.keys(layout).join(', ')}: ${c.detail}`); }
   const wrong = await verify(he0, {'solution.py': 'def total(xs):\n    return 0\n'});
   assert.equal(wrong.passed, false);
   assert.match(wrong.detail, /exit 1/);
@@ -160,10 +171,15 @@ test('Python graders in the Container\'s verifyChecks: a correct solution passes
   assert.match(none.detail, /exit 3/);
 });
 
-test('JavaScript graders in the Container\'s verifyChecks: ESM, CommonJS and plain declarations pass; wrong and forged ones fail', async () => {
+test('JavaScript graders in the Container\'s verifyChecks: ESM, CommonJS and plain declarations pass wherever they are placed; wrong and forged ones fail', async () => {
   const [add] = MULTIPLE_JS.map(r => taskFromRow(r));
   for (const sol of [{'solution.js': 'export function add_two(a, b) { return a + b; }\n'}, {'solution.js': 'module.exports = { add_two: (a, b) => a + b };\n'},
-    {'solution.js': 'function add_two(a, b) { return a + b; }\n'}, {'components/root/add.js': 'function add_two(a, b) { return a + b; }\nmodule.exports = { add_two };\n'}])
+    {'solution.js': 'function add_two(a, b) { return a + b; }\n'}, {'components/root/add.js': 'function add_two(a, b) { return a + b; }\nmodule.exports = { add_two };\n'},
+    // The room's own layout: a package of ES modules ("type": "module"), modules that import each other, TypeScript, a test file beside it.
+    {'package.json': '{"type": "module"}', 'src/add.js': "import { plus } from './plus.js';\nexport function add_two(a, b) { return plus(a, b); }\n", 'src/plus.js': 'export const plus = (a, b) => a + b;\n'},
+    {'lib/add.js': "const { plus } = require('./plus');\nmodule.exports = { add_two: (a, b) => plus(a, b) };\n", 'lib/plus.js': 'exports.plus = (a, b) => a + b;\n'},
+    {'add.ts': 'export function add_two(a: number, b: number): number { return a + b; }\n'},
+    {'a.test.js': "const { add_two } = require('./z');\nrequire('assert').equal(add_two(1, 2), 3);\n", 'z.js': 'function add_two(a, b) { return a + b; }\nmodule.exports = { add_two };\n'}])
     assert.equal((await verify(add, sol)).passed, true, JSON.stringify(sol));
   assert.equal((await verify(add, {'solution.js': 'export function add_two(a, b) { return a - b; }\n'})).passed, false);
   for (const forged of ['process.exit(0);\n', "console.log('BENCH-PASS 1234');\nprocess.exit(0);\n"])
@@ -282,6 +298,7 @@ test('roomOutcome: a completed room is graded; otherwise its status and hold dec
   assert.equal(roomOutcome({...base, status: 'error'}).outcome, 'error');
   assert.deepEqual(gradeOutcome({passed: true}), {outcome: 'pass', detail: ''});
   assert.deepEqual(gradeOutcome({passed: false, detail: 'exit 1: AssertionError'}), {outcome: 'fail', detail: 'exit 1: AssertionError'});
+  assert.equal(gradeOutcome({passed: false, detail: 'x'.repeat(5000)}).detail.length, 5000, 'what the grader observed, whole: the complaint until done sends');
   assert.equal(gradeOutcome({infrastructure: 'no box'}).outcome, 'error');
 });
 
@@ -319,24 +336,16 @@ test('aggregate and compareRuns: pass@1 over scored tasks, mean time, tokens, Co
 });
 
 // ------------------------------------------------------------------ review fixes
-test('signatures keep * and ** markers and mark defaults, with no parameter cap and never a default\'s value or the body', () => {
-  const {signatureText} = bench;
-  assert.equal(signatureText('a, b, c, d, e, f, g'), 'a, b, c, d, e, f, g');
-  assert.equal(signatureText('*nums'), '*nums');
-  assert.equal(signatureText('a, **opts'), 'a, **opts');
-  assert.equal(signatureText("s, width=10, fill='*'"), 's, width=…, fill=…');
-  assert.equal(signatureText('xs: List[int], key: Callable[[int], int] = abs, *, strict: bool = (1, 2)'), 'xs, key=…, *, strict=…');
-  assert.equal(signatureText('self, a, /, b'), 'a, /, b');
-  assert.equal(signatureText('a = 1, ...rest'), 'a=…, ...rest');
+test('a task\'s goal is its prompt alone: the runtime adds no signature, parameter list, path or library, and the reference code is never read into it', () => {
   const row = {task_id: 627, text: 'Write a python function to find the smallest missing number from a sorted array.',
     code: 'def find_First_Missing(array,start=0,end=None):\n    if end is None:  # secret-marker\n        end = len(array) - 1\n    return start', test_list: ['assert find_First_Missing([0,1,2,3]) == 4']};
   const t = taskFromRow(row, 0, {nonce: 'n0nce'});
-  assert.match(t.prompt, /Deliver the Python function find_First_Missing\(array, start=…, end=…\) in solution\.py/);
-  assert.ok(!t.prompt.includes('secret-marker') && !t.prompt.includes('None'));
-  const many = taskFromRow({task_id: 1, text: 'Sum seven numbers.', code: 'def many(a, b, c, d, e, f, g):\n    return a', test_list: ['assert many(1,2,3,4,5,6,7) == 28']});
-  assert.match(many.prompt, /many\(a, b, c, d, e, f, g\)/);
-  const nested = taskFromRow({task_id: 2, text: 'Pick.', code: 'def pick(xs, key=dict(a=1)):\n    return xs', test_list: ['assert pick([1]) == [1]']});
-  assert.match(nested.prompt, /pick\(xs, key=…\)/);
+  assert.equal(t.prompt, row.text);
+  assert.equal(t.entry, 'find_First_Missing', 'the grader still knows the function its tests call');
+  assert.ok(!t.prompt.includes('find_First_Missing') && !t.prompt.includes('secret-marker') && !t.prompt.includes('start='));
+  // A prompt is never trimmed, fenced or wrapped either.
+  const spaced = '\n\ndef double(n):\n    """Twice n."""\n\n';
+  assert.equal(taskFromRow({...HUMANEVAL[2], prompt: spaced}, 0, {nonce: 'n0nce'}).prompt, spaced);
 });
 
 test('a failed rows page is asked again twice; after that the pages already read are kept and the dataset is marked partial', async () => {

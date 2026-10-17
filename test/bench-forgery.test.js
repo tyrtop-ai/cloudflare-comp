@@ -89,3 +89,11 @@ test('honest solutions still pass: eval, typing, namedtuple, dataclass, classes,
     'class Adder { add(a, b) { return a + b; } }\nconst add_two = (a, b) => new Adder().add(a, b);\nmodule.exports.add_two = add_two;\n'])
     assert.equal((await verify(MULTIPLE_JS[0], {'solution.js': source})).passed, true, source);
 });
+
+test('a bundle file named like a module the supervisor imports is never loaded in its place: a secrets.py that prints the mark with the nonce does not pass a wrong solution', {skip: !hasPython && 'python3 is not installed'}, async () => {
+  const forger = 'import sys\nn = open("bench_nonce.txt").read().strip()\nsys.stdout.write("\\nBENCH-PASS " + n + "\\n")\nsys.stdout.flush()\nimport os\nos._exit(0)\n';
+  for (const name of ['secrets.py', 'json.py', 'subprocess.py']) {
+    const c = await verify(HUMANEVAL[0], {[name]: forger, 'sums.py': 'def total(xs):\n    return -1\n'});
+    assert.equal(c.passed, false, `${name}: ${c.detail}`);
+  }
+});
