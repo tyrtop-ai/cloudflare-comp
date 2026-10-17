@@ -2144,3 +2144,15 @@ does that live through compression?
 ````text
 were you able to get user prompts from before compression?
 ````
+
+## 2026-10-17 01:03
+
+````text
+404 not found
+````
+
+## 2026-10-17 01:11
+
+````text
+now that you have all that, audit the code and find out where you'd drifted or made extra work
+````
