@@ -143,7 +143,11 @@ Owner: "every model should work that way, where the runtime should only be inter
 - **Splitter:** `contract`, `validation`, `piece`, `level`, `done`. `done` returns what the owner's rules still need (three different examples per called or run contract), or hands the level to Clef.
 - **Worker:** `read_file`, `write_file`, `run_examples` (its examples in its own box, as the compiler would run them), `ask` (by name, through the broker), `done`.
 - **Builder:** read its children's files and the design artifact, `write_file` (glue), `rename` (interface names), `done`.
-- **Source reading:** `note` for what a linked page says.
+- **Source reading:** `note` for what a linked page says: a reader of its own for each part of a page and one for the page. Each reader is an agent of the room, drawn in the graph like the others.
 - **Manager (Clef):** `children()` (each live child's label and the contracts it delivers, never the tasks its splitter wrote: owner, "the manager doesn't need to know that, that's why we use an artifact for that"), and its level's own choices (split or hand down; admit or retry a split; whether a document meets its question).
   - **On an ask:** `answer(contract)` to the asker, `grant(package)` down the asker's line, or `ask_parent(need)` (the same call one level up). An ask no manager up to the room holds archives the asker at the room (rule 4). No level grows for an ask.
   - **On a complaint or a change:** `route_to(child)`, or `extend` (hands it to its splitter): for a change, or for a complaint naming a contract no live child delivers (rule 4 (b) 3).
+
+## What the dashboard shows (owner)
+- **Every agent is in the graph** (owner, 2026-10-16: "the every agent should be visible in the tree...e.g. splitter manager worker etc"): the managers and workers, each splitter step, builder and compiler, and each link reader the room runs on the prompt's links.
+- **Agent traffic is the whole run, newest first** (owner, 2026-10-13: "change agent traffic so most recent events are at the top and you scroll to see the last events"): a v8 room's dashboard gets every event and every committed file, with no window on either.
