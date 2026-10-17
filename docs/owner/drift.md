@@ -6,12 +6,6 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 
 ## Open
 
-### R1-chrono-5: Byte-identical answer to a complaint still holds the room
-- drift, `src/index.js:9432`
-- Owner (2026-10-16 20:06): > Unchanged files: when a worker sends a file back byte-identical, the room drops it silently and then escalates. That’s what stopped both to-do runs. this should be impossiblefor the worker to do || 2026-10-16 19:44: "3 & 4 are issues with the runtime / routing"
-- Required: Answering a complaint with unchanged files must not be possible for the worker. When it does happen, the cause is in the runtime or the routing, and is fixed there instead of escalating a hold.
-- Status: in progress: the owner ruled 2026-10-17 "problem statement failure, not worker or routing failure": an unchanged answer goes to the splitter. Earlier: waiting on the owner. The hold is gone; a worker can still call done with its files unchanged after a complaint. Making it impossible needs either done to refuse that (a new rule) or the routing to send the complaint elsewhere when the cause is not in the worker's files (with one child, Clef has no other option). Owner question: which?
-
 ### R2-worker/code-4: Broker rewrites existing files and linked pages it quotes to a worker (sanitizeText envelope escaping, invisible-char stripping) and labels them 'untrusted'
 - extra, `src/broker.js:113`
 - Owner (2026-10-16 05:39): text heuristics - I don't understand what this is for. Like architecturally, this is protecting from someting that shouldn't happen.
@@ -163,6 +157,12 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Status: waiting on the owner: this session's permission check refused removing fetchSource's content-type refusal as a security weakening. The owner's 2026-10-17 answer ("Those interfaces shouldn't be mutating the data ever") covers it; the check still refused it in Auto mode.
 
 ## Fixed, awaiting recheck
+
+### R1-chrono-5: Byte-identical answer to a complaint still holds the room
+- drift, `src/index.js:9432`
+- Owner (2026-10-16 20:06): > Unchanged files: when a worker sends a file back byte-identical, the room drops it silently and then escalates. That’s what stopped both to-do runs. this should be impossiblefor the worker to do || 2026-10-16 19:44: "3 & 4 are issues with the runtime / routing"
+- Required: Answering a complaint with unchanged files must not be possible for the worker. When it does happen, the cause is in the runtime or the routing, and is fixed there instead of escalating a hold.
+- Fixed in: 14d92bb (owner, 2026-10-17: "problem statement failure, not worker or routing failure"): a worker that answers a complaint with done and its files byte for byte unchanged is archived; its level's splitter rebuilds its contracts reading the complaint and that the delivery did not change, and can replace the validations serving them with drop_validation. The worker is not handed the complaint again and the routing is not asked again; handed_before_and_unchanged is gone.
 
 ### R4-compiler/chrono-2: The runtime guesses which module a call check loads by scanning every bundle file for the function name, instead of using the served contract's path
 - extra, `src/checks.js:32`
