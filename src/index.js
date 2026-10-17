@@ -9313,8 +9313,8 @@ export default {
       if (url.pathname==='/api/file' && request.method==='GET') return json(await stub.fileContent(url.searchParams.get('agent'),url.searchParams.get('path')));
       if (url.pathname==='/api/run' && request.method==='POST') {
         const goal=String(payload.goal||'').trim();
-        // A v8 goal is taken as long as the person writes it; v7's keeps its limit.
-        if (payload.settings?.pipeline==='v8'?goal.length<8:goal.length<8 || goal.length>GOAL_LIMIT) return json({error:payload.settings?.pipeline==='v8'?'Goal must have at least 8 characters':`Goal must have 8–${GOAL_LIMIT} characters`},400);
+        // A v8 goal is taken as the person writes it, however short or long (an empty one has nothing to build); v7's keeps its limits.
+        if (payload.settings?.pipeline==='v8'?!goal:goal.length<8 || goal.length>GOAL_LIMIT) return json({error:payload.settings?.pipeline==='v8'?'An empty goal has nothing to build':`Goal must have 8–${GOAL_LIMIT} characters`},400);
         // v8 S8b: what the run starts from, and this deployment's host, which the goal's links never reach.
         const started=await stub.start(goal,normalizeTurnBudget(payload.budget??20),payload.settings||{},room,{base:payload.base??null,selfHosts:[url.host,...selfHostsOf(env)],...(Array.isArray(payload.grants)?{grants:payload.grants}:{})});
         return json(started,started.error?started.status||400:200);

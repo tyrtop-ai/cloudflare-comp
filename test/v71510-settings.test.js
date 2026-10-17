@@ -144,6 +144,13 @@ test('v7.15.10: /api/run takes a goal of GOAL_LIMIT characters and refuses a lon
   assert.equal(res.status,200);
   res=await call(env,`/api/run?room=${ROOM}`,{method:'POST',body:{room:ROOM,goal:'short',budget:20}});
   assert.equal(res.status,400);
+  // A v8 goal is taken as written, however short; only an empty one has nothing to build.
+  res=await call(env,`/api/run?room=${ROOM}`,{method:'POST',body:{room:ROOM,goal:'fix it',budget:20,settings:{pipeline:'v8'}}});
+  assert.equal(res.status,200,await res.text());
+  assert.equal(seen.at(-1).goal,'fix it');
+  res=await call(env,`/api/run?room=${ROOM}`,{method:'POST',body:{room:ROOM,goal:'   ',budget:20,settings:{pipeline:'v8'}}});
+  assert.equal(res.status,400);
+  assert.deepEqual(await res.json(),{error:'An empty goal has nothing to build'});
 });
 
 test('v7.15.10: a goal of the full length reaches Root whole in a live room, with the start requirement after it',async()=>{
