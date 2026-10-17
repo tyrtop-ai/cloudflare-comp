@@ -207,11 +207,11 @@ test('an ask goes to the asker\'s manager as one choice among its functions, eac
   const all = choices.filter(c => c.state.item.kind === 'ask'), asks = all.filter(c => c.state.assignment === TRACKER);
   assert.equal(all.length, 4);
   assert.equal(asks.length, 2);
-  for (const below of all.filter(c => c.state.assignment !== TRACKER)) assert.deepEqual(Object.keys(below.questions), ['grant_0', 'grant_1', 'ask_parent']);
-  // A name no row holds may be granted new, as a package in each code language the box compiles: Clef's choice, as every option is.
+  for (const below of all.filter(c => c.state.assignment !== TRACKER)) assert.deepEqual(Object.keys(below.questions), ['grant_0', 'ask_parent']);
+  // A name no row holds may be granted new, by its name (the runtime knows no language): Clef's choice, as every option is.
   // Every package the room's manager's row lists that the asker's does not is a grant, as the row lists it: pytest too, though the tree's contracts are .js (no filter by a guessed language).
-  assert.deepEqual(Object.keys(asks[0].questions), ['answer_0', 'answer_1', 'grant_0', 'grant_1', 'grant_2', 'ask_parent'], 'the store\'s contracts, none of the asker\'s line, its row\'s package, the new grants, and no extend');
-  assert.deepEqual(asks[0].state.packages_offered.map(p => p.package), ['pytest (tests)', 'getTicket (a JavaScript package)', 'getTicket (a Python package)']);
+  assert.deepEqual(Object.keys(asks[0].questions), ['answer_0', 'answer_1', 'grant_0', 'grant_1', 'ask_parent'], 'the store\'s contracts, none of the asker\'s line, its row\'s package, the new grant, and no extend');
+  assert.deepEqual(asks[0].state.packages_offered.map(p => p.package), ['pytest (tests)', 'getTicket (new: no row lists it yet)']);
   assert.equal(asks[0].questions.ask_parent.instructions, CLEF.ask_parent);
   assert.equal(asks[0].questions.answer_1.instructions, clefText('answer', {j: 1}));
   assert.deepEqual(asks[0].state.item, {kind: 'ask', need: 'read one ticket back by its id', expected_name: 'getTicket'});
@@ -220,8 +220,8 @@ test('an ask goes to the asker\'s manager as one choice among its functions, eac
   // Each choice is an event with Clef's p for the chosen call and the others'.
   const said = events(room, 'manager_choice').filter(e => /^On the ask/.test(e.body)).map(e => [e.actor, e.body]);
   assert.deepEqual(said.map(([a]) => a), [rp.id, rp.id, m, m]);
-  assert.equal(said[0][1], 'On the ask for getTicket: ask_parent(need) p=0.950; the others: grant(getTicket, JavaScript) p=0.200, grant(getTicket, Python) p=0.200.');
-  assert.equal(said[2][1], 'On the ask for getTicket: answer(getTicket) p=0.950; the others: answer(createTicket) p=0.900, grant(pytest) p=0.900, grant(getTicket, JavaScript) p=0.200, grant(getTicket, Python) p=0.200, ask_parent(need) p=0.100.');
+  assert.equal(said[0][1], 'On the ask for getTicket: ask_parent(need) p=0.950; the others: grant(getTicket, new) p=0.200.');
+  assert.equal(said[2][1], 'On the ask for getTicket: answer(getTicket) p=0.950; the others: answer(createTicket) p=0.900, grant(pytest) p=0.900, grant(getTicket, new) p=0.200, ask_parent(need) p=0.100.');
   assert.equal(events(room, 'ask_parent').length, 2);
   // The answer reached the asker: the contract as declared, which it may call from then on; its entry stays as its splitter wrote it.
   const answers = room.read(`fn_answers:${w.id}`, []);

@@ -190,8 +190,8 @@ test('packages across pieces: each piece holds the packages its splitter named t
   // Louder's ask is answered from its row within its session, so it goes on to done; Notes' ask goes to its manager, so it waits for the answer.
   // (R4-room/chrono-3: a worker's wait is its own call, and nothing wakes it but a message.)
   const leaf = leafOf({control: (user, n) => { const c = user.prompt.deliver.find(d => asks[d.name]); return c && n === 0 ? {summary: 'need', ...(c.name === 'loud' ? {done: true} : {wait: true}), ask: asks[c.name]} : null; }});
-  // Clef: a package a row holds gives the need, and so does a name granted new as a Python package; as another language's it does not.
-  const grantP = (k, state) => { const o = state.packages_offered?.[Number(k.split('_')[1])]?.package || ''; return !/ package\)$/.test(o) || /a Python package/.test(o) ? 0.95 : 0.1; };
+  // Clef: a package a row holds gives the need, and so does the name asked for, granted new (by its name: the runtime knows no language).
+  const grantP = () => 0.95;
   const clef = clefFor(undefined, {'^grant_\\d+$': grantP, '^ask_parent$': (_k, state) => state.packages_offered ? 0.1 : 0.95});
   const r = await toolkit({split, leaf, clef});
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
@@ -212,6 +212,6 @@ test('packages across pieces: each piece holds the packages its splitter named t
   assert.deepEqual(names(worker('Notes')), ['pytest']);
   assert.deepEqual(names(m.Notes), ['pytest'], 'every row between holds it too');
   assert.match(events(r.room, 'package_granted').find(e => e.actor === m.Notes).body, /granted pytest to "Notes"/);
-  assert.ok(events(r.room, 'manager_choice').some(e => e.actor === m.Notes && /^On the ask for pytest: grant\(pytest, Python\)/.test(e.body)), 'the grant is the Notes manager\'s choice');
+  assert.ok(events(r.room, 'manager_choice').some(e => e.actor === m.Notes && /^On the ask for pytest: grant\(pytest, new\)/.test(e.body)), 'the grant is the Notes manager\'s choice');
   assert.equal(events(r.room, 'level_extend').length, 0);
 });

@@ -18,7 +18,7 @@ import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfa
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
-import { toolchainOf, TOOLCHAINS, COMPILE_ROWS, installed as installedRows } from './toolchains.js';
+import { toolchainOf, TOOLCHAINS, installed as installedRows } from './toolchains.js';
 // v8 S9: amendments and the prompt queue.
 import { effectiveGoal, goalView, promptText, reorderError } from './amend.js';
 import { statusEntry, runNotes, checkLimitsOf, DEFAULT_CHECK_SECONDS } from './checks.js';
@@ -4024,13 +4024,6 @@ export class ControlRoom extends DurableObject {
   savePass(v, at, {digest, passed}) {
     const {[at]:last,...others}=this.read(`piece_pass:${v.id}`,null)?.at||{};
     this.save(`piece_pass:${v.id}`,{at:passed?{...others,[at]:{check:this.checkKey(v),digest,ts:Date.now()}}:others});
-  }
-  // The languages a manager's grant of a new package offers: the installed
-  // toolchain rows and the compile rows a room's saved box inventory
-  // confirms (a room from before the compiler agent; none in a new one).
-  compileRows() {
-    const inv=this.read('toolchain_inventory',null);
-    return [...this.installedToolchains(),...(inv?installedRows(inv,COMPILE_ROWS):[])];
   }
   // v8 ship-verified (M1): what of a bundle ships though its box did not
   // hold it (unsent): {list} or null.
@@ -8525,15 +8518,14 @@ export class ControlRoom extends DurableObject {
       // Each package its row holds that the asker's does not: grant gives it down the asker's line.
       const held=new Set(this.packagesOf(item.worker).map(p=>p.name)),mine=this.packagesOf(m);
       const grants=this.packageView(m).filter(p=>!held.has(p.name)).map(p=>({package:p}));
-      // The name asked for, which m's row does not list, granted new in a
-      // language: one option per code language the box compiles (owner,
-      // 2026-10-15 22:12: "why are packages not allowed now?"; every manager
-      // has it, whatever its depth, 22:22): each language whose row says how
-      // its packages install (install); the agents install it in their boxes.
+      // The name asked for, which m's row does not list, granted new: one
+      // option, by its name (owner, 2026-10-15 22:12: "why are packages not
+      // allowed now?"; every manager has it, whatever its depth, 22:22). The
+      // runtime knows no language (owner, 2026-10-17): the agents install it
+      // in their boxes as they judge.
       const [named]=normalizePackages(item.name?[item.name]:[]);
-      if(named&&!mine.some(p=>p.name===named.name)&&!held.has(named.name))
-        for(const row of this.compileRows().filter(r=>r.install))grants.push({package:{name:named.name,language:row.id},fresh:row.name});
-      grants.forEach((g,j)=>out.push({fn:'grant',...g,key:`grant_${j}`,question:clefText('grant',{j}),call:`grant(${g.package.name}${g.fresh?`, ${g.fresh}`:''})`}));
+      if(named&&!mine.some(p=>p.name===named.name)&&!held.has(named.name))grants.push({package:{name:named.name},fresh:true});
+      grants.forEach((g,j)=>out.push({fn:'grant',...g,key:`grant_${j}`,question:clefText('grant',{j}),call:`grant(${g.package.name}${g.fresh?', new':''})`}));
       out.push({fn:'ask_parent',key:'ask_parent',question:CLEF.ask_parent,call:'ask_parent(need)'});
       return out;
     }
@@ -8561,7 +8553,7 @@ export class ControlRoom extends DurableObject {
       assignment:view.assignment,my_contracts:lines(view.mine),
       children:view.children.map((c,i)=>({slot:i,label:c.label,contracts:lines(c.contracts),...(item.packages?.length?{packages:this.packagesOf(c.id).map(p=>p.name).filter(n=>item.packages.includes(n))}:{}),...(item.kind==='complaint'?{wrote:wrote(c)}:{})})),
       ...(offered.length?{contracts_offered:offered.map((o,j)=>({slot:j,contract:contractLine(o.contract)}))}:{}),
-      ...(granted.length?{packages_offered:granted.map((o,j)=>({slot:j,package:o.fresh?`${o.package.name} (a ${o.fresh} package)`:packageLine(o.package)}))}:{}),
+      ...(granted.length?{packages_offered:granted.map((o,j)=>({slot:j,package:o.fresh?`${o.package.name} (new: no row lists it yet)`:packageLine(o.package)}))}:{}),
       options:options.map(o=>o.call)};
     const what=item.kind==='ask'?`the ask for ${item.name||`"${clip(item.need,120)}"`}`:`the ${item.kind}`;
     let ps=[null];

@@ -45,8 +45,8 @@ test('H2 (owner, 2026-10-16 20:43): a worker\'s ask by any name its world does n
 
 test('H2: the manager is the interface for what exists: a package its row holds, or the name asked for granted new, is one of its functions on an ask (grant), at every depth; Clef scores it, and a grant is listed on the asker\'s whole line; a manager whose grants Clef finds give nothing hands the ask up', async () => {
   const REQUESTS = {name: 'requests', language: 'python', provides: 'HTTP client'};
-  // Clef: a package a row holds gives the need; of the names granted new, only flask as a Python package does.
-  const grantP = (key, state) => { const o = state.packages_offered?.[Number(key.split('_')[1])]?.package || ''; return !/ package\)$/.test(o) ? 0.95 : /^flask \(a Python package/.test(o) ? 0.95 : 0.1; };
+  // Clef: a package a row holds gives the need; of the names granted new (each by its name: the runtime knows no language), only flask does.
+  const grantP = (key, state) => { const o = state.packages_offered?.[Number(key.split('_')[1])]?.package || ''; return !/ \(new: no row lists it yet\)$/.test(o) ? 0.95 : /^flask /.test(o) ? 0.95 : 0.1; };
   const {room} = liveRoom({clef: usualClef({'^grant_\\d+$': grantP, '^ask_parent$': 0.6})});
   room.save('settings', {...room.settings(), pipeline: 'v8'});
   await room.provision(TOP, null, 'Root objective', 'a tracker', [], [], [PYTEST, REQUESTS], 'manager', {seq: 1});
@@ -63,7 +63,7 @@ test('H2: the manager is the interface for what exists: a package its row holds,
   // requests is Root's alone: Backend may grant httpx new, which Clef finds gives nothing here, and hands it up; Root grants requests to every row between.
   await room.workerAsk(SERVER, {need: 'fetch a page over HTTP', name: 'httpx'});
   await room.routeHeld(BACKEND);
-  assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for httpx: ask_parent\(need\) p=0\.600; the others: grant\(httpx, JavaScript\) p=0\.100, grant\(httpx, Python\) p=0\.100\.$/);
+  assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for httpx: ask_parent\(need\) p=0\.600; the others: grant\(httpx, new\) p=0\.100\.$/);
   await room.routeHeld(TOP);
   assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for httpx: grant\(requests\) p=0\.950/);
   assert.ok(room.packagesOf(BACKEND).some(p => p.name === 'requests') && room.packagesOf(SERVER).some(p => p.name === 'requests'));
@@ -72,8 +72,8 @@ test('H2: the manager is the interface for what exists: a package its row holds,
   // A manager with a manager above it grants a name no row lists, new (every manager has the same functions); it is listed on the whole line.
   await room.workerAsk(SERVER, {need: 'a web framework', name: 'flask'});
   await room.routeHeld(BACKEND);
-  assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for flask: grant\(flask, Python\) p=0\.950/);
-  for (const id of [SERVER, BACKEND, TOP]) assert.deepEqual(room.packagesOf(id).find(p => p.name === 'flask'), {name: 'flask', language: 'python'}, id);
+  assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for flask: grant\(flask, new\) p=0\.950/);
+  for (const id of [SERVER, BACKEND, TOP]) assert.deepEqual(room.packagesOf(id).find(p => p.name === 'flask'), {name: 'flask'}, id);
 });
 
 test('M1: the installed set and the rows\' packages hold no standard library module; its modules are row data (stdlib_provides)', () => {

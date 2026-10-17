@@ -64,7 +64,7 @@ test('2: the room\'s manager is created with the installed set; a v7 room\'s row
   assert.deepEqual(v7.room.catalogue('root'), []);
 });
 
-test('2: a package a piece needs is asked of its manager, whose functions grant it: a package its row holds, or the name asked for, new, in any code language the box compiles, the same at every depth; a grant is listed on every row of the asker\'s line', async () => {
+test('2: a package a piece needs is asked of its manager, whose functions grant it: a package its row holds, or the name asked for, new (by its name: the runtime knows no language), the same at every depth; a grant is listed on every row of the asker\'s line', async () => {
   const {room} = liveRoom({});
   room.save('settings', {...room.settings(), pipeline: 'v8'});
   const pytest = {name: 'pytest', language: 'python', provides: 'tests'}, requests = {name: 'requests', language: 'python', provides: 'HTTP client'};
@@ -72,9 +72,8 @@ test('2: a package a piece needs is asked of its manager, whose functions grant 
   await room.provision(BACKEND, TOP, 'Backend', 'the backend', [], [], [pytest], 'manager', {seq: 1});
   await room.provision(SERVER, BACKEND, 'Server', 'the server', [], [], [], 'worker', {seq: 1});
   const calls = (m, name) => room.managerOptions(m, {kind: 'ask', worker: SERVER, need: 'an HTTP client', name}, room.managerView(m)).map(o => o.call);
-  // Every manager, whatever its depth, grants what its row holds or the name asked for, new, in each code language; or asks one level up.
-  const fresh = name => room.compileRows().filter(r => r.id !== 'text').map(r => `grant(${name}, ${r.name})`);
-  assert.ok(fresh('httpx').length >= 2, fresh('httpx').join());
+  // Every manager, whatever its depth, grants what its row holds or the name asked for, new; or asks one level up.
+  const fresh = name => [`grant(${name}, new)`];
   assert.deepEqual(calls(BACKEND, 'httpx'), ['grant(pytest)', ...fresh('httpx'), 'ask_parent(need)']);
   assert.deepEqual(calls(TOP, 'httpx'), ['grant(pytest)', 'grant(requests)', ...fresh('httpx'), 'ask_parent(need)']);
   // No name shape decides what a package is: a Go module path is granted as any other name.
@@ -82,15 +81,15 @@ test('2: a package a piece needs is asked of its manager, whose functions grant 
   assert.deepEqual(calls(TOP, 'requests'), ['grant(pytest)', 'grant(requests)', 'ask_parent(need)'], 'a name its row holds is granted as held');
   // A manager's grant of a new name (here the one with no manager above it, which does not know that): listed on every row of the line, the granter's too; the agents install it in their boxes.
   const ask = {worker: SERVER, key: 'fn httpx', need: 'an HTTP client', name: 'httpx', request_id: 'r1'};
-  await room.grantPackage(TOP, ask, {name: 'httpx', language: 'python'});
-  for (const row of [TOP, BACKEND, SERVER]) assert.ok(room.packagesOf(row).some(p => p.name === 'httpx' && p.language === 'python'), row);
+  await room.grantPackage(TOP, ask, {name: 'httpx'});
+  for (const row of [TOP, BACKEND, SERVER]) assert.ok(room.packagesOf(row).some(p => p.name === 'httpx'), row);
   assert.match(events(room, 'package_granted').at(-1).body, /^"Root objective" granted httpx to "Server"\.$/);
   // A manager's grant of what its row holds: listed on the rows below it (those above hold it already).
   await room.grantPackage(BACKEND, {...ask, key: 'fn pytest', name: 'pytest'}, pytest);
   assert.ok(room.packagesOf(SERVER).some(p => p.name === 'pytest'));
   // A manager with a manager above it grants a new name the same way: listed on the whole line.
-  await room.grantPackage(BACKEND, {...ask, key: 'fn mux', name: 'github.com/gorilla/mux'}, {name: 'github.com/gorilla/mux', language: 'go'});
-  for (const row of [TOP, BACKEND, SERVER]) assert.ok(room.packagesOf(row).some(p => p.name === 'github.com/gorilla/mux' && p.language === 'go'), row);
+  await room.grantPackage(BACKEND, {...ask, key: 'fn mux', name: 'github.com/gorilla/mux'}, {name: 'github.com/gorilla/mux'});
+  for (const row of [TOP, BACKEND, SERVER]) assert.ok(room.packagesOf(row).some(p => p.name === 'github.com/gorilla/mux'), row);
   // A name the rows do not know as a package's goes on as a contract ask.
   assert.equal(room.askKind(SERVER, 'parse_input', 'reads the input').kind, 'contract');
   // A worker's ask by a package's name is its manager's (its grant), never the runtime's.
