@@ -372,17 +372,18 @@ test('a manager reads its children and contracts from its level files only, neve
   assert.ok(PAGE);
 });
 
-test('a change is one manager choice too: route_to the child it concerns, or extend; Clef failing holds it at the manager, nothing decided', async () => {
+// R3-room/code-4: Clef giving no answer leaves the change at the manager, which is woken to ask again on a turn of the budget; no hold.
+test('a change is one manager choice too: route_to the child it concerns, or extend; Clef failing keeps it at the manager, nothing decided, and its next turn (one of the budget) asks again', async () => {
   let bad = true;
   const {asked, clef} = recorded({'^route_to_\\d+$': (k, state) => bad ? 7 : state.children[Number(k.split('_').pop())].label === 'Page' ? 0.9 : 0.2, '^extend$': 0.3});
   const {room, top, a} = await tree(clef);
   await room.routeChange(top.id, 'Make the page dark', {});
-  assert.deepEqual(room.roomHolds().map(h => h.kind), ['clef_blocked']);
+  assert.deepEqual(room.roomHolds(), [], 'no hold for the person');
   assert.equal(room.problems("holder=? AND kind='change' AND status='open'", top.id).length, 1, 'the change waits at the manager');
   assert.equal(events(room, 'manager_choice').length, 0);
+  assert.equal(room.node(top.id).status, 'ready', 'the manager is woken to ask again');
+  assert.equal(room.spendsTurn(top.id), true, 'its next turn is one of the budget');
   bad = false;
-  room.saveHolds([]);
-  room.set(`escalated:${top.id}`, '');
   await room.routeHeld(top.id);
   assert.deepEqual(Object.keys(asked.at(-1).questions), ['route_to_0', 'route_to_1', 'extend']);
   assert.equal(asked.at(-1).questions.extend.instructions, CLEF.extend_change);
@@ -403,4 +404,30 @@ test('a worker\'s session that ends with neither done nor wait (its context wind
   assert.equal(room.get('status'), 'paused');
   assert.match(events(room, 'paused').at(-1)?.body || room.get('pause_reason', '') || '', /budget/i);
   assert.equal(room.node(w.id).status, 'ready');
+});
+
+// R3-room/chrono-2: no count of failed turns pauses a row and no agent_stuck hold reaches the room:
+// a turn that throws runs again, each run a turn of the budget, until the budget the person set ends.
+test('a worker\'s turn that throws runs again, as a turn of the budget: no pause after a number of failures, no hold', async () => {
+  const run = async (budget, throws) => {
+    const r = liveRoom({split: () => CLI_LEVEL, leaf: () => deliver({'convert.js': CONVERT_JS}), clef: caught()});
+    const own = r.room.levelWorkerTurn;
+    let n = 0;
+    r.room.levelWorkerTurn = function (...a) { if (++n <= throws) throw new Error(`defect ${n}`); return own.apply(this, a); };
+    await r.room.start(CLI, budget, {pipeline: 'v8'}, 'throws-test');
+    await r.drain();
+    return {r, n};
+  };
+  const {r, n} = await run(20, 5);
+  assert.equal(r.room.get('status'), 'complete', events(r.room).slice(-12).map(e => `${e.kind}: ${e.body}`).join('\n'));
+  assert.equal(n, 6, 'five failed turns, then the turn that delivered');
+  assert.equal(events(r.room, 'error').length, 5);
+  assert.deepEqual(events(r.room, 'paused'), []);
+  assert.deepEqual(events(r.room, 'stuck'), []);
+  // A defect on every turn: the budget the person set is the bound, and nothing holds.
+  const bounded = await run(4, Infinity);
+  assert.equal(bounded.r.room.get('status'), 'paused');
+  assert.equal(bounded.n, 3, 'the manager\'s split step spent one turn of the four, and each retry one more');
+  assert.deepEqual(bounded.r.room.roomHolds(), []);
+  assert.match(events(bounded.r.room, 'paused').at(-1).body, /Inference budget ended/);
 });

@@ -133,8 +133,8 @@ function renderPrompts(s) {
   const list=s.prompts||[],queued=list.filter(p=>p.status==='queued').map(p=>p.id),running=s.status==='running';
   if($('prompt-now')){$('prompt-now').textContent=running?'Adjust now':'Apply now';$('prompt-now').disabled=s.settings?.pipeline!=='v8'||!s.agents?.length||!!s.amending;}
   if($('queue-on-fail')&&document.activeElement!==$('queue-on-fail'))$('queue-on-fail').value=s.queue_on_fail||'stop';
-  // The queue's bounds: the turns left for queued prompts and the room-wide repair rounds (S9 review).
-  if($('prompts-note')&&s.queue_turns_left!=null)$('prompts-note').textContent=`v8 · ${s.queue_turns_left} turns left for queued prompts · repair rounds ${s.room_repair_rounds??0} of ${s.room_repair_cap??0}`;
+  // The room-wide repair rounds (S9 review).
+  if($('prompts-note')&&s.room_repair_cap!=null)$('prompts-note').textContent=`v8 · repair rounds ${s.room_repair_rounds??0} of ${s.room_repair_cap??0}`;
   if($('queue-stopped')){$('queue-stopped').hidden=!s.queue_stopped;$('queue-stopped').innerHTML=s.queue_stopped?`${esc(s.queue_stopped)} <button type="button" class="secondary" data-queue-resume="1">Go on</button>`:'';}
   // Polling never overwrites a prompt being edited.
   if(editingPrompt&&queued.includes(editingPrompt)&&renderedPrompts!==null)return;

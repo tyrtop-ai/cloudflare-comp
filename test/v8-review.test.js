@@ -191,7 +191,8 @@ test('F8: the worker of shout reads only shout\'s own examples, never a sibling\
 });
 
 // ------------------------------------------------------------------ F9
-test('F9: Clef failing on a manager\'s choice on an ask is asked again, then the room holds as infrastructure: nobody is archived; Continue goes on with the walk where it stopped', {skip}, async () => {
+// R3-room/code-4: no retry schedule and no clef_blocked hold: the manager's next turn asks again, as a turn of the budget.
+test('F9: Clef failing on a manager\'s choice on an ask is asked again at the manager\'s next turn, each a turn of the budget, with no hold: nobody is archived; Continue goes on with the walk where it stopped', {skip}, async () => {
   let asked = false, bad = true;
   const leaf = leafOf({control: user => {
     if (!user.prompt.deliver.some(c => c.name === 'loud') || asked) return null;
@@ -202,9 +203,11 @@ test('F9: Clef failing on a manager\'s choice on an ask is asked again, then the
   const m = at(r.room);
   assert.equal(r.room.get('status'), 'paused', tail(r.room));
   // Louder's only child is the asker's line: ask_parent is the one function it may call, so Clef is first asked at Loud part.
-  assert.deepEqual(r.room.roomHolds().map(h => [h.kind, h.agent]), [['clef_blocked', m['Loud part']]]);
-  assert.match(r.room.roomHolds()[0].text, /Clef could not answer which function answers the ask for synonyms at "Loud part": .*Nothing was decided on it; Continue asks again\./s);
-  assert.equal(events(r.room, 'clef_retry').length, 2, 'asked again twice first');
+  assert.deepEqual(r.room.roomHolds(), [], 'no hold for the person');
+  const unanswered = events(r.room, 'clef_unanswered');
+  assert.ok(unanswered.length >= 2 && unanswered.every(e => e.actor === m['Loud part']), tail(r.room));
+  assert.match(unanswered[0].body, /^Clef gave no answer to which function answers the ask for synonyms: .*Its next turn asks again\./s);
+  assert.match(events(r.room, 'paused').at(-1).body, /Inference budget ended/, 'the run ends when its budget does');
   assert.deepEqual(r.room.allNodes().filter(n => n.status === 'archived'), [], 'a failure is never read as out of scope');
   assert.deepEqual(events(r.room, 'manager_choice').map(e => e.actor), [m.Louder]);
   bad = false;
@@ -214,7 +217,7 @@ test('F9: Clef failing on a manager\'s choice on an ask is asked again, then the
   assert.ok(events(r.room, 'manager_choice').every(e => /: ask_parent\(need\) (\(the only function it may call\)|p=0\.950;)/.test(e.body)));
   assert.equal(r.room.allNodes().filter(n => n.status === 'archived').length, 1, 'archived on answers below the bar at every level');
 });
-test('F9: Clef failing on a change\'s routing holds the room as infrastructure: no splitter extends the level; Continue routes it to the child it concerns, and the change lands', {skip}, async () => {
+test('F9: Clef failing on a change\'s routing is asked again at the next turn, with no hold: no splitter extends the level; once Clef answers, Continue routes it to the child it concerns, and the change lands', {skip}, async () => {
   let bad = false;
   const pick = (key, state) => { const t = state.children?.[Number(key.split('_').pop())]?.label || ''; return bad ? 7 : t === 'Loud part' || t === 'Shouter' ? 0.9 : 0.1; };
   const r = await toolkit({clef: clefFor(undefined, {'^route_to_\\d+$': pick})});
@@ -225,7 +228,8 @@ test('F9: Clef failing on a change\'s routing holds the room as infrastructure: 
   await r.drain();
   const m = at(r.room);
   assert.equal(r.room.get('status'), 'paused', tail(r.room));
-  assert.deepEqual(r.room.roomHolds().map(h => [h.kind, h.agent]), [['clef_blocked', m.Root]]);
+  assert.deepEqual(r.room.roomHolds(), [], 'no hold for the person');
+  assert.ok(events(r.room, 'clef_unanswered').length >= 2 && events(r.room, 'clef_unanswered').every(e => e.actor === m.Root), tail(r.room));
   assert.equal(r.calls.split.length, splits, 'no splitter extended the level');
   assert.ok(!events(r.room, 'level_extend').length && !events(r.room, 'change_routed').length);
   assert.equal((await r.room.appFiles()).passed, false);

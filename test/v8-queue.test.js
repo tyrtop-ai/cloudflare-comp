@@ -224,18 +224,21 @@ test('queue on failure: a run that ends failed fails its running prompt, and the
   }
 });
 
-test('two failed prompts in a row stop a continue queue', async () => {
+// R3-room/chrono-1: no failure count stops a continue queue; after each failed prompt its next one is due.
+test('a continue queue goes on after every failed prompt: no count of failures stops it', async () => {
   const {room, drain} = docRoom();
   await room.queuePolicy({queue_on_fail: 'continue'});
   await room.start(DOC_GOAL, 30, {pipeline: 'v8'});
   await drain();
   await room.addPrompt(CUPS);
   room.db().exec("UPDATE prompts SET seq=5 WHERE status='queued'");
-  await failRun(room, 'p-1', 1);
-  assert.equal(room.get('queue_stopped') || '', '', 'one failure: a continue queue goes on');
-  await failRun(room, 'p-2', 2);
-  assert.deepEqual(states(room).map(x => x[1]), ['failed', 'failed', 'queued'], tail(room));
-  assert.match(room.get('queue_stopped'), /Two prompts in a row failed, so the queue waits even on continue/);
+  for (const [id, seq] of [['p-1', 1], ['p-2', 2], ['p-3', 3]]) {
+    room.save('prompts_due', null);
+    await failRun(room, id, seq);
+    assert.equal(room.get('queue_stopped') || '', '', `${id}: a continue queue goes on`);
+    assert.ok(room.read('prompts_due', null), `${id}: the next prompt is due`);
+  }
+  assert.deepEqual(states(room).map(x => x[1]), ['failed', 'failed', 'failed', 'queued'], tail(room));
 });
 
 // ------------------------------------------------------------ the queue's own operations
@@ -291,15 +294,18 @@ test('a paused room stays paused after a change: it waits on the manager\'s row,
   assert.match((await room.appFiles()).files.find(f => f.path === 'GUIDE.md').content, /Makes 2 cups/);
 });
 
-test('a spent turn allowance stops the queue', async () => {
+// R3-room/chrono-1: no queue allowance; each queued prompt's run has the Start budget (or its own).
+test('queued prompts apply one after another, each run with the Start budget: no allowance across them', async () => {
   const {room, drain, fire} = docRoom();
   await room.start(DOC_GOAL, 20, {pipeline: 'v8'});
-  await room.addPrompt(CUPS);
-  room.set('queue_turns_left', '0');
+  for (let i = 0; i < 6; i++) await room.addPrompt(`${CUPS} (round ${i})`);
   await drain();
-  await fire();
-  assert.deepEqual(states(room).map(x => x[1]), ['queued']);
-  assert.match(room.get('queue_stopped'), /turn allowance is spent/);
+  for (let i = 0; i < 6; i++) await fire();
+  assert.deepEqual(states(room).map(x => x[1]), Array(6).fill('done'), tail(room));
+  assert.equal(room.get('queue_stopped') || '', '');
+  assert.equal(events(room, 'resume').length, 6);
+  assert.ok(events(room, 'resume').every(e => / up to 20 turns/.test(e.body)), 'each run has the Start budget');
+  assert.equal(room.snapshot().queue_turns_left, undefined);
 });
 
 test('a prompt queued on a failed room says why it waits, and Go on applies it', async () => {
