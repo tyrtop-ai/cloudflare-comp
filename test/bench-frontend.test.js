@@ -42,7 +42,9 @@ test('the Benchmarks panel: dataset URL, paste and upload, limit, rooms at once,
   for (const id of ['bench-panel', 'bench-url', 'bench-text', 'bench-file', 'bench-limit', 'bench-concurrency', 'bench-label', 'bench-start', 'bench-runs', 'bench-a', 'bench-b', 'bench-compare', 'bench-results'])
     assert.match(html, new RegExp(`id="${id}"`), id);
   assert.match(html, /<section class="panel bench-panel" id="bench-panel">\s*<div class="section-head"><span class="counter">06<\/span><h2>Benchmarks<\/h2>/);
-  assert.match(html, /<input id="bench-limit" class="mono" type="number"[^>]*min="1" max="500"[^>]*value="20"/);
+  // No task count is set: an empty Tasks field runs every task of the dataset.
+  assert.match(html, /<input id="bench-limit" class="mono" type="number"[^>]*min="1"[^>]*placeholder="all"/);
+  assert.doesNotMatch(html, /id="bench-limit"[^>]*(?:max|value)=/);
   assert.match(html, /<input id="bench-concurrency" class="mono" type="number"[^>]*min="1" max="16"[^>]*value="2"/);
   assert.match(html, /<button class="primary" id="bench-start"/);
   // Grading has one way: the grade goes back until done (owner 2026-10-16 05:54); no mode in which nothing goes back is offered.
@@ -75,12 +77,11 @@ test('the runs list, one run\'s results with a link to each task\'s room, and a 
   assert.match(shown, /pass@1 <b>50\.0%<\/b>[\s\S]*until done <b>100\.0%<\/b> <span class="faint">\(2 of 2; mean 1\.5 gradings\)<\/span>/);
   assert.match(shown, /· 2 at once · keeps failed rooms/);
   assert.match(shown, /<span class="req-chip pass"[^>]*>pass<\/span> <span class="faint" title="its first grading \(pass@1\)">first fail<\/span> <span class="faint">· 2 gradings<\/span>/);
-  // A deleted room, a clamped concurrency and a partial dataset are said so.
-  const later = context.benchResultsMarkup({...RUN, concurrency_asked: 8, executors: 4, keep_rooms: 'none', dataset: {...RUN.dataset, partial: 'rows from offset 100 could not be read'},
+  // A deleted room and a clamped concurrency are said so.
+  const later = context.benchResultsMarkup({...RUN, concurrency_asked: 8, executors: 4, keep_rooms: 'none',
     tasks: [{...RUN.tasks[0], room_deleted: true}]});
   assert.match(later, /2 at once \(asked 8; 4 Container slots\) · keeps none rooms/);
   assert.doesNotMatch(context.benchResultsMarkup({...RUN, feedback: 'once'}), /feedback/, 'a run stored with the old grading choice shows none');
-  assert.match(later, /partial: rows from offset 100 could not be read/);
   assert.match(later, /<td><span class="faint">room deleted<\/span><\/td>/);
   assert.match(runs, /<td class="num">– \/ –<\/td><td class="num">–<\/td>/);
   assert.equal(context.benchRunsMarkup([]), '<p class="empty">No benchmark runs yet.</p>');

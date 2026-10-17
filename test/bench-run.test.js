@@ -182,7 +182,7 @@ test('stop stops the running rooms and starts nothing; resume runs their tasks a
   assert.equal(rooms.live(), 0);
 });
 
-test('no wall clock ends a task: a room running for hours goes on; an unreachable room is an error after five polls; a refused start is an error', async () => {
+test('no wall clock ends a task: a room running for hours goes on; a room that cannot be read is read again on each tick, with no strike count; a refused start is an error', async () => {
   const {rooms, run} = benchEnv(), b = run();
   await begin(b, {concurrency: 3});
   await b.alarm();
@@ -202,11 +202,18 @@ test('no wall clock ends a task: a room running for hours goes on; an unreachabl
   assert.equal(s.tasks[3].outcome, 'error');
   assert.match(s.tasks[3].detail, /did not start: Unsupported Workers AI model/);
   assert.equal(s.tasks[1].status, 'running');
-  for (let i = 0; i < 4; i++) await b.alarm();
+  // Owner 2026-10-15 23:16 "no stopgaps? ever?": no count of failed reads ends the task.
+  for (let i = 0; i < 12; i++) await b.alarm();
   s = b.status();
-  assert.equal(s.tasks[1].outcome, 'error');
-  assert.match(s.tasks[1].detail, /could not be read: room unreachable/);
-  assert.equal(s.aggregate.error, 2);
+  assert.equal(s.tasks[1].status, 'running');
+  assert.equal(s.tasks[1].outcome, null);
+  // Once it can be read, its outcome is what the room and the grader observe.
+  rooms.rooms.get(taskRoom(ID, 1, 0)).broken = false;
+  rooms.end(taskRoom(ID, 1, 0), pass);
+  await b.alarm();
+  s = b.status();
+  assert.equal(s.tasks[1].outcome, 'pass');
+  assert.equal(s.aggregate.error, 1);
 });
 
 test('a room still running from before is retried in a fresh room on the next tick', async () => {

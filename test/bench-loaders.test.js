@@ -120,6 +120,11 @@ test('the task limit, duplicate ids, and a fresh nonce per task; a task\'s tests
   assert.equal(BENCH_LIMITS.fixture, undefined);
   assert.equal(loadTasks([...HUMANEVAL, ...MBPP], {limit: 4}).tasks.length, 4);
   assert.equal(loadTasks(HUMANEVAL, {limit: 10_000}).tasks.length, 3);
+  // Owner 2026-10-15 05:16 "point this thing at ... benchmarks": no task count is set; with no limit every row is a task.
+  assert.equal(BENCH_LIMITS.maxTasks, undefined);
+  const many = Array.from({length: 1200}, (_, i) => ({...HUMANEVAL[0], task_id: `Toy/${i}`}));
+  assert.equal(loadTasks(many).tasks.length, 1200);
+  assert.equal(loadTasks(many, {limit: 700}).tasks.length, 700);
   // Owner 2026-10-17 00:25 on an invented cap: "I don't understand the need". Long tests and a long prompt load as written.
   const big = {...HUMANEVAL[0], task_id: 'Toy/big', test: 'def check(candidate):\n' + '    assert candidate([1]) == 1\n'.repeat(1000)};
   assert.equal(taskFromRow(big).grader.check.files[FIXTURE.tests], big.test);
@@ -271,7 +276,7 @@ test('fetchDataset: a JSON lines file, a gzipped one served as octet-stream, a r
   assert.doesNotMatch(src, /\bfetch\s*\(/, 'every request goes through the fetcher\'s guardedFetch');
 });
 
-test('fetchDataset: a datasets-server rows URL is paged up to the wanted rows; a body over the cap is refused', async () => {
+test('fetchDataset: a datasets-server rows URL is paged up to the wanted rows; a large body is read whole', async () => {
   const all = [...MULTIPLE_JS, ...MULTIPLE_JS.map(r => ({...r, name: r.name + '_b'}))];
   const base = 'https://datasets-server.huggingface.co/rows?dataset=toy%2Fbench&config=js&split=test';
   const page = (offset, length) => `${base}&offset=${offset}&length=${length}`;
@@ -285,11 +290,14 @@ test('fetchDataset: a datasets-server rows URL is paged up to the wanted rows; a
   const r2 = await fetchDataset(base, {fetch, policy: policy(), want: 100});
   assert.equal(parseRows(r2.text).rows.length, 8);
   assert.deepEqual(fetch.calls.slice(1).map(c => c.url), [page(0, 100)]);
-  const huge = fakeFetch({'https://huggingface.co/big.jsonl': body('x'.repeat(4096))});
-  assert.match((await fetchDataset('https://huggingface.co/big.jsonl', {fetch: huge, policy: policy({maxBytes: 1024})})).error, /larger than 1024 bytes/);
+  // No size is set on a dataset: a body past the old 16 MiB is read whole.
+  const huge = fakeFetch({'https://huggingface.co/big.jsonl': body('x'.repeat(17 * 1024 * 1024))});
+  const big = await fetchDataset('https://huggingface.co/big.jsonl', {fetch: huge, policy: policy()});
+  assert.equal(big.error, null);
+  assert.equal(big.text.length, 17 * 1024 * 1024);
 });
 
-test('loadDataset: from a URL or pasted text, with a stable digest; errors for nothing usable and for oversized paste', async () => {
+test('loadDataset: from a URL or pasted text, with a stable digest; errors for nothing usable', async () => {
   const url = 'https://raw.githubusercontent.com/toy/bench/main/mbpp.jsonl';
   const fetch = fakeFetch({[url]: body(jsonl(MBPP))});
   const fromUrl = await loadDataset({url}, {fetch, policy: policy(), limit: 2, nonce: 'n0nce'});
@@ -303,7 +311,11 @@ test('loadDataset: from a URL or pasted text, with a stable digest; errors for n
   assert.equal((await loadDataset({text: jsonl(GENERIC), name: 'mine.jsonl'}, {fetch, policy: policy()})).source, 'inline: mine.jsonl');
   assert.equal((await loadDataset(url, {fetch, policy: policy()})).tasks.length, 3, 'a bare URL string is a URL');
   assert.match((await loadDataset({text: '{"question": 1}\n'}, {fetch, policy: policy()})).error, /no task could be read \(1 rows, 0 unreadable lines; first skipped: unrecognised row/);
-  assert.match((await loadDataset({text: 'x'.repeat(BENCH_LIMITS.inlineBytes + 1)}, {fetch, policy: policy()})).error, /larger than/);
+  // No size is set on a pasted dataset: a large one loads whole.
+  assert.equal(BENCH_LIMITS.inlineBytes, undefined);
+  const wide = Array.from({length: 40}, (_, i) => JSON.stringify({...GENERIC[0], id: `w${i}`, prompt: GENERIC[0].prompt + ' '.repeat(150_000)})).join('\n');
+  assert.ok(wide.length > 4 * 1024 * 1024);
+  assert.equal((await loadDataset({text: wide}, {fetch, policy: policy()})).tasks.length, 40);
   assert.match((await loadDataset({}, {fetch, policy: policy()})).error, /give a URL/);
   assert.match((await loadDataset({url: 'https://example.com/a.jsonl'}, {fetch, policy: policy()})).error, /not on the allowlist/);
 });
@@ -372,45 +384,36 @@ test('a task\'s goal is its prompt alone: the runtime adds no signature, paramet
   assert.equal(taskFromRow({...HUMANEVAL[2], prompt: spaced}, 0, {nonce: 'n0nce'}).prompt, spaced);
 });
 
-test('a failed rows page is asked again twice; after that the pages already read are kept and the dataset is marked partial', async () => {
+test('a rows page that cannot be read is the dataset\'s error: no retry, and no part of a benchmark is run', async () => {
+  // Owner 2026-10-15 23:16: "there should be no stopgaps? ever?"
+  assert.equal(bench.PAGE_RETRY_MS, undefined);
   const base = 'https://datasets-server.huggingface.co/rows?dataset=toy%2Fbench&config=js&split=test';
   const rows = Array.from({length: 150}, (_, i) => ({...MULTIPLE_JS[0], name: `Toy_${i}_add_two`}));
-  let calls = 0, page2 = [];
+  let calls = 0, page2 = null;
   const fetch = async url => {
     calls++;
     const u = new URL(url), o = +u.searchParams.get('offset'), n = +u.searchParams.get('length');
-    if (o === 100) {
-      const next = page2.shift();
-      if (next) return next();
-    }
+    if (o === 100 && page2) return page2();
     return new Response(JSON.stringify({rows: rows.slice(o, o + n).map(row => ({row})), num_rows_total: rows.length}), {headers: {'content-type': 'application/json'}});
   };
-  const slept = [], sleep = async ms => { slept.push(ms); };
-  const err500 = () => new Response('oops', {status: 500, headers: {'content-type': 'text/plain'}});
-  const errBody = () => new Response(JSON.stringify({error: 'The dataset is being processed'}), {headers: {'content-type': 'application/json'}});
-  // Two failures, then the page: the whole table.
-  page2 = [err500, errBody];
-  let r = await fetchDataset(base, {fetch, policy: policy(), want: 150, sleep});
+  // Every page read: the whole table, with no limit named.
+  let r = await fetchDataset(base, {fetch, policy: policy()});
   assert.equal(r.error, null);
   assert.equal(parseRows(r.text).rows.length, 150);
+  assert.equal(calls, 2);
+  // The second page fails once: the dataset could not be read, and says where.
+  page2 = () => new Response(JSON.stringify({error: 'The dataset is being processed'}), {headers: {'content-type': 'application/json'}});
+  calls = 0;
+  r = await fetchDataset(base, {fetch, policy: policy()});
+  assert.equal(calls, 2, 'the failed page is not asked again');
+  assert.equal(r.text, '');
+  assert.match(r.error, /the rows from offset 100 could not be read \(The dataset is being processed\)/);
   assert.equal(r.partial, undefined);
-  assert.deepEqual(slept, [500, 1500]);
-  // Three failures: the first page is kept, marked partial.
-  page2 = [err500, err500, errBody]; slept.length = 0; calls = 0;
-  r = await fetchDataset(base, {fetch, policy: policy(), want: 150, sleep});
-  assert.equal(parseRows(r.text).rows.length, 100);
-  assert.match(r.partial, /rows from offset 100 could not be read \(a rows page without rows \(The dataset is being processed\)\); the 100 rows before them are used/);
-  assert.equal(calls, 4, 'one good page and three tries, never a page per offset');
-  page2 = [err500, err500, err500];
-  const loaded = await loadDataset({url: base}, {fetch, policy: policy(), limit: 150, sleep});
-  assert.equal(loaded.tasks.length, 100);
-  assert.match(loaded.partial, /could not be read/);
-  // The first page failing is an error, and a refusal is never retried.
-  const down = await fetchDataset(base, {fetch: async () => err500(), policy: policy(), want: 10, sleep});
-  assert.match(down.error, /http 500/);
-  slept.length = 0;
-  assert.match((await fetchDataset('https://datasets-server.example.org/rows?x=1', {fetch, policy: policy(), want: 10, sleep})).error, /not on the allowlist/);
-  assert.deepEqual(slept, []);
+  page2 = () => new Response('oops', {status: 500, headers: {'content-type': 'text/plain'}});
+  const loaded = await loadDataset({url: base}, {fetch, policy: policy(), limit: 150});
+  assert.equal(loaded.tasks, undefined);
+  assert.match(loaded.error, /http 500/);
+  assert.match((await fetchDataset('https://datasets-server.example.org/rows?x=1', {fetch, policy: policy(), want: 10})).error, /not on the allowlist/);
 });
 
 test('the dataset digest covers the tasks used, not the text fetched: the same tasks through other pages give the same digest', async () => {

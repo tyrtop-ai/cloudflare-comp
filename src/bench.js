@@ -5,7 +5,7 @@
 // Pure: `fetch` is injected and the module never sees the Worker's bindings
 // or secrets. Datasets are read through src/fetcher.js (guardedFetch: the
 // owner's allowlist narrowed to the dataset hosts, https only, manual and
-// rechecked redirects, no credentials, capped and decompressed bodies).
+// rechecked redirects, no credentials, decompressed bodies), whole.
 //
 // A task room is an ordinary room started from the task's prompt, as the
 // benchmark wrote it: the runtime adds no language, path, library or
@@ -18,15 +18,13 @@
 // files. A task is loaded in whatever language its row is written in: the
 // toolchain rows (src/toolchains.js) say which files are that language's and
 // how the box runs them.
-import { fetchPolicy, guardedFetch, plainBody, readCapped, inputCapFor, allowedType, redactText, FetchRefused } from './fetcher.js';
+import { fetchPolicy, guardedFetch, plainBody, readCapped, allowedType, redactText, FetchRefused } from './fetcher.js';
 import { TOOLCHAINS, COMPILE_ROWS } from './toolchains.js';
 import { pythonHarness as pyHarness, javascriptHarness as jsHarness, testsAfterHarness } from './bench-harness.js';
 
+// No count or size is set on a benchmark: its tasks are every row the
+// dataset holds, or the first `limit` the person names.
 export const BENCH_LIMITS = Object.freeze({
-  maxTasks: 500,              // tasks one run may hold
-  defaultLimit: 20,           // tasks taken when the request names no limit
-  datasetBytes: 16 * 1024 * 1024, // a fetched dataset, after decompression
-  inlineBytes: 4 * 1024 * 1024,   // a pasted or uploaded dataset
   timeoutMs: 30_000,          // one dataset fetch, every page together
   pageRows: 100,              // the datasets-server rows API's page size
   concurrency: [1, 16], budget: [1, 100000]
@@ -200,9 +198,9 @@ export function taskFromRow(row, index = 0, {format = null, nonce = null} = {}) 
   return {id, format: f, language: language.id, entry: entry || null, prompt, grader};
 }
 
-// Rows → tasks, at most `limit`, with the skipped rows and why.
-export function loadTasks(rows, {limit = BENCH_LIMITS.defaultLimit, format = null, nonce = null} = {}) {
-  const cap = Math.max(1, Math.min(BENCH_LIMITS.maxTasks, Number(limit) || BENCH_LIMITS.defaultLimit));
+// Rows → tasks, every one or the first `limit`, with the skipped rows and why.
+export function loadTasks(rows, {limit = null, format = null, nonce = null} = {}) {
+  const cap = Number(limit) >= 1 ? Number(limit) : Infinity;
   const tasks = [], skipped = [], seen = new Set();
   for (const [i, row] of rows.entries()) {
     if (tasks.length >= cap) break;
@@ -234,21 +232,17 @@ export const tasksDigest = tasks => sha256(JSON.stringify(tasks.map(t => [t.id, 
 // refused, archives (a .jsonl.gz served as octet-stream) allowed.
 export function benchPolicy({allow, selfHosts = [], ...limits} = {}) {
   return fetchPolicy({allow, room: [...BENCH_HOSTS], selfHosts, requireSelfHosts: true, archive: true,
-    maxBytes: BENCH_LIMITS.datasetBytes, timeoutMs: BENCH_LIMITS.timeoutMs, ...limits});
+    timeoutMs: BENCH_LIMITS.timeoutMs, ...limits});
 }
-// A datasets-server rows URL: its pages are fetched up to `want` rows.
+// A datasets-server rows URL: its pages are fetched up to `want` rows, or all of them.
 const rowsApi = u => u.hostname === 'datasets-server.huggingface.co' && u.pathname === '/rows';
 
 // One dataset text from a URL, through the fetcher's guarded GET. Never
 // throws: {text, final_url, bytes, error}. A datasets-server rows URL is
 // paged (offset/length, 100 a page) until `want` rows or the table's end,
-// and its pages are joined as JSON lines.
-// A rows page that fails (an HTTP error, a body without a rows array) is
-// asked again after each of PAGE_RETRY_MS; after that the pages already read
-// are kept and the result is marked partial (an error only when none was read).
-export const PAGE_RETRY_MS = Object.freeze([500, 1500]);
-const pause = ms => new Promise(done => setTimeout(done, ms));
-export async function fetchDataset(url, {fetch, policy, want = BENCH_LIMITS.defaultLimit, redact = t => t, sleep = pause} = {}) {
+// and its pages are joined as JSON lines. A page that cannot be read is the
+// dataset's error: the benchmark is read whole or not at all.
+export async function fetchDataset(url, {fetch, policy, want = null, redact = t => t} = {}) {
   let u;
   try { u = new URL(String(url)); } catch { return {text: '', error: 'source_refused: not a URL'}; }
   const deadline = Date.now() + policy.timeoutMs;
@@ -258,7 +252,7 @@ export async function fetchDataset(url, {fetch, policy, want = BENCH_LIMITS.defa
   expired.catch(() => {});
   const timer = setTimeout(() => { controller.abort(); fail(new FetchRefused('timeout')); }, Math.max(1, deadline - Date.now()));
   const race = p => Promise.race([p, expired]);
-  let left = policy.maxBytes, bytes = 0, final_url = null;
+  let bytes = 0, final_url = null;
   const getText = async target => {
     const {response, final_url: f} = await guardedFetch(target, {fetch, policy, race, signal: controller.signal,
       accept: 'application/json, application/x-ndjson, application/jsonl, text/plain;q=0.9, application/gzip;q=0.8, */*;q=0.1'});
@@ -266,46 +260,29 @@ export async function fetchDataset(url, {fetch, policy, want = BENCH_LIMITS.defa
     const type = String(response.headers?.get?.('content-type') || '').split(';')[0].trim().toLowerCase();
     if (response.status < 200 || response.status > 299) { try { response.body?.cancel?.().catch?.(() => {}); } catch {} throw new FetchRefused(`http ${response.status}`); }
     if (!allowedType(type, policy)) { try { response.body?.cancel?.().catch?.(() => {}); } catch {} throw new FetchRefused(`content type ${type || '(none)'} is not read`); }
-    const body = await plainBody(response.body, {race, inputCap: inputCapFor(left), limit: left + 1, encoding: response.headers?.get?.('content-encoding') || ''});
-    const read = await readCapped(body, left, race);
-    if (read.truncated) throw new FetchRefused(`the dataset is larger than ${policy.maxBytes} bytes`);
+    const body = await plainBody(response.body, {race, encoding: response.headers?.get?.('content-encoding') || ''});
+    const read = await readCapped(body, Infinity, race);
     if (read.bytes.subarray(0, 8192).includes(0)) throw new FetchRefused('binary content (a parquet or archive file is not read; use a JSON lines URL)');
-    left -= read.bytes.length; bytes += read.bytes.length;
+    bytes += read.bytes.length;
     return new TextDecoder('utf-8').decode(read.bytes);
   };
   try {
     if (!rowsApi(u)) return {text: await getText(u.href), final_url, bytes, error: null};
     const lines = [], start = Math.max(0, Number(u.searchParams.get('offset')) || 0);
-    const total = Math.max(1, Math.min(BENCH_LIMITS.maxTasks, Number(want) || BENCH_LIMITS.defaultLimit));
-    let partial = null;
+    const total = Number(want) >= 1 ? Number(want) : Infinity;
     for (let offset = start; lines.length < total;) {
       const page = new URL(u.href);
       page.searchParams.set('offset', String(offset));
       page.searchParams.set('length', String(Math.min(BENCH_LIMITS.pageRows, total - lines.length)));
-      let got = null;
-      for (let k = 0; ; k++) {
-        try {
-          let v;
-          try { v = JSON.parse(await getText(page.href)); } catch (e) { if (e instanceof FetchRefused) throw e; throw new FetchRefused('a rows page that is not JSON'); }
-          if (!plain(v) || !Array.isArray(v.rows)) throw new FetchRefused(`a rows page without rows${plain(v) && typeof v.error === 'string' ? ` (${clip(v.error, 120)})` : ''}`);
-          got = {rows: v.rows.map(r => plain(r?.row) ? r.row : r).filter(plain), all: Number.isInteger(v.num_rows_total) ? v.num_rows_total : undefined};
-          break;
-        } catch (e) {
-          // The deployment's own refusals (host, size, type) are never retried.
-          if (!(e instanceof FetchRefused) || /allowlist|refused|larger than|content type|binary|timeout/.test(e.message) || k >= PAGE_RETRY_MS.length) {
-            if (!lines.length) throw e;
-            partial = `rows from offset ${offset} could not be read (${clip(e.message, 160)}); the ${lines.length} rows before them are used`;
-            break;
-          }
-          await sleep(PAGE_RETRY_MS[k]);
-        }
-      }
-      if (!got) break;
-      lines.push(...got.rows.map(r => JSON.stringify(r)));
-      offset += got.rows.length;
-      if (!got.rows.length || (got.all !== undefined && offset >= got.all)) break;
+      let v;
+      try { v = JSON.parse(await getText(page.href)); } catch (e) { if (e instanceof FetchRefused) throw e; throw new FetchRefused(`the rows from offset ${offset} are not JSON`); }
+      if (!plain(v) || !Array.isArray(v.rows)) throw new FetchRefused(`the rows from offset ${offset} could not be read${plain(v) && typeof v.error === 'string' ? ` (${clip(v.error, 120)})` : ''}`);
+      const rows = v.rows.map(r => plain(r?.row) ? r.row : r).filter(plain), all = Number.isInteger(v.num_rows_total) ? v.num_rows_total : undefined;
+      lines.push(...rows.map(r => JSON.stringify(r)));
+      offset += rows.length;
+      if (!rows.length || (all !== undefined && offset >= all)) break;
     }
-    return {text: lines.join('\n'), final_url, bytes, error: null, ...(partial ? {partial} : {})};
+    return {text: lines.join('\n'), final_url, bytes, error: null};
   } catch (e) {
     const message = e instanceof FetchRefused ? `source_refused: ${e.message}` : `fetch failed: ${e?.message || e}`;
     return {text: '', final_url, bytes, error: clip(redact(redactText(message)))};
@@ -313,24 +290,23 @@ export async function fetchDataset(url, {fetch, policy, want = BENCH_LIMITS.defa
 }
 
 // A dataset from {url} or {text} (pasted or uploaded): tasks, skipped rows,
-// the source's digest and counts. Over-large inline text, a refused URL and
-// an empty result come back as {error}.
-export async function loadDataset(dataset, {fetch, policy, limit = BENCH_LIMITS.defaultLimit, format = null, nonce = null, redact, sleep} = {}) {
+// the source's digest and counts. A URL that could not be read and an empty
+// result come back as {error}. limit: the first `limit` tasks; none, all.
+export async function loadDataset(dataset, {fetch, policy, limit = null, format = null, nonce = null, redact} = {}) {
   const d = typeof dataset === 'string' ? (/^https?:\/\/\S+$/i.test(dataset.trim()) ? {url: dataset.trim()} : {text: dataset}) : plain(dataset) ? dataset : {};
-  let text, source, partial = null;
+  let text, source;
   if (typeof d.url === 'string' && d.url.trim()) {
     if (!policy) return {error: 'source_refused: no fetch policy (the deployment\'s own host is not known)', source: clip(d.url, 300)};
-    const got = await fetchDataset(d.url.trim(), {fetch, policy, want: limit, redact, ...(sleep ? {sleep} : {})});
+    const got = await fetchDataset(d.url.trim(), {fetch, policy, want: limit, redact});
     if (got.error) return {error: got.error, source: clip(d.url, 300)};
-    text = got.text; source = clip(got.final_url || d.url, 300); partial = got.partial || null;
+    text = got.text; source = clip(got.final_url || d.url, 300);
   } else if (typeof d.text === 'string' && d.text.trim()) {
-    if (new TextEncoder().encode(d.text).length > BENCH_LIMITS.inlineBytes) return {error: `the pasted dataset is larger than ${BENCH_LIMITS.inlineBytes} bytes`, source: 'inline'};
     text = d.text; source = clip(d.name ? `inline: ${d.name}` : 'inline', 120);
   } else return {error: 'dataset: give a URL or the JSON lines themselves', source: ''};
   const {rows, bad} = parseRows(text);
   const out = loadTasks(rows, {limit, format, nonce});
   if (!out.tasks.length) return {error: `no task could be read (${rows.length} rows, ${bad} unreadable lines${out.skipped[0] ? `; first skipped: ${out.skipped[0].reason}` : ''})`, source, skipped: out.skipped};
-  return {...out, source, rows: rows.length, bad, digest: await tasksDigest(out.tasks), ...(partial ? {partial} : {})};
+  return {...out, source, rows: rows.length, bad, digest: await tasksDigest(out.tasks)};
 }
 
 // --- results ------------------------------------------------------------------------

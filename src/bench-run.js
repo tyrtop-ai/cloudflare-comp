@@ -43,8 +43,8 @@ const clip = (v, n = 300) => String(v ?? '').slice(0, n);
 const json = (body, status = 200) => Response.json(body, {status, headers: {'cache-control': 'no-store'}});
 export const RUN_ID = /^[a-f0-9]{12}$/;
 export const KEEP_ROOMS = Object.freeze(['failed', 'all', 'none']);
-export const BENCH_DEFAULTS = Object.freeze({limit: BENCH_LIMITS.defaultLimit, concurrency: 2, budget: 60, poll_ms: 10_000, executors: 4, keep_rooms: 'failed'});
-const MAX_POLL_ERRORS = 5, MAX_PURGE_TRIES = 10;
+export const BENCH_DEFAULTS = Object.freeze({limit: null, concurrency: 2, budget: 60, poll_ms: 10_000, executors: 4, keep_rooms: 'failed'});
+const MAX_PURGE_TRIES = 10;
 // How many task rooms run at once at most: BENCH_EXECUTORS, else 4. (Each
 // compile opens its own box; the durable_object policy has no max_instances.)
 export const executorSlots = env => { const n = Number(env?.BENCH_EXECUTORS); return Number.isInteger(n) && n >= 1 && n <= 64 ? n : BENCH_DEFAULTS.executors; };
@@ -59,13 +59,12 @@ export class BenchRun extends DurableObject {
     this.ctx = ctx; this.env = env;
     // The dataset fetch: the global fetch (tests replace it). Never given env.
     this.fetcher = (...a) => fetch(...a);
-    this.sleep = undefined;
     const db = this.db();
     db.exec('CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)');
     db.exec(`CREATE TABLE IF NOT EXISTS tasks(idx INTEGER PRIMARY KEY, task_id TEXT, format TEXT, language TEXT, entry TEXT, goal TEXT, grader TEXT,
       status TEXT, attempt INTEGER DEFAULT 0, room TEXT, slot INTEGER, started_at INTEGER, ended_at INTEGER, outcome TEXT, requirements TEXT, detail TEXT,
       wall_ms INTEGER, tokens INTEGER DEFAULT 0, prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0, model_calls INTEGER DEFAULT 0,
-      container_ms INTEGER DEFAULT 0, prior TEXT, poll_errors INTEGER DEFAULT 0, digest TEXT, once TEXT, rounds INTEGER DEFAULT 0)`);
+      container_ms INTEGER DEFAULT 0, prior TEXT, digest TEXT, once TEXT, rounds INTEGER DEFAULT 0)`);
     // A run stored before the grader left the room: its rows gain the grader's columns.
     const cols = query(db, "SELECT name FROM pragma_table_info('tasks')").map(c => c.name);
     for (const [c, type] of [['grader', 'TEXT'], ['once', 'TEXT'], ['rounds', 'INTEGER DEFAULT 0']]) if (!cols.includes(c)) db.exec(`ALTER TABLE tasks ADD COLUMN ${c} ${type}`);
@@ -89,7 +88,7 @@ export class BenchRun extends DurableObject {
     if (!RUN_ID.test(String(id || ''))) return {error: 'Invalid benchmark id'};
     let loaded;
     try {
-      loaded = await loadDataset(dataset, {fetch: this.fetcher, policy: selfHosts.length ? benchPolicy({allow, selfHosts}) : null, limit, format, ...(this.sleep ? {sleep: this.sleep} : {})});
+      loaded = await loadDataset(dataset, {fetch: this.fetcher, policy: selfHosts.length ? benchPolicy({allow, selfHosts}) : null, limit, format});
     } catch (e) { loaded = {error: clip(e?.message || e)}; }
     if (loaded.error) return {error: clip(loaded.error, 600), skipped: loaded.skipped || []};
     const now = Date.now(), slots = executorSlots(this.env), pool = Math.max(1, Math.min(Number(concurrency) || 1, slots));
@@ -98,7 +97,7 @@ export class BenchRun extends DurableObject {
         i, t.id, t.format, t.language, t.entry, t.prompt, JSON.stringify(t.grader), 'queued', await taskDigest(t));
     for (const [k, v] of Object.entries({id, label: clip(label, 80), created_at: now, status: 'running', settings, concurrency: pool, ...(pool < concurrency ? {concurrency_asked: concurrency} : {}),
       executors: slots, budget, limit, poll_ms, keep_rooms: KEEP_ROOMS.includes(keep_rooms) ? keep_rooms : BENCH_DEFAULTS.keep_rooms,
-      dataset: {source: loaded.source, digest: loaded.digest, rows: loaded.rows, bad: loaded.bad, formats: loaded.formats, skipped: loaded.skipped, ...(loaded.partial ? {partial: loaded.partial} : {})}}))
+      dataset: {source: loaded.source, digest: loaded.digest, rows: loaded.rows, bad: loaded.bad, formats: loaded.formats, skipped: loaded.skipped}}))
       this.set(k, v);
     await this.ctx.storage.setAlarm(now);
     await this.publish();
@@ -124,12 +123,8 @@ export class BenchRun extends DurableObject {
       // The row may have changed while this tick waited (a Stop requeued it).
       const t = this.row(t0.idx);
       if (!t || t.status !== 'running' || t.room !== t0.room) continue;
-      if (err) {
-        const n = t.poll_errors + 1;
-        if (n >= MAX_POLL_ERRORS) this.finish(t, {outcome: 'error', detail: clip(`the room could not be read: ${err?.message || err}`)}, null, now);
-        else this.db().exec('UPDATE tasks SET poll_errors=? WHERE idx=?', n, t.idx);
-        continue;
-      }
+      // A room that could not be read this tick is read again on the next.
+      if (err) continue;
       const result = roomOutcome(s);
       if (result?.outcome === 'complete') { await this.graded(t, s, now); continue; }
       if (result) { this.finish(t, result, s, now); continue; }
@@ -147,7 +142,7 @@ export class BenchRun extends DurableObject {
       while (busy.includes(slot)) slot++;
       const room = taskRoom(this.get('id'), t.idx, t.attempt), started = Date.now();
       // Reserved before the await, so a Stop arriving meanwhile sees it.
-      this.db().exec("UPDATE tasks SET status='running',room=?,slot=?,started_at=?,poll_errors=0 WHERE idx=?", room, slot, started, t.idx);
+      this.db().exec("UPDATE tasks SET status='running',room=?,slot=?,started_at=? WHERE idx=?", room, slot, started, t.idx);
       this.db().exec("INSERT INTO rooms(room,idx,state) VALUES (?,?,'running') ON CONFLICT(room) DO NOTHING", room, t.idx);
       let r;
       try { r = await this.env.ROOMS.getByName(room).start(t.goal, budget, settings, room); }
@@ -208,7 +203,7 @@ export class BenchRun extends DurableObject {
   record(t, s) {
     if (!s) return;
     const prior = parse(t.prior, {}), now = {tokens: s.tokens?.total || 0, prompt_tokens: s.tokens?.prompt || 0, completion_tokens: s.tokens?.completion || 0, model_calls: s.tokens?.calls || 0, container_ms: s.container_ms || 0};
-    this.db().exec(`UPDATE tasks SET ${COSTS.map(k => `${k}=?`).join(',')},poll_errors=0 WHERE idx=?`, ...COSTS.map(k => (prior[k] || 0) + now[k]), t.idx);
+    this.db().exec(`UPDATE tasks SET ${COSTS.map(k => `${k}=?`).join(',')} WHERE idx=?`, ...COSTS.map(k => (prior[k] || 0) + now[k]), t.idx);
   }
   finish(t, result, s, now) {
     this.record(t, s);
@@ -229,7 +224,7 @@ export class BenchRun extends DurableObject {
   // Back to the queue, keeping what the attempt cost.
   requeue(t) {
     const prior = Object.fromEntries(COSTS.map(k => [k, t[k] || 0]));
-    this.db().exec("UPDATE tasks SET status='queued',room=NULL,slot=NULL,started_at=NULL,attempt=attempt+1,prior=?,poll_errors=0,once=NULL,rounds=0 WHERE idx=?", JSON.stringify(prior), t.idx);
+    this.db().exec("UPDATE tasks SET status='queued',room=NULL,slot=NULL,started_at=NULL,attempt=attempt+1,prior=?,once=NULL,rounds=0 WHERE idx=?", JSON.stringify(prior), t.idx);
   }
   pendingPurges() { return query(this.db(), 'SELECT COUNT(*) AS n FROM rooms WHERE purge=1 AND purged=0 AND tries<?', MAX_PURGE_TRIES)[0].n; }
   // Delete the rooms marked for deletion; a busy one (a stop still
@@ -367,7 +362,7 @@ export async function gradeBundle(env, grader, files) {
 const int = (v, [lo, hi], otherwise, name) => {
   if (v === undefined || v === null || v === '') return otherwise;
   const n = Number(v);
-  if (!Number.isInteger(n) || n < lo || n > hi) throw new RangeError(`Invalid ${name}: expected ${lo}–${hi}`);
+  if (!Number.isInteger(n) || n < lo || n > hi) throw new RangeError(`Invalid ${name}: expected ${hi === Infinity ? `a whole number from ${lo}` : `${lo}–${hi}`}`);
   return n;
 };
 export async function benchRoute(request, env, url, payload, {normalizeRoomSettings, normalizeTurnBudget}) {
@@ -388,7 +383,7 @@ export async function benchRoute(request, env, url, payload, {normalizeRoomSetti
         settings = normalizeRoomSettings({...(payload.settings && typeof payload.settings === 'object' ? payload.settings : {}), pipeline: 'v8'});
         budget = normalizeTurnBudget(payload.budget ?? BENCH_DEFAULTS.budget);
         concurrency = int(payload.concurrency, BENCH_LIMITS.concurrency, BENCH_DEFAULTS.concurrency, 'concurrency');
-        limit = int(payload.limit, [1, BENCH_LIMITS.maxTasks], BENCH_DEFAULTS.limit, 'limit');
+        limit = int(payload.limit, [1, Infinity], BENCH_DEFAULTS.limit, 'limit');
         if (payload.keep_rooms !== undefined && !KEEP_ROOMS.includes(payload.keep_rooms)) throw new RangeError(`Invalid keep_rooms: expected ${KEEP_ROOMS.join(', ')}`);
       } catch (e) { return json({error: clip(e?.message || e)}, 400); }
       const dataset = payload.dataset;
