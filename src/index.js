@@ -3769,8 +3769,10 @@ export class ControlRoom extends DurableObject {
       }
     }
     // The texts placed at each path, the builder's own files among them: copies with one text are one file.
+    // An existing file's path stays the existing file's (only the person's grant changes one): the builder's own file there is in its world only.
     const work=bid?this.builtWork(bid):null,own=new Map(Object.entries(work?.glue||{})),texts=new Map();
-    for(const [p,t] of own)texts.set(p,new Set([t]));
+    const existing=this.holdsBase(m)?new Set([...this.basePaths(),...this.passthroughPaths()]):new Set();
+    for(const [p,t] of own)if(!existing.has(p))texts.set(p,new Set([t]));
     for(const x of copies)texts.set(x.at,(texts.get(x.at)||new Set()).add(x.content));
     const twice=[];
     for(const x of copies) {
@@ -3783,15 +3785,16 @@ export class ControlRoom extends DurableObject {
     this.addBase(m,files);
     const raw=new Map(files),glue=new Map(),beside=[];
     for(const [p,r] of Object.entries(work?.renamed||{}))if(by.has(p)&&r?.base===textHash(files.get(p)))files.set(p,r.text);
-    // The builder's own files stay its own (built:<builder>, its world), each in the bundle at its path (glue).
-    // One at a path where an existing file stands, or a delivered file with no folder of its own to stand in, is beside it in the builder's world.
-    const existing=this.holdsBase(m)?this.passthroughPaths():new Set();
+    // The delivered files as the builder's world holds them (its renames in them), each with the child it came from.
+    const delivered=new Map([...files].filter(([p])=>by.has(p))),deliveredBy=new Map(by);
+    // The builder's own files stay its own (built:<builder>, its world), each the file the piece holds at its path (glue),
+    // a delivered file there included (the builder wrote it there, and its world shows both).
     for(const [p,t] of own) {
-      if(!files.has(p)&&!existing.has(p))files.set(p,t);
-      if(files.get(p)===t)glue.set(p,t);else beside.push(p);
+      if(existing.has(p)){beside.push(p);continue;}
+      files.set(p,t);glue.set(p,t);by.delete(p);origin.delete(p);placed.delete(p);
     }
-    if(beside.length)this.noteOnce(actor,'bundle_conflict',`The builder's own file stands beside an existing or delivered file at the same path, both in its world: ${beside.join(', ')}.`);
-    return this.pieceBundle(m,files,origin,placed,by,glue,raw);
+    if(beside.length)this.noteOnce(actor,'bundle_conflict',`The builder's own file is at the path of an existing file, which stays as it is; the builder's file is in its world: ${beside.join(', ')}.`);
+    return {...this.pieceBundle(m,files,origin,placed,by,glue,raw),delivered,deliveredBy};
   }
   // What a builder made of its children's files: {renamed: {path: {base,
   // text, renames}}, glue: {path: text}} (src/builder.js builderWork).
@@ -3865,17 +3868,15 @@ export class ControlRoom extends DurableObject {
     }
     this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
     const seen=this.joinedInput(m),piece=await this.joinPiece(m,id),labels=new Map(this.children(m).map(c=>[c.id,c.label]));
-    const from=new Map([...piece.by].map(([p,c])=>[p,labels.get(c)||c]));
-    // Its world: the delivered files, its own files as it kept them, and the paths existing files hold.
-    const own=new Map(Object.entries(this.builtWork(id)?.glue||{}));
-    const world=builderWorld({files:new Map([...piece.files].filter(([p])=>piece.by.has(p))),from,glue:own,
-      held:new Set([...[...piece.files.keys()].filter(p=>!piece.by.has(p)),...(this.holdsBase(m)?this.passthroughPaths():[])].filter(p=>!own.has(p)))});
+    const from=new Map([...piece.deliveredBy].map(([p,c])=>[p,labels.get(c)||c]));
+    // Its world: the delivered files and its own files as it kept them.
+    const world=builderWorld({files:piece.delivered,from,glue:new Map(Object.entries(this.builtWork(id)?.glue||{}))});
     this.event(id,'working',`Turn ${n.turn+1}; joining ${world.files.size} file(s) of ${this.node(m)?.label||m}'s children.`);
     const out=await builderSession(this.inferenceEnv('builder'),this.builderView(m,world),world);
     this.save(`built:${id}`,builderWork(world,this.builtWork(id)||{},p=>textHash(piece.raw.get(p))));
     const renames=[...world.renamed].flatMap(([p,list])=>list.map(r=>`${p}: ${r.from} → ${r.to}`));
     const said=[out.transcript.length?`${out.transcript.length} call(s) in ${out.rounds} round(s)`:'no call',world.written.length?`wrote ${world.written.join(', ')}`:'',
-      renames.length?`renamed ${renames.join('; ')}`:'',world.unchanged.length?`unchanged ${world.unchanged.join(', ')}`:''].filter(Boolean).join('; ');
+      renames.length?`renamed ${renames.join('; ')}`:'',world.unchanged.length?`unchanged ${world.unchanged.join(', ')}`:'',world.removed.length?`removed ${world.removed.join(', ')}`:''].filter(Boolean).join('; ');
     this.event(id,'session',clip(out.end?`${said}; ended with done.`:`${said}; ended without done (${out.reason==='context'?'its context window was full':out.reason}).`,900));
     // Its session ended without done, or the children's work changed while it worked: it goes on next turn, its work kept.
     if(!out.end||this.joinedInput(m)!==seen) {

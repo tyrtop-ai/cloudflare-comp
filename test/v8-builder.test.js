@@ -29,11 +29,11 @@ const CALL_PY = fileURLToPath(new URL('../container/adapters/call.py', import.me
 // ------------------------------------------------------------ each function's results
 const REPORT = "const { createTicket } = require('./createTicket');\nconst createTicketLater = 1;\nconsole.log(createTicket('x').id);\n";
 const STORE = 'function createTicket(title) { return {id: 1, title}; }\nmodule.exports = { createTicket };\n';
-const worldOf = () => builderWorld({files: new Map([['report.js', REPORT], ['store.js', STORE]]), from: new Map([['report.js', 'Ticket report'], ['store.js', 'Ticket store']]), held: new Set(['README.md'])});
+const worldOf = () => builderWorld({files: new Map([['report.js', REPORT], ['store.js', STORE]]), from: new Map([['report.js', 'Ticket report'], ['store.js', 'Ticket store']])});
 
 test('the builder\'s functions: each does exactly what it is given or says exactly why it cannot; a rename changes a name where it stands whole and shows each line it changed', () => {
   const w = worldOf(), call = (name, args) => builderCall(w, name, args);
-  assert.deepEqual(TOOLS.builder.map(t => t.name), ['read_file', 'write_file', 'rename', 'done']);
+  assert.deepEqual(TOOLS.builder.map(t => t.name), ['read_file', 'write_file', 'delete_file', 'rename', 'done']);
   assert.equal(builderTools(), TOOLS.builder);
   // read_file: a delivered file as it stands, or that there is none and which there are.
   assert.deepEqual(call('read_file', {path: 'store.js'}).result, {path: 'store.js', content: STORE});
@@ -52,12 +52,16 @@ test('the builder\'s functions: each does exactly what it is given or says exact
   assert.deepEqual(call('rename', {path: 'report.js', from: 'x', to: 'f(x)'}).result, {error: 'to is one name or reference path: letters, digits and _ $ . / @ : - only'});
   assert.deepEqual(call('rename', {path: 'report.js', from: 'x', to: 'x'}).result, {error: 'from and to are the same'});
   assert.deepEqual(call('rename', {path: 'nope.js', from: 'x', to: 'y'}).result, {error: MESSAGES.builder_no_file({path: 'nope.js', paths: 'report.js, store.js'})});
-  // write_file: a file of its own at a path no file holds; the same bytes again say so; a delivered or existing path says why not.
+  // write_file: a file of its own at any path; the same bytes again say so.
   assert.deepEqual(call('write_file', {path: 'createTicket.js', content: "module.exports = require('./store.js');\n"}).result, {written: 'createTicket.js', characters: 40});
   assert.deepEqual(call('read_file', {path: 'createTicket.js'}).result, {path: 'createTicket.js', content: "module.exports = require('./store.js');\n"});
   assert.deepEqual(call('write_file', {path: 'createTicket.js', content: "module.exports = require('./store.js');\n"}).result, {unchanged: 'createTicket.js', says: MESSAGES.unchanged({path: 'createTicket.js'})});
-  assert.deepEqual(call('write_file', {path: 'store.js', content: 'x'}).result, {error: MESSAGES.builder_delivered({path: 'store.js', piece: 'Ticket store'})});
-  assert.deepEqual(call('write_file', {path: 'README.md', content: 'x'}).result, {error: MESSAGES.builder_held({path: 'README.md'})});
+  // A path outside its world is a path like any other: no path rule (owner 2026-10-16 05:39, "no path rules for agents").
+  assert.deepEqual(call('write_file', {path: 'README.md', content: 'x'}).result, {written: 'README.md', characters: 1});
+  // delete_file: one of its own, or that it has none there and which it has.
+  assert.deepEqual(call('delete_file', {path: 'README.md'}).result, {removed: 'README.md'});
+  assert.deepEqual(call('delete_file', {path: 'store.js'}).result, {error: MESSAGES.builder_not_yours({path: 'store.js', paths: 'createTicket.js'})});
+  assert.deepEqual(call('read_file', {path: 'README.md'}).result, {error: MESSAGES.builder_no_file({path: 'README.md', paths: 'createTicket.js, report.js, store.js'})});
   // No path rule: a path apart from another only in letter case is its own path, and a path reads as a rooted file system reads it.
   assert.deepEqual(call('write_file', {path: 'Store.js', content: 'x'}).result, {written: 'Store.js', characters: 1});
   assert.deepEqual(call('write_file', {path: '../.config/up file.js', content: 'x'}).result, {written: '.config/up file.js', characters: 1});
@@ -67,7 +71,7 @@ test('the builder\'s functions: each does exactly what it is given or says exact
   assert.equal(call('rename', {path: 'createTicket.js', from: './store.js', to: './store'}).result.renamed, 'createTicket.js');
   assert.equal(w.glue.get('createTicket.js'), "module.exports = require('./store');\n");
   assert.deepEqual([...w.renamed], [['report.js', [{from: './createTicket', to: './store.js'}, {from: 'createTicket', to: 'fileTicket'}]], ['store.js', [{from: 'title', to: '$title'}, {from: '$title', to: 'title'}]]]);
-  assert.deepEqual([w.written, w.unchanged], [['createTicket.js', 'Store.js', '.config/up file.js'], ['createTicket.js']]);
+  assert.deepEqual([w.written, w.unchanged, w.removed], [['createTicket.js', 'Store.js', '.config/up file.js'], ['createTicket.js'], ['README.md']]);
   assert.equal(w.files.get('store.js'), STORE, 'renamed there and back');
   // done ends the session with the summary given; anything else is no function.
   assert.deepEqual(call('done', {}), {result: {error: 'summary says what you did, in one line'}});
@@ -94,12 +98,20 @@ test('what the room keeps of a session: each renamed file\'s text for the exact 
   assert.deepEqual(builderWork(changed, kept, p => textHash(p === 'report.js' ? REPORT + '\n' : STORE)), {renamed: {}, glue: {}}, 'a rename made for another text, and files it no longer has, are not kept');
 });
 
-test('a delivered file and one of the builder\'s own at one path are both in its world: read_file shows both, and its own stays its to write', () => {
-  const w = builderWorld({files: new Map([['wire.js', 'delivered\n']]), from: new Map([['wire.js', 'Ticket store']]), glue: new Map([['wire.js', 'mine\n']])});
+test('a delivered file and one of the builder\'s own at one path are both in its world: read_file shows both, its own stays its to write, rename or remove', () => {
+  const w = builderWorld({files: new Map([['wire.js', 'delivered\n'], ['store.js', STORE]]), from: new Map([['wire.js', 'Ticket store'], ['store.js', 'Ticket store']]), glue: new Map([['wire.js', 'mine\n']])});
   assert.deepEqual(builderCall(w, 'read_file', {path: 'wire.js'}).result, {path: 'wire.js', content: 'delivered\n', piece: 'Ticket store', yours: 'mine\n'});
   assert.deepEqual(builderCall(w, 'write_file', {path: 'wire.js', content: 'mine 2\n'}).result, {written: 'wire.js', characters: 7});
   assert.equal(w.glue.get('wire.js'), 'mine 2\n');
   assert.equal(w.files.get('wire.js'), 'delivered\n');
+  // A rename at that path changes its own file, the one the piece holds there.
+  assert.equal(builderCall(w, 'rename', {path: 'wire.js', from: 'mine', to: 'ours'}).result.renamed, 'wire.js');
+  assert.deepEqual([w.glue.get('wire.js'), w.files.get('wire.js')], ['ours 2\n', 'delivered\n']);
+  // Its own file at a delivered file's path is its to write; removed, the delivered file is the one there.
+  assert.deepEqual(builderCall(w, 'write_file', {path: 'store.js', content: 'wired\n'}).result, {written: 'store.js', characters: 6});
+  assert.deepEqual(builderCall(w, 'delete_file', {path: 'wire.js'}).result, {removed: 'wire.js'});
+  assert.deepEqual(builderCall(w, 'read_file', {path: 'wire.js'}).result, {path: 'wire.js', content: 'delivered\n'});
+  assert.deepEqual(builderWork(w, {}, () => '').glue, {'store.js': 'wired\n'});
 });
 
 // ------------------------------------------------------------ package directories

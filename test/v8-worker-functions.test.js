@@ -388,6 +388,23 @@ test('the join keeps the builder\'s own file: a delivered file placed later at i
   assert.ok(same.glue.has('index.html'));
 });
 
+test('the builder\'s own file is the file the piece holds at its path, a delivered file there included, which its world still shows; at an existing file\'s path the existing file stays (only the person grants a change to one), and the builder\'s file stays in its world', async () => {
+  const {room, top, a, wa} = await tree(recorded().clef);
+  const bid = 'builder-00000000000000ab', atN = packagePath('Page', 'notes.txt', wa.id);
+  room.set(`base_digest:${top.id}`, 'd1');
+  room.db().exec('INSERT INTO base_files(path,content,sha256) VALUES (?,?,?)', 'README.md', '# Base\n', 'h');
+  await room.putFile(wa.id, 'notes.txt', 'the worker\'s notes\n');
+  room.save(`built:${bid}`, {renamed: {}, glue: {[atN]: 'the builder\'s notes\n', 'README.md': '# mine\n'}});
+  const piece = await room.joinPiece(top.id, bid);
+  assert.equal(piece.files.get(atN), 'the builder\'s notes\n', 'the builder wrote it there: its file stands');
+  assert.ok(piece.glue.has(atN) && !piece.by.has(atN) && !piece.origin.has(atN), 'the builder\'s, nobody else\'s');
+  assert.equal(piece.delivered.get(atN), 'the worker\'s notes\n', 'its world shows the delivered file too');
+  assert.equal(piece.deliveredBy.get(atN), a.id);
+  assert.equal(piece.files.get('README.md'), '# Base\n', 'an existing file changes only through the person\'s grant');
+  assert.ok(!piece.glue.has('README.md'));
+  assert.match(events(room, 'bundle_conflict').at(-1).body, /README\.md/);
+});
+
 test('a manager reads its children and contracts from its level files only, never from the rows\' copies: a copy that says otherwise changes nothing it is shown or chooses', async () => {
   const {asked, clef} = recorded();
   const {room, top, a, b, wa, PAGE} = await tree(clef);

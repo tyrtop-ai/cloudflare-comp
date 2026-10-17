@@ -21,7 +21,7 @@ export const ROLE = Object.freeze({
 export const FORMAT = Object.freeze({
   splitter: 'Answer by calling your functions, one or several at a time. Each result says what was stored, or exactly why nothing was: a call that stored nothing can be made again as its result describes. Names match exactly as declared, and level shows everything declared so far.',
   worker: 'Answer by calling your functions, one or several at a time. Each result says what was done, or exactly why nothing was. read_file shows a file of yours, write_file stores a whole file, and run_examples runs your examples on your files as they stand and says what each observed. Call done once your files deliver everything your prompt asks, or wait while something you asked for is not answered yet.',
-  builder: 'Answer by calling your functions, one or several at a time. Each result says what was done, or exactly why nothing was. read_file shows a file as it stands now, write_file stores a whole file of your own, rename changes one name or reference path throughout one file and shows each line it changed, and done ends your turn.'
+  builder: 'Answer by calling your functions, one or several at a time. Each result says what was done, or exactly why nothing was. read_file shows a file as it stands now, write_file stores a whole file of your own, delete_file removes one of yours, rename changes one name or reference path throughout one file, and done ends your turn.'
 });
 
 // The splitter's functions (Workers AI tools): what each does and takes, in
@@ -120,8 +120,10 @@ export const TOOLS = Object.freeze({
   builder: Object.freeze([
     {name: 'read_file', description: 'Shows one of the files as it stands now, your renames and your own files included. The result is its whole text (where a delivered file and one of yours share the path, both), or that there is no file at that path, with the paths there are.',
       parameters: {type: 'object', properties: {path: text('The relative path of the file, exactly as the files list it.')}, required: ['path']}},
-    {name: 'write_file', description: 'Stores a whole file of your own at a path no other file holds: a new file that connects names, or the complete new text of one of yours. The result says it is written, that the file already holds exactly this text, or why it is not written.',
+    {name: 'write_file', description: 'Stores a whole file of your own at a path: a new file that connects names, or the complete new text of one of yours. Where a delivered file has the same path, yours is the file there. The result says it is written, that the file already holds exactly this text, or why it is not written.',
       parameters: {type: 'object', properties: {path: text('The relative path of the file.'), content: text('The complete text of the file.')}, required: ['path', 'content']}},
+    {name: 'delete_file', description: 'Removes one file of your own. The result says it is removed, or that you have no file at that path, with the paths of yours.',
+      parameters: {type: 'object', properties: {path: text('The relative path of the file of yours.')}, required: ['path']}},
     {name: 'rename', description: 'Renames one name or reference path throughout one file: every place where from stands whole, with no letter, digit, _ or $ right before or after it, becomes to. The result shows each line it changed, or why nothing changed.',
       parameters: {type: 'object', properties: {path: text('The relative path of the file.'), from: text('The name or reference path as the file has it.'), to: text('The name or reference path it becomes.')}, required: ['path', 'from', 'to']}},
     {name: 'done', description: 'Ends your turn with every reference among the files reaching what it names.',
@@ -182,8 +184,7 @@ export const MESSAGES = Object.freeze({
   no_examples: () => 'Nothing you deliver has examples to run.',
   // ------------------------------------------------- what the builder's functions say
   builder_no_file: ({path, paths}) => paths ? `There is no file ${path}. The files: ${paths}.` : `There is no file ${path}, and no files yet.`,
-  builder_delivered: ({path, piece}) => `${path} is a file the piece "${piece}" delivered: rename changes names in it, and a file of your own goes at a path no file holds.`,
-  builder_held: ({path}) => `${path} holds an existing file, which stays as it is: a file of your own goes at a path no file holds.`,
+  builder_not_yours: ({path, paths}) => paths ? `You have no file at ${path}. Yours: ${paths}.` : `You have no file at ${path}, and none of your own yet.`,
   builder_no_name: ({name, path}) => `${name} does not stand whole anywhere in ${path}: a rename finds it only where no letter, digit, _ or $ is right before or after it.`,
   // ------------------------------------------------------------ answers to asks
   provided: ({contract, reference}) => `${contract}. Refer to it exactly as: ${reference}, and use it rather than writing your own.`,
