@@ -194,7 +194,7 @@ function worker() {
   A.strict = S; S.strict = S; freeze(A); freeze(S); freeze(A0); freeze(S0);
   const testsRequire = name => /^(?:node:)?assert$/.test(name) ? A : /^(?:node:)?assert\/strict$/.test(name) ? S : req0(name);
   (async () => {
-    const word = new RegExp('(^|[^\\w$])' + entry.replace(/\$/g, '\\$') + '(?![\\w$])');
+    const word = new RegExp('(^|[^\\w$])' + entry.replace(/[$.*+?^{}()|[\]\\]/g, '\\$&') + '(?![\\w$])');
     const found = [];
     const walk = d => { for (const e of fs.readdirSync(d, {withFileTypes: true}).sort((a, b) => a.name < b.name ? -1 : 1)) {
       const f = p.join(d, e.name);
@@ -277,7 +277,7 @@ function main() {
   let nfd;
   try { nfd = fs.openSync(NONCE, 'r'); fs.unlinkSync(NONCE); } catch (e) { verdict(6, 'protocol', 'the nonce file is missing'); }
   const tests = take(TESTS);
-  const word = ENTRY ? new RegExp('(^|[^\\w$])' + ENTRY.replace(/\$/g, '\\$') + '(?![\\w$])') : null;
+  const word = ENTRY ? new RegExp('(^|[^\\w$])' + ENTRY.replace(/[$.*+?^{}()|[\]\\]/g, '\\$&') + '(?![\\w$])') : null;
   const found = [];
   const walk = d => { for (const e of fs.readdirSync(d, {withFileTypes: true}).sort((a, b) => a.name < b.name ? -1 : 1)) {
     const f = p.join(d, e.name);

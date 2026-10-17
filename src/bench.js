@@ -141,7 +141,8 @@ const taskId = (format, row, index) => clip(str(row.task_id) || str(row.name) ||
 // Python and JavaScript have their own harness; any other language's tests
 // run after the solution's file, by the command the box runs that file
 // with (testsAfterHarness). A language no row runs has no check: the grader
-// says so ({unrunnable}), and the task is an error, never scored.
+// says so ({unrunnable}), and that grading observes nothing: the task stays
+// running and is graded again (src/bench-run.js), until it is done.
 export function benchGrader({language, extensions = [], entry, tests, prompt = '', callCheck = true, nonce}) {
   const expect = {exit: 0, stdout_has: [`${PASS_MARK} ${nonce}`]};
   const files = {[FIXTURE.tests]: tests, [FIXTURE.nonce]: nonce};
@@ -191,7 +192,7 @@ export function taskFromRow(row, index = 0, {format = null, nonce = null} = {}) 
     entry = (str(row.entry_point) || str(row.entry)).trim() || (HARNESSED.has(language.id) ? promptEntry(prompt, language.id) : null);
     if (language.id === 'python') promptFixture = /(?:^|\n)\s*(?:async\s+)?def\s/.test(prompt) ? prompt : '';
   }
-  if ((HARNESSED.has(language.id) || entry) && !/^[A-Za-z_$][\w$]{0,63}$/.test(entry || '')) return {id, skip: 'no entry function could be read from the row'};
+  if (HARNESSED.has(language.id) && !entry) return {id, skip: 'no entry function could be read from the row'};
   if (!prompt.trim()) return {id, skip: 'the row has no prompt'};
   if (!String(tests ?? '').trim()) return {id, skip: 'the row has no tests'};
   const grader = benchGrader({language: language.id, extensions: language.extensions, entry, tests, prompt: promptFixture, callCheck, nonce: nonce || newNonce()});

@@ -115,6 +115,24 @@ test('generic {id, language, prompt, tests} rows: the language from the row (a r
   assert.match(tasks[2].grader.check.files[FIXTURE.tests], /^def check\(candidate\):\n    assert candidate\(1\) == 2$/);
 });
 
+// Owner 2026-10-15 05:16/05:17 "Any code type" / "there shouldn't be any ... code type pinning": the row's entry is used as written, in its own language.
+test('an entry is taken as the row writes it: no length or JS/Python name shape decides which tasks exist', () => {
+  const longName = 'f' + 'x'.repeat(80);
+  const py = taskFromRow({...HUMANEVAL[0], task_id: 'Toy/longname', entry_point: longName}, 0, {nonce: 'n0nce'});
+  assert.equal(py.skip, undefined);
+  assert.equal(py.entry, longName);
+  const rb = taskFromRow({id: 'g-rb', language: 'ruby', entry: 'empty?', prompt: 'Write empty?(xs).', tests: 'raise unless empty?([])'}, 0, {nonce: 'n0nce'});
+  assert.equal(rb.skip, undefined);
+  assert.equal(rb.entry, 'empty?');
+  // The harness looks for files naming the entry with the name quoted as text, not as a pattern.
+  const line = rb.grader.check.files[FIXTURE.harness].split('\n').find(l => l.includes('const word'));
+  const word = new Function('ENTRY', line + '\nreturn word;')('empty?');
+  assert.equal(word.test('def empty?(xs) = xs.size == 0'), true);
+  assert.equal(word.test('def empt(xs) = 1'), false);
+  // Python and JavaScript still need a name the harness can call.
+  assert.match(taskFromRow({id: 'g-none', language: 'python', prompt: 'Do it.', tests: 'assert True'}).skip, /no entry function/);
+});
+
 test('the task limit, duplicate ids, and a fresh nonce per task; a task\'s tests and prompt are kept whole, whatever their length', () => {
   assert.equal(BENCH_LIMITS.goal, undefined);
   assert.equal(BENCH_LIMITS.fixture, undefined);
