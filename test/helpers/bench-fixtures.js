@@ -18,9 +18,14 @@ export const MULTIPLE_JS = [
   {name: 'Toy_2_neg', language: 'js', prompt: '//Negate.\nfunction neg(n){\n', tests: "const assert = require('node:assert');\nfunction test() {\n  assert.equal(neg(3), -3);\n}\ntest();", stop_tokens: []},
   {name: 'Toy_3_rs', language: 'rs', prompt: '/// Add\nfn add(a: i64) -> i64 {\n', tests: 'fn main() {}', stop_tokens: []}
 ];
+// MultiPL-E rows in a language other than Python and JavaScript: their tests run after the solution.
+export const MULTIPLE_RB = [
+  {name: 'Toy_0_add_two_rb', language: 'rb', prompt: '# Add two numbers.\ndef add_two(a, b)\n', stop_tokens: ['\nend'],
+    tests: 'require \'test/unit\'\nclass TestHumanEval < Test::Unit::TestCase\n  def test_add_two\n    candidate = method(:add_two)\n    assert_equal(42, candidate.call(40, 2))\n  end\nend\n'}
+];
 export const GENERIC = [
   {id: 'g-py', language: 'python', prompt: 'Write a function triple(n) that returns three times n.', entry: 'triple', tests: 'assert triple(3) == 9\nassert candidate(1) == 3  # toy-generic-marker\n'},
-  {id: 'g-js', prompt: 'Complete:\nfunction greet(name) {\n  // returns "hi <name>"\n}\n', tests: "require('node:assert').equal(greet('ann'), 'hi ann');"},
-  {id: 'g-check', prompt: 'def inc(n):\n    """n plus one"""\n', tests: ['def check(candidate):', '    assert candidate(1) == 2']},
+  {id: 'g-js', language: 'javascript', prompt: 'Complete:\nfunction greet(name) {\n  // returns "hi <name>"\n}\n', tests: "require('node:assert').equal(greet('ann'), 'hi ann');"},
+  {id: 'g-check', language: 'py', prompt: 'def inc(n):\n    """n plus one"""\n', tests: ['def check(candidate):', '    assert candidate(1) == 2']},
   {id: 'g-none', prompt: 'Make something nice.', tests: 'assert True'}
 ];

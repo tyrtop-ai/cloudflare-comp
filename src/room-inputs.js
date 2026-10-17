@@ -8,8 +8,8 @@
 // BASE_LABEL) beside a fixed clause, never in a system prompt. Nothing here
 // reads the Worker's bindings: `fetch` is passed in, and no request carries a
 // credential (src/fetcher.js, src/base.js).
-import {fetchGoalSources, fetchPolicy, chunkText, quoteSource, sanitizeText, sourceSummaries, goalUrls, SOURCE_CLAUSE, LIMITS} from './fetcher.js';
-import {fetchGithubRepo, parseRepoUrl, repoDigest, REPO_LIMITS, byteLength} from './base.js';
+import {fetchGoalSources, fetchPolicy, chunkText, quoteSource, sanitizeText, sourceSummaries, goalUrls, SOURCE_CLAUSE} from './fetcher.js';
+import {fetchGithubRepo, parseRepoUrl, REPO_LIMITS, byteLength} from './base.js';
 import {runtimeOwned} from './code-work.js';
 import {boxPathError} from '../container/build-path.mjs';
 import {fromBase64} from './zip.js';
@@ -20,9 +20,9 @@ export {SOURCE_CLAUSE};
 // cut as its summary cut it, so a ref S1#3 is the third chunk of S1; base_files: the
 // project the room starts from (§7.1), with each file's mode (an executable
 // keeps its bit); base_passthrough: the files of that project the room does
-// not build (a hidden directory such as .github/, a binary, a file over the
-// size cap, a vendored directory), carried untouched as bytes into the
-// export and never seen by the gate, the bundle, the checks or a model.
+// not build (a path outside the box's folder, a binary, a vendored
+// directory), carried untouched as bytes into the export, never built or
+// checked; the agents see them listed by path beside the base files.
 export const INPUT_TABLES = Object.freeze(['sources', 'source_chunks', 'base_files', 'base_passthrough']);
 export const INPUT_SCHEMA = Object.freeze([
   "CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, url TEXT NOT NULL, final_url TEXT, title TEXT NOT NULL DEFAULT '', sha256 TEXT, bytes INTEGER NOT NULL DEFAULT 0, truncated INTEGER NOT NULL DEFAULT 0, error TEXT, status INTEGER, content_type TEXT, summary TEXT, fetched_at INTEGER NOT NULL)",
@@ -30,13 +30,11 @@ export const INPUT_SCHEMA = Object.freeze([
   'CREATE TABLE IF NOT EXISTS base_files (path TEXT PRIMARY KEY, content TEXT NOT NULL, sha256 TEXT NOT NULL, mode INTEGER NOT NULL DEFAULT 420)',
   "CREATE TABLE IF NOT EXISTS base_passthrough (path TEXT PRIMARY KEY, bytes BLOB NOT NULL, mode INTEGER NOT NULL DEFAULT 420, sha256 TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '')"
 ]);
-// Stored text: every source of one room together (the fetcher's own room
-// budget, counted again on what is kept), cut as sourceSummaries cuts it.
-export const SOURCE_STORE_BYTES = LIMITS.roomBytes;
+// Stored text: every source whole, cut into chunks as sourceSummaries cuts it.
 export const CHUNK_CHARS = 6000;
 
 const clip = (v, n = 300) => String(v ?? '').slice(0, n);
-const REF = /^S([1-9]\d{0,2})(?:#([1-9]\d{0,3}))?$/;
+const REF = /^S([1-9]\d*)(?:#([1-9]\d*))?$/;
 const ROOM_ID = /^[a-zA-Z0-9-]{8,64}$/;
 const SHORT_REPO = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
 const utf8 = new TextEncoder();
@@ -78,21 +76,22 @@ export function notCarried(path) {
 }
 
 // Sort the base: entries [{path, text} | {path, bytes, reason}] with a mode
-// each. Kept as base files, within U8's limits (≤ 400 text files, ≤ 2 MB, ≤
-// 256 KB each): text at a path inside the box's folder. Carried untouched
-// (within passMaxFiles and passMaxBytes): what is bytes already, a path
-// outside the box's folder, a binary, a file over a cap. Never carried, and listed: the
-// runtime's paths, and a second file whose path equals another's apart from
-// case (a case-insensitive file system holds one of them). Result: {files:
-// Map(path → text), modes: Map(path → mode), passthrough: [{path, bytes,
-// mode, reason}], not_carried: [{path, reason}], skipped, skipped_count, bytes}.
+// each. Kept as base files, every one, whole: text at a path inside the
+// box's folder. Carried untouched: what is bytes already, a path outside the
+// box's folder, a binary. Never carried, and listed: the runtime's paths, a
+// second file whose path equals another's apart from case (a
+// case-insensitive file system holds one of them), and a file larger than
+// one storage row holds (STORE_ROW_BYTES). Result: {files: Map(path →
+// text), modes: Map(path → mode), passthrough: [{path, bytes, mode,
+// reason}], not_carried: [{path, reason}], skipped, skipped_count, bytes}.
 export function keepBaseFiles(entries, limits = {}) {
   const L = {...REPO_LIMITS, ...limits}, files = new Map(), modes = new Map(), passthrough = [], not_carried = [], skipped = [], seen = new Map();
   let bytes = 0, passBytes = 0, skipped_count = 0;
   const skip = (path, reason) => { skipped_count++; if (skipped.length < L.maxSkipped) skipped.push({path: clip(path, 200), reason}); };
   const drop = (path, reason) => { if (not_carried.length < L.maxSkipped) not_carried.push({path: clip(path, 200), reason}); };
+  const tooLarge = `larger than one storage row holds (${L.maxFileBytes} bytes)`;
   const carry = (path, data, mode, reason) => {
-    if (passthrough.length >= L.passMaxFiles || passBytes + data.length > L.passMaxBytes) return skip(path, `${reason}; over the limit of files carried untouched`);
+    if (data.length > L.maxFileBytes) return skip(path, `${reason}; ${tooLarge}`);
     passBytes += data.length;
     passthrough.push({path, bytes: data, mode: modeOf(mode), reason});
   };
@@ -109,9 +108,7 @@ export function keepBaseFiles(entries, limits = {}) {
     if (boxPathError(path)) { carry(path, utf8.encode(text), e.mode, 'a path outside the box\'s folder'); continue; }
     if (text.slice(0, 8192).includes('\u0000')) { carry(path, utf8.encode(text), e.mode, 'binary'); continue; }
     const size = byteLength(text);
-    if (size > L.maxFileBytes) { carry(path, utf8.encode(text), e.mode, 'too large'); continue; }
-    if (files.size >= L.maxFiles) { carry(path, utf8.encode(text), e.mode, 'file cap'); continue; }
-    if (bytes + size > L.maxBytes) { carry(path, utf8.encode(text), e.mode, 'total cap'); continue; }
+    if (size > L.maxFileBytes) { skip(path, tooLarge); continue; }
     files.set(path, text);
     modes.set(path, modeOf(e.mode));
     bytes += size;
@@ -135,7 +132,8 @@ export function baseFromApp(app) {
 // Result: {meta: {kind, source, ref, resolved_sha, dir, room, passed,
 // unverified, digest, files, bytes, passthrough, pass_bytes, not_carried,
 // skipped, skipped_count, truncated}, files: Map, modes: Map, passthrough}.
-// meta.digest is repoDigest's text, which the room's manager reads.
+// meta.digest names this base (the digest of its paths and contents): the
+// agents read the files themselves (existingFiles).
 export async function loadBase(base, {fetch, readApp, limits = {}} = {}) {
   let entries, meta;
   if (base.repo) {
@@ -156,9 +154,9 @@ export async function loadBase(base, {fetch, readApp, limits = {}} = {}) {
   }
   const kept = keepBaseFiles(entries, limits);
   if (!kept.files.size) return {error: `${meta.source} has no text file the room can start from${kept.skipped_count ? ` (${kept.skipped_count} skipped: ${kept.skipped.slice(0, 3).map(s => `${s.path}: ${s.reason}`).join('; ')})` : ''}`};
-  const digest = repoDigest(kept.files);
+  const digest = await sha256Bytes(utf8.encode(JSON.stringify([[...kept.files], kept.passthrough.map(p => p.path)])));
   return {files: kept.files, modes: kept.modes, passthrough: kept.passthrough,
-    meta: {...meta, digest: digest.text, languages: digest.languages, files: kept.files.size, bytes: kept.bytes,
+    meta: {...meta, digest, files: kept.files.size, bytes: kept.bytes,
       passthrough: kept.passthrough.length, pass_bytes: kept.pass_bytes, not_carried: kept.not_carried.slice(0, 50),
       skipped: kept.skipped.slice(0, 50), skipped_count: kept.skipped_count}};
 }
@@ -172,7 +170,7 @@ export async function loadBase(base, {fetch, readApp, limits = {}} = {}) {
 // Result: {rows: [{id, url, final_url, title, sha256, bytes, truncated,
 // error, status, content_type, summary}], chunks: [{ref, source, n, text}]}.
 export async function loadSources(goal, {fetch, allow, selfHosts = [], note, more} = {}) {
-  const urls = goalUrls(goal, LIMITS.maxUrls);
+  const urls = goalUrls(goal);
   if (!urls.length) return {rows: [], chunks: []};
   let fetched;
   try {
@@ -182,13 +180,6 @@ export async function loadSources(goal, {fetch, allow, selfHosts = [], note, mor
     const error = `source_refused: ${clip(e?.message || e, 200)}`;
     fetched = urls.map((url, i) => ({id: `S${i + 1}`, url, final_url: null, title: '', text: '', bytes: 0, truncated: false, sha256: null, error}));
   }
-  // Kept text, under one room cap counted in bytes.
-  let left = SOURCE_STORE_BYTES;
-  for (const s of fetched) {
-    if (s.error || !s.text) continue;
-    if (byteLength(s.text) > left) { s.text = cutBytes(s.text, left); s.truncated = true; }
-    left -= byteLength(s.text);
-  }
   let summaries = [];
   try { summaries = await sourceSummaries(fetched, {note, more, chunkChars: CHUNK_CHARS}); } catch {}
   const chunks = [];
@@ -197,10 +188,6 @@ export async function loadSources(goal, {fetch, allow, selfHosts = [], note, mor
     sha256: s.sha256 ?? null, bytes: s.bytes || 0, truncated: !!s.truncated, error: s.error ? clip(s.error, 300) : (s.text ? null : 'no text'),
     status: s.status ?? null, content_type: s.content_type ?? null, summary: summaries.find(c => c.id === s.id) || null}));
   return {rows, chunks};
-}
-function cutBytes(text, n) {
-  const enc = new TextEncoder().encode(text);
-  return enc.length <= n ? text : new TextDecoder().decode(enc.subarray(0, Math.max(0, n)), {stream: true});
 }
 
 // Refs a split gives a piece, kept to what its parent holds (the promises'
@@ -215,6 +202,17 @@ export function narrowRefs(raw, held) {
     for (const h of hits) if (!kept.includes(h)) kept.push(h);
   }
   return {kept, dropped};
+}
+
+// The project a room starts from, as its agents see it: every file of it,
+// by path and size, with nothing left out or summarised by the runtime, and
+// the files carried untouched by path. A file's text is not inlined: a
+// whole repo does not fit a model's context window (reading a base file is
+// a function the splitter and the worker would need; see the report).
+// files: [{path, bytes}]; passthrough: [{path, reason}].
+export function existingFiles(files, passthrough = [], label) {
+  return {label, files: files.map(f => ({path: f.path, bytes: f.bytes})),
+    ...(passthrough.length ? {carried_untouched: passthrough.map(p => ({path: p.path, reason: p.reason || 'carried untouched'}))} : {})};
 }
 
 // The source summaries as a splitter reads them: each quoted, its outline

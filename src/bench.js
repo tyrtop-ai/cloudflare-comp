@@ -15,10 +15,12 @@
 // its own, with the benchmark's tests (src/bench-run.js); its harness finds
 // the entry in whichever file the room put it (src/bench-harness.js). The
 // tests, the harness and the run's nonce live only in the grader's input
-// files.
+// files. A task is loaded in whatever language its row is written in: the
+// toolchain rows (src/toolchains.js) say which files are that language's and
+// how the box runs them.
 import { fetchPolicy, guardedFetch, plainBody, readCapped, inputCapFor, allowedType, redactText, FetchRefused } from './fetcher.js';
-import { GOAL_LIMIT } from './model.js';
-import { pythonHarness as pyHarness, javascriptHarness as jsHarness } from './bench-harness.js';
+import { TOOLCHAINS, COMPILE_ROWS } from './toolchains.js';
+import { pythonHarness as pyHarness, javascriptHarness as jsHarness, testsAfterHarness } from './bench-harness.js';
 
 export const BENCH_LIMITS = Object.freeze({
   maxTasks: 500,              // tasks one run may hold
@@ -27,22 +29,23 @@ export const BENCH_LIMITS = Object.freeze({
   inlineBytes: 4 * 1024 * 1024,   // a pasted or uploaded dataset
   timeoutMs: 30_000,          // one dataset fetch, every page together
   pageRows: 100,              // the datasets-server rows API's page size
-  fixture: 20000,             // one input file of the grader (tests, prompt)
-  goal: GOAL_LIMIT,
-  concurrency: [1, 16], budget: [1, 100000], taskTimeoutMs: [60_000, 6 * 3600_000]
+  concurrency: [1, 16], budget: [1, 100000]
 });
 // Only these hosts are fetched for datasets, and only when the owner's
 // FETCH_ALLOW (or its default) covers them too: the bench narrows the owner's
 // list, never widens it. huggingface.co covers datasets-server.huggingface.co.
 export const BENCH_HOSTS = Object.freeze(['huggingface.co', 'raw.githubusercontent.com']);
 export const BENCH_FORMATS = Object.freeze(['humaneval', 'mbpp', 'multipl-e', 'generic']);
-const LANG_ALIASES = {py: 'python', python: 'python', python3: 'python', js: 'javascript', javascript: 'javascript', node: 'javascript', nodejs: 'javascript'};
+// Every toolchain row the box knows, code rows and compile rows alike.
+const ROWS = [...TOOLCHAINS, ...COMPILE_ROWS];
 // The grader's input files: data files (.txt), so the harness is run by its
 // interpreter and never imported by the solution.
 export const FIXTURE = Object.freeze({harness: 'bench_check.txt', tests: 'bench_tests.txt', prompt: 'bench_prompt.txt', nonce: 'bench_nonce.txt'});
 export const PASS_MARK = 'BENCH-PASS';
-// How the check runs the harness, per language (src/bench-harness.js says why).
-const RUN = Object.freeze({python: `python3 -I ${FIXTURE.harness}`, javascript: `node -r ./${FIXTURE.harness} -e 0`});
+// How the check runs the harness (src/bench-harness.js says why): Python's
+// under python3 -I; JavaScript's, and the one that runs any other language's
+// tests after the solution, preloaded by node.
+const RUN = Object.freeze({python: `python3 -I ${FIXTURE.harness}`, node: `node -r ./${FIXTURE.harness} -e 0`});
 
 const clip = (v, n = 300) => String(v ?? '').slice(0, n);
 const plain = v => v && typeof v === 'object' && !Array.isArray(v);
@@ -108,34 +111,68 @@ export function newNonce() {
   crypto.getRandomValues(b);
   return [...b].map(x => x.toString(16).padStart(2, '0')).join('');
 }
-const languageOf = v => LANG_ALIASES[String(v ?? '').trim().toLowerCase()] || null;
+// The language a row names, as {id, extensions}: the toolchain row that
+// has the name as its id, an alias, its name or an extension; a name no row
+// has stands for itself, and its files are those with the name as their
+// extension (MultiPL-E names its languages by their file extension).
+// known: only a row's language, or null.
+function languageOf(v, {known = false} = {}) {
+  const n = String(v ?? '').trim().toLowerCase();
+  if (!n) return null;
+  const row = ROWS.find(r => r.id === n || (r.aliases || []).includes(n) || (r.extensions || []).includes(`.${n}`) || String(r.name || '').toLowerCase() === n);
+  if (row) return {id: row.id, extensions: [...(row.extensions || [])]};
+  return known ? null : {id: n, extensions: /^[a-z0-9+#-]+$/.test(n) ? [`.${n}`] : []};
+}
+// The commands the box runs a file with, by extension: every row's run_file
+// for its extensions (only those of `extensions`, when it names any).
+function runCommands(extensions = []) {
+  const out = {};
+  for (const r of ROWS) if (Array.isArray(r.run_file)) for (const e of r.extensions || [])
+    if (!extensions.length || extensions.includes(e)) out[e] ??= [...r.run_file];
+  return out;
+}
+// The two languages whose harness checks the tests from inside the
+// solution's process (counted assertions, a token-signed report).
+const HARNESSED = new Set(['python', 'javascript']);
 const taskId = (format, row, index) => clip(str(row.task_id) || str(row.name) || str(row.id) || `${format}-${index}`, 80)
   .replace(/^(\d+)$/, format === 'mbpp' ? 'MBPP/$1' : '$1');
 
 // The grader of one task: a command check that runs the harness against the
 // bundle the room ships, with the benchmark's tests and the nonce as its
 // input files (validation-shaped, so src/checks.js checkPlan reads it).
-export function benchGrader({language, entry, tests, prompt = '', callCheck = true, nonce}) {
-  const harness = language === 'python' ? pythonHarness({entry, callCheck}) : javascriptHarness({entry});
-  const files = {[FIXTURE.harness]: harness, [FIXTURE.tests]: tests, [FIXTURE.nonce]: nonce};
-  if (language === 'python' && prompt) files[FIXTURE.prompt] = prompt;
-  return {id: 'grader', serves: [], check: {kind: 'command', run: RUN[language], files, expect: {exit: 0, stdout_has: [`${PASS_MARK} ${nonce}`]}}};
+// Python and JavaScript have their own harness; any other language's tests
+// run after the solution's file, by the command the box runs that file
+// with (testsAfterHarness). A language no row runs has no check: the grader
+// says so ({unrunnable}), and the task is an error, never scored.
+export function benchGrader({language, extensions = [], entry, tests, prompt = '', callCheck = true, nonce}) {
+  const expect = {exit: 0, stdout_has: [`${PASS_MARK} ${nonce}`]};
+  const files = {[FIXTURE.tests]: tests, [FIXTURE.nonce]: nonce};
+  if (language === 'python') {
+    if (prompt) files[FIXTURE.prompt] = prompt;
+    return {id: 'grader', serves: [], check: {kind: 'command', run: RUN.python, files: {[FIXTURE.harness]: pythonHarness({entry, callCheck}), ...files}, expect}};
+  }
+  if (language === 'javascript') return {id: 'grader', serves: [], check: {kind: 'command', run: RUN.node, files: {[FIXTURE.harness]: javascriptHarness({entry}), ...files}, expect}};
+  const runs = runCommands(extensions);
+  if (!Object.keys(runs).length) return {id: 'grader', serves: [], unrunnable: `no toolchain row of the box runs ${language || 'the task\'s'} files${extensions.length ? ` (${extensions.join(', ')})` : ''}`};
+  return {id: 'grader', serves: [], check: {kind: 'command', run: RUN.node, files: {[FIXTURE.harness]: testsAfterHarness({entry, runs, files: FIXTURE, passMark: PASS_MARK}), ...files}, expect}};
 }
 
 // One row as a task, or {skip} with the reason: its prompt, verbatim, is
 // the goal the task's room starts from; its entry (the function the tests
-// call) and tests are the grader's only. opts: format (forced), nonce
-// (tests pass a fixed one).
+// call) and tests are the grader's only. A row in a language other than
+// Python and JavaScript needs no entry: its grader runs the tests after
+// each file of that language (the files that name the entry, when the row
+// gives one). opts: format (forced), nonce (tests pass a fixed one).
 export function taskFromRow(row, index = 0, {format = null, nonce = null} = {}) {
   const f = format || detectFormat(row);
-  if (!f) return {skip: 'unrecognised row: expected HumanEval, MBPP, MultiPL-E or {id, prompt, tests} fields'};
+  if (!f) return {skip: 'unrecognised row: expected HumanEval, MBPP, MultiPL-E or {id, language, prompt, tests} fields'};
   const id = taskId(f, row, index);
   let language, prompt, tests, entry = null, callCheck = true, promptFixture = '';
   if (f === 'humaneval') {
-    language = 'python'; prompt = str(row.prompt); tests = str(row.test); promptFixture = prompt;
+    language = languageOf('python'); prompt = str(row.prompt); tests = str(row.test); promptFixture = prompt;
     entry = str(row.entry_point).trim();
   } else if (f === 'mbpp') {
-    language = 'python'; prompt = str(row.text) || str(row.prompt); callCheck = false;
+    language = languageOf('python'); prompt = str(row.text) || str(row.prompt); callCheck = false;
     const list = row.test_list.filter(t => typeof t === 'string');
     const all = list.join('\n');
     // The function the asserts call: one the reference code defines (its
@@ -145,25 +182,22 @@ export function taskFromRow(row, index = 0, {format = null, nonce = null} = {}) 
     const imports = Array.isArray(row.test_imports) ? row.test_imports.filter(t => typeof t === 'string') : [];
     tests = [...imports, str(row.test_setup_code), ...list].filter(s => s.trim()).join('\n') + '\n';
   } else if (f === 'multipl-e') {
-    language = languageOf(row.language) || languageOf(String(row.name).split('_')[0]);
-    if (!language) return {id, skip: `language ${clip(row.language, 20) || '(none)'} is not loaded by this version (js and py are)`};
+    language = languageOf(row.language) || languageOf(String(row.name).split('_')[0], {known: true});
+    if (!language) return {id, skip: 'the row names no language'};
     prompt = str(row.prompt); tests = str(row.tests); callCheck = false;
-    entry = promptEntry(prompt, language);
+    entry = HARNESSED.has(language.id) ? promptEntry(prompt, language.id) : null;
   } else {
-    language = languageOf(row.language) || (/(?:^|\n)\s*(?:async\s+)?def\s/.test(str(row.prompt)) ? 'python' : /\bfunction\s+[A-Za-z_$]/.test(str(row.prompt)) ? 'javascript' : null);
-    if (!language) return {id, skip: 'no language: give "language" (python or javascript) or a def/function in the prompt'};
+    language = languageOf(row.language);
+    if (!language) return {id, skip: 'the row names no language: give "language" (python, javascript, ruby, …)'};
     prompt = str(row.prompt); tests = Array.isArray(row.tests) ? row.tests.filter(t => typeof t === 'string').join('\n') : str(row.tests);
-    entry = (str(row.entry_point) || str(row.entry)).trim() || promptEntry(prompt, language);
-    if (language === 'python') promptFixture = /(?:^|\n)\s*(?:async\s+)?def\s/.test(prompt) ? prompt : '';
+    entry = (str(row.entry_point) || str(row.entry)).trim() || (HARNESSED.has(language.id) ? promptEntry(prompt, language.id) : null);
+    if (language.id === 'python') promptFixture = /(?:^|\n)\s*(?:async\s+)?def\s/.test(prompt) ? prompt : '';
   }
-  if (!entry || !/^[A-Za-z_$][\w$]{0,63}$/.test(entry)) return {id, skip: 'no entry function could be read from the row'};
+  if ((HARNESSED.has(language.id) || entry) && !/^[A-Za-z_$][\w$]{0,63}$/.test(entry || '')) return {id, skip: 'no entry function could be read from the row'};
   if (!prompt.trim()) return {id, skip: 'the row has no prompt'};
   if (!String(tests ?? '').trim()) return {id, skip: 'the row has no tests'};
-  for (const [what, text] of [['tests', tests], ['prompt', promptFixture]])
-    if (String(text).length > BENCH_LIMITS.fixture) return {id, skip: `its ${what} (${String(text).length} characters) exceed the check's ${BENCH_LIMITS.fixture}-character input file`};
-  if (prompt.length > BENCH_LIMITS.goal) return {id, skip: `its prompt (${prompt.length} characters) is longer than a room's goal (at most ${BENCH_LIMITS.goal})`};
-  const grader = benchGrader({language, entry, tests, prompt: promptFixture, callCheck, nonce: nonce || newNonce()});
-  return {id, format: f, language, entry, prompt, grader};
+  const grader = benchGrader({language: language.id, extensions: language.extensions, entry, tests, prompt: promptFixture, callCheck, nonce: nonce || newNonce()});
+  return {id, format: f, language: language.id, entry: entry || null, prompt, grader};
 }
 
 // Rows → tasks, at most `limit`, with the skipped rows and why.
@@ -301,10 +335,6 @@ export async function loadDataset(dataset, {fetch, policy, limit = BENCH_LIMITS.
 
 // --- results ------------------------------------------------------------------------
 
-// Errors that are the platform's, not the task's: Workers AI capacity and
-// rate limits, upstream and network failures, Artifacts and Container
-// outages. ControlRoom.benchSummary counts the room's error events that match.
-export const INFRA_ERROR = /AiError|InferenceUpstream|\b(?:3040|3043|429|500|502|503|504)\b|capacity|rate.?limit|overloaded|unavailable|temporarily|timed? ?out|timeout|ECONNRESET|ETIMEDOUT|fetch failed|network|socket hang up|Artifacts \w+ failed|BUILD_EXECUTORS|Container|executor/i;
 const HOLD_ERROR = new Set(['checks_blocked']);
 const HOLD_FAIL = new Set(['checks_failed', 'split_failed']);
 // One task room's state from its summary (ControlRoom.benchSummary), or
@@ -312,10 +342,9 @@ const HOLD_FAIL = new Set(['checks_failed', 'split_failed']);
 //  - complete: the room completed on its own validations, so the run
 //    grades what it ships (gradeOutcome);
 //  - error, never scored: validations that could not run (checks_blocked),
-//    the room's own error, an observer's stop, agents stalled by platform
-//    failures, and a turn budget spent mostly on them;
+//    the room's own error, an observer's stop;
 //  - fail: an agent failed, the room held where only the person can go on,
-//    or its own work used up the turn budget.
+//    or the turn budget ended.
 export function roomOutcome(s) {
   if (!s) return {outcome: 'error', detail: 'the room gave no summary'};
   const terminal = ['complete', 'failed', 'error'].includes(s.status) || (s.status === 'paused' && !s.busy);
@@ -325,42 +354,36 @@ export function roomOutcome(s) {
   if (s.status === 'error') return out('error', s.failure || 'the room stopped with an error');
   if (HOLD_ERROR.has(kind)) return out('error', `${kind}: ${s.pause.text || ''}`);
   if (s.stopped) return out('error', 'the room was stopped by an observer');
-  if (s.stalled_infra) return out('error', `agents stopped after repeated platform failures (${s.infra_errors} error events)`);
   if (s.status === 'failed') return out('fail', s.failure || 'the room failed');
   if (HOLD_FAIL.has(kind)) return out('fail', `${kind}: ${s.pause.text || ''}`);
-  if (s.infra_errors >= 3 && s.infra_errors * 4 >= (s.turns || 0)) return out('error', `the turn budget went mostly on platform failures (${s.infra_errors} of ${s.turns} turns)`);
   return out('fail', s.pause?.text || 'the turn budget ended before the task was solved');
 }
 // The grader's result as an outcome: pass, fail (what it observed, whole:
-// the complaint a run with feedback 'until_done' sends the room), or error
-// when it could not run.
+// the complaint the run sends the room), or error when it could not run.
 export function gradeOutcome(g) {
   if (!g || g.infrastructure) return {outcome: 'error', detail: clip(`the grader could not run: ${g?.infrastructure || 'no answer'}`)};
   return g.passed ? {outcome: 'pass', detail: ''} : {outcome: 'fail', detail: g.detail || 'the benchmark\'s tests failed'};
 }
 
-const SCORED = new Set(['pass', 'fail', 'timeout']);
+const SCORED = new Set(['pass', 'fail']);
 // Aggregates of a run's task rows: pass@1 (each task's first grading) over
-// the scored tasks (pass, fail, timeout; errors are counted apart), and, for
-// a run with feedback 'until_done', the share that passed once the grader's
-// failures went back as complaints, with the mean gradings it took; mean
-// wall time, total tokens and Container seconds.
-export function aggregate(rows, {feedback} = {}) {
+// the scored tasks (pass, fail; errors are counted apart), and the share
+// that passed once the grader's failures went back as complaints, with the
+// mean gradings it took; mean wall time, total tokens and Container seconds.
+export function aggregate(rows) {
   const done = rows.filter(r => r.outcome);
   const first = r => r.once || r.outcome;
-  const by = Object.fromEntries(['pass', 'fail', 'timeout', 'error', 'stopped'].map(k => [k, done.filter(r => first(r) === k).length]));
+  const by = Object.fromEntries(['pass', 'fail', 'error'].map(k => [k, done.filter(r => first(r) === k).length]));
   const scored = done.filter(r => SCORED.has(first(r))).length;
-  const untilDone = feedback === 'until_done' ? (() => {
-    const scoredDone = done.filter(r => SCORED.has(r.outcome)), passed = scoredDone.filter(r => r.outcome === 'pass');
-    const rounds = passed.map(r => Number(r.rounds)).filter(n => n > 0);
-    return {until_done: {scored: scoredDone.length, pass: passed.length, pass_rate: scoredDone.length ? passed.length / scoredDone.length : null,
-      mean_rounds_to_done: rounds.length ? Math.round(rounds.reduce((a, n) => a + n, 0) / rounds.length * 100) / 100 : null}};
-  })() : {};
+  const scoredDone = done.filter(r => SCORED.has(r.outcome)), passed = scoredDone.filter(r => r.outcome === 'pass');
+  const rounds = passed.map(r => Number(r.rounds)).filter(n => n > 0);
+  const untilDone = {until_done: {scored: scoredDone.length, pass: passed.length, pass_rate: scoredDone.length ? passed.length / scoredDone.length : null,
+    mean_rounds_to_done: rounds.length ? Math.round(rounds.reduce((a, n) => a + n, 0) / rounds.length * 100) / 100 : null}};
   const timed = done.filter(r => Number.isFinite(r.wall_ms) && r.wall_ms > 0);
   const sum = k => rows.reduce((a, r) => a + (Number(r[k]) || 0), 0);
   return {
     tasks: rows.length, finished: done.length, running: rows.filter(r => r.status === 'running').length, queued: rows.filter(r => r.status === 'queued').length,
-    feedback, ...by, scored, pass_at_1: scored ? by.pass / scored : null, ...untilDone,
+    ...by, scored, pass_at_1: scored ? by.pass / scored : null, ...untilDone,
     mean_ms: timed.length ? Math.round(timed.reduce((a, r) => a + r.wall_ms, 0) / timed.length) : null,
     tokens: sum('tokens'), prompt_tokens: sum('prompt_tokens'), completion_tokens: sum('completion_tokens'),
     container_s: Math.round(sum('container_ms') / 100) / 10

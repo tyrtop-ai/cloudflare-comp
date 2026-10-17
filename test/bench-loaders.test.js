@@ -17,10 +17,9 @@ const {checkPlan} = await import('../src/checks.js');
 const {snapshotHash} = await import('../src/build-verification.js');
 const {TOOLCHAINS} = await import('../src/toolchains.js');
 const bench = await import('../src/bench.js');
-const {GOAL_LIMIT} = await import('../src/model.js');
 const {parseRows, detectFormat, taskFromRow, loadTasks, loadDataset, fetchDataset, benchPolicy, roomOutcome, gradeOutcome, aggregate, compareRuns, BENCH_LIMITS, BENCH_HOSTS, FIXTURE, PASS_MARK} = bench;
 
-import { HUMANEVAL, MBPP, MULTIPLE_JS, GENERIC } from './helpers/bench-fixtures.js';
+import { HUMANEVAL, MBPP, MULTIPLE_JS, MULTIPLE_RB, GENERIC } from './helpers/bench-fixtures.js';
 const jsonl = rows => rows.map(r => JSON.stringify(r)).join('\n') + '\n';
 
 // ------------------------------------------------------------------ parsing and detection
@@ -59,13 +58,11 @@ function assertGrader(t, {language, entry, prompt}) {
   assert.equal(g.check.kind, 'command');
   assert.equal(g.check.run, language === 'python' ? `python3 -I ${FIXTURE.harness}` : `node -r ./${FIXTURE.harness} -e 0`);
   assert.deepEqual(g.check.expect, {exit: 0, stdout_has: [`${PASS_MARK} n0nce`]});
-  for (const text of Object.values(g.check.files)) assert.ok(text.length <= BENCH_LIMITS.fixture);
   // The tests are in the grader's input files, never in the prompt the room starts from.
   const tests = g.check.files[FIXTURE.tests];
   assert.ok(tests.trim());
   for (const line of tests.split('\n').filter(l => l.trim().length > 12)) assert.ok(!t.prompt.includes(line.trim()), `${t.id}: the prompt quotes a test line: ${line}`);
   assert.ok(!t.prompt.includes('n0nce') && !t.prompt.includes(FIXTURE.harness));
-  assert.ok(t.prompt.length <= GOAL_LIMIT);
   // The harness is told no path: it finds the entry wherever the room put it.
   assert.doesNotMatch(g.check.files[FIXTURE.harness], /solution\.(?:py|js)/);
 }
@@ -90,34 +87,44 @@ test('MBPP rows: the function the asserts call, from the reference code\'s names
   assert.equal(tasks[0].grader.check.files[FIXTURE.prompt], undefined);
 });
 
-test('MultiPL-E HumanEval-JS rows: the last function of the prompt; a language this version does not load is skipped', () => {
-  const {tasks, skipped, formats} = loadTasks(MULTIPLE_JS, {limit: 10, nonce: 'n0nce'});
-  assert.deepEqual(tasks.map(t => [t.id, t.entry]), [['Toy_0_add_two', 'add_two'], ['Toy_1_rev', 'rev'], ['Toy_2_neg', 'neg']]);
-  for (const [i, t] of tasks.entries()) assertGrader(t, {language: 'javascript', entry: t.entry, prompt: MULTIPLE_JS[i].prompt});
-  assert.deepEqual(formats, {'multipl-e': 3});
-  assert.deepEqual(skipped, [{id: 'Toy_3_rs', reason: 'language rs is not loaded by this version (js and py are)'}]);
+test('MultiPL-E rows: every language loads (owner: "Any code type"); JavaScript\'s entry is the last function of the prompt; another language\'s tests run after the solution, by the command its toolchain row runs a file with', () => {
+  const {tasks, skipped, formats} = loadTasks([...MULTIPLE_JS, ...MULTIPLE_RB], {limit: 10, nonce: 'n0nce'});
+  assert.deepEqual(tasks.map(t => [t.id, t.language, t.entry]), [['Toy_0_add_two', 'javascript', 'add_two'], ['Toy_1_rev', 'javascript', 'rev'], ['Toy_2_neg', 'javascript', 'neg'], ['Toy_3_rs', 'rust', null], ['Toy_0_add_two_rb', 'ruby', null]]);
+  for (const [i, t] of tasks.slice(0, 3).entries()) assertGrader(t, {language: 'javascript', entry: t.entry, prompt: MULTIPLE_JS[i].prompt});
+  assert.deepEqual(formats, {'multipl-e': 5});
+  assert.deepEqual(skipped, []);
   assert.equal(tasks[0].prompt, '//Add two numbers.\n// >>> add_two(1, 2)\n// 3\nfunction add_two(a, b){\n');
+  // Ruby: the harness runs the tests after each .rb file, with the ruby row's run_file.
+  const rb = tasks[4];
+  assert.equal(rb.prompt, MULTIPLE_RB[0].prompt);
+  assert.equal(rb.grader.check.run, `node -r ./${FIXTURE.harness} -e 0`);
+  assert.match(rb.grader.check.files[FIXTURE.harness], /"\.rb":\["ruby","\{path\}"\]/);
+  assert.equal(rb.grader.check.files[FIXTURE.tests], MULTIPLE_RB[0].tests);
+  // Rust: loaded as written; no toolchain row runs a .rs file yet, so its grader says so, and the task is an error, never scored.
+  assert.equal(tasks[3].grader.check, undefined);
+  assert.match(tasks[3].grader.unrunnable, /no toolchain row of the box runs rust files \(\.rs\)/);
 });
 
-test('generic {id, prompt, tests} rows: the entry from the row or the prompt, the language from the row or the prompt', () => {
+test('generic {id, language, prompt, tests} rows: the language from the row (a row naming none is skipped), the entry from the row or the prompt', () => {
   const {tasks, skipped} = loadTasks(GENERIC, {nonce: 'n0nce'});
   assert.deepEqual(tasks.map(t => [t.id, t.language, t.entry]), [['g-py', 'python', 'triple'], ['g-js', 'javascript', 'greet'], ['g-check', 'python', 'inc']]);
   for (const [i, t] of tasks.entries()) assertGrader(t, {language: t.language, entry: t.entry, prompt: GENERIC[i].prompt});
   assert.deepEqual(skipped.map(s => s.id), ['g-none']);
-  assert.match(skipped[0].reason, /no language/);
+  assert.match(skipped[0].reason, /names no language/);
   assert.equal(tasks[0].prompt, 'Write a function triple(n) that returns three times n.');
   assert.match(tasks[2].grader.check.files[FIXTURE.tests], /^def check\(candidate\):\n    assert candidate\(1\) == 2$/);
 });
 
-test('caps: the task limit, the check\'s input-file size, the goal size, duplicate ids, and a fresh nonce per task', () => {
-  assert.equal(BENCH_LIMITS.goal, GOAL_LIMIT);
-  assert.equal(BENCH_LIMITS.fixture, 20000);
+test('the task limit, duplicate ids, and a fresh nonce per task; a task\'s tests and prompt are kept whole, whatever their length', () => {
+  assert.equal(BENCH_LIMITS.goal, undefined);
+  assert.equal(BENCH_LIMITS.fixture, undefined);
   assert.equal(loadTasks([...HUMANEVAL, ...MBPP], {limit: 4}).tasks.length, 4);
   assert.equal(loadTasks(HUMANEVAL, {limit: 10_000}).tasks.length, 3);
+  // Owner 2026-10-17 00:25 on an invented cap: "I don't understand the need". Long tests and a long prompt load as written.
   const big = {...HUMANEVAL[0], task_id: 'Toy/big', test: 'def check(candidate):\n' + '    assert candidate([1]) == 1\n'.repeat(1000)};
-  assert.match(taskFromRow(big).skip, /tests \(\d+ characters\) exceed the check's 20000-character input file/);
-  const long = {...HUMANEVAL[0], task_id: 'Toy/long', prompt: HUMANEVAL[0].prompt + '#'.repeat(GOAL_LIMIT)};
-  assert.match(taskFromRow(long).skip, /its prompt \(\d+ characters\) is longer than a room's goal/);
+  assert.equal(taskFromRow(big).grader.check.files[FIXTURE.tests], big.test);
+  const long = {...HUMANEVAL[0], task_id: 'Toy/long', prompt: HUMANEVAL[0].prompt + '#'.repeat(10_000)};
+  assert.equal(taskFromRow(long).prompt, long.prompt);
   const dup = loadTasks([HUMANEVAL[0], HUMANEVAL[0]]);
   assert.equal(dup.tasks.length, 1);
   assert.match(dup.skipped[0].reason, /came earlier/);
@@ -186,6 +193,23 @@ test('JavaScript graders in the Container\'s verifyChecks: ESM, CommonJS and pla
     assert.equal((await verify(add, {'solution.js': forged})).passed, false, forged);
   const [, g] = loadTasks(GENERIC).tasks;
   assert.equal((await verify(g, {'solution.js': 'export const greet = name => `hi ${name}`;\n'})).passed, true);
+});
+
+const hasRuby = spawnSync('ruby', ['--version']).status === 0;
+test('Ruby graders in the Container\'s verifyChecks: the tests run after the solution, wherever the room put it; a wrong solution fails with what the tests printed', {skip: !hasRuby && 'ruby is not installed'}, async () => {
+  const [rb] = MULTIPLE_RB.map(r => taskFromRow(r));
+  for (const sol of [{'add.rb': 'def add_two(a, b)\n  a + b\nend\n'}, {'lib/math/add.rb': '# adds\ndef add_two(a, b) = a + b\n', 'README.md': '# x\n'}]) {
+    const c = await verify(rb, sol);
+    assert.equal(c.passed, true, `${JSON.stringify(sol)}: ${c.detail}`);
+  }
+  const wrong = await verify(rb, {'add.rb': 'def add_two(a, b)\n  a - b\nend\n'});
+  assert.equal(wrong.passed, false);
+  assert.match(wrong.output, /expected but was|Failure/);
+  assert.match(wrong.detail, /exit 1/);
+  const forged = await verify(rb, {'add.rb': 'puts "BENCH-PASS 1234"\ndef add_two(a, b)\n  0\nend\n'});
+  assert.equal(forged.passed, false, 'the mark without the nonce is not the verdict');
+  const none = await verify(rb, {'README.md': '# nothing to run\n'});
+  assert.match(none.detail, /exit 3/);
 });
 
 // ------------------------------------------------------------------ fetching
@@ -306,16 +330,16 @@ test('aggregate and compareRuns: pass@1 over scored tasks, mean time, tokens, Co
   const rows = [
     {task_id: 'a', status: 'done', outcome: 'pass', wall_ms: 1000, tokens: 100, prompt_tokens: 80, completion_tokens: 20, container_ms: 1500},
     {task_id: 'b', status: 'done', outcome: 'fail', wall_ms: 3000, tokens: 50, prompt_tokens: 40, completion_tokens: 10, container_ms: 500},
-    {task_id: 'c', status: 'done', outcome: 'timeout', wall_ms: 5000, tokens: 10, container_ms: 0},
-    {task_id: 'd', status: 'done', outcome: 'stopped', wall_ms: 3000, tokens: 0},
+    {task_id: 'c', status: 'done', outcome: 'fail', wall_ms: 5000, tokens: 10, container_ms: 0},
     {task_id: 'e', status: 'done', outcome: 'error', wall_ms: null},
     {task_id: 'f', status: 'running'}, {task_id: 'g', status: 'queued'}
   ];
   const a = aggregate(rows);
-  assert.deepEqual([a.tasks, a.finished, a.running, a.queued, a.scored, a.pass, a.fail, a.timeout, a.stopped, a.error], [7, 5, 1, 1, 3, 1, 1, 1, 1, 1]);
+  assert.deepEqual([a.tasks, a.finished, a.running, a.queued, a.scored, a.pass, a.fail, a.error], [6, 4, 1, 1, 3, 1, 2, 1]);
   assert.equal(a.pass_at_1, 1 / 3);
   assert.equal(a.mean_ms, 3000);
   assert.deepEqual([a.tokens, a.prompt_tokens, a.completion_tokens, a.container_s], [160, 120, 30, 2]);
+  assert.deepEqual(a.until_done, {scored: 3, pass: 1, pass_rate: 1 / 3, mean_rounds_to_done: null});
   assert.equal(aggregate([]).pass_at_1, null);
   const runA = {id: 'aaaaaaaaaaaa', label: 'scout', dataset: {digest: 'd1'}, tasks: [{task_id: 'x', outcome: 'pass'}, {task_id: 'y', outcome: 'fail'}, {task_id: 'z', outcome: 'pass'}, {task_id: 'only-a', outcome: 'pass'}]};
   const runB = {id: 'bbbbbbbbbbbb', label: 'coder', dataset: {digest: 'd1'}, tasks: [{task_id: 'x', outcome: 'pass'}, {task_id: 'y', outcome: 'pass'}, {task_id: 'z', outcome: 'fail'}, {task_id: 'w', outcome: 'pass'}]};
@@ -402,20 +426,17 @@ test('the dataset digest covers the tasks used, not the text fetched: the same t
   assert.equal(await bench.taskDigest(a.tasks[3]), await bench.taskDigest(c.tasks[3]), 'but each shared task digests the same');
 });
 
-test('infrastructure outcomes score error, never fail: blocked checks, an observer stop, Workers AI stalls, a budget spent on platform failures', () => {
-  const base = {busy: false, turns: 20, infra_errors: 0};
+test('a room\'s outcome is what the room observed, never a reading of its error text: blocked checks and an observer stop are errors; a hold or a spent budget is a fail', () => {
+  const base = {busy: false, turns: 20};
   const o = s => roomOutcome({...base, ...s});
   assert.equal(o({status: 'paused', pause: {kind: 'checks_blocked', text: 'x'}}).outcome, 'error');
   assert.equal(o({status: 'paused', stopped: true}).outcome, 'error');
-  assert.equal(o({status: 'paused', stalled_infra: true, infra_errors: 3}).outcome, 'error');
-  assert.equal(o({status: 'paused', infra_errors: 6, turns: 20}).outcome, 'error');
-  // The room's own work: a budget spent on its turns, a model that kept answering badly, a failed agent.
-  assert.equal(o({status: 'paused', infra_errors: 1}).outcome, 'fail');
-  assert.equal(o({status: 'paused', stalled_infra: false}).outcome, 'fail');
+  assert.equal(o({status: 'error', failure: 'AiError: 3040: Capacity temporarily exceeded'}).outcome, 'error');
+  // Owner 2026-10-16 05:39: "text heuristics - I don't understand what this is for". No error text decides an outcome.
+  assert.equal(bench.INFRA_ERROR, undefined);
+  assert.equal(o({status: 'paused', infra_errors: 6, stalled_infra: true}).outcome, 'fail');
   assert.equal(o({status: 'failed', failure: 'root failed'}).outcome, 'fail');
   assert.equal(o({status: 'complete'}).outcome, 'complete');
-  assert.ok(bench.INFRA_ERROR.test('AiError: 3040: Capacity temporarily exceeded'));
-  assert.ok(!bench.INFRA_ERROR.test('Bad action response: no pieces'));
   const a = aggregate([{outcome: 'error', status: 'done'}, {outcome: 'pass', status: 'done'}, {outcome: 'fail', status: 'done'}]);
   assert.deepEqual([a.scored, a.pass_at_1, a.error], [2, 0.5, 1]);
 });

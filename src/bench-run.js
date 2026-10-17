@@ -9,16 +9,14 @@
 // the same call /api/run makes (ControlRoom.start), with the task's prompt.
 // The grader is outside the room: once the room completes on its own
 // validations, the run grades the bundle it ships (appFiles) in a fresh box
-// of its own with the internet off (gradeBundle). feedback 'until_done' (the
-// default): a failed grading goes back to the room's manager as a complaint,
-// verbatim, like any other (ControlRoom.graderComplaint), the room goes on
-// with the turns its budget has left, and the run grades again each time it
-// completes, until a grading passes or the room ends otherwise (its budget
-// spent, a hold, the task's timeout); the task records its first grading
-// (pass@1) and the gradings it took. 'once': the first grading is the
-// task's result and nothing goes back (pass@1, comparable with published
-// scores). A slot (at most BENCH_EXECUTORS) only caps how many rooms run at
-// once. A scored room's repositories and storage are deleted unless the run
+// of its own with the internet off (gradeBundle). A failed grading goes back
+// to the room's manager as a complaint, whole, like any other
+// (ControlRoom.graderComplaint), the room goes on with the turns its budget
+// has left, and the run grades again each time it completes, until a
+// grading passes or the room ends otherwise (its budget spent, a hold, an
+// observer's Stop); the task records its first grading (pass@1) and the
+// gradings it took. A slot (at most BENCH_EXECUTORS) only caps how many
+// rooms run at once. A scored room's repositories and storage are deleted unless the run
 // keeps it (keep_rooms: 'failed', the default, keeps every room that did not
 // pass; 'all'; 'none'). One more instance ('index') lists the runs for the
 // dashboard.
@@ -45,8 +43,7 @@ const clip = (v, n = 300) => String(v ?? '').slice(0, n);
 const json = (body, status = 200) => Response.json(body, {status, headers: {'cache-control': 'no-store'}});
 export const RUN_ID = /^[a-f0-9]{12}$/;
 export const KEEP_ROOMS = Object.freeze(['failed', 'all', 'none']);
-export const FEEDBACK = Object.freeze(['until_done', 'once']);
-export const BENCH_DEFAULTS = Object.freeze({limit: BENCH_LIMITS.defaultLimit, concurrency: 2, budget: 60, task_timeout_ms: 30 * 60_000, poll_ms: 10_000, executors: 4, keep_rooms: 'failed', feedback: 'until_done'});
+export const BENCH_DEFAULTS = Object.freeze({limit: BENCH_LIMITS.defaultLimit, concurrency: 2, budget: 60, poll_ms: 10_000, executors: 4, keep_rooms: 'failed'});
 const MAX_POLL_ERRORS = 5, MAX_PURGE_TRIES = 10;
 // How many task rooms run at once at most: BENCH_EXECUTORS, else 4. (Each
 // compile opens its own box; the durable_object policy has no max_instances.)
@@ -87,8 +84,7 @@ export class BenchRun extends DurableObject {
   // ---------------------------------------------------------------- the run
   // Load the dataset and queue its tasks; the first alarm starts rooms.
   async begin({id, label = '', dataset, limit = BENCH_DEFAULTS.limit, format = null, settings, concurrency = BENCH_DEFAULTS.concurrency,
-    budget = BENCH_DEFAULTS.budget, task_timeout_ms = BENCH_DEFAULTS.task_timeout_ms, poll_ms = BENCH_DEFAULTS.poll_ms, keep_rooms = BENCH_DEFAULTS.keep_rooms,
-    feedback = BENCH_DEFAULTS.feedback, allow, selfHosts = []} = {}) {
+    budget = BENCH_DEFAULTS.budget, poll_ms = BENCH_DEFAULTS.poll_ms, keep_rooms = BENCH_DEFAULTS.keep_rooms, allow, selfHosts = []} = {}) {
     if (this.get('id')) return {error: 'This benchmark run already exists'};
     if (!RUN_ID.test(String(id || ''))) return {error: 'Invalid benchmark id'};
     let loaded;
@@ -101,8 +97,7 @@ export class BenchRun extends DurableObject {
       this.db().exec('INSERT INTO tasks(idx,task_id,format,language,entry,goal,grader,status,digest) VALUES (?,?,?,?,?,?,?,?,?)',
         i, t.id, t.format, t.language, t.entry, t.prompt, JSON.stringify(t.grader), 'queued', await taskDigest(t));
     for (const [k, v] of Object.entries({id, label: clip(label, 80), created_at: now, status: 'running', settings, concurrency: pool, ...(pool < concurrency ? {concurrency_asked: concurrency} : {}),
-      executors: slots, budget, limit, task_timeout_ms, poll_ms, keep_rooms: KEEP_ROOMS.includes(keep_rooms) ? keep_rooms : BENCH_DEFAULTS.keep_rooms,
-      feedback: FEEDBACK.includes(feedback) ? feedback : BENCH_DEFAULTS.feedback,
+      executors: slots, budget, limit, poll_ms, keep_rooms: KEEP_ROOMS.includes(keep_rooms) ? keep_rooms : BENCH_DEFAULTS.keep_rooms,
       dataset: {source: loaded.source, digest: loaded.digest, rows: loaded.rows, bad: loaded.bad, formats: loaded.formats, skipped: loaded.skipped, ...(loaded.partial ? {partial: loaded.partial} : {})}}))
       this.set(k, v);
     await this.ctx.storage.setAlarm(now);
@@ -121,7 +116,7 @@ export class BenchRun extends DurableObject {
       if (status === 'done') { if (this.pendingPurges()) await this.ctx.storage.setAlarm(Date.now() + this.get('poll_ms', BENCH_DEFAULTS.poll_ms)); else await this.ctx.storage.deleteAlarm?.(); }
       return this.status();
     }
-    const now = Date.now(), timeout = this.get('task_timeout_ms', BENCH_DEFAULTS.task_timeout_ms);
+    const now = Date.now();
     for (const t0 of query(this.db(), "SELECT * FROM tasks WHERE status='running' ORDER BY idx")) {
       const stub = this.env.ROOMS.getByName(t0.room);
       let s, err = null;
@@ -136,13 +131,9 @@ export class BenchRun extends DurableObject {
         continue;
       }
       const result = roomOutcome(s);
-      if (result?.outcome === 'complete') { await this.graded(t, s, now, timeout); continue; }
+      if (result?.outcome === 'complete') { await this.graded(t, s, now); continue; }
       if (result) { this.finish(t, result, s, now); continue; }
-      if (now - t.started_at >= timeout) {
-        try { await stub.stop(); } catch {}
-        const again = this.row(t.idx);
-        if (again?.status === 'running' && again.room === t.room) this.finish(again, {outcome: 'timeout', detail: `no result after ${Math.round(timeout / 60000)} min; the room was stopped`}, s, now);
-      } else this.record(t, s);
+      this.record(t, s);
     }
     const settings = this.get('settings', {}), budget = this.get('budget', BENCH_DEFAULTS.budget), concurrency = this.get('concurrency', BENCH_DEFAULTS.concurrency);
     const skip = new Set();
@@ -186,19 +177,17 @@ export class BenchRun extends DurableObject {
     await this.publish();
     return this.status();
   }
-  // A room that completed: its shipped bundle graded. A pass (or, with
-  // feedback 'once', any grading) settles the task; with 'until_done' a
-  // failed grading goes back to the room's manager as a complaint and the
-  // room runs again, with the turns its budget has left, while the task's
-  // time is left. A room that cannot take it (its budget spent) settles
-  // the task with that grading.
-  async graded(t, s, now, timeout) {
+  // A room that completed: its shipped bundle graded. A pass settles the
+  // task; a failed grading goes back to the room's manager as a complaint
+  // and the room runs again, with the turns its budget has left. A room that
+  // cannot take it (its budget spent) settles the task with that grading,
+  // and so does the run's Stop (settle).
+  async graded(t, s, now, {settle = false} = {}) {
     const g = gradeOutcome(await this.grade(t)), round = (t.rounds || 0) + 1, once = t.once || g.outcome;
     const row = this.row(t.idx);
     if (!row || row.status !== 'running' || row.room !== t.room) return;
     this.db().exec('UPDATE tasks SET rounds=?,once=? WHERE idx=?', round, once, t.idx);
-    const again = this.get('feedback', BENCH_DEFAULTS.feedback) === 'until_done' && g.outcome === 'fail' && now - t.started_at < timeout;
-    if (again) {
+    if (g.outcome === 'fail' && !settle) {
       let r;
       try { r = await this.env.ROOMS.getByName(t.room).graderComplaint(g.detail); } catch (e) { r = {error: clip(e?.message || e)}; }
       if (!r?.error) { this.record(t, s); return; }
@@ -223,9 +212,9 @@ export class BenchRun extends DurableObject {
   }
   finish(t, result, s, now) {
     this.record(t, s);
-    const start = s?.started_at || t.started_at, end = s && result.outcome !== 'timeout' ? s.last_event_at || now : now;
+    const start = s?.started_at || t.started_at, end = s ? s.last_event_at || now : now;
     this.db().exec("UPDATE tasks SET status='done',slot=NULL,ended_at=?,outcome=?,once=?,detail=?,wall_ms=? WHERE idx=?",
-      end, result.outcome, t.once || result.outcome, clip(result.detail, 300), start ? Math.max(0, end - start) : null, t.idx);
+      end, result.outcome, t.once || result.outcome, String(result.detail ?? ''), start ? Math.max(0, end - start) : null, t.idx);
     if (t.room) {
       const keep = this.get('keep_rooms', BENCH_DEFAULTS.keep_rooms), purge = keep === 'none' || (keep === 'failed' && result.outcome === 'pass');
       this.db().exec("INSERT INTO rooms(room,idx,state,purge) VALUES (?,?,'scored',?) ON CONFLICT(room) DO UPDATE SET state='scored',purge=excluded.purge", t.room, t.idx, purge ? 1 : 0);
@@ -267,8 +256,8 @@ export class BenchRun extends DurableObject {
       let t = this.row(t0.idx);
       if (!t || t.status !== 'running' || t.room !== t0.room) continue;
       const result = s && roomOutcome(s);
-      // A room that completed is graded once more before the run stops (no time left for feedback).
-      if (result?.outcome === 'complete') { await this.graded(t, s, Date.now(), 0); continue; }
+      // A room that completed is graded before the run stops, and that grading settles it.
+      if (result?.outcome === 'complete') { await this.graded(t, s, Date.now(), {settle: true}); continue; }
       if (result) { this.finish(t, result, s, Date.now()); continue; }
       try { await stub.stop(); } catch {}
       t = this.row(t0.idx);
@@ -322,17 +311,17 @@ export class BenchRun extends DurableObject {
     const tasks = this.rows().map(t => ({idx: t.idx, task_id: t.task_id, digest: t.digest, format: t.format, language: t.language, entry: t.entry, status: t.status,
       attempt: t.attempt, room: t.room, room_deleted: !!t.room && purged.has(t.room), outcome: t.outcome, once: t.once || null, rounds: t.rounds || 0, detail: t.detail || '', wall_ms: t.wall_ms,
       tokens: t.tokens, prompt_tokens: t.prompt_tokens, completion_tokens: t.completion_tokens, model_calls: t.model_calls, container_ms: t.container_ms}));
-    return {...this.head(), aggregate: aggregate(tasks, {feedback: this.get('feedback', BENCH_DEFAULTS.feedback)}), tasks};
+    return {...this.head(), aggregate: aggregate(tasks), tasks};
   }
   head() {
-    return Object.fromEntries(['id', 'label', 'status', 'created_at', 'finished_at', 'settings', 'concurrency', 'concurrency_asked', 'executors', 'budget', 'limit', 'task_timeout_ms', 'keep_rooms', 'feedback', 'dataset'].map(k => [k, this.get(k)]));
+    return Object.fromEntries(['id', 'label', 'status', 'created_at', 'finished_at', 'settings', 'concurrency', 'concurrency_asked', 'executors', 'budget', 'limit', 'keep_rooms', 'dataset'].map(k => [k, this.get(k)]));
   }
   // The run's line in the index.
   async publish() {
     const index = this.index();
     if (!index || this.get('status') === 'deleting') return;
     const {dataset, ...head} = this.head();
-    try { await index.register({...head, dataset: {source: dataset?.source, digest: dataset?.digest}, aggregate: aggregate(this.rows(), {feedback: head.feedback || BENCH_DEFAULTS.feedback})}); } catch {}
+    try { await index.register({...head, dataset: {source: dataset?.source, digest: dataset?.digest}, aggregate: aggregate(this.rows())}); } catch {}
   }
 
   // ---------------------------------------------------------------- the index ('index')
@@ -353,7 +342,7 @@ export class BenchRun extends DurableObject {
 // the box's whole observation of a failed grading (what it says failed, then
 // the exit, stdout and stderr it reports), the complaint the room gets.
 export async function gradeBundle(env, grader, files) {
-  if (!grader?.check) return {infrastructure: 'the task has no grader'};
+  if (!grader?.check) return {infrastructure: grader?.unrunnable || 'the task has no grader'};
   if (!env?.BOXES) return {infrastructure: 'BOXES binding unavailable: the grader runs only in a fresh box with the internet off'};
   let snapshot;
   try { snapshot = validateBoxFiles(files); } catch (e) { return {passed: false, detail: `the shipped files cannot be carried: ${e?.message || e}`}; }
@@ -370,7 +359,7 @@ export async function gradeBundle(env, grader, files) {
 // ---------------------------------------------------------------- /api/bench
 // Behind the APP_TOKEN check in src/index.js. deps: normalizeRoomSettings and
 // normalizeTurnBudget (from src/index.js, which imports this module).
-//   POST   /api/bench          {dataset, limit?, format?, settings?, concurrency?, budget?, label?, task_timeout_minutes?, keep_rooms?, feedback?}: start
+//   POST   /api/bench          {dataset, limit?, format?, settings?, concurrency?, budget?, label?, keep_rooms?}: start
 //   GET    /api/bench          the runs;  GET /api/bench?id=  one run with its tasks
 //   GET    /api/bench/compare?a=&b=  two runs on their shared tasks
 //   POST   /api/bench/stop {id},  POST /api/bench/resume {id}
@@ -394,23 +383,20 @@ export async function benchRoute(request, env, url, payload, {normalizeRoomSetti
       return stub ? answer(await stub.status()) : json({error: 'Invalid benchmark id'}, 400);
     }
     if (path === '/api/bench' && method === 'POST') {
-      let settings, budget, concurrency, limit, timeout;
+      let settings, budget, concurrency, limit;
       try {
         settings = normalizeRoomSettings({...(payload.settings && typeof payload.settings === 'object' ? payload.settings : {}), pipeline: 'v8'});
         budget = normalizeTurnBudget(payload.budget ?? BENCH_DEFAULTS.budget);
         concurrency = int(payload.concurrency, BENCH_LIMITS.concurrency, BENCH_DEFAULTS.concurrency, 'concurrency');
         limit = int(payload.limit, [1, BENCH_LIMITS.maxTasks], BENCH_DEFAULTS.limit, 'limit');
-        const minutes = int(payload.task_timeout_minutes, [1, 360], null, 'task timeout (minutes)');
-        timeout = minutes ? minutes * 60_000 : BENCH_DEFAULTS.task_timeout_ms;
         if (payload.keep_rooms !== undefined && !KEEP_ROOMS.includes(payload.keep_rooms)) throw new RangeError(`Invalid keep_rooms: expected ${KEEP_ROOMS.join(', ')}`);
-        if (payload.feedback !== undefined && !FEEDBACK.includes(payload.feedback)) throw new RangeError(`Invalid feedback: expected ${FEEDBACK.join(' or ')}`);
       } catch (e) { return json({error: clip(e?.message || e)}, 400); }
       const dataset = payload.dataset;
       if (!dataset || (typeof dataset !== 'string' && typeof dataset !== 'object')) return json({error: 'dataset: give a URL or the JSON lines themselves'}, 400);
       const format = typeof payload.format === 'string' && payload.format && payload.format !== 'auto' ? payload.format : null;
       const id = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
       const r = await run(id).begin({id, label: typeof payload.label === 'string' ? payload.label : '', dataset, limit, format, settings, concurrency, budget,
-        task_timeout_ms: timeout, keep_rooms: payload.keep_rooms ?? BENCH_DEFAULTS.keep_rooms, feedback: payload.feedback ?? BENCH_DEFAULTS.feedback, allow: env.FETCH_ALLOW, selfHosts: [url.host]});
+        keep_rooms: payload.keep_rooms ?? BENCH_DEFAULTS.keep_rooms, allow: env.FETCH_ALLOW, selfHosts: [url.host]});
       return json(r, r?.error ? 400 : 200);
     }
     if (path === '/api/bench/compare' && method === 'GET') {

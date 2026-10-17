@@ -16,6 +16,7 @@ import {lintRequests, crashAt, reopen} from './helpers/levels.js';
 import {SOURCE_CLAUSE, SOURCE_LABEL, chunkText} from '../src/fetcher.js';
 import {BASE_LABEL, MESSAGES} from '../src/prompts.js';
 import {normalizeBase, narrowRefs, keepBaseFiles, summariesFor, chunksFor, baseFromApp, loadBase} from '../src/room-inputs.js';
+import {STORE_ROW_BYTES} from '../src/base.js';
 import {splitterState, splitterCall} from '../src/splitter.js';
 // After helpers/room.js has registered the cloudflare: loader.
 const {default: worker} = await import('../src/index.js');
@@ -114,20 +115,21 @@ test('base: owner/name or a github.com URL, or a room id; anything else is refus
     assert.ok(normalizeBase(bad).error, JSON.stringify(bad));
 });
 
-test('base files: built text within 400 files and 2 MB, at any path inside the box\'s folder; the rest is carried untouched; the runtime\'s paths and case twins are not carried', () => {
+test('base files: every text file, whole, at any path inside the box\'s folder (no count or size of the runtime\'s); binaries are carried untouched; the runtime\'s paths and case twins are not carried', () => {
   const t = (path, text, mode = 0o644) => ({path, text, mode});
   const kept = keepBaseFiles([t('README.md', '# x\n'), t('.recursive/RUN.md', 'notes'), t('glue/index.js', 'x'), t('memory/public.json', '{}'), t('a b.txt', 'x'),
     t('.github/workflows/ci.yml', 'on: push'), t('.gitignore', 'node_modules\n'), t('data.bin', 'a\u0000b'), t('big.txt', 'x'.repeat(300 * 1024)), t('bin/run.sh', 'echo hi\n', 0o755),
     t('readme.md', 'a twin\n'), {path: 'logo.png', bytes: new Uint8Array([1, 2, 3]), mode: 0o644, reason: 'binary'}]);
-  assert.deepEqual([...kept.files.keys()], ['.github/workflows/ci.yml', '.gitignore', 'README.md', 'a b.txt', 'bin/run.sh', 'memory/public.json']);
+  assert.deepEqual([...kept.files.keys()], ['.github/workflows/ci.yml', '.gitignore', 'README.md', 'a b.txt', 'big.txt', 'bin/run.sh', 'memory/public.json']);
   assert.equal(kept.modes.get('bin/run.sh'), 0o755);
-  assert.deepEqual(kept.passthrough.map(p => [p.path, p.reason]), [['big.txt', 'too large'], ['data.bin', 'binary'], ['logo.png', 'binary']]);
+  assert.deepEqual(kept.passthrough.map(p => [p.path, p.reason]), [['data.bin', 'binary'], ['logo.png', 'binary']]);
   assert.deepEqual(kept.not_carried.map(s => [s.path, s.reason]), [['.recursive/RUN.md', 'the runtime writes this path for each run'], ['glue/index.js', 'the runtime writes this path for each run'],
     ['readme.md', 'the same path as README.md apart from letter case']]);
   const many = keepBaseFiles(Array.from({length: 410}, (_, i) => t(`f${String(i).padStart(3, '0')}.txt`, 'x\n')));
-  assert.deepEqual([many.files.size, many.passthrough.length, many.skipped_count], [400, 10, 0]);
-  const over = keepBaseFiles(Array.from({length: 410}, (_, i) => t(`f${String(i).padStart(3, '0')}.txt`, 'x\n')), {passMaxFiles: 4});
-  assert.deepEqual([over.passthrough.length, over.skipped_count], [4, 6]);
+  assert.deepEqual([many.files.size, many.passthrough.length, many.skipped_count], [410, 0, 0]);
+  // Only what one storage row cannot hold (Cloudflare's 2 MB) is left out, and listed.
+  const huge = keepBaseFiles([t('huge.json', 'q'.repeat(STORE_ROW_BYTES + 1)), t('ok.txt', 'x')]);
+  assert.deepEqual([[...huge.files.keys()], huge.skipped], [['ok.txt'], [{path: 'huge.json', reason: `larger than one storage row holds (${STORE_ROW_BYTES} bytes)`}]]);
   // A room's result: its files as text, and the files it carried come back as bytes.
   const app = baseFromApp({kind: 'levels', files: [{path: '.recursive/RUN.md', content: 'r'}, {path: 'a.txt', content: 'a'},
     {path: 'logo.png', content_base64: 'AQID', mode: '100644', passthrough: true, reason: 'binary'}]});
@@ -153,7 +155,7 @@ test('refs: a child keeps only refs its parent holds; a bare source id cites eve
   assert.deepEqual(out.map(c => [c.ref, c.excerpt]), [['S1#1', chunks[0].text], ['S1#2', chunks[1].text]]);
 });
 
-test('loadBase from a fake GitHub tarball: no token, the digest names the files; a repo that cannot be read is an error', async () => {
+test('loadBase from a fake GitHub tarball: no token; the digest names the base (its files and contents); a repo that cannot be read is an error', async () => {
   const fetch = fakeFetch(repoRoutes());
   const r = await loadBase({repo: 'https://github.com/acme-example/widget'}, {fetch});
   assert.equal(r.error, undefined);
@@ -161,8 +163,8 @@ test('loadBase from a fake GitHub tarball: no token, the digest names the files;
   assert.equal(r.meta.kind, 'repo');
   assert.equal(r.meta.ref, 'main');
   assert.equal(r.meta.resolved_sha, SHA);
-  assert.match(r.meta.digest, /## manifest package\.json/);
-  assert.match(r.meta.digest, /src\/shout\.js {2}\d+/);
+  assert.match(r.meta.digest, /^[0-9a-f]{64}$/);
+  assert.equal((await loadBase({repo: 'https://github.com/acme-example/widget'}, {fetch: fakeFetch(repoRoutes())})).meta.digest, r.meta.digest);
   for (const c of fetch.calls) { const h = headersOf(c.init); assert.equal(h.authorization, undefined); assert.equal(h.cookie, undefined); }
   const missing = await loadBase({repo: 'https://github.com/acme-example/absent'}, {fetch});
   assert.match(missing.error, /^The repo could not be read: base_refused: repo lookup answered 404/);
@@ -277,7 +279,7 @@ async function readmeOnBase(opts = {}) {
   return {...r, fetch};
 }
 
-test('README on a base repo: the splitter reads the base\'s digest; a file a worker writes that its contracts do not place stays in its own folder, so the base ships as it was; the judge passes, and the export is the base plus the README', async () => {
+test('README on a base repo: the splitter sees every base file; a file a worker writes that its contracts do not place stays in its own folder, so the base ships as it was; the judge passes, and the export is the base plus the README', async () => {
   const {room, calls, fetch} = await readmeOnBase();
   assert.equal(room.get('status'), 'complete', trace(room));
   assert.ok(allPass(room));
@@ -291,11 +293,13 @@ test('README on a base repo: the splitter reads the base\'s digest; a file a wor
   const meta = room.read('base', null);
   assert.deepEqual([meta.kind, meta.source, meta.ref, meta.resolved_sha, meta.files], ['repo', 'https://github.com/acme-example/widget', 'main', SHA, 3]);
   assert.match(events(room, 'base_loaded')[0].body, /^Starts from https:\/\/github\.com\/acme-example\/widget at main \(0123456789ab\): 3 file\(s\)/);
-  assert.match(meta.digest, /bin\/widget\.js/);
-  // The splitter read the digest as existing_files, quoted and labelled beside the base note; so did the worker.
-  assert.deepEqual(calls.split[0].existing_files, {label: BASE_LABEL, digest: meta.digest});
+  assert.match(meta.digest, /^[0-9a-f]{64}$/);
+  // The splitter saw every base file as existing_files, by path and size, labelled beside the base note, with nothing summarised or left out by the runtime; so did the worker.
+  // (Owner 2026-10-16 05:39: "They have commands they can run, things they can see ... they have their world that exists.")
+  const whole = {label: BASE_LABEL, files: Object.keys(BASE_FILES).sort().map(path => ({path, bytes: Buffer.byteLength(BASE_FILES[path])}))};
+  assert.deepEqual(calls.split[0].existing_files, whole);
   assert.equal(calls.split[0].base_note, MESSAGES.base_note());
-  assert.deepEqual(calls.leaf[0].world.existing_files, {label: BASE_LABEL, digest: meta.digest});
+  assert.deepEqual(calls.leaf[0].world.existing_files, whole);
   assert.equal(calls.leaf[0].world.base_note, MESSAGES.base_note());
   // The worker's own src/shout.js and Src/Shout.js, which no contract of its places, are in its files and reach no one else.
   const w = theWorker(room);
@@ -350,7 +354,7 @@ test('previous result: a new run in the same room starts from what the last one 
   assert.deepEqual(room.db().exec('SELECT path FROM base_files ORDER BY path').toArray().map(r => r.path).filter(p => !p.startsWith('components/')), previous.map(f => f.path).filter(p => !p.startsWith('components/')).sort());
   assert.equal(room.read('base', null).kind, 'room');
   assert.equal(room.read('base', null).passed, true);
-  assert.match(second.calls.split[0].existing_files.digest, /README\.md/);
+  assert.equal(second.calls.split[0].existing_files.files.find(f => f.path === 'README.md').bytes, Buffer.byteLength(GOOD_README));
   // The worker's contract names README.md, a base file the person granted: it read it quoted (base_files, never as its own) and replaced it.
   const view = second.calls.leaf[0];
   assert.deepEqual(view.world.base_files, [{path: 'README.md', label: BASE_LABEL, content: GOOD_README}]);
@@ -456,7 +460,7 @@ test('S8b review M1: base text reaches every model quoted and labelled; a level 
   // The level is admitted with both base files on it, marked; the pieces placing them wait, and the room waits for the person. Clef's p is a review beside each.
   assert.equal(room.snapshot().pause?.kind, 'base_confirm', trace(room));
   assert.deepEqual(room.snapshot().base_pending, [{path: 'src/shout.js', p: 0.1, named: false}, {path: 'bin/widget.js', p: 0.1, named: false}]);
-  assert.deepEqual(calls.split[0].existing_files, {label: BASE_LABEL, digest: room.read('base', null).digest});
+  assert.deepEqual(calls.split[0].existing_files, {label: BASE_LABEL, files: Object.keys(BASE_FILES).sort().map(path => ({path, bytes: Buffer.byteLength(BASE_FILES[path])}))});
   assert.equal(calls.split[0].base_note, MESSAGES.base_note());
   const m = room.roomManager(), [notesPart, shoutPart, helpPart] = kids(room, m);
   assert.deepEqual(room.promisedOf(helpPart.id).map(c => c.path), ['HELP.md', 'bin/widget.js'], 'nothing is taken off the piece');

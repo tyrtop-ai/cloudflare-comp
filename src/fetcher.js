@@ -15,12 +15,12 @@ export const DEFAULT_ALLOW = Object.freeze([
 ]);
 export const FETCH_ALLOW_VAR = 'FETCH_ALLOW';
 export const USER_AGENT = 'recursive-control-plane-fetcher/1 (+no-credentials)';
+// A linked page is read whole, and every link the goal writes is read: no
+// count or size is set on them. A caller that fetches something else (a
+// dataset, src/bench.js) passes its own maxBytes.
 export const LIMITS = Object.freeze({
-  maxBytes: 512 * 1024,     // per URL, counted after decompression
-  roomBytes: 2 * 1024 * 1024, // all sources of one goal together
   timeoutMs: 10_000,        // whole fetch: every hop plus the body
-  maxHops: 3,               // redirects followed, each one rechecked
-  maxUrls: 8
+  maxHops: 3                // redirects followed, each one rechecked
 });
 // Content types a source may have. Archives are only for the repo fetcher.
 const TEXT_TYPES = /^(?:text\/[a-z0-9.+-]+|application\/(?:json|x-ndjson|jsonl|ld\+json|xhtml\+xml|xml|markdown|x-markdown|[a-z0-9.-]+\+json|vnd\.github(?:\.v3)?(?:\.raw)?(?:\+json)?))$/;
@@ -137,7 +137,7 @@ function trimUrl(m) {
   return m.slice(0, end);
 }
 // URLs written literally in the goal, in order, without trailing punctuation.
-export function goalUrls(goal, max = LIMITS.maxUrls) {
+export function goalUrls(goal, max = Infinity) {
   const out = [];
   for (const raw of String(goal ?? '').match(/\bhttps?:\/\/[^\s<>"'`]+/gi) || []) {
     const m = trimUrl(raw);
@@ -573,8 +573,9 @@ async function sha256(bytes) {
 // `final_url` is the normalised href of the last hop. `urls` may pass the
 // goal's already-extracted URLs; `redact` is an extra redaction step for
 // error text. `wire_bytes` counts what was read from the network (before
-// this module inflates it), even when the fetch then fails.
-export async function fetchSource(goal, url, {fetch, policy = fetchPolicy(), maxBytes = policy.maxBytes, urls = null, redact = t => t} = {}) {
+// this module inflates it), even when the fetch then fails. The body is
+// read whole unless the policy or the caller sets maxBytes.
+export async function fetchSource(goal, url, {fetch, policy = fetchPolicy(), maxBytes = policy.maxBytes ?? Infinity, urls = null, redact = t => t} = {}) {
   const result = {url: String(url), final_url: null, status: null, content_type: null, title: '', text: '',
     bytes: 0, wire_bytes: 0, truncated: false, sha256: null, error: null};
   if (!(urls || goalUrls(goal, Infinity)).includes(result.url)) return {...result, error: 'source_refused: only URLs written in the goal are fetched'};
@@ -609,18 +610,10 @@ export async function fetchSource(goal, url, {fetch, policy = fetchPolicy(), max
   return result;
 }
 
-// Every URL in the goal, ids S1…Sn, under one total byte budget. Each source
-// is charged the larger of its decompressed and its wire bytes, so bodies
-// that inflate to little still use up the budget (and the CPU it bounds).
+// Every URL in the goal, ids S1…Sn, each read whole.
 export async function fetchGoalSources(goal, {fetch, policy = fetchPolicy(), redact} = {}) {
-  const out = [], urls = goalUrls(goal, policy.maxUrls);
-  let left = policy.roomBytes;
-  for (const url of urls) {
-    const r = left > 0 || urlRefusal(url, policy) ? await fetchSource(goal, url, {fetch, policy, urls, redact, maxBytes: Math.min(policy.maxBytes, left)})
-      : {url, final_url: null, title: '', text: '', bytes: 0, wire_bytes: 0, truncated: false, error: 'source_refused: the room byte budget is spent'};
-    left -= Math.max(r.bytes, r.wire_bytes);
-    out.push({id: `S${out.length + 1}`, ...r});
-  }
+  const out = [], urls = goalUrls(goal);
+  for (const url of urls) out.push({id: `S${out.length + 1}`, ...await fetchSource(goal, url, {fetch, policy, urls, redact})});
   return out;
 }
 

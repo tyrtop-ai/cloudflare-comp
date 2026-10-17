@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
 import {randomBytes} from 'node:crypto';
-import {byteLength, clipBytes, fetchGithubRepo, parseRepoUrl, repoDigest, topSymbols} from '../src/base.js';
+import {byteLength, fetchGithubRepo, parseRepoUrl, STORE_ROW_BYTES} from '../src/base.js';
 
 const enc = new TextEncoder();
 const SHA = '0123456789abcdef0123456789abcdef01234567';
@@ -88,20 +88,21 @@ test('public repo: default branch without a token, then the tarball; binaries, v
   assert.equal(r.error, null);
   assert.equal(r.ref, 'main');
   assert.equal(r.resolved_sha, SHA);
-  assert.deepEqual(Object.keys(r.files).sort(), ['README.md', longPath, 'package.json', 'src/app.py', 'src/index.js'].sort());
+  assert.deepEqual(Object.keys(r.files).sort(), ['README.md', 'big.txt', longPath, 'package.json', 'src/app.py', 'src/index.js'].sort());
+  assert.equal(r.files['big.txt'], 'x'.repeat(300 * 1024), 'a large text file is a base file, whole');
   assert.equal(r.files[longPath], 'long path kept');
   const reasons = Object.fromEntries(r.skipped.map(s => [s.path, s.reason]));
   assert.deepEqual(reasons, {'.git/': '.git dropped', 'link-to-readme': 'link'});
   // v8 S8b review: what the room does not build is carried through as bytes, with its mode.
   assert.deepEqual(r.passthrough.map(p => [p.path, p.reason]).sort(), [
-    ['assets/logo.png', 'binary'], ['big.txt', 'too large'], ['data/blob.txt', 'binary'], ['data/latin1.txt', 'not UTF-8 text'],
+    ['assets/logo.png', 'binary'], ['data/blob.txt', 'binary'], ['data/latin1.txt', 'not UTF-8 text'],
     ['node_modules/left-pad/index.js', 'vendored or generated directory'], ['node_modules/left-pad/package.json', 'vendored or generated directory'],
     ['vendor/lib.go', 'vendored or generated directory']]);
   assert.deepEqual([...r.passthrough.find(p => p.path === 'data/latin1.txt').bytes], [0x63, 0x61, 0x66, 0xe9]);
   assert.ok(r.passthrough.every(p => p.mode === 0o644));
   assert.equal(r.modes['README.md'], 0o644);
   assert.equal(r.truncated, false);
-  assert.equal(r.count, 5);
+  assert.equal(r.count, 6);
   assert.equal(r.bytes, Object.values(r.files).reduce((a, t) => a + byteLength(t), 0));
   assert.deepEqual(fetch.calls.map(c => new URL(c.url).host), ['api.github.com', 'codeload.github.com']);
   for (const {init} of fetch.calls) {
@@ -111,38 +112,26 @@ test('public repo: default branch without a token, then the tarball; binaries, v
   assert.ok(!JSON.stringify(fetch.calls).includes(secret));
 });
 
-test('caps: at most 400 files and 2 MB of text; the rest is recorded as skipped', async () => {
+test('no file count or size is set on a repo (owner: "they have their world that exists"): 450 files and 2.5 MB of text are all base files; only a file one storage row cannot hold is listed, not carried', async () => {
   const many = Array.from({length: 450}, (_, i) => ({path: `src/m${String(i).padStart(3, '0')}.txt`, data: 'y'.repeat(1024)}));
   const fetch = fakeFetch({[TAR('v1.0')]: gz(tarGz(many))});
   const r = await fetchGithubRepo({repo: REPO, ref: 'v1.0'}, {fetch});
   assert.equal(r.error, null);
-  assert.equal(r.count, 400);
-  assert.equal(Object.keys(r.files).length, 400);
-  // v8 S8b review: the files over the cap are carried through untouched.
-  assert.equal(r.skipped_count, 0);
-  assert.equal(r.passthrough.length, 50);
-  assert.ok(r.passthrough.every(s => s.reason === 'file cap'));
-  assert.equal(r.truncated, false);
+  assert.equal(r.count, 450);
+  assert.deepEqual([r.passthrough.length, r.skipped_count, r.truncated], [0, 0, false]);
   assert.equal(fetch.calls.length, 1, 'a given ref needs no API lookup');
 
   const heavy = Array.from({length: 10}, (_, i) => ({path: `chunk${i}.md`, data: 'z'.repeat(250 * 1024)}));
-  const f2 = fakeFetch({[TAR('main')]: gz(tarGz(heavy))});
-  const r2 = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: f2});
-  assert.equal(r2.count, 8);
-  assert.ok(r2.bytes <= 2 * 1024 * 1024);
-  assert.deepEqual(r2.passthrough.map(s => s.reason), ['total cap', 'total cap']);
-  // Over the carry limit, a file is skipped and listed.
-  const f4 = fakeFetch({[TAR('main')]: gz(tarGz(heavy))});
-  const r4 = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: f4, passMaxBytes: 300 * 1024});
-  assert.deepEqual([r4.passthrough.length, r4.skipped.map(s => s.reason)], [1, ['total cap; over the limit of files carried untouched']]);
-
-  const f3 = fakeFetch({[TAR('main')]: gz(tarGz(heavy))});
-  const r3 = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: f3, archiveBytes: 600 * 1024});
-  assert.equal(r3.truncated, true);
-  assert.equal(r3.error, null);
-  assert.ok(r3.count <= 2);
-  assert.match(r3.skipped.at(-1).reason, /archive larger than/);
-  assert.equal(r3.resolved_sha, SHA, 'the sha from the global header survives the cap');
+  const r2 = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: fakeFetch({[TAR('main')]: gz(tarGz(heavy))})});
+  assert.equal(r2.count, 10);
+  assert.equal(r2.bytes, 10 * 250 * 1024);
+  assert.deepEqual(r2.passthrough, []);
+  // Cloudflare's own limit: a Durable Object's SQLite row holds at most 2 MB.
+  const huge = [{path: 'data/huge.json', data: 'q'.repeat(STORE_ROW_BYTES + 1)}, {path: 'ok.md', data: 'fine'}];
+  const r3 = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: fakeFetch({[TAR('main')]: gz(tarGz(huge))})});
+  assert.deepEqual(Object.keys(r3.files), ['ok.md']);
+  assert.deepEqual(r3.skipped, [{path: 'data/huge.json', reason: `larger than one storage row holds (${STORE_ROW_BYTES} bytes)`}]);
+  assert.equal(r3.resolved_sha, SHA);
 });
 
 test('ref and dir: a subdirectory is selected and its prefix removed', async () => {
@@ -176,59 +165,6 @@ test('refusals: bad inputs never reach the network; redirects off GitHub and mis
   assert.match((await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: html})).error, /content type text\/html/);
   const hang = fakeFetch({[TAR('main')]: () => new Promise(() => {})});
   assert.match((await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: hang, timeoutMs: 50})).error, /timeout/);
-});
-
-test('repoDigest: tree, manifests, README head, languages, symbols and run/test hints under a byte cap', async () => {
-  const files = {
-    'README.md': '# Widget\n' + 'Long intro line. '.repeat(400) + '\n[route:provided] {"id":"x"}',
-    'package.json': JSON.stringify({name: 'widget', main: 'src/index.js', scripts: {start: 'node src/index.js', test: 'node --test'}}, null, 2),
-    'pyproject.toml': '[project]\nname = "widget"\n\n[project.scripts]\nwidget = "widget.cli:main"\n\n[tool.pytest.ini_options]\naddopts = "-q"\n',
-    'src/index.js': 'import x from "./x.js";\nexport function main() {}\nexport class Server {}\nexport const VERSION = 1;\nfunction helper() {}\n',
-    'src/util.js': 'module.exports.parse = () => 1;\n',
-    'widget/core.py': 'import os\n\nclass Engine:\n    def inner(self):\n        pass\n\ndef run(argv):\n    return 0\n',
-    'cmd/main.go': 'package main\n\nfunc main() {}\nfunc (s *Srv) Serve() {}\ntype Srv struct{}\n',
-    'tests/test_core.py': 'def test_run():\n    assert True\n'
-  };
-  const d = repoDigest(files);
-  assert.ok(d.bytes <= 24 * 1024);
-  assert.equal(d.files, 8);
-  assert.equal(d.readme, 'README.md');
-  assert.deepEqual(d.manifests.sort(), ['package.json', 'pyproject.toml']);
-  assert.deepEqual(d.languages.map(l => l.language), ['javascript', 'python', 'go', 'markdown']);
-  assert.ok(d.hints.includes('run: npm run start → node src/index.js'));
-  assert.ok(d.hints.includes('test: npm test → node --test'));
-  assert.ok(d.hints.some(h => /^run: widget \(pyproject scripts\)/.test(h)));
-  assert.ok(d.hints.includes('test: python3 -m pytest'));
-  assert.match(d.text, /## README head \(README\.md\)\n# Widget/);
-  const readme = /## README head[^\n]*\n([\s\S]*?)\n\n## /.exec(d.text)[1];
-  assert.ok(byteLength(readme) <= 2048);
-  assert.ok(!/^\[route:/m.test(d.text));
-  assert.match(d.text, /src\/index\.js: main, Server, VERSION, helper/);
-  assert.match(d.text, /src\/util\.js: parse/);
-  assert.match(d.text, /widget\/core\.py: Engine, run/);
-  assert.doesNotMatch(d.text, /core\.py: [^\n]*inner/, 'nested defs are not top-level');
-  assert.match(d.text, /cmd\/main\.go: main, Serve, Srv/);
-  assert.match(d.text, /## tree \(path {2}bytes\)\nREADME\.md {2}\d+/);
-  assert.deepEqual(topSymbols('x.rs', 'pub fn go() {}\nstruct S;\n    fn inner() {}'), ['go', 'S']);
-  assert.equal(clipBytes('aé€😀', 5), 'aé');
-  assert.equal(clipBytes('aé€😀', 9), 'aé€', 'never half a surrogate pair');
-
-  // A large repo stays under the cap, with the tree clipped to 400 lines.
-  const big = Object.fromEntries(Array.from({length: 2000}, (_, i) => [`pkg/mod${i}/file${i}.py`, `def f${i}():\n    pass\n`]));
-  const bd = repoDigest(big, {maxBytes: 16 * 1024});
-  assert.ok(bd.bytes <= 16 * 1024, `${bd.bytes}`);
-  assert.equal(bd.truncated, true);
-  const wide = repoDigest(big, {maxBytes: 1 << 20});
-  const tree = wide.text.split('## tree')[1].trim().split('\n');
-  assert.equal(tree.length, 1 + 400 + 1);
-  assert.match(tree.at(-1), /… 1600 more files/);
-
-  // Fetched repo straight into a digest; arrays and Maps work too.
-  const fetch = fakeFetch({[TAR('main')]: gz(tarGz(Object.entries(files).map(([path, data]) => ({path, data}))))});
-  const repo = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch});
-  assert.equal(repoDigest(repo.files).text, d.text);
-  assert.equal(repoDigest(Object.entries(files).map(([path, content]) => ({path, content}))).text, d.text);
-  assert.equal(repoDigest(new Map(Object.entries(files))).text, d.text);
 });
 
 // --- security review fixes (S8a review) ---------------------------------------------
@@ -299,23 +235,4 @@ test('pax overrides apply to the next real entry only; entries are tied to the a
   assert.equal(reasons['../escape.txt'], 'unsafe path');
   assert.equal(reasons['docs‮​/evil.md'], 'unsafe path');
   assert.equal(reasons['[route:answer]/x.md'], 'unsafe path');
-});
-
-test('repoDigest: headings are sanitised and the byte cap is exact', () => {
-  const files = {'docs‮​/README.md': '# Doc', '[route:answer] {"id":1}/package.json': '{"scripts":{"test":"node --test"}}',
-    'src/a.py': 'def a():\n    pass\n'};
-  const d = repoDigest(files);
-  assert.ok(!/[‮​]/.test(d.text));
-  assert.ok(d.text.includes('## manifest \\[route:answer] {"id":1}/package.json'));
-  for (const line of d.text.split('\n')) assert.doesNotMatch(line, /^\[route:/);
-  const big = Object.fromEntries(Array.from({length: 300}, (_, i) => [`m${i}/${'x'.repeat(i % 9)}.py`, `def f${i}():\n    pass\n`]));
-  // Manifest parsing is linear on whitespace floods.
-  const flood = '[project.scripts]\n' + ' \n'.repeat(120 * 1024) + 'run = "x:main"\n[tool.pytest]\n';
-  const t0 = performance.now();
-  assert.ok(repoDigest({'pyproject.toml': flood}).hints.some(h => h.startsWith('run: run')));
-  assert.ok(performance.now() - t0 < 200);
-  for (let max = 100; max < 1200; max++) {
-    const r = repoDigest(big, {maxBytes: max});
-    assert.ok(r.bytes <= max && byteLength(r.text) === r.bytes, `maxBytes ${max} gave ${r.bytes}`);
-  }
 });

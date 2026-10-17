@@ -11,7 +11,6 @@ import { freshBox, compileBoxSpec, BOX_COLD_MS } from './box.js';
 import { BoxPrewarm, levelBoxSpec } from './box-prewarm.js';
 export { BenchRun } from './bench-run.js';
 import { benchRoute } from './bench-run.js';
-import { INFRA_ERROR } from './bench.js';
 import { clip, isId, isRowId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
 import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, judgeRequirement, sourceModel, vetBaseChanges, pieceReach, PIECE_REACH_BAR, reviewLevel, chooseCall } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
@@ -40,7 +39,7 @@ import { inheritServes, otherName, kindOf as contractKind, contractLine, gateLin
 import { branchDirectory, packageDirectory, packagePath, partsRoot, PARTS_ROOT } from './assembly.js';
 import { placeChecks, checkEntries, installedModule, checkUses, importClosure, textHash } from './piece.js';
 import { zipFiles } from './zip.js';
-import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, namedIn } from './room-inputs.js';
+import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, namedIn, existingFiles } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
 import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer } from './broker.js';
 import { normalizePackages, installedPackages, heldByName, stdlibRow, piecePackages, packageLine } from './packages.js';
@@ -665,6 +664,8 @@ export class ControlRoom extends DurableObject {
   // Whether a row holds the existing project (the room gives the manager it
   // creates the base and its digest, base_digest), and the digest it reads.
   holdsBase(id) { return this.get(`base_digest:${id}`,null)!==null; }
+  // The project the room started from, as an agent that holds it sees it: every base file by path and size, and the files carried untouched by path.
+  existingFiles() { return existingFiles(query(this.db(),'SELECT path,LENGTH(CAST(content AS BLOB)) AS bytes FROM base_files ORDER BY path'),query(this.db(),'SELECT path,reason FROM base_passthrough ORDER BY path'),BASE_LABEL); }
   heldDigest(id) { return this.holdsBase(id)?this.read(`base_digest:${id}`,null)??this.read('base',null)?.digest??null:null; }
   allRefs() { return query(this.db(),'SELECT ref FROM source_chunks ORDER BY CAST(SUBSTR(source,2) AS INTEGER),n').map(r=>r.ref); }
   assignRefs(child, parent, raw) {
@@ -705,7 +706,7 @@ export class ControlRoom extends DurableObject {
       r.id,r.url,r.final_url,r.title,r.sha256,r.bytes,r.truncated?1:0,r.error,r.status,r.content_type,r.summary?JSON.stringify(r.summary):null,Date.now());
     for(const c of chunks)this.db().exec('INSERT INTO source_chunks(ref,source,n,text) VALUES (?,?,?,?) ON CONFLICT(ref) DO NOTHING',c.ref,c.source,c.n,c.text);
     this.set('sources_loaded','1');
-    if(rows.length)this.event('room','sources_read',clip(`The prompt's ${rows.length} link(s), in ${Date.now()-started} ms: ${rows.map(r=>r.error?`${r.id} not read (${r.error})`:`${r.id} ${r.title||r.url} (${r.bytes} bytes${r.truncated?', cut at the cap':''}, ${chunks.filter(c=>c.source===r.id).length} part(s))`).join('; ')}.`,1500));
+    if(rows.length)this.event('room','sources_read',clip(`The prompt's ${rows.length} link(s), in ${Date.now()-started} ms: ${rows.map(r=>r.error?`${r.id} not read (${r.error})`:`${r.id} ${r.title||r.url} (${r.bytes} bytes, ${chunks.filter(c=>c.source===r.id).length} part(s))`).join('; ')}.`,1500));
     return calls;
   }
   // v8 S6 review: what one reference is rendered from (useReferences): the
@@ -6919,14 +6920,10 @@ export class ControlRoom extends DurableObject {
     const t=query(db,"SELECT COUNT(*) AS calls,COALESCE(SUM(json_extract(attrs,'$.prompt_tokens')),0) AS prompt,COALESCE(SUM(json_extract(attrs,'$.completion_tokens')),0) AS completion FROM spans WHERE kind='model'")[0];
     const c=query(db,"SELECT COUNT(*) AS runs,COALESCE(SUM(end_ms-start_ms),0) AS ms FROM spans WHERE kind='container'")[0];
     const e=query(db,"SELECT MIN(CASE WHEN kind='start' THEN ts END) AS started,MAX(ts) AS last FROM events")[0];
-    // Why a paused room stopped: the observer, agents stalled by three
-    // failures (platform ones if their last error says so), or the budget.
-    const errors=query(db,"SELECT actor,body FROM events WHERE kind='error' ORDER BY id").map(r=>({actor:r.actor,infra:INFRA_ERROR.test(r.body||'')}));
-    const stalled=Object.entries(this.read('failures',{})).filter(([,n])=>n>=3).map(([id])=>id);
+    // Why a paused room stopped: the observer, or the hold it is in.
     const last=query(db,"SELECT kind FROM events WHERE actor='system' AND kind IN ('stopped','paused','complete','failed','error','start','resume') ORDER BY id DESC LIMIT 1")[0]?.kind;
     return {status,busy:!!this.busy,pause:this.read('paused_state',null),
       compile_passed:!!this.read('compile_passed',null),stopped:last==='stopped',turns:query(db,"SELECT COUNT(*) AS n FROM events WHERE kind='dispatch'")[0].n,
-      infra_errors:errors.filter(x=>x.infra).length,stalled_infra:stalled.length>0&&stalled.every(id=>errors.filter(x=>x.actor===id).at(-1)?.infra),
       validations:this.validationRows().map(v=>v.id),validation_status:this.read('validation_status',{}),
       started_at:e.started??null,last_event_at:e.last??null,
       tokens:{calls:t.calls,prompt:t.prompt,completion:t.completion,total:t.prompt+t.completion},container_ms:c.ms,container_runs:c.runs,
@@ -8510,7 +8507,7 @@ export class ControlRoom extends DurableObject {
       ...(calls.length?{contracts_you_may_call:calls.map(({serves:_,...c})=>c)}:{}),
       box:{programs:this.boxPrograms(),toolchains:rows.map(r=>({id:r.id,extensions:r.extensions||[]}))},
       ...(packages.length?{your_packages:packages.map(p=>({name:p.name,...(p.provides?{provides:p.provides}:{})}))}:{}),
-      ...(typeof digest==='string'&&digest?{base_note:MESSAGES.base_note(),existing_files:{label:BASE_LABEL,digest}}:{}),
+      ...(typeof digest==='string'&&digest?{base_note:MESSAGES.base_note(),existing_files:this.existingFiles()}:{}),
       ...this.sourceInputs(id,'summaries'),
       max_pieces:max,
       ...(feedback?.reason?{previous_answer_problems:[feedback.reason],...(feedback.rejected?.length?{rejected:feedback.rejected}:{})}:{})};
@@ -9020,7 +9017,7 @@ export class ControlRoom extends DurableObject {
     const complaints=this.heldComplaints(id,inbox).map(c=>c.text);
     const answers=this.read(`fn_answers:${id}`,[]).map(a=>a.text),digest=this.heldDigest(id),base=this.baseFilesFor(id);
     const world={...this.availableView(id,answers),...(answers.length?{answers}:{}),...this.sourceInputs(id,'chunks'),
-      ...(digest||base.length?{base_note:MESSAGES.base_note(),...(digest?{existing_files:{label:BASE_LABEL,digest}}:{}),...(base.length?{base_files:base}:{})}:{})};
+      ...(digest||base.length?{base_note:MESSAGES.base_note(),...(digest?{existing_files:this.existingFiles()}:{}),...(base.length?{base_files:base}:{})}:{})};
     return {prompt,files,complaints,world};
   }
   // The complaints a worker was handed and has not answered with done: those

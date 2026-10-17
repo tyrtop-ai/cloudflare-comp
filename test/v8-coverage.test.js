@@ -145,11 +145,12 @@ test('exportsame: the export is byte for byte the bundle of the room\'s manager\
   assert.equal(r.room.read(`verified:${m.Root}`, null).digest, app.digest);
 });
 
-test('the base\'s files the box cannot hold (a binary, one past the box\'s bytes) ship, with no hold, and the export names them; a hidden path is a file like any other, in every box', {skip}, async () => {
+test('the base\'s files the box cannot hold (a binary) ship, with no hold, and the export names them; a file one storage row cannot hold (Cloudflare\'s 2 MB) is listed as not carried; a hidden path is a file like any other, in every box', {skip}, async () => {
   const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00, 0x01]).toString('base64');
   const r = await toolkit({base: {'logo.bin': {base64: bytes, reason: 'binary'}, '.pytest.ini': '[pytest]\naddopts = -x\n', 'big.txt': 'x'.repeat(4_194_200) + '\n', 'README.md': '# Base\n'}, budget: 80});
   const m = at(r.room), bundle = await r.room.bundleFiles(m.Root);
-  assert.deepEqual(bundle.unsent.map(u => u.path).sort(), ['big.txt', 'logo.bin']);
+  assert.deepEqual(bundle.unsent.map(u => u.path).sort(), ['logo.bin']);
+  assert.ok(r.room.read('base', null).skipped.some(x => x.path === 'big.txt' && /^larger than one storage row holds/.test(x.reason)));
   assert.equal(bundle.files.get('.pytest.ini'), '[pytest]\naddopts = -x\n', 'a hidden path is the project\'s file, in its bundle');
   // The room completes on what its final compiler observed: no hold for the person.
   assert.equal(r.room.read('paused_state', null), null, tail(r.room));
@@ -158,7 +159,8 @@ test('the base\'s files the box cannot hold (a binary, one past the box\'s bytes
   assert.ok(r.boxes.some(b => b.files['.pytest.ini'] === '[pytest]\naddopts = -x\n'), 'the box holds it');
   const app = await r.room.appFiles();
   assert.equal(app.passed, true);
-  assert.deepEqual([...app.unchecked].sort(), ['big.txt', 'logo.bin']);
+  assert.deepEqual([...app.unchecked].sort(), ['logo.bin']);
+  assert.ok(!app.files.some(f => f.path === 'big.txt'));
   assert.equal(app.files.find(f => f.path === 'logo.bin').content_base64, bytes);
 });
 

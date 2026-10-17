@@ -163,7 +163,7 @@
           <div class="bench-form">
             <label for="bench-url">Dataset URL <span class="faint">(a JSON lines file on raw.githubusercontent.com, or a datasets-server.huggingface.co rows URL)</span></label>
             <input id="bench-url" class="mono" spellcheck="false" autocomplete="off" placeholder="https://datasets-server.huggingface.co/rows?dataset=openai%2Fopenai_humaneval&amp;config=openai_humaneval&amp;split=test" />
-            <label for="bench-text">Or paste or upload JSON lines <span class="faint">(HumanEval, MBPP, MultiPL-E, or {"id", "prompt", "tests"})</span></label>
+            <label for="bench-text">Or paste or upload JSON lines <span class="faint">(HumanEval, MBPP, MultiPL-E in any language, or {"id", "language", "prompt", "tests"})</span></label>
             <textarea id="bench-text" class="mono bench-text" rows="3" spellcheck="false" placeholder='{"id": "t1", "language": "python", "prompt": "Write a function triple(n)…", "entry": "triple", "tests": "assert triple(2) == 6"}'></textarea>
             <input id="bench-file" type="file" accept=".jsonl,.json,.txt,application/json" aria-label="Upload a JSON lines file" />
             <div class="bench-row">
@@ -176,11 +176,6 @@
               <option value="failed">Keep the rooms that did not pass, delete the passed ones (default)</option>
               <option value="all">Keep every room</option>
               <option value="none">Delete every room once it is scored</option>
-            </select>
-            <label for="bench-feedback">Grading</label>
-            <select id="bench-feedback">
-              <option value="until_done" selected>Until done (default): a failed grading goes back to the room as a complaint, and the room goes on until a grading passes or its turn budget is spent</option>
-              <option value="once">Once (pass@1): the first grading is the result, and nothing goes back to the room, for a number comparable with published pass@1</option>
             </select>
             <p class="helper" id="bench-slots">Rooms at once is capped by the deployment's Container slots: each room builds on one executor of the run's pool.</p>
             <button class="primary" id="bench-start" title="Run the benchmark">Run benchmark <span>↗</span></button>

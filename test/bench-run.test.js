@@ -1,11 +1,11 @@
 // B1: the BenchRun Durable Object (src/bench-run.js) and /api/bench.
 // Scheduling with fake task rooms: concurrency, alarms, stop and resume,
-// timeouts, results and aggregates, the index, and the API's auth. The
-// grader runs on what a completed room ships, in the real build runner
-// behind fake boxes: feedback 'until_done' (the default) sends a failed one
-// back to the room as a complaint and grades again each time the room
-// completes, bounded by the room's own turn budget; 'once' scores that
-// first grading.
+// results and aggregates, the index, and the API's auth. The grader runs on
+// what a completed room ships, in the real build runner behind fake boxes:
+// a failed grading goes back to the room as a complaint, and the run grades
+// again each time the room completes, bounded by the room's own turn budget
+// (owner 2026-10-16 05:54: "it should go back until done, just like
+// anything else").
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Sql } from './helpers/room.js';
@@ -143,7 +143,6 @@ test('a run queues its tasks, starts at most `concurrency` rooms per tick, and k
   assert.deepEqual(done.tasks.map(t => t.rounds), [1, 1, 1, 0, 1]);
   assert.deepEqual([done.tasks[2].tokens, done.tasks[2].prompt_tokens, done.tasks[2].completion_tokens, done.tasks[2].model_calls, done.tasks[2].container_ms, done.tasks[2].wall_ms], [400, 300, 100, 3, 2500, 3000]);
   assert.equal(done.aggregate.pass_at_1, 3 / 5);
-  assert.equal(done.aggregate.feedback, 'until_done', 'the default: the grader\'s failures go back until done');
   assert.deepEqual(done.aggregate.until_done, {scored: 5, pass: 3, pass_rate: 3 / 5, mean_rounds_to_done: 1});
   assert.match(done.tasks[1].detail, /could not take the grader's complaint \(The room's turn budget is spent\.\)/);
   assert.equal(done.aggregate.tokens, 400);
@@ -183,18 +182,23 @@ test('stop stops the running rooms and starts nothing; resume runs their tasks a
   assert.equal(rooms.live(), 0);
 });
 
-test('a room past the task timeout is stopped and scored timeout; an unreachable room is an error after five polls; a refused start is an error', async () => {
+test('no wall clock ends a task: a room running for hours goes on; an unreachable room is an error after five polls; a refused start is an error', async () => {
   const {rooms, run} = benchEnv(), b = run();
-  await begin(b, {concurrency: 3, task_timeout_ms: 60_000});
+  await begin(b, {concurrency: 3});
   await b.alarm();
   rooms.rooms.get(taskRoom(ID, 1, 0)).broken = true;
   rooms.ns.getByName(taskRoom(ID, 3, 0));
   rooms.rooms.get(taskRoom(ID, 3, 0)).refuse = 'Unsupported Workers AI model';
-  b.db().exec('UPDATE tasks SET started_at=? WHERE idx=0', Date.now() - 61_000);
+  b.db().exec('UPDATE tasks SET started_at=? WHERE idx=0', Date.now() - 6 * 3600_000);
   await b.alarm();
   let s = b.status();
-  assert.equal(s.tasks[0].outcome, 'timeout');
-  assert.equal(rooms.rooms.get(taskRoom(ID, 0, 0)).stopped, 1);
+  assert.equal(s.tasks[0].status, 'running', 'only the room\'s own budget, a hold or Stop ends it');
+  assert.equal(rooms.rooms.get(taskRoom(ID, 0, 0)).stopped || 0, 0);
+  assert.ok(!('task_timeout_ms' in s));
+  rooms.end(taskRoom(ID, 0, 0), pass);
+  await b.alarm();
+  s = b.status();
+  assert.equal(s.tasks[0].outcome, 'pass');
   assert.equal(s.tasks[3].outcome, 'error');
   assert.match(s.tasks[3].detail, /did not start: Unsupported Workers AI model/);
   assert.equal(s.tasks[1].status, 'running');
@@ -202,7 +206,6 @@ test('a room past the task timeout is stopped and scored timeout; an unreachable
   s = b.status();
   assert.equal(s.tasks[1].outcome, 'error');
   assert.match(s.tasks[1].detail, /could not be read: room unreachable/);
-  assert.equal(s.aggregate.timeout, 1);
   assert.equal(s.aggregate.error, 2);
 });
 
@@ -431,15 +434,14 @@ test('wrangler.jsonc: BENCHES is bound to BenchRun (a sqlite export) and BENCH_E
 });
 
 // ------------------------------------------------------------------ feedback
-test('feedback "until_done" is the default: a failed grading goes back to the room\'s manager as a complaint, verbatim, the room runs again, and the task records its first grading (pass@1) and the gradings it took to pass', async () => {
-  assert.equal(BENCH_DEFAULTS.feedback, 'until_done');
+test('a failed grading goes back to the room\'s manager as a complaint, whole, the room runs again, and the task records its first grading (pass@1) and the gradings it took to pass', async () => {
   const {rooms, run} = benchEnv(), b = run();
   await begin(b, {concurrency: 2, limit: 2, dataset: {text: DATA(2)}});
   await b.alarm();
   rooms.end(taskRoom(ID, 0, 0), wrong); rooms.end(taskRoom(ID, 1, 0), pass);
   await b.alarm();
   let s = b.status();
-  assert.equal(s.feedback, 'until_done');
+  assert.ok(!('feedback' in s), 'one way only: the grade goes back until done');
   assert.deepEqual(s.tasks.map(t => [t.status, t.once, t.rounds]), [['running', 'fail', 1], ['done', 'pass', 1]]);
   const r0 = rooms.rooms.get(taskRoom(ID, 0, 0));
   assert.equal(r0.complaints.length, 1);
@@ -457,7 +459,7 @@ test('feedback "until_done" is the default: a failed grading goes back to the ro
   assert.deepEqual(s.aggregate.until_done, {scored: 2, pass: 2, pass_rate: 1, mean_rounds_to_done: 1.5});
 });
 
-test('feedback "until_done" has no round cap: the failure goes back each time the room completes, until the room\'s own turn budget is spent; then the task fails with the last observation', async () => {
+test('the grade going back has no round cap: the failure goes back each time the room completes, until the room\'s own turn budget is spent; then the task fails with the last observation', async () => {
   const {rooms, run} = benchEnv(), b = run();
   await begin(b, {concurrency: 1, limit: 1, dataset: {text: DATA(1)}});
   await b.alarm();
@@ -474,32 +476,22 @@ test('feedback "until_done" has no round cap: the failure goes back each time th
   assert.deepEqual(s.aggregate.until_done, {scored: 1, pass: 0, pass_rate: 0, mean_rounds_to_done: null});
 });
 
-test('feedback "once", when chosen: the grader runs once on what the completed room ships, in a fresh box with the internet off, that grading is the task\'s pass@1, and nothing goes back', async () => {
+test('there is no grading mode in which nothing goes back: /api/bench ignores a feedback field, and a failed grading still goes back (owner 2026-10-16 05:54)', async () => {
+  assert.ok(!('feedback' in BENCH_DEFAULTS));
+  const {env} = benchEnv({APP_TOKEN, ASSETS: {fetch: () => new Response('asset')}});
+  const res = await call(env, '/api/bench', {method: 'POST', body: {dataset: DATA(1), feedback: 'once'}});
+  assert.equal(res.status, 200);
+  assert.ok(!('feedback' in await res.json()));
   const {rooms, boxes, run} = benchEnv(), b = run();
   await begin(b, {concurrency: 2, limit: 2, dataset: {text: DATA(2)}, feedback: 'once'});
   await b.alarm();
   rooms.end(taskRoom(ID, 0, 0), pass); rooms.end(taskRoom(ID, 1, 0), wrong);
   const s = await b.alarm().then(() => b.status());
-  assert.equal(s.feedback, 'once');
-  assert.deepEqual(s.tasks.map(t => [t.outcome, t.once, t.rounds]), [['pass', 'pass', 1], ['fail', 'fail', 1]]);
-  assert.equal(rooms.log.filter(l => l[0] === 'complaint').length, 0, 'once never sends the grader\'s failure back');
-  assert.equal(s.aggregate.pass_at_1, 0.5);
-  assert.ok(!('until_done' in s.aggregate));
+  assert.deepEqual(s.tasks.map(t => [t.status, t.once, t.rounds]), [['done', 'pass', 1], ['running', 'fail', 1]]);
+  assert.equal(rooms.log.filter(l => l[0] === 'complaint').length, 1);
   // Each grading opened a box of its own, with the internet off.
   assert.equal(boxes.boxes.length, 2);
   assert.ok(boxes.boxes.every(x => x.container.options?.enableInternet === false));
-});
-
-test('/api/bench takes feedback until_done (the default) or once, and refuses anything else', async () => {
-  const {env} = benchEnv({APP_TOKEN, ASSETS: {fetch: () => new Response('asset')}});
-  let res = await call(env, '/api/bench', {method: 'POST', body: {dataset: DATA(1), feedback: 'twice'}});
-  assert.equal(res.status, 400);
-  assert.match((await res.json()).error, /Invalid feedback: expected until_done or once/);
-  res = await call(env, '/api/bench', {method: 'POST', body: {dataset: DATA(1), feedback: 'once'}});
-  assert.equal(res.status, 200);
-  assert.equal((await res.json()).feedback, 'once');
-  res = await call(env, '/api/bench', {method: 'POST', body: {dataset: DATA(1)}});
-  assert.equal((await res.json()).feedback, 'until_done');
 });
 
 // ------------------------------------------------------------------ a task room, for real
