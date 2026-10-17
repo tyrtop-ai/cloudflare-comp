@@ -113,7 +113,7 @@ export function checkPlan(spec, files, {rows = TOOLCHAINS, placed = new Set(), c
     } else checks.push({id: v.id, kind: c.kind, serve: c.serve, steps: c.steps});
   }
   return {plan: {syntax, install: installs.map(x => ({toolchain: x.toolchain, packages: [...x.packages]})), project: [], runs, commands, checks}, toolchains, local,
-    container: inventory || syntax.length > 0 || checks.length > 0};
+    container: inventory || syntax.length > 0 || checks.length > 0 || installs.length > 0};
 }
 
 // A file check, in the Worker (§4.1 step 2), run exactly as the splitter

@@ -53,7 +53,8 @@ export const TOOLCHAINS = Object.freeze([
     // install: how the compiler's box installs the packages an agent's row
     // lists (container/build-runner.mjs, stage 3): its command ({packages}:
     // the names; {scratch}: the folder above every fresh copy of the files),
-    // the tree it fills there, and what names that tree to a check (env).
+    // the tree it fills there, and what names that tree to a check (env:
+    // {tree} is the tree, {$NAME} the variable's value before the install).
     install:{argv:['npm','install','--no-save','--no-package-lock','--ignore-scripts','--no-audit','--no-fund','--prefix','{scratch}','{packages}'], tree:'node_modules', env:{}},
     packages:[], module_prefix:'node:',
     stdlib_provides:[{name:'node:http',provides:'HTTP server'},{name:'node:https',provides:'HTTPS server and client'},{name:'node:fs',provides:'files and folders'},{name:'node:path',provides:'file paths'},
@@ -163,6 +164,18 @@ for line in open('build.json'):
         for f in m['filenames']:
             if f.endswith(('.rlib', '.so')): print('--extern ' + name + '=' + f)
 `;
+// The install of a C, C++ or shell row: its packages are the system's
+// (Debian's, the box image's own distribution), downloaded with what they
+// depend on that the image lacks and unpacked into the tree (the box runs
+// as a user, so nothing is installed system-wide); the tree's link lists,
+// for the compiler, each library a package there gives to link with
+// (-lname for every libname.so). lib-arch and include-arch name the
+// tree's folders of the box's architecture.
+const APT_INSTALL = String.raw`t="$0" a="$0/.apt"; o="-qq -o Dir::State=$a -o Dir::Cache=$a -o Debug::NoLocking=1 -o APT::Sandbox::User=$(id -un)"
+mkdir -p "$a/lists/partial" "$a/archives/partial" && apt-get $o update && apt-get $o install -y --download-only --no-install-recommends "$@" || exit
+for d in "$a"/archives/*.deb; do [ -e "$d" ] || continue; dpkg-deb -x "$d" "$t" || exit 1; done
+m=$(gcc -print-multiarch 2>/dev/null); ln -sfn "usr/lib/$m" "$t/lib-arch" && ln -sfn "usr/include/$m" "$t/include-arch" || exit 1
+find "$t/usr/lib/$m" "$t/usr/lib" "$t/lib/$m" -maxdepth 1 -name 'lib*.so' 2>/dev/null | sed 's#.*/lib\(.*\)\.so$#-l\1#' | sort -u > "$t/link"; rm -rf "$a"`;
 const SH_SYNTAX = 'for f do case "$(head -n 1 "./$f")" in "#!"*bash*) bash -n "./$f";; *) sh -n "./$f";; esac || s=1; done; exit ${s:-0}';
 export const COMPILE_ROWS = Object.freeze([
   Object.freeze({ id:'typescript', name:'TypeScript', extensions:['.ts','.mts','.cts'], requires:{node:'22.18.0'}, run_file:['node','{path}'],
@@ -173,7 +186,10 @@ export const COMPILE_ROWS = Object.freeze([
     // JavaScript row's (node_modules above every fresh copy).
     call_adapter:['node','/opt/adapters/call.mjs'], stack:'v8',
     install:{argv:['npm','install','--no-save','--no-package-lock','--ignore-scripts','--no-audit','--no-fund','--prefix','{scratch}','{packages}'], tree:'node_modules', env:{}} }),
+  // A shell script's packages are the programs it runs: the system's, as
+  // the C row's (APT_INSTALL), found on the PATH the install puts first.
   Object.freeze({ id:'shell', name:'shell', extensions:['.sh','.bash'], shebang:['sh','dash','bash'], requires:{sh:'',bash:''},
+    install:{argv:['sh','-c',APT_INSTALL,'{tree}','{packages}'], tree:'shell-packages', env:{PATH:'{tree}/usr/bin:{tree}/bin:{$PATH}',LD_LIBRARY_PATH:'{tree}/lib-arch:{tree}/usr/lib:{$LD_LIBRARY_PATH}'}},
     syntax:['sh','-c',SH_SYNTAX,'sh','{files}'] }),
   // Owner 2026-10-15 05:16 ("Any code type"): the other languages the box
   // image installs (container/Dockerfile.box), each compiled by its own
@@ -194,8 +210,16 @@ export const COMPILE_ROWS = Object.freeze([
   Object.freeze({ id:'rust', name:'Rust', extensions:['.rs'], requires:{rustfmt:''}, run_file:['sh','-c','d=$(mktemp -d) && rustc --edition 2021 $(cat "${RUST_EXTERNS:-/dev/null}") -o "$d/main" "$0" && exec "$d/main" "$@"','{path}'],
     install:{argv:['sh','-c','cd "$0" && py="$1" && shift && cargo init -q --lib --vcs none --name checks_deps . && cargo add -q "$@" && cargo build -q --message-format=json > build.json && python3 -c "$py" > externs','{tree}',RUST_EXTERNS,'{packages}'], tree:'rust-crates', env:{RUST_EXTERNS:'{tree}/externs'}},
     syntax:['sh','-c','for f do rustfmt --edition 2021 --emit stdout "./$f" >/dev/null || s=1; done; exit ${s:-0}','sh','{files}'] }),
-  Object.freeze({ id:'c', name:'C', extensions:['.c','.h'], requires:{gcc:''}, run_file:['sh','-c','d=$(mktemp -d) && gcc -o "$d/main" "$0" && exec "$d/main" "$@"','{path}'], syntax:['gcc','-fsyntax-only','{files}'] }),
-  Object.freeze({ id:'cpp', name:'C++', extensions:['.cc','.cpp','.cxx','.hpp','.hh'], requires:{'g++':''}, run_file:['sh','-c','d=$(mktemp -d) && g++ -o "$d/main" "$0" && exec "$d/main" "$@"','{path}'], syntax:['g++','-fsyntax-only','{files}'] }),
+  // C's and C++'s packages are the system's libraries (APT_INSTALL): the
+  // compiler finds their headers and libraries in the tree (CPATH,
+  // LIBRARY_PATH), links each one the tree's link file lists (C_LINK,
+  // CXX_LINK), and the program loads them from there (LD_LIBRARY_PATH).
+  Object.freeze({ id:'c', name:'C', extensions:['.c','.h'], requires:{gcc:''}, run_file:['sh','-c','d=$(mktemp -d) && gcc -o "$d/main" "$0" $(cat "${C_LINK:-/dev/null}") && exec "$d/main" "$@"','{path}'],
+    install:{argv:['sh','-c',APT_INSTALL,'{tree}','{packages}'], tree:'c-packages', env:{CPATH:'{tree}/usr/include:{tree}/include-arch:{$CPATH}',LIBRARY_PATH:'{tree}/lib-arch:{tree}/usr/lib:{$LIBRARY_PATH}',LD_LIBRARY_PATH:'{tree}/lib-arch:{tree}/usr/lib:{$LD_LIBRARY_PATH}',C_LINK:'{tree}/link'}},
+    syntax:['gcc','-fsyntax-only','{files}'] }),
+  Object.freeze({ id:'cpp', name:'C++', extensions:['.cc','.cpp','.cxx','.hpp','.hh'], requires:{'g++':''}, run_file:['sh','-c','d=$(mktemp -d) && g++ -o "$d/main" "$0" $(cat "${CXX_LINK:-/dev/null}") && exec "$d/main" "$@"','{path}'],
+    install:{argv:['sh','-c',APT_INSTALL,'{tree}','{packages}'], tree:'cpp-packages', env:{CPATH:'{tree}/usr/include:{tree}/include-arch:{$CPATH}',LIBRARY_PATH:'{tree}/lib-arch:{tree}/usr/lib:{$LIBRARY_PATH}',LD_LIBRARY_PATH:'{tree}/lib-arch:{tree}/usr/lib:{$LD_LIBRARY_PATH}',CXX_LINK:'{tree}/link'}},
+    syntax:['g++','-fsyntax-only','{files}'] }),
   // Java's packages are Maven artifacts (group:artifact:version), copied as
   // jars into the tree, which CLASSPATH names to javac and java.
   Object.freeze({ id:'java', name:'Java', extensions:['.java'], requires:{javac:''}, run_file:['java','{path}'],

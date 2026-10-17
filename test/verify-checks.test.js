@@ -7,6 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {tmpdir} from 'node:os';
+import path from 'node:path';
 import {existsSync,readFileSync,rmSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {createServer as createHttpServer} from 'node:http';
@@ -718,6 +719,41 @@ test('install: the box installs the packages a plan lists, by the row\'s install
   // A language whose row has no install command: the box reports it, as observed.
   const none=await run(files,{install:[{toolchain:'python',packages:['fakepkg']}],checks:[]},{toolchains:[{...fake,install:undefined}],isolation:[]});
   assert.deepEqual(none.installed,[{toolchain:'python',packages:['fakepkg'],passed:false,detail:'no install command for python'}]);
+});
+
+// Owner 2026-10-15 22:12 ("why are packages not allowed now?"): C's packages are the system's libraries, which the C row's install
+// downloads (apt-get, here a stand-in that hands over a package built on the spot) and unpacks into its tree; the check compiles with
+// its headers, links its library and runs with it. A package the system has none of is reported, as observed.
+const hasDeb=hasGcc&&spawnSync('dpkg-deb',['--version']).status===0;
+test('install: a C package is the system\'s library, unpacked into the tree the check compiles, links and runs with; one that does not exist is observed',{skip:!hasDeb&&'gcc or dpkg-deb is not installed'},async()=>{
+  const {COMPILE_ROWS}=await import('../src/toolchains.js');
+  const {mkdtempSync,mkdirSync,writeFileSync,symlinkSync,chmodSync}=await import('node:fs');
+  const dir=mkdtempSync(path.join(tmpdir(),'apt-')),m=spawnSync('gcc',['-print-multiarch']).stdout.toString().trim(),stage=path.join(dir,'stage');
+  mkdirSync(path.join(stage,'DEBIAN'),{recursive:true});mkdirSync(path.join(stage,'usr/include'),{recursive:true});mkdirSync(path.join(stage,'usr/lib',m),{recursive:true});
+  writeFileSync(path.join(stage,'DEBIAN/control'),'Package: libgreet-dev\nVersion: 1.0\nArchitecture: all\nMaintainer: t <t@t>\nDescription: t\n');
+  writeFileSync(path.join(stage,'usr/include/greet.h'),'const char *greet(void);\n');
+  writeFileSync(path.join(dir,'greet.c'),'const char *greet(void) { return "greetings"; }\n');
+  assert.equal(spawnSync('gcc',['-shared','-fPIC','-o',path.join(stage,'usr/lib',m,'libgreet.so.1'),path.join(dir,'greet.c')]).status,0);
+  symlinkSync('libgreet.so.1',path.join(stage,'usr/lib',m,'libgreet.so'));
+  assert.equal(spawnSync('dpkg-deb',['-b',stage,path.join(dir,'libgreet-dev.deb')]).status,0);
+  // The stand-in: update succeeds; install copies the package it knows into the archives folder its options name, else fails as apt-get does.
+  mkdirSync(path.join(dir,'bin'));
+  writeFileSync(path.join(dir,'bin/apt-get'),`#!/bin/sh\nfor x do case "$x" in Dir::Cache=*) c="\${x#Dir::Cache=}";; esac; done\ncase " $* " in *" update "*) exit 0;; esac\nfor x do case "$x" in libgreet-dev) cp ${JSON.stringify(path.join(dir,'libgreet-dev.deb'))} "$c/archives/";; -*|install|Dir::*|Debug::*|APT::*) ;; *) [ -n "$x" ] && echo "E: Unable to locate package $x" && exit 100;; esac; done\n`);
+  chmodSync(path.join(dir,'bin/apt-get'),0o755);
+  const PATH=process.env.PATH;process.env.PATH=`${path.join(dir,'bin')}:${PATH}`;
+  try {
+    const rows=[...ROWS,...JSON.parse(JSON.stringify(COMPILE_ROWS))];
+    const files={'hello.c':'#include <stdio.h>\n#include <greet.h>\nint main(void) { printf("%s\\n", greet()); return 0; }\n'};
+    const report=await run(files,{install:[{toolchain:'c',packages:['libgreet-dev']}],syntax:[{toolchain:'c',files:['hello.c']}],checks:[{id:'R1',kind:'command',run:'hello.c',expect:{stdout:'greetings'}}]},{toolchains:rows,isolation:[]});
+    assert.deepEqual(report.installed,[{toolchain:'c',packages:['libgreet-dev'],passed:true}],JSON.stringify(report.stages));
+    assert.equal(report.stages.find(s=>s.name==='syntax:c')?.passed,true,JSON.stringify(report.stages));
+    assert.equal(byId(report).R1.passed,true,byId(report).R1.detail);
+    assert.equal(report.passed,true);
+    const missing=await run(files,{install:[{toolchain:'c',packages:['libnothing-dev']}],checks:[{id:'R1',kind:'command',run:'hello.c',expect:{stdout:'greetings'}}]},{toolchains:rows,isolation:[]});
+    assert.equal(missing.installed[0].passed,false);
+    assert.match(missing.installed[0].detail,/^exit 100: E: Unable to locate package libnothing-dev/);
+    assert.equal(missing.passed,false,'a package not installed fails the verification');
+  } finally {process.env.PATH=PATH;rmSync(dir,{recursive:true,force:true});}
 });
 
 test('helpers: words, commands from the rows, json_has, limits',()=>{

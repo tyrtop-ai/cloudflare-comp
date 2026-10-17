@@ -18,7 +18,9 @@ ARG BOX_BROWSER=0
 # check runs), and the package managers the rows install packages with: pip
 # for Python, gem (with ruby) for Ruby, npm with the Node base (JavaScript
 # and TypeScript), go for Go's modules, cargo for Rust's crates, maven for
-# Java's artifacts, composer (with unzip, which it unpacks with) for PHP's.
+# Java's artifacts, composer (with unzip, which it unpacks with) for PHP's,
+# and the base's own apt-get and dpkg-deb for C's, C++'s and shell's (the
+# system's packages, unpacked into the check's tree as the box's user).
 # Channels only, no versions pinned: the inventory records what each box had.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pytest python3-pip ca-certificates iputils-ping \
     golang-go gcc g++ libc6-dev default-jdk-headless ruby php-cli rustc cargo rustfmt maven composer unzip \
