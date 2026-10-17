@@ -69,8 +69,17 @@ test('the model hint follows the pipeline: in v8 every manager\'s splitter propo
   const page=renderWithPage(true,{settings:{pipeline:'v8'}}),hint=()=>page.get('model-hint').textContent;
   assert.match(hint(),/^Every manager's splitter proposes a split, on the manager model, and Clef decides whether it is valid; Clef also makes each manager's routing choices\. The worker model writes the code\. No model writes tests/);
   assert.doesNotMatch(hint(),/\broot\b|YES\/NO|writes the test\b/i);
+  // The pickers' labels follow the pipeline too: in v8 Clef makes every manager's choice,
+  // the manager model runs the splitters and builders, and the compiler model reads the linked pages.
+  const label=id=>page.get(id).textContent;
+  assert.equal(label('model-label'),'Manager model (the splitters and the builders)');
+  assert.equal(label('compiler-model-label'),'Compiler model (reads the linked pages)');
+  assert.match(label('split-model-label'),/^Clef model \(every manager's choice/);
+  assert.doesNotMatch(label('model-label')+label('compiler-model-label'),/decisions|runner's test/);
   page.get('pipeline').value='v7';fire(page.get('pipeline'),'change');
   assert.match(hint(),/^Clef scores YES\/NO/,'the hint follows the Pipeline select');
+  assert.equal(label('model-label'),'Manager model (splits, decisions, linking)','the labels follow the Pipeline select');
+  assert.equal(label('compiler-model-label'),'Compiler model (API coverage check, the runner\'s test)');
   assert.doesNotMatch(html,/root repository|If YES, the agent model proposes a split|Root assembly/);
   assert.match(html,/Start begins a new run\. Every agent gets its own real Cloudflare Artifacts repository\./);
 });
