@@ -7,7 +7,7 @@ export { BuildExecutor } from './build-executor.js';
 export { Box } from './box.js';
 export { BoxProbe, BoxProbePeer } from './box-probe.js';
 import { boxProbeRoute } from './box-probe.js';
-import { freshBox, compileBoxSpec, BOX_COLD_MS, classifyEnvironment } from './box.js';
+import { freshBox, compileBoxSpec, BOX_COLD_MS } from './box.js';
 import { BoxPrewarm, levelBoxSpec } from './box-prewarm.js';
 export { BenchRun } from './bench-run.js';
 import { benchRoute } from './bench-run.js';
@@ -4197,10 +4197,7 @@ export class ControlRoom extends DurableObject {
       const named=this.read(`level_compiler:${id}`,null);
       if(named&&opened.name)this.save(`level_compiler:${id}`,{...named,box:opened.name});
       if(report.mode!=='checks'||!Array.isArray(report.checks))return {infrastructure:'The box answered without a report of the validations: its image predates them.'};
-      // v8 live 5: a failure the box's inventory explains (its host name, a missing interpreter) is the box's, never the code's.
-      const classified=classifyEnvironment(report);
-      if(classified!==report)this.event(id,'box_environment',clip(classified.infrastructure_issue,900));
-      return {report:classified};
+      return {report};
     } catch(e) {
       // The box closes itself (compile's finally, and its alarm); this is the backstop for an RPC that broke first.
       if(box&&typeof box.close==='function'){const closing=Promise.resolve().then(()=>box.close()).catch(()=>{});if(this.ctx.waitUntil)this.ctx.waitUntil(closing);}

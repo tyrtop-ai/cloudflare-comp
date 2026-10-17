@@ -34,7 +34,7 @@
 // remote URLs or account ids.
 import { DurableObject } from 'cloudflare:workers';
 import { loadDataset, benchPolicy, roomOutcome, gradeOutcome, aggregate, compareRuns, taskDigest, BENCH_LIMITS } from './bench.js';
-import { freshBox, compileBoxSpec, classifyEnvironment } from './box.js';
+import { freshBox, compileBoxSpec } from './box.js';
 import { checkPlan, CHECK_LIMITS } from './checks.js';
 import { snapshotHash, validateBoxFiles } from './build-verification.js';
 import { TOOLCHAINS } from './toolchains.js';
@@ -359,8 +359,8 @@ export async function gradeBundle(env, grader, files) {
   try {
     const {box: opened, ...report} = await freshBox(env.BOXES).compile(compileBoxSpec(run), {fingerprint: await snapshotHash(files), files: Object.fromEntries(snapshot), mode: 'checks', plan: run, toolchains, limits: CHECK_LIMITS}) || {};
     if (opened?.fresh !== true || opened?.internet !== false) return {infrastructure: 'the box did not confirm a fresh start with the internet off'};
-    const r = classifyEnvironment(report), c = (r.checks || []).find(x => x?.id === grader.id);
-    if (!c || c.infrastructure) return {infrastructure: clip(c?.detail || r.infrastructure_issue || 'the grader did not run')};
+    const c = (report.checks || []).find(x => x?.id === grader.id);
+    if (!c || c.infrastructure) return {infrastructure: clip(c?.detail || report.infrastructure_issue || 'the grader did not run')};
     return {passed: !!c.passed, detail: c.detail || ''};
   } catch (e) { return {infrastructure: clip(e?.message || e)}; }
 }
