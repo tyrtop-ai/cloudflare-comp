@@ -428,7 +428,7 @@ test('a worker\'s turn that throws runs again, as a turn of the budget: no pause
   // A defect on every turn: the budget the person set is the bound, and nothing holds.
   const bounded = await run(4, Infinity);
   assert.equal(bounded.r.room.get('status'), 'paused');
-  assert.equal(bounded.n, 3, 'the manager\'s split step spent one turn of the four, and each retry one more');
+  assert.equal(bounded.n, 2, 'the manager\'s split session spent two turns of the four (each model call of a splitter\'s session counts), and each retry one more');
   assert.deepEqual(bounded.r.room.roomHolds(), []);
   assert.match(events(bounded.r.room, 'paused').at(-1).body, /Inference budget ended/);
 });
