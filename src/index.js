@@ -748,7 +748,7 @@ export class ControlRoom extends DurableObject {
   // v8 live 4 review (L6): a row's packages as a prompt shows them: those of the levels' code languages, once a level names them.
   packageView(id) {
     const langs=contractLanguages(this.treeContracts()),all=this.packagesOf(id);
-    return (langs.length?all.filter(p=>!p.language||langs.includes(p.language)):all).map(p=>{const seen=this.installSeen(p);return seen&&!seen.passed?{...p,not_installed:clip(seen.detail,400)}:p;});
+    return (langs.length?all.filter(p=>!p.language||langs.includes(p.language)):all).map(p=>{const seen=this.installSeen(p);return seen&&!seen.passed?{...p,not_installed:seen.detail}:p;});
   }
   // v8 (owner, 2026-10-15 22:12, "why are packages not allowed now?"): what
   // the box last observed installing package p, in its language: {passed,
@@ -756,7 +756,7 @@ export class ControlRoom extends DurableObject {
   installSeen(p) { return this.read('package_installs',{})[`${p?.language||''}|${p?.name}`]||null; }
   // A package as a manager's options and a worker's answers name it, with
   // what the box observed when it did not install it.
-  seenLine(p) { const seen=this.installSeen(p);return seen&&!seen.passed?MESSAGES.package_not_installed({names:packageLine(p),observed:clip(seen.detail,400)}):packageLine(p); }
+  seenLine(p) { const seen=this.installSeen(p);return seen&&!seen.passed?MESSAGES.package_not_installed({names:packageLine(p),observed:seen.detail}):packageLine(p); }
   // The box's report of the packages it installed (report.installed): each
   // recorded by language and name (installSeen), and the room's record says
   // what it installed and what it did not. The entries it did not install,
