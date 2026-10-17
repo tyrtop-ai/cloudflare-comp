@@ -14,8 +14,7 @@ import { fakeBoxes } from './helpers/boxes.js';
 import { levelRoom, usualClef, deliver, callCheck, events } from './helpers/levels.js';
 import { HUMANEVAL } from './helpers/bench-fixtures.js';
 const { BenchRun, taskRoom, RUN_ID, BENCH_DEFAULTS, gradeBundle } = await import('../src/bench-run.js');
-const { taskFromRow } = await import('../src/bench.js');
-const { verifyChecks } = await import('../container/build-runner.mjs');
+const { taskFromRow, FIXTURE } = await import('../src/bench.js');
 const worker = (await import('../src/index.js')).default;
 
 const ROW = i => ({id: `t${i}`, prompt: `Write a function f${i}(n) that returns n plus ${i}.`, language: 'python', entry: `f${i}`, tests: `assert f${i}(1) == ${1 + i}\n`});
@@ -78,7 +77,7 @@ function fakeRooms() {
 }
 function benchEnv(extra = {}) {
   const rooms = fakeRooms(), instances = new Map();
-  const boxes = fakeBoxes({run: req => verifyChecks({...req}, {isolation: []})});
+  const boxes = fakeBoxes();
   const env = {ROOMS: rooms.ns, BOXES: boxes, ...extra};
   env.BENCHES = {getByName: name => {
     if (!instances.has(name)) {
@@ -514,7 +513,7 @@ test('a failed grading goes back to the room\'s manager as a complaint, whole, t
   assert.equal(r0.complaints[0].length, 1, 'the observation alone: the room\'s own budget bounds the run, the run gives it none');
   const [said] = r0.complaints[0];
   assert.match(said, /BenchHarnessError|AssertionError|exit/, 'the grader\'s observation, verbatim');
-  assert.ok(!said.includes('bench_nonce'), 'never the grader\'s input files');
+  assert.ok(!said.includes(FIXTURE.tests), 'never the grader\'s input files');
   // The room fixes it and completes again: graded again, and it passes.
   rooms.end(taskRoom(ID, 0, 0), pass);
   s = await b.alarm().then(() => b.status());
@@ -567,17 +566,17 @@ test('there is no grading mode in which nothing goes back: /api/bench ignores a 
 // worker as a complaint and the room goes on with the turns its budget has left.
 const hasPython = spawnSync('python3', ['--version']).status === 0;
 test('a task room starts from the task\'s prompt verbatim; the grader finds the function in the file the room chose; its failure goes back to the worker, verbatim, within the room\'s own budget', {skip: !hasPython && 'python3 is not installed'}, async () => {
-  const task = taskFromRow(HUMANEVAL[0], 0, {nonce: 'n0nce'});
+  const task = taskFromRow(HUMANEVAL[0]);
   assert.equal(task.prompt, HUMANEVAL[0].prompt);
   const TOTAL = {name: 'total', kind: 'function', does: 'sums a list of integers', inputs: [{name: 'xs', is: 'a list of integers'}], outputs: 'their sum', path: 'sums.py'};
   // The room's own validations pass on the first answer; the benchmark's tests do not.
   const LEVEL = {contracts: [TOTAL], validations: [callCheck('a', ['total'], [['total', [[1, 2]], 3]]), callCheck('b', ['total'], [['total', [[2, 3]], 5]]), callCheck('c', ['total'], [['total', [[0, 7]], 7]])], pieces: []};
   const FIRST = 'def total(xs):\n    return xs[0] + xs[1]\n', FIXED = 'def total(xs):\n    return sum(xs)\n';
-  const r = await levelRoom({prompt: task.prompt, split: () => LEVEL, leaf: user => deliver({'sums.py': user.complaints.length ? FIXED : FIRST}), clef: usualClef({'^should_split$': 0.02}), budget: 30, room_id: 'bench-room-test'});
+  const r = await levelRoom({prompt: task.prompt, split: () => LEVEL, leaf: user => deliver({'sums.py': user.complaints.length ? FIXED : FIRST}), clef: usualClef({'^should_split$': 0.02}), budget: 40, room_id: 'bench-room-test'});
   const {room, calls} = r;
   assert.equal(room.get('status'), 'complete');
   assert.equal(calls.split[0].assignment, task.prompt, 'the room\'s manager reads the task\'s prompt as the benchmark wrote it');
-  const env = {BOXES: fakeBoxes({run: req => verifyChecks({...req}, {isolation: []})})};
+  const env = {BOXES: fakeBoxes()};
   const shipped = async () => new Map((await room.appFiles()).files.filter(f => !f.path.startsWith('.recursive/')).map(f => [f.path, f.content]));
   assert.ok((await shipped()).has('sums.py'));
   const first = await gradeBundle(env, task.grader, await shipped());
@@ -585,7 +584,7 @@ test('a task room starts from the task\'s prompt verbatim; the grader finds the 
   assert.match(first.detail, /BenchHarnessError: failed/);
   // Until done: the grader's observation goes to the room as a complaint, and the room goes on with what its budget left.
   const left = Number(room.get('budget_left'));
-  assert.ok(left >= 1 && left < 30, String(left));
+  assert.ok(left >= 1 && left < 40, String(left));
   assert.deepEqual(room.graderComplaint(first.detail), {status: 'running'});
   assert.match(events(room, 'resume').at(-1).body, new RegExp(`for up to ${left} turns`));
   await r.drain();

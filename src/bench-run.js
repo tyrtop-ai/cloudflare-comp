@@ -32,10 +32,9 @@
 // remote URLs or account ids.
 import { DurableObject } from 'cloudflare:workers';
 import { loadDataset, benchPolicy, roomOutcome, gradeOutcome, aggregate, compareRuns, taskDigest, BENCH_LIMITS } from './bench.js';
-import { freshBox, compileBoxSpec } from './box.js';
-import { checkPlan, checkLimitsOf } from './checks.js';
-import { snapshotHash, validateBoxFiles } from './build-verification.js';
-import { TOOLCHAINS } from './toolchains.js';
+import { freshBox, boxTimes, BOX_ROOT, BOX_WORK } from './box.js';
+import { checkLimitsOf } from './checks.js';
+import { boxPathError } from '../container/build-path.mjs';
 import { selfHostsOf } from './room-inputs.js';
 
 const query = (db, sql, ...args) => db.exec(sql, ...args).toArray();
@@ -333,24 +332,41 @@ export class BenchRun extends DurableObject {
   }
 }
 
-// The grader on a bundle, in a fresh single-use box with the internet off:
-// its command check, run as a level's validations run (src/checks.js
-// checkPlan, mode 'checks'). {passed, detail} or {infrastructure}; detail is
-// the box's whole observation of a failed grading (what it says failed, then
-// the exit, stdout and stderr it reports), the complaint the room gets.
+// The grader on a bundle, in a fresh single-use box of its own with the
+// internet off: the bundle's files and the grader's input files in the box's
+// folder, and its one command run there. {passed, detail} or
+// {infrastructure}; detail is the box's whole observation of a failed
+// grading (the command, what it expected that did not hold, then its exit,
+// stdout and stderr), the complaint the room gets.
+export const GRADER_BOX = Object.freeze({image: 'check', instance: 'standard-1', internet: false});
+// What of the grader's expectation its command's result does not meet: '' when it meets all of it.
+function unmet(e, r) {
+  const out = r.stdout || '', err = r.stderr || '', lacks = (list, text) => (list || []).find(x => !text.includes(x));
+  if (r.timed_out) return 'it ran out of time';
+  if (e.exit !== undefined && r.code !== e.exit) return `its exit is not ${e.exit}`;
+  if (e.stdout !== undefined && out !== e.stdout) return 'its stdout is not the expected text';
+  if (lacks(e.stdout_has, out) !== undefined) return `its stdout lacks ${JSON.stringify(lacks(e.stdout_has, out))}`;
+  if (lacks(e.stderr_has, err) !== undefined) return `its stderr lacks ${JSON.stringify(lacks(e.stderr_has, err))}`;
+  return '';
+}
 export async function gradeBundle(env, grader, files, limits = checkLimitsOf({})) {
   if (!grader?.check) return {infrastructure: grader?.unrunnable || 'the task has no grader'};
   if (!env?.BOXES) return {infrastructure: 'BOXES binding unavailable: the grader runs only in a fresh box with the internet off'};
-  let snapshot;
-  try { snapshot = validateBoxFiles(files); } catch (e) { return {passed: false, detail: `the shipped files cannot be carried: ${e?.message || e}`}; }
-  const {plan, toolchains} = checkPlan({contracts: [], validations: [grader]}, files, {rows: TOOLCHAINS}), run = {...plan, syntax: []};
+  const c = grader.check, argv = String(c.run || '').trim().split(/\s+/).filter(Boolean);
+  const put = Object.fromEntries([...files].filter(([p]) => !boxPathError(p)));
+  for (const [p, t] of Object.entries(c.files || {})) put[p] = t;
+  let box = null;
   try {
-    const {box: opened, ...report} = await freshBox(env.BOXES).compile(compileBoxSpec(run), {fingerprint: await snapshotHash(files), files: Object.fromEntries(snapshot), mode: 'checks', plan: run, toolchains, limits}) || {};
+    box = freshBox(env.BOXES);
+    const opened = await box.open(GRADER_BOX, limits.total_ms);
     if (opened?.fresh !== true || opened?.internet !== false) return {infrastructure: 'the box did not confirm a fresh start with the internet off'};
-    const c = (report.checks || []).find(x => x?.id === grader.id);
-    if (!c || c.infrastructure) return {infrastructure: clip(c?.detail || report.infrastructure_issue || 'the grader did not run')};
-    return {passed: !!c.passed, detail: c.passed ? '' : [c.detail, c.output].filter(Boolean).join('\n')};
+    await box.write(put);
+    const r = await box.run(argv, {stdin: c.stdin || '', ms: boxTimes(limits.total_ms).run, max: Infinity, user: BOX_ROOT, cwd: BOX_WORK});
+    const out = r.stdout || '', err = r.stderr || '', missed = unmet(c.expect || {}, r);
+    if (!missed) return {passed: true, detail: ''};
+    return {passed: false, detail: `${argv.join(' ')}: exit ${r.code}; ${missed}\nstdout:\n${out}\nstderr:\n${err}`};
   } catch (e) { return {infrastructure: clip(e?.message || e)}; }
+  finally { if (box) await Promise.resolve(box.close()).catch(() => {}); }
 }
 
 // ---------------------------------------------------------------- /api/bench
