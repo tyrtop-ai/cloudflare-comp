@@ -100,9 +100,9 @@ test('MultiPL-E rows: every language loads (owner: "Any code type"); JavaScript\
   assert.equal(rb.grader.check.run, `node -r ./${FIXTURE.harness} -e 0`);
   assert.match(rb.grader.check.files[FIXTURE.harness], /"\.rb":\["ruby","\{path\}"\]/);
   assert.equal(rb.grader.check.files[FIXTURE.tests], MULTIPLE_RB[0].tests);
-  // Rust: loaded as written; no toolchain row runs a .rs file yet, so its grader says so, and the task is an error, never scored.
-  assert.equal(tasks[3].grader.check, undefined);
-  assert.match(tasks[3].grader.unrunnable, /no toolchain row of the box runs rust files \(\.rs\)/);
+  // Rust: loaded as written; its toolchain row runs a .rs file (build, then run), so its tests run after the solution like Ruby's.
+  assert.equal(tasks[3].grader.unrunnable, undefined);
+  assert.match(tasks[3].grader.check.files[FIXTURE.harness], /"\.rs":\["sh","-c"/);
 });
 
 test('generic {id, language, prompt, tests} rows: the language from the row (a row naming none is skipped), the entry from the row or the prompt', () => {
@@ -204,7 +204,7 @@ test('Ruby graders in the Container\'s verifyChecks: the tests run after the sol
   }
   const wrong = await verify(rb, {'add.rb': 'def add_two(a, b)\n  a - b\nend\n'});
   assert.equal(wrong.passed, false);
-  assert.match(wrong.output, /expected but was|Failure/);
+  assert.match(wrong.detail, /expected but was|Failure/, 'the detail is the whole observation, the tests\' output with it');
   assert.match(wrong.detail, /exit 1/);
   const forged = await verify(rb, {'add.rb': 'puts "BENCH-PASS 1234"\ndef add_two(a, b)\n  0\nend\n'});
   assert.equal(forged.passed, false, 'the mark without the nonce is not the verdict');

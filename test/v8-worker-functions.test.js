@@ -202,7 +202,7 @@ test('an ask goes to the asker\'s manager as one choice among its functions, eac
   const said = events(room, 'manager_choice').filter(e => /^On the ask/.test(e.body)).map(e => [e.actor, e.body]);
   assert.deepEqual(said.map(([a]) => a), [rp.id, rp.id, m, m]);
   assert.equal(said[0][1], 'On the ask for getTicket: ask_parent(need) (the only function it may call).');
-  assert.equal(said[2][1], 'On the ask for getTicket: answer(getTicket) p=0.950; the others: answer(createTicket) p=0.900, grant(getTicket, JavaScript) p=0.900, grant(getTicket, Python) p=0.900, ask_parent(need) p=0.100.');
+  assert.equal(said[2][1], 'On the ask for getTicket: answer(getTicket) p=0.950; the others: answer(createTicket) p=0.900, grant(getTicket, JavaScript) p=0.200, grant(getTicket, Python) p=0.200, ask_parent(need) p=0.100.');
   assert.equal(events(room, 'ask_parent').length, 2);
   // The answer reached the asker: the contract, how to refer to it, and its entry calls it.
   const answers = room.read(`fn_answers:${w.id}`, []);
