@@ -192,79 +192,99 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: Take the owner's allowlist as he writes it: whatever host suffixes he lists are fetched, with no runtime list deciding which of his entries count or which hosts are off-limits.
 - Status: not done: this session's permission check refused removing the fetcher's suffix lists over FETCH_ALLOW as a security weakening, so it waits for the owner's decision.
 
+### R9-room/record-1: A level-file comment says the manager routes without reading its level file, but every routing choice is built from it
+- record, `src/index.js:8276`
+- Owner (2026-10-16 05:39 (and 2026-10-16 05:21)): Managers rewrite their children’s assignments at runtime. - this is why managers are clef. Clef is built to walk the tree and route questions. The builder can know what the original design is from the splitter, sure, but the manager doesn't need to know that, that's why we use an artifact for that. || (05:21) manager (router of the system) - owns the interfaces of its children
+- Required: Change the comment to say what the code does. The manager routes on its level file's children (their labels and the contracts each delivers), the interfaces the owner said it owns. It does not read the piece prompts its splitter wrote; the builder and the workers read those.
+
+### R9-splitter/chrono-1: contract() refuses command names outside a runtime-picked character grammar ('one word ... so it runs as typed'), though no shell types the name any more
+- extra, `src/contracts.js:297`
+- Owner (2026-10-16 16:14; 2026-10-16 20:38; 2026-10-16 20:40): you added those yourself. (16:14, about the runtime's own rules on what a split may contain) || e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it (20:38) || every model should work that way, where the runtime should only be interfaces exposed to the models.  …
+- Required: Store a command contract under the name the splitter gives it, refusing only for the reasons the accepted interface lists (for example, the name is already taken). Drop COMMAND_WORD and the 'one word ... so it runs as typed' text from contract() and from the tool description.
+
+### R9-splitter/record-1: done() refuses three runs of a command contract's own file: a run counts only when argv[0] is the contract's name or its declared run
+- drift, `src/validations.js:374`
+- Owner (2026-10-16 05:50; 2026-10-16 16:59; 2026-10-16 20:38): there must 3 different examples for each contract || only to contracts that are called or run || e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
+- Required: Count three different runs of a command toward that command when the splitter declares that they serve it. The splitter's own serves statement and its run as written count, with no runtime test of argv[0] against the contract's name.
+
+### R9-splitter/record-2: A route's examples count only if its path parameters are written ':x' or '{x}': a route named in another framework's form (e.g. 'GET /items/<id>') can never reach three examples
+- drift, `src/validations.js:364`
+- Owner (2026-10-15 05:16 / 05:17; 2026-10-16 05:50): 1. more code that just js. Any code type. should be adrogenous || there shouldn't be any version pinning or code type pinning or specific prompt pinning. || there must 3 different examples for each contract
+- Required: Don't decide whether a request exercises a route by a runtime-chosen parameter syntax. Count the requests the splitter declares as serving the route, or accept whatever path form the route was declared in, so any language's route spelling can complete the level.
+
+### R9-splitter/record-3: Texts the splitter reads tell it about other agents: 'the review judged' (every retry) and 'the level ... goes to one worker'
+- drift, `src/prompts.js:168`
+- Owner (2026-10-16 05:47): shared...princples...after I say "agents shouldn't know that any other agents exist...over...and over...and over...again. What the fuck is the point of a principles file
+- Required: Rewrite the splitter's retry and function-result texts so they describe only its own division and what it still needs: for example, that its previous division was not valid or had pieces too small, and that the level holds no division when the room has room for fewer than two pieces. Name no reviewer and no worker, and update the test that pins the wording.
+
+### R9-worker/code-1: The builder's own file takes the place of a worker's delivered file at the contract's path, so the contract ships and is checked as builder-written code
+- drift, `src/index.js:3838`
+- Owner (2026-10-16 05:21): worker - writes code. only agent that writes code ... builder - writes glue between the interfaces created by the worker. can edit interface names
+- Required: The file at a contract's path must stay the worker's delivered file, with the builder's renames applied. The builder's own files are glue beside the workers' files and never take the place of a worker's delivery. The write_file text must stop telling the builder that its file replaces a delivered one.
+
+### R9-compiler/chrono-1: Call adapter and box runner comments say a check's args, expected values and steps are never shown to the agents that write the code, but the owner ruled that the worker's examples are built from the validations
+- record, `container/adapters/call.mjs:23`
+- Owner (2026-10-16 05:49 / 05:50): the worker doesn't get validations. The example sohuld be built from the validation. || there must 3 different examples for each contract
+- Required: Rewrite these comments to say what the owner ruled and the code does: the worker sees each validation rendered as its examples, including the calls, arguments and expected values. Drop the 'never shown' rationale, together with the protocol it defends if the owner rules on R3-compiler/code-4.
+
+### R9-compiler/code-1: A command check's 'exactly' stdout is loosened by the box: CRLF becomes LF, trailing whitespace is dropped, and box paths are rewritten before the comparison
+- drift, `container/build-runner.mjs:841`
+- Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
+- Required: Compare the program's raw standard output to the splitter's expect.stdout exactly as written, with no runtime normalisation or rewriting before the assertion, so that the check asserts only what the validation and its example state.
+
+### R9-compiler/code-2: The box installs a granted npm package with --ignore-scripts, so a JavaScript or TypeScript package that needs its install script does not work in the check's box
+- extra, `src/toolchains.js:55`
+- Owner (2026-10-15 15:52): i mean the runtime should just make it architecturally impossible for the agents to do something. e.g. only exposing what they have access to so that the agents only know what they exist. otherwise for testing, they should just get their own little testing box instead of limiting what they can do
+- Required: Install granted npm packages the way npm normally does, scripts included, inside the single-use box, and let the box be the isolation rather than an install flag that limits what a package can do.
+
+### R9-compiler/code-3: hostname.py says the room classifies a check that failed under the platform's host name as infrastructure, but no such classification exists
+- record, `container/box/hostname.py:26`
+- Owner (2026-10-16 05:08): can everything here just get a base16 name? things should still be named manager or whatever, but just name it manager actually root is deprecated by design anyway, it should be manager-hex16 give boxes a hex16 name as well
+- Required: Rewrite the comment to say what the code does: the box runs under its hex16 name. When the name cannot be set, the inventory reports that, and nothing reclassifies a check's failure.
+
+### R9-compiler/record-2: The box rewrites what the deliverable printed (runner paths replaced by '.', '<work>' or bundle-relative paths) before it checks stdout and stderr and before it reports the complaint
+- extra, `container/build-runner.mjs:835`
+- Owner (2026-10-16 05:39): text heuristics - I don't understand what this is for. Like architecturally, this is protecting from someting that shouldn't happen.
+- Required: Compare each expectation against the output exactly as the process printed it, and pass that output to the worker unchanged as the compiler observed it. Drop the redaction and the test that pins it.
+
+### R9-edges/chrono-1: A benchmark task's room cannot read any link in its prompt: bench rooms start with no self hosts, so the fetch policy throws and every link is refused
+- drift, `src/bench-run.js:146`
+- Owner (2026-10-15 05:16): 2. I want to be able to point this thing at links and benchmarks, like AI benchmarks
+- Required: Treat a benchmark task's room like any other room: give it the deployment's hosts (the bench request's host and SELF_HOSTS) when it starts, so the links in a task's prompt are read the same way a person's prompt's links are.
+
+### R9-edges/chrono-2: Linked pages are fetched one at a time and every part is read by one reader after another, all before the room's manager exists
+- drift, `src/fetcher.js:682`
+- Owner (2026-10-15 05:16): 3. I think this should be faster, overall. For how distributed it is, it should be pretty snappy and it doesn't feel that way now.
+- Required: Read independent links, and the independent parts of a page, at the same time (each reader its own agent, as the room already names them), so the readings of links stop running one after another ahead of the whole room.
+
+### R9-edges/code-1: Linked pages are refused by a runtime content-type allowlist: a link served as application/javascript, application/yaml, application/pdf and so on is 'not fetched', and a test pins it
+- extra, `src/fetcher.js:25`
+- Owner (2026-10-15 05:16): 2. I want to be able to point this thing at links and benchmarks, like AI benchmarks
+- Required: Read every link the prompt writes that the allowlist lets through, whatever type it is declared as, and do not refuse it by a runtime list of content types. Record as not read only a body that cannot be read at all, with the reason, and change the test that pins the type refusals.
+
+### R9-edges/record-2: The deployment's SELF_HOSTS list is silently cut to its first 16 entries, and a room keeps only the first 8 self hosts it is given at Start
+- extra, `src/index.js:9330`
+- Owner (2026-10-17 00:25): it wasn't the question. I don't understand the need
+- Required: Take every host the owner lists in SELF_HOSTS, and every host the room is given at Start, with no count picked by the runtime.
+
+### R9-records/chrono-1: Docs and the dashboard still say v8 builds in any language, although the box runs a fixed list and refuses everything else
+- unfixed, `public/index.html:98`
+- Owner (2026-10-15 05:16 / 05:17): 1. more code that just js. Any code type. should be adrogenous || there shouldn't be any version pinning or code type pinning or specific prompt pinning.
+- Required: Make the dashboard labels and how-it-works say what the box does: it runs a fixed set of languages from its image, and 'Any code type' is waiting on the owner. Keep them that way until the box actually runs any code type.
+
+### R9-records/code-2: rulings.md keeps the removed parsers and path rule (commandArgv, urlPathError, SELECTOR) as helpers that stay in validations.js
+- record, `docs/owner/rulings.md:33`
+- Owner (2026-10-16 20:38 / 2026-10-16 20:40 / 2026-10-16 05:39): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it || not parsing the models output, but functions exposed to the models. for every model. For every interaction. || there should be no per command blocklists, there should be no path rules for agents
+- Required: Rewrite rulings.md:33 so it no longer lists a parser, selector grammar or path rule as carried over. Name only what is kept (checkSummary and the executability rules), since the owner ruled out runtime parsing of model output and path rules.
+
+### R9-records/record-2: The benchmark panel says task rooms share 'one executor of the run's pool' of Container slots, but every v8 task room compiles in its own fresh box, and a test pins the text
+- record, `public/app.js:713`
+- Owner (2026-10-15 15:52): otherwise for testing, they should just get their own little testing box instead of limiting what they can do
+- Required: Rewrite the bench-slots text, and the test that pins it, to say what the code does: Rooms at once is capped by the deployment's BENCH_EXECUTORS setting, and each compile of a task room runs in its own fresh box.
+
 ## Fixed, awaiting recheck
 
-### R7-splitter/code-1: Admitting a level gives every piece all its parent's packages for a guessed language, whatever packages the splitter named for it
-- extra, `src/packages.js:83`
-- Owner (2026-10-15 22:11; 2026-10-16 20:38): packages should be listed in the durable object upon creation, same way as interfaces. That way it can have the same hierarchy as interfaces || e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
-- Required: Give a piece the packages the splitter named for it through piece(), nothing more, the same way it gets only the contracts named for it. Drop the language-guess inheritance.
-- Fixed in: 3a380a4 (with 296ba0b): a rebuild's pieces get only the packages, uses and refs the splitter named for them; the job no longer carries packages.
-
-### R8-room/record-1: Level-file comments still describe the removed entry amendments and an 'ask job' that grows a level
-- record, `src/index.js:8493`
-- Owner (2026-10-16 05:39): Managers rewrite their children’s assignments at runtime. - this is why managers are clef. Clef is built to walk the tree and route questions. The builder can know what the original design is from the splitter, sure, but the manager doesn't need to know that, that's why we use an artifact for that.
-- Required: Rewrite both comments to say what the code does now. The splitter's entries in the level file are never amended. An ask is answered, granted or passed up with ask_parent, and never becomes a level job. The only changes to the file are an admitted level or job, a validation joining serves, and an archive.
-- Fixed in: 4ba0af0: the level-file comments name its three writers (an admission, serveBelow, archive) and say an ask never writes the file.
-
-### R8-splitter/chrono-1: A browser check's selector is refused unless it is a 'simple selector' that starts with a tag, though the page runs any CSS selector
-- extra, `src/validations.js:239`
-- Owner (2026-10-16 16:14; 2026-10-16 20:40): you added those yourself. (16:14, on the runtime's rules for what a split may contain) || every model should work that way, where the runtime should only be interfaces exposed to the models. not parsing the models output, but functions exposed to the models. (20:40, accepting an interface whose validation() rule is 'The check must run as written')
-- Required: Store the selector as the splitter writes it and let the box run it. Refuse it only when the page's selector engine cannot read it, and give that engine's own reason, with no runtime-picked selector grammar in validations.js or the adapter.
-- Fixed in: 3a380a4: a browser check's selector is stored and run as written (page.locator); SELECTOR and ELEMENT_SELECTOR are gone.
-
-### R8-splitter/chrono-2: A command line the splitter writes is parsed by the runtime's own quoting grammar, which refuses a backslash outside quotes
-- drift, `src/validations.js:40`
-- Owner (2026-10-16 20:38; 2026-10-16 20:40): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it || every model should work that way, where the runtime should only be interfaces exposed to the models. not parsing the models output, but functions exposed to the models. for every model. For every interacti …
-- Required: Give the splitter an interface that takes the command as its argument list (program, then each argument), stored and run exactly as given, instead of a flat command line that the runtime parses with a quoting grammar it picked.
-- Fixed in: 3a380a4: a command is its argument list, stored as argv and run by the box's exec as given; the runtime's quoting grammar (commandArgv) is gone.
-
-### R8-worker/chrono-1: A worker's available packages are filtered by the runtime's guess of the tree's languages from contract file extensions
-- extra, `src/index.js:758`
-- Owner (2026-10-15 22:11; 2026-10-16 20:38; 2026-10-16 20:08): packages should be listed in the durable object upon creation, same way as interfaces. That way it can have the same hierarchy as interfaces || e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it || the runtime should only be exposing functions that make other …
-- Required: Show the worker every package its row lists, as the row holds it, just as its contracts are shown, with no runtime filter by guessed language.
-- Fixed in: 3a380a4: packageView returns every package the row lists (no contractLanguages filter).
-
-### R8-worker/record-1: rulings.md says a worker's file outside its contract paths 'reaches no one else', but the join ships every file of the worker's repository
-- record, `docs/owner/rulings.md:94`
-- Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
-- Required: Rewrite rulings.md:94 to say what the owner ruled and the code does: a worker's world is its own repository, and every file it writes there is part of what the builder joins and ships. No sentence should say that a file outside the contract paths reaches no one.
-- Fixed in: 4ba0af0: rulings.md and how-it-works say every file a worker writes is joined and ships: at a contract path, or under its own folder.
-
-### R8-edges/chrono-2: Link reader agents are named reader-S1-2, not <role>-hex16 like every other agent
-- drift, `src/index.js:703`
-- Owner (2026-10-16 05:08): can everything here just get a base16 name? things should still be named manager or whatever, but just name it manager actually root is deprecated by design anyway, it should be manager-hex16 give boxes a hex16 name as well
-- Required: Name each link reader reader-<hex16>, as every other agent is named <role>-<hex16>, and update the test that pins reader-S1-1.
-- Fixed in: e6f22fd: each link reader is named reader-<hex16> (rowId), like every other row.
-
-### R8-edges/chrono-4: Bench comments still say datasets are fetched under the owner's allowlist 'narrowed to the dataset hosts'
-- record, `src/bench.js:7`
-- Owner (2026-10-15 05:16): 2. I want to be able to point this thing at links and benchmarks, like AI benchmarks
-- Required: Rewrite both comments to say what the code does: a dataset is fetched from any host the owner's FETCH_ALLOW allows, with the deployment's own hosts refused.
-- Fixed in: 885f91e: bench comments say a dataset is fetched from any host FETCH_ALLOW allows.
-
-### R8-records/chrono-1: README and INSTALL say the v8 box runs any code type 'with no fixed set of languages', but the box pins a fixed list and refuses everything else
-- record, `README.md:96`
-- Owner (2026-10-15 05:16 / 05:17): 1. more code that just js. Any code type. should be adrogenous || there shouldn't be any version pinning or code type pinning or specific prompt pinning.
-- Required: Until the box actually runs any code type, the README and INSTALL must say what it does: a fixed set of languages from the box image, with function contracts in other languages refused at declaration. The open pinning items should not be described as settled.
-- Fixed in: 4ba0af0: README and INSTALL say the box runs a fixed set of languages, its image's, and that any code type waits on the owner.
-
-### R8-records/chrono-3: Dashboard says the manager states its level's contracts and validations; the owner gave that to the splitter
-- record, `public/index.html:133`
-- Owner (2026-10-16 05:21): manager (router of the system) - owns the interfaces of its children ... splitter - handles splitting the code into smaller chunks (essentially what you're calling manager now). Also build validations for that level in form of "contracts"
-- Required: Say that the manager's splitter states the level (its contracts and the validations that check them), and that the manager owns its children's interfaces and routes.
-- Fixed in: 4ba0af0: the dashboard says the manager's splitter states its level's contracts and validations.
-
-### R8-records/code-2: The changelog says a v8 run is ready once its ready path answers at all, but without a network namespace the box still requires a status below 500
-- record, `CHANGELOG-v8.md:466`
-- Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
-- Required: Correct CHANGELOG-v8.md:466 to say what the box does: in a box without a network namespace a run counts as ready only once its ready path answers below 500. Keep it that way until the code counts any answer as ready, as the owner's 'write via those interfaces. That's it' requires.
-- Fixed in: 4ba0af0: the changelog says a run is ready on any answer inside a network namespace, and below 500 without one (waiting on the owner).
-
-### R8-records/record-1: Changelog and rulings say a level file stays as its splitter wrote it, but admissions rewrite level files below and replace contracts in the manager's own design artifact
-- record, `CHANGELOG-v8.md:475`
-- Owner (2026-10-16 05:39): Managers rewrite their children's assignments at runtime. - this is why managers are clef. Clef is built to walk the tree and route questions. The builder can know what the original design is from the splitter, sure, but the manager doesn't need to know that, that's why we use an artifact for that.
-- Required: The owner's words make each level's artifact the original design its splitter wrote. Either keep each level file, the parent's and the ones below, as its own splitter wrote it, and record later joins and rebuilt contracts somewhere other than the original design, or change CHANGELOG-v8.md:475 and rulings.md:76 so they no longer claim the artifact stays as written while the runtime rewrites it.
-- Fixed in: 4ba0af0: the changelog, rulings and how-it-works say what changes a level file (an admission, a serves join, an archive) and that a change or an answer never writes it.
+(none)
 
 ## Disputed
 
@@ -1304,6 +1324,12 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: A manager answers the ask (the asker hears the contract) and routes. It does not rewrite its children's assignments in the splitter's design artifact, so the level file keeps the original design the splitter wrote.
 - Closed: round 8 recheck (4 of 4): src/index.js:8885-8890: answerAsk now only calls answerAsker with {call:c.name}, which goes into fn_answers. amendEntry is gone (grep finds no match). updateLevel is not called from the ask path, and neither is a write to a row's uses. assignmentOf (8336-8337) works out the callable names from the entry's calls plus the answered calls, and callableOf (8380) reads them, so the level file keeps what
 
+### R7-splitter/code-1: Admitting a level gives every piece all its parent's packages for a guessed language, whatever packages the splitter named for it
+- extra, `src/packages.js:83`
+- Owner (2026-10-15 22:11; 2026-10-16 20:38): packages should be listed in the durable object upon creation, same way as interfaces. That way it can have the same hierarchy as interfaces || e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
+- Required: Give a piece the packages the splitter named for it through piece(), nothing more, the same way it gets only the contracts named for it. Drop the language-guess inheritance.
+- Closed: 3a380a4 (with 296ba0b): a rebuild's pieces get only the packages, uses and refs the splitter named for them; the job no longer carries packages. Closed by round 9 quorum.
+
 ### R7-splitter/record-1: A validation a job writes for a contract the level already has never joins that contract's serves, so its examples reach no worker though the level's compiler checks it
 - drift, `src/index.js:8510`
 - Owner (2026-10-16 05:49 / 05:50): the worker doesn't get validations. The example sohuld be built from the validation. || there must 3 different examples for each contract
@@ -1346,6 +1372,72 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: Rewrite how-it-works.md:411 and INSTALL-CLOUDFLARE.md:335 to say what the box does: a step the call adapter cannot build from JSON is what the check observed, a failed step that goes back as a complaint. Remove it from the list of checks that could not run.
 - Closed: round 8 recheck (3 of 3): docs/how-it-works.md:411 now says what the call adapters build (the file's own structs, classes, enums and single-implementation interfaces) and that 'what JSON cannot give, such as a function or an interface several types implement, is the check's observed failure'. INSTALL-CLOUDFLARE.md:335 lists only box/Chromium start failures as checks that could not run, and no longer mentions JSON. A grep f
 
+### R8-room/record-1: Level-file comments still describe the removed entry amendments and an 'ask job' that grows a level
+- record, `src/index.js:8493`
+- Owner (2026-10-16 05:39): Managers rewrite their children’s assignments at runtime. - this is why managers are clef. Clef is built to walk the tree and route questions. The builder can know what the original design is from the splitter, sure, but the manager doesn't need to know that, that's why we use an artifact for that.
+- Required: Rewrite both comments to say what the code does now. The splitter's entries in the level file are never amended. An ask is answered, granted or passed up with ask_parent, and never becomes a level job. The only changes to the file are an admitted level or job, a validation joining serves, and an archive.
+- Closed: 4ba0af0: the level-file comments name its three writers (an admission, serveBelow, archive) and say an ask never writes the file. Closed by round 9 quorum.
+
+### R8-splitter/chrono-1: A browser check's selector is refused unless it is a 'simple selector' that starts with a tag, though the page runs any CSS selector
+- extra, `src/validations.js:239`
+- Owner (2026-10-16 16:14; 2026-10-16 20:40): you added those yourself. (16:14, on the runtime's rules for what a split may contain) || every model should work that way, where the runtime should only be interfaces exposed to the models. not parsing the models output, but functions exposed to the models. (20:40, accepting an interface whose validation() rule is 'The check must run as written')
+- Required: Store the selector as the splitter writes it and let the box run it. Refuse it only when the page's selector engine cannot read it, and give that engine's own reason, with no runtime-picked selector grammar in validations.js or the adapter.
+- Closed: 3a380a4: a browser check's selector is stored and run as written (page.locator); SELECTOR and ELEMENT_SELECTOR are gone. Closed by round 9 quorum.
+
+### R8-splitter/chrono-2: A command line the splitter writes is parsed by the runtime's own quoting grammar, which refuses a backslash outside quotes
+- drift, `src/validations.js:40`
+- Owner (2026-10-16 20:38; 2026-10-16 20:40): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it || every model should work that way, where the runtime should only be interfaces exposed to the models. not parsing the models output, but functions exposed to the models. for every model. For every interacti …
+- Required: Give the splitter an interface that takes the command as its argument list (program, then each argument), stored and run exactly as given, instead of a flat command line that the runtime parses with a quoting grammar it picked.
+- Closed: 3a380a4: a command is its argument list, stored as argv and run by the box's exec as given; the runtime's quoting grammar (commandArgv) is gone. Closed by round 9 quorum.
+
+### R8-worker/chrono-1: A worker's available packages are filtered by the runtime's guess of the tree's languages from contract file extensions
+- extra, `src/index.js:758`
+- Owner (2026-10-15 22:11; 2026-10-16 20:38; 2026-10-16 20:08): packages should be listed in the durable object upon creation, same way as interfaces. That way it can have the same hierarchy as interfaces || e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it || the runtime should only be exposing functions that make other …
+- Required: Show the worker every package its row lists, as the row holds it, just as its contracts are shown, with no runtime filter by guessed language.
+- Closed: 3a380a4: packageView returns every package the row lists (no contractLanguages filter). Closed by round 9 quorum.
+
+### R8-worker/record-1: rulings.md says a worker's file outside its contract paths 'reaches no one else', but the join ships every file of the worker's repository
+- record, `docs/owner/rulings.md:94`
+- Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
+- Required: Rewrite rulings.md:94 to say what the owner ruled and the code does: a worker's world is its own repository, and every file it writes there is part of what the builder joins and ships. No sentence should say that a file outside the contract paths reaches no one.
+- Closed: 4ba0af0: rulings.md and how-it-works say every file a worker writes is joined and ships: at a contract path, or under its own folder. Closed by round 9 quorum.
+
+### R8-edges/chrono-2: Link reader agents are named reader-S1-2, not <role>-hex16 like every other agent
+- drift, `src/index.js:703`
+- Owner (2026-10-16 05:08): can everything here just get a base16 name? things should still be named manager or whatever, but just name it manager actually root is deprecated by design anyway, it should be manager-hex16 give boxes a hex16 name as well
+- Required: Name each link reader reader-<hex16>, as every other agent is named <role>-<hex16>, and update the test that pins reader-S1-1.
+- Closed: e6f22fd: each link reader is named reader-<hex16> (rowId), like every other row. Closed by round 9 quorum.
+
+### R8-edges/chrono-4: Bench comments still say datasets are fetched under the owner's allowlist 'narrowed to the dataset hosts'
+- record, `src/bench.js:7`
+- Owner (2026-10-15 05:16): 2. I want to be able to point this thing at links and benchmarks, like AI benchmarks
+- Required: Rewrite both comments to say what the code does: a dataset is fetched from any host the owner's FETCH_ALLOW allows, with the deployment's own hosts refused.
+- Closed: 885f91e: bench comments say a dataset is fetched from any host FETCH_ALLOW allows. Closed by round 9 quorum.
+
+### R8-records/chrono-1: README and INSTALL say the v8 box runs any code type 'with no fixed set of languages', but the box pins a fixed list and refuses everything else
+- record, `README.md:96`
+- Owner (2026-10-15 05:16 / 05:17): 1. more code that just js. Any code type. should be adrogenous || there shouldn't be any version pinning or code type pinning or specific prompt pinning.
+- Required: Until the box actually runs any code type, the README and INSTALL must say what it does: a fixed set of languages from the box image, with function contracts in other languages refused at declaration. The open pinning items should not be described as settled.
+- Closed: 4ba0af0: README and INSTALL say the box runs a fixed set of languages, its image's, and that any code type waits on the owner. Closed by round 9 quorum.
+
+### R8-records/chrono-3: Dashboard says the manager states its level's contracts and validations; the owner gave that to the splitter
+- record, `public/index.html:133`
+- Owner (2026-10-16 05:21): manager (router of the system) - owns the interfaces of its children ... splitter - handles splitting the code into smaller chunks (essentially what you're calling manager now). Also build validations for that level in form of "contracts"
+- Required: Say that the manager's splitter states the level (its contracts and the validations that check them), and that the manager owns its children's interfaces and routes.
+- Closed: 4ba0af0: the dashboard says the manager's splitter states its level's contracts and validations. Closed by round 9 quorum.
+
+### R8-records/code-2: The changelog says a v8 run is ready once its ready path answers at all, but without a network namespace the box still requires a status below 500
+- record, `CHANGELOG-v8.md:466`
+- Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
+- Required: Correct CHANGELOG-v8.md:466 to say what the box does: in a box without a network namespace a run counts as ready only once its ready path answers below 500. Keep it that way until the code counts any answer as ready, as the owner's 'write via those interfaces. That's it' requires.
+- Closed: 4ba0af0: the changelog says a run is ready on any answer inside a network namespace, and below 500 without one (waiting on the owner). Closed by round 9 quorum.
+
+### R8-records/record-1: Changelog and rulings say a level file stays as its splitter wrote it, but admissions rewrite level files below and replace contracts in the manager's own design artifact
+- record, `CHANGELOG-v8.md:475`
+- Owner (2026-10-16 05:39): Managers rewrite their children's assignments at runtime. - this is why managers are clef. Clef is built to walk the tree and route questions. The builder can know what the original design is from the splitter, sure, but the manager doesn't need to know that, that's why we use an artifact for that.
+- Required: The owner's words make each level's artifact the original design its splitter wrote. Either keep each level file, the parent's and the ones below, as its own splitter wrote it, and record later joins and rebuilt contracts somewhere other than the original design, or change CHANGELOG-v8.md:475 and rulings.md:76 so they no longer claim the artifact stays as written while the runtime rewrites it.
+- Closed: 4ba0af0: the changelog, rulings and how-it-works say what changes a level file (an admission, a serves join, an archive) and that a change or an answer never writes it. Closed by round 9 quorum.
+
 ## Rejected by quorum
 
 - R1-record-14: CHANGELOG-v8.md never records the owner's 2026-10-16 rulings, so its last word is that workers get the goal and shared principles (`CHANGELOG-v8.md`). chrono: CHANGELOG-v8.md:59, :61 and :67 describe what the S6 and B1 slices did at the time, and that history is accurate. The code already honours the owner: there is no PRINCIPLES, no goal in workerView and no tamper scan. A missing changelog entry does not say something the owner didn't, and no ow
@@ -1361,6 +1453,7 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - R8-splitter/code-3: Routes and http steps are limited to five HTTP methods by a runtime list (`src/validations.js`). splitter/chrono: Verified. METHODS (validations.js:33), the refusal in httpStep (:188), ROUTE_NAME (contracts.js:28, used in nameError and called from splitter.js:84) and the http_check enum in prompts.js all limit methods to GET, POST, PUT, PATCH and DELETE. The box's http-check.mjs:85,95 sends any
 - R8-edges/record-3: Benchmark 'Rooms at once' is hard-capped at 16, a ceiling no person can raise (`src/bench.js`). edges/chrono: The cap exists (bench.js:30 concurrency [1,16], enforced in benchRoute). But the owner accepted bounded inputs with limits ('add a little red flash to the gui when you hit a limit on the slider', 2026-10-15 00:58). The quorum rejected the analogous box-concurrency ceiling (R6-compiler/
 - R8-records/chrono-2: A manager is no longer drawn split in half (|) while its builder is building; it stays a full circle (`public/app.js`). records/chrono: The 2026-10-13 00:14 split-manager glyph was asked for when the builder was not its own node, as the way to show that a manager was using a builder. Later prompts change that picture: at 00:22 'literally just circles', and on 2026-10-16 18:36/18:37 every agent visible in the tree, wi
+- R9-compiler/chrono-2: The check box holds only UTF-8 text: a project's binary base files (images, fonts, archives) are left out of the world its checks run in (`src/index.js`). compiler/chrono: addCarried (index.js:3741-3753) does leave non-UTF-8 base files out of the box. But the quoted 05:39 prompt is about per-command blocklists and path rules for agents, and the owner never spoke about how the box stores binary files. Leaving binary files out is a limit of how the box 
 
 ## Rounds
 
@@ -1372,3 +1465,4 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Round 6 (2026-10-17, six teams of three, snapshot ebc1dac): 46 findings, 26 confirmed, 17 folded, 3 rejected; rechecks closed 33 of 41 and reopened 8.
 - Round 7 (2026-10-17, six teams of three, snapshot 1554ac3): 28 findings, 14 confirmed, 13 folded, 1 rejected; rechecks closed 25 of 31 and reopened 6.
 - Round 8 (2026-10-17, six teams of three, snapshot 2914aac): 29 findings, 17 confirmed, 9 folded, 3 rejected; rechecks closed 10 of 11 and reopened 1.
+- Round 9 (2026-10-17, six teams of three, snapshot 9bcfb34): 23 findings, 18 confirmed, 4 folded, 1 rejected; rechecks closed 12 of 12 and reopened 0.
