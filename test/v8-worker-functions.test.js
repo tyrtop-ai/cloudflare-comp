@@ -247,8 +247,8 @@ test('an ask the worker\'s world answers by name is answered in the function\'s 
 
 // ------------------------------------------------------------ complaints, and what a manager reads
 // A small tree with level files: Top divides into A and B; A hands down to worker WA, B to worker WB.
-async function tree(clef) {
-  const r = liveRoom({room_id: 'choice-room-0001', clef}), room = r.room;
+async function tree(clef, leaf = null) {
+  const r = liveRoom({room_id: 'choice-room-0001', clef, leaf}), room = r.room;
   room.configure({pipeline: 'v8'});
   room.set('run_nonce', 'run-1');
   const top = await room.provision(await rowId('choice-room-0001', 1, 'manager'), null, 'Top', 'a page and its styles', [], [], [], 'manager', {seq: 1});
@@ -312,6 +312,30 @@ test('what a manager\'s choice reads and what reaches the worker are whole: the 
   assert.equal(room.read(`fn_answers:${wa.id}`, []).length, 12);
   assert.equal(room.workerView(wa.id).world.answers.length, 12);
   assert.ok(PAGE && CSS);
+});
+
+test('a complaint the worker was handed stays in its view until a session of it ends with done: a session that ends with wait, or with its context window full, keeps it', async () => {
+  const seen = [];
+  const leaf = (user, n, _s, {round}) => {
+    if (round === 1) seen.push(user.complaints);
+    // Session 2 never ends its turn: it reads its file until its context window is full.
+    if (n === 2) return round === 1 ? [{name: 'write_file', arguments: {path: 'index.html', content: `<p>${'x'.repeat(9000)}</p>\n`}}] : [{name: 'read_file', arguments: {path: 'index.html'}}];
+    return [{name: n === 3 ? 'done' : 'wait', arguments: {summary: `session ${n}`}}];
+  };
+  const {room, wa} = await tree(recorded().clef, leaf);
+  const complain = text => room.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)', 'runtime:complaint', wa.id, `[complaint] ${text}`);
+  complain('the list is empty');
+  await room.levelWorkerTurn(wa.id);
+  assert.equal(room.node(wa.id).status, 'waiting');
+  complain('the title is missing');
+  await room.levelWorkerTurn(wa.id);
+  assert.match(events(room, 'session').at(-1).body, /its context window was full/);
+  await room.levelWorkerTurn(wa.id);
+  assert.deepEqual(seen, [['the list is empty'], ['the list is empty', 'the title is missing'], ['the list is empty', 'the title is missing']]);
+  // Its done answered them: the next session reads only what is new.
+  complain('the page is blank');
+  await room.levelWorkerTurn(wa.id);
+  assert.deepEqual(seen.at(-1), ['the page is blank']);
 });
 
 test('a manager reads its children and contracts from its level files only, never from the rows\' copies: a copy that says otherwise changes nothing it is shown or chooses', async () => {

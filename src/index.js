@@ -9167,7 +9167,8 @@ export class ControlRoom extends DurableObject {
   // names and paths, each with every example rendered from the validations
   // that serve it, and the names it may call with their references), the
   // paths of its own files (it reads them with read_file), the complaints
-  // routed to it, verbatim, and its world: what it can ask for by name and
+  // routed to it that it has not answered with done (heldComplaints),
+  // verbatim, and its world: what it can ask for by name and
   // the answers it has, the chunks of linked pages and the existing files it
   // holds. The prompt is the one its manager's level file holds for it (designOf).
   workerView(id, inbox=[], ownFiles=[]) {
@@ -9179,11 +9180,18 @@ export class ControlRoom extends DurableObject {
       examples:contractExamples(c,(c.serves||[]).map(v=>byId.get(v)).filter(Boolean))}));
     const prompt={task:design.prompt,deliver,...(callable.length?{call:callable.map((c,i)=>({name:c.name,contract:contractLine(c),reference:refs[i]?.reference||c.name}))}:{})};
     const files=ownFiles.map(f=>f.path).sort();
-    const complaints=inbox.filter(m=>/^\[complaint\] /.test(m.body)).map(m=>m.body.slice(12));
+    const complaints=this.heldComplaints(id,inbox).map(c=>c.text);
     const answers=this.read(`fn_answers:${id}`,[]).map(a=>a.text),digest=this.heldDigest(id),base=this.baseFilesFor(id);
     const world={...this.availableView(id,answers),...(answers.length?{answers}:{}),...this.sourceInputs(id,'chunks'),
       ...(digest||base.length?{base_note:MESSAGES.base_note(),...(digest?{existing_files:{label:BASE_LABEL,digest}}:{}),...(base.length?{base_files:base}:{})}:{})};
     return {prompt,files,complaints,world};
+  }
+  // The complaints a worker was handed and has not answered with done: those
+  // an earlier session read that ended with wait or a full context window
+  // (complaints:<id>), then the new ones in its inbox, each once, verbatim.
+  heldComplaints(id, inbox=[]) {
+    const held=this.read(`complaints:${id}`,[]),seen=new Set(held.map(c=>c.id));
+    return [...held,...inbox.filter(m=>/^\[complaint\] /.test(m.body)&&!seen.has(m.id)).map(m=>({id:m.id,text:m.body.slice(12)}))];
   }
   // A worker's turn is one session of its functions (src/worker.js): it
   // reads and writes its own files (staged for the turn's one commit), runs
@@ -9219,7 +9227,8 @@ export class ControlRoom extends DurableObject {
     const operations=[
       async () => {if(end){this.db().exec('UPDATE agents SET summary=? WHERE id=?',clip(end.summary,1100),id);this.event(id,'report',clip(end.summary,1100),n.parent||'');}},
       async () => {await this.flushWrites(id);},
-      async () => {this.acknowledge(id,inbox);},
+      // Its messages are read; a complaint it was handed stays in its view until a session of it ends with done.
+      async () => {this.save(`complaints:${id}`,end?.done?[]:this.heldComplaints(id,inbox));this.acknowledge(id,inbox);},
       async () => {
         const node=this.node(id);
         if(!node||['archived','failed','retired'].includes(node.status))return;
