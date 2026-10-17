@@ -19,9 +19,9 @@ export {SOURCE_CLAUSE};
 // (error says why not), with its summary; source_chunks: the stored text,
 // cut as its summary cut it, so a ref S1#3 is the third chunk of S1; base_files: the
 // project the room starts from (§7.1), with each file's mode (an executable
-// keeps its bit); base_passthrough: the files of that project the room does
-// not build (a path outside the box's folder, a binary, a vendored
-// directory), carried untouched as bytes into the export, never built or
+// keeps its bit); base_passthrough: the files of that project whose content
+// is not text (a NUL byte, or not UTF-8) or whose path is outside the box's
+// folder, carried untouched as bytes into the export, never built or
 // checked; the agents see them listed by path beside the base files.
 export const INPUT_TABLES = Object.freeze(['sources', 'source_chunks', 'base_files', 'base_passthrough']);
 export const INPUT_SCHEMA = Object.freeze([
@@ -78,14 +78,12 @@ export function notCarried(path) {
 // Sort the base: entries [{path, text} | {path, bytes, reason}] with a mode
 // each. Kept as base files, every one, whole: text at a path inside the
 // box's folder. Carried untouched: what is bytes already, a path outside the
-// box's folder, a binary. Never carried, and listed: the runtime's paths, a
-// second file whose path equals another's apart from case (a
-// case-insensitive file system holds one of them), and a file larger than
-// one storage row holds (STORE_ROW_BYTES). Result: {files: Map(path →
+// box's folder, a binary. Never carried, and listed: the runtime's paths,
+// and a file larger than one storage row holds (STORE_ROW_BYTES). Result: {files: Map(path →
 // text), modes: Map(path → mode), passthrough: [{path, bytes, mode,
 // reason}], not_carried: [{path, reason}], skipped, skipped_count, bytes}.
 export function keepBaseFiles(entries, limits = {}) {
-  const L = {...REPO_LIMITS, ...limits}, files = new Map(), modes = new Map(), passthrough = [], not_carried = [], skipped = [], seen = new Map();
+  const L = {...REPO_LIMITS, ...limits}, files = new Map(), modes = new Map(), passthrough = [], not_carried = [], skipped = [];
   let bytes = 0, passBytes = 0, skipped_count = 0;
   const skip = (path, reason) => { skipped_count++; if (skipped.length < L.maxSkipped) skipped.push({path: clip(path, 200), reason}); };
   const drop = (path, reason) => { if (not_carried.length < L.maxSkipped) not_carried.push({path: clip(path, 200), reason}); };
@@ -100,9 +98,6 @@ export function keepBaseFiles(entries, limits = {}) {
     if (!path) continue;
     const never = notCarried(path);
     if (never) { drop(path, never); continue; }
-    const low = path.toLowerCase();
-    if (seen.has(low)) { drop(path, `the same path as ${seen.get(low)} apart from letter case`); continue; }
-    seen.set(low, path);
     if (e.bytes instanceof Uint8Array) { carry(path, e.bytes, e.mode, e.reason || 'carried untouched'); continue; }
     const text = String(e.text ?? '');
     if (boxPathError(path)) { carry(path, utf8.encode(text), e.mode, 'a path outside the box\'s folder'); continue; }

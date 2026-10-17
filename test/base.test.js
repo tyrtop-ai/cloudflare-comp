@@ -63,7 +63,7 @@ test('repo URLs: only https://github.com/<owner>/<name>', () => {
     assert.equal(parseRepoUrl(bad), null, bad);
 });
 
-test('public repo: default branch without a token, then the tarball; binaries, vendored dirs, .git and links skipped', async () => {
+test('public repo: default branch without a token, then the tarball; every regular file is the project\'s whatever its directory or extension (owner 2026-10-16 05:39: "no path rules for agents"); content that is not text is carried as bytes; .git and links skipped', async () => {
   const longPath = 'docs/' + 'deep/'.repeat(25) + 'notes.md';
   const archive = tarGz([
     {path: 'README.md', data: '# Widget\nA made-up example.\n'},
@@ -74,6 +74,9 @@ test('public repo: default branch without a token, then the tarball; binaries, v
     {path: 'node_modules/left-pad/index.js', data: 'module.exports=1'},
     {path: 'node_modules/left-pad/package.json', data: '{}'},
     {path: 'vendor/lib.go', data: 'package lib'},
+    {path: 'external/core.c', data: 'int core(void) { return 1; }\n'},
+    {path: 'build/gen.py', data: 'print(1)\n'},
+    {path: 'data/table.dat', data: '1,2,3\n'},
     {path: '.git/config', data: '[core]'},
     {path: 'assets/logo.png', data: new Uint8Array([0x89, 0x50, 0x4e, 0x47])},
     {path: 'data/blob.txt', data: new Uint8Array([0x61, 0, 0x62])},
@@ -88,21 +91,20 @@ test('public repo: default branch without a token, then the tarball; binaries, v
   assert.equal(r.error, null);
   assert.equal(r.ref, 'main');
   assert.equal(r.resolved_sha, SHA);
-  assert.deepEqual(Object.keys(r.files).sort(), ['README.md', 'big.txt', longPath, 'package.json', 'src/app.py', 'src/index.js'].sort());
+  assert.deepEqual(Object.keys(r.files).sort(), ['README.md', 'big.txt', 'build/gen.py', 'data/table.dat', 'external/core.c', longPath,
+    'node_modules/left-pad/index.js', 'node_modules/left-pad/package.json', 'package.json', 'src/app.py', 'src/index.js', 'vendor/lib.go'].sort());
   assert.equal(r.files['big.txt'], 'x'.repeat(300 * 1024), 'a large text file is a base file, whole');
   assert.equal(r.files[longPath], 'long path kept');
   const reasons = Object.fromEntries(r.skipped.map(s => [s.path, s.reason]));
   assert.deepEqual(reasons, {'.git/': '.git dropped', 'link-to-readme': 'link'});
-  // v8 S8b review: what the room does not build is carried through as bytes, with its mode.
+  // Content that is not text (by its bytes, never by its name) is carried through as bytes, with its mode.
   assert.deepEqual(r.passthrough.map(p => [p.path, p.reason]).sort(), [
-    ['assets/logo.png', 'binary'], ['data/blob.txt', 'binary'], ['data/latin1.txt', 'not UTF-8 text'],
-    ['node_modules/left-pad/index.js', 'vendored or generated directory'], ['node_modules/left-pad/package.json', 'vendored or generated directory'],
-    ['vendor/lib.go', 'vendored or generated directory']]);
+    ['assets/logo.png', 'not UTF-8 text'], ['data/blob.txt', 'binary'], ['data/latin1.txt', 'not UTF-8 text']]);
   assert.deepEqual([...r.passthrough.find(p => p.path === 'data/latin1.txt').bytes], [0x63, 0x61, 0x66, 0xe9]);
   assert.ok(r.passthrough.every(p => p.mode === 0o644));
   assert.equal(r.modes['README.md'], 0o644);
   assert.equal(r.truncated, false);
-  assert.equal(r.count, 6);
+  assert.equal(r.count, 12);
   assert.equal(r.bytes, Object.values(r.files).reduce((a, t) => a + byteLength(t), 0));
   assert.deepEqual(fetch.calls.map(c => new URL(c.url).host), ['api.github.com', 'codeload.github.com']);
   for (const {init} of fetch.calls) {

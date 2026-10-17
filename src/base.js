@@ -21,11 +21,6 @@ export const REPO_LIMITS = Object.freeze({
 // Only these two hosts are ever contacted, whatever FETCH_ALLOW says.
 const GITHUB_POLICY = {allow: ['api.github.com', 'codeload.github.com'], archive: true};
 const NAME = /^[A-Za-z0-9_.-]{1,100}$/;
-const VENDORED = new Set(['node_modules', 'bower_components', 'jspm_packages', 'vendor', 'vendors', 'third_party',
-  'third-party', 'external', 'deps', '.venv', 'venv', 'virtualenv', '__pycache__', '.tox', '.nox', '.mypy_cache',
-  '.pytest_cache', '.ruff_cache', 'site-packages', 'dist', 'build', 'target', 'out', '.next', '.nuxt', '.svelte-kit',
-  '.parcel-cache', '.cache', 'coverage', '.gradle', 'Pods', 'Carthage', '.terraform', '.idea', '.vs']);
-const BINARY_EXT = /\.(?:png|jpe?g|gif|bmp|ico|icns|webp|avif|tiff?|psd|ai|sketch|fig|pdf|docx?|xlsx?|pptx?|odt|zip|gz|tgz|bz2|xz|zst|7z|rar|tar|jar|war|ear|class|dex|apk|ipa|so|dylib|dll|exe|bin|dat|o|a|lib|obj|pyc|pyo|whl|egg|wasm|woff2?|ttf|otf|eot|mp[34]|m4a|wav|ogg|flac|mov|avi|mkv|webm|sqlite3?|db|npy|npz|pkl|pickle|h5|onnx|pt|ckpt|safetensors|parquet|arrow|lockb)$/i;
 
 const clip = (v, n = 300) => String(v ?? '').slice(0, n);
 const utf8 = new TextEncoder();
@@ -214,14 +209,8 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
     src = byteSource(await plainChunks(response.body, {race}));
     // ignoreBOM: a byte order mark is part of the file and survives (S8b review).
     const decoder = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true});
-    // A regular file the room does not build, carried as bytes.
-    const carry = async (entry, path, reason, data = null) => {
-      if (entry.type !== '0' && entry.type !== '\0' && entry.type !== '7') return skip(path, reason);
-      if (entry.size > L.maxFileBytes) return skip(path, `${reason}; larger than one storage row holds (${L.maxFileBytes} bytes)`);
-      const bytes = data || await entry.read();
-      if (!bytes) return;
-      out.passthrough.push({path, bytes: bytes.slice(), mode: entry.mode, reason});
-    };
+    // A file whose content is not text (a NUL byte, or not UTF-8), carried as bytes.
+    const carry = (entry, path, reason, data) => { out.passthrough.push({path, bytes: data.slice(), mode: entry.mode, reason}); };
     await readTar(src, async entry => {
       // Every entry must sit under the archive's single root directory
       // (<name>-<sha>/), which the first entry names.
@@ -238,11 +227,8 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
       const segs = path.split('/');
       const gitAt = segs.indexOf('.git');
       if (gitAt >= 0) { const d = segs.slice(0, gitAt + 1).join('/') + '/'; if (!recorded.has(d)) { recorded.add(d); skip(d, '.git dropped'); } return; }
-      const vend = segs.slice(0, -1).findIndex(s => VENDORED.has(s));
       if (entry.type === '1' || entry.type === '2') return skip(path, 'link');
       if (entry.type !== '0' && entry.type !== '\0' && entry.type !== '7') return skip(path, 'not a regular file');
-      if (vend >= 0) return carry(entry, path, 'vendored or generated directory');
-      if (BINARY_EXT.test(path)) return carry(entry, path, 'binary');
       if (entry.size > L.maxFileBytes) return skip(path, `larger than one storage row holds (${L.maxFileBytes} bytes)`);
       const prior = sizes.get(path) ?? null;
       const data = await entry.read();

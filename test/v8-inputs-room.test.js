@@ -115,16 +115,15 @@ test('base: owner/name or a github.com URL, or a room id; anything else is refus
     assert.ok(normalizeBase(bad).error, JSON.stringify(bad));
 });
 
-test('base files: every text file, whole, at any path inside the box\'s folder (no count or size of the runtime\'s); binaries are carried untouched; the runtime\'s paths and case twins are not carried', () => {
+test('base files: every text file, whole, at any path inside the box\'s folder (no count or size of the runtime\'s); binaries are carried untouched; the runtime\'s paths are not carried; two paths apart from letter case are two files', () => {
   const t = (path, text, mode = 0o644) => ({path, text, mode});
   const kept = keepBaseFiles([t('README.md', '# x\n'), t('.recursive/RUN.md', 'notes'), t('glue/index.js', 'x'), t('memory/public.json', '{}'), t('a b.txt', 'x'),
     t('.github/workflows/ci.yml', 'on: push'), t('.gitignore', 'node_modules\n'), t('data.bin', 'a\u0000b'), t('big.txt', 'x'.repeat(300 * 1024)), t('bin/run.sh', 'echo hi\n', 0o755),
     t('readme.md', 'a twin\n'), {path: 'logo.png', bytes: new Uint8Array([1, 2, 3]), mode: 0o644, reason: 'binary'}]);
-  assert.deepEqual([...kept.files.keys()], ['.github/workflows/ci.yml', '.gitignore', 'README.md', 'a b.txt', 'big.txt', 'bin/run.sh', 'memory/public.json']);
+  assert.deepEqual([...kept.files.keys()], ['.github/workflows/ci.yml', '.gitignore', 'README.md', 'a b.txt', 'big.txt', 'bin/run.sh', 'memory/public.json', 'readme.md']);
   assert.equal(kept.modes.get('bin/run.sh'), 0o755);
   assert.deepEqual(kept.passthrough.map(p => [p.path, p.reason]), [['data.bin', 'binary'], ['logo.png', 'binary']]);
-  assert.deepEqual(kept.not_carried.map(s => [s.path, s.reason]), [['.recursive/RUN.md', 'the runtime writes this path for each run'], ['glue/index.js', 'the runtime writes this path for each run'],
-    ['readme.md', 'the same path as README.md apart from letter case']]);
+  assert.deepEqual(kept.not_carried.map(s => [s.path, s.reason]), [['.recursive/RUN.md', 'the runtime writes this path for each run'], ['glue/index.js', 'the runtime writes this path for each run']]);
   const many = keepBaseFiles(Array.from({length: 410}, (_, i) => t(`f${String(i).padStart(3, '0')}.txt`, 'x\n')));
   assert.deepEqual([many.files.size, many.passthrough.length, many.skipped_count], [410, 0, 0]);
   // Only what one storage row cannot hold (Cloudflare's 2 MB) is left out, and listed.
@@ -615,8 +614,7 @@ test('S8b review M5: files the room does not build are carried untouched (bytes,
   const {room, drain} = inputsRoom({level: README_LEVEL, judge: readmeJudge, fetch, answers: {'README.md': [wrote([['README.md', GOOD_README]])]}});
   await room.start(README_GOAL, 20, {pipeline: 'v8'}, 'room-m5m5-0001', {base: {repo: 'acme-example/widget'}, selfHosts: ['c.example.com']});
   await drain();
-  // Text at any path inside the box's folder (a dotfile path, a path with a space) is a base file; a carried file that is text
-  // (dist/bundle.js) ships in the bundle, so its box held it and its syntax step compiled it; a binary the box cannot hold, so the
+  // Text at any path inside the box's folder (a dotfile path, a path with a space, a file under dist/) is a base file; a binary the box cannot hold, so the
   // room completes on what its final compiler observed (no hold), and the export names it as never in a box.
   assert.equal(room.snapshot().pause, null, trace(room));
   assert.equal(room.get('status'), 'complete', trace(room));
@@ -637,7 +635,8 @@ test('S8b review M5: files the room does not build are carried untouched (bytes,
   const notes = at('.recursive/RUN.md').content;
   assert.match(notes, /Carried untouched, never built, run or checked \(1\):[\s\S]*`logo\.png` \(binary\)/);
   assert.match(notes, /Not carried[\s\S]*`glue\/loader\.js` \(the runtime writes this path for each run\)/);
-  assert.equal(room.snapshot().base.passthrough, 2);
+  // Only the binary is carried as bytes: dist/bundle.js is text, so it is a base file like any other (no directory-name list).
+  assert.equal(room.snapshot().base.passthrough, 1);
   // The ZIP holds the bytes and the exec bit.
   const zip = zipFiles(app.files);
   const hasExec = [...zip.keys()].some(i => zip[i] === 0x00 && zip[i + 1] === 0x00 && zip[i + 2] === 0xed && zip[i + 3] === 0x81);
