@@ -8,13 +8,14 @@ const [journal, round, out = new URL('../docs/owner/redteam-findings.md', import
 const rows = readFileSync(journal, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))
 const label = Object.fromEntries(rows.filter(r => r.type === 'started').map(r => [r.key, r.label]))
 const results = rows.filter(r => r.type === 'result' && r.result).map(r => ({ label: label[r.key] || '', ...r.result }))
-const lensOf = l => l.split(':')[1]
+// Round 1 had one team (hunt:<lens>); the swarm has six (hunt:<team>:<lens>).
+const lensOf = l => l.split(':').slice(1).join('/')
 
 const findings = []
 const rechecks = {}
 for (const h of results.filter(r => r.label.startsWith('hunt:'))) {
   const lens = lensOf(h.label)
-  h.findings.forEach((f, j) => findings.push({ ...f, key: `${lens}-${j + 1}` }))
+  h.findings.forEach((f, j) => findings.push({ ...f, key: `${lens}-${j + 1}`, team: lens.includes('/') ? lens.split('/')[0] : '' }))
   h.rechecks.forEach(r => (rechecks[r.id] ||= []).push({ lens, ...r }))
 }
 const votes = {}
@@ -32,6 +33,9 @@ for (const f of judged) {
   const t = f.yes >= 2 && byKey[f.dup]
   if (t && t.yes >= 2 && !folded.has(t.key)) folded.set(f.key, t.key)
 }
+// The merge pass groups the same issue found by two teams; it never confirms or rejects.
+const merge = results.find(r => r.label === 'merge')
+for (const g of merge ? merge.groups : []) for (const k of g.same) if (k !== g.keep && byKey[k]?.yes >= 2 && !folded.has(k) && byKey[g.keep]?.yes >= 2 && !folded.has(g.keep)) folded.set(k, g.keep)
 const verdict = f => f.yes < 2 ? `rejected (${f.yes} of 3)` : folded.has(f.key) ? `confirmed (${f.yes} of 3), same issue as R${round}-${folded.get(f.key)}` : `confirmed (${f.yes} of 3)`
 
 const one = s => String(s ?? '').replace(/\s*\n\s*/g, ' ')
@@ -42,7 +46,7 @@ if (Object.keys(rechecks).length) {
   L.push('### Rechecks of fixed and disputed items', '')
   for (const [id, vs] of Object.entries(rechecks)) {
     const closed = vs.filter(v => v.closed ?? v.fixed).length
-    L.push(`- **${id}**: ${closed >= 2 ? 'closed' : 'still open'} (${closed} of ${vs.length})`)
+    L.push(`- **${id}**: ${closed >= 2 && closed * 2 > vs.length ? 'closed' : 'still open'} (${closed} of ${vs.length})`)
     for (const v of vs) L.push(`  - ${v.lens}: ${(v.closed ?? v.fixed) ? 'closed' : 'open'}. ${one(v.evidence)}`)
   }
   L.push('')
@@ -62,7 +66,7 @@ for (const f of [...judged].sort((a, b) => rank(a) - rank(b))) {
 }
 const section = L.join('\n')
 
-const head = '# Red-team findings\n\nEvery finding the prompt red team (`.claude/workflows/prompt-redteam.js`) has made, round by round, with each judge\'s vote and reason, written from the workflow journals by `scripts/redteam-findings.mjs`. Status and fixes are tracked in `drift.md`.\n'
+const head = '# Red-team findings\n\nEvery finding the prompt red team (`.claude/workflows/prompt-redteam.js`, a swarm of teams of three from round 2) has made, round by round, with each judge\'s vote and reason, written from the workflow journals by `scripts/redteam-findings.mjs`. Status and fixes are tracked in `drift.md`.\n'
 let doc = existsSync(out) ? readFileSync(out, 'utf8') : head
 const re = new RegExp(`## Round ${round}\\n[\\s\\S]*?(?=\\n## Round |$)`)
 doc = re.test(doc) ? doc.replace(re, section) : doc.trimEnd() + '\n\n' + section
