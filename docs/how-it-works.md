@@ -408,7 +408,7 @@ v8 is a room setting: **Pipeline** in the dashboard, or `settings.pipeline: "v8"
    | `file` | Reads a file and looks for texts in it, each exactly as written; optionally, the file parses as JSON |
    | `judge` | Clef reads one file and answers a yes-or-no question about it |
    | `command` | Runs a command line in a fresh box, with optional stdin and input files, and observes its exit code and output |
-   | `call` | Calls declared function contracts of one file, in order, in one process (Node or Python), with saved results passed on |
+   | `call` | Calls declared function contracts of one file, in order, in one process, in any language the box has a call adapter for (JavaScript, TypeScript, Python, Ruby, PHP; a call into another language is not run, as infrastructure), with saved results passed on |
    | `http` | Starts a declared contract that states how it runs, and sends it web requests in order |
    | `browser` | Starts the contract and drives it in headless Chromium: go to, fill, click, press, expect a text, a count or an element |
 
@@ -633,7 +633,7 @@ The changelogs give each run's evidence, and the local replays of its files, whi
 | `src/knowledge.js`, `src/protocol.js` | Public and private knowledge files, action and request parsing, reading model output, contact rules |
 | `src/zip.js`, `src/github-export.js` | Getting the code out: a store-only ZIP writer, and the push of the linked application to a new GitHub branch and pull request |
 | `src/vendor/acorn.mjs` | Vendored Acorn parser (MIT, see `src/vendor/ACORN-LICENSE`) |
-| `container/` | Container images (`Dockerfile`, and `Dockerfile.box` and `Dockerfile.fetch` for v8's boxes), `build-runner.mjs` (v7 builds and v8 validations), `box/` (the box's host name, and the probe), stack readers `stack-frames.mjs`, and `adapters/` (function calls in Node and Python, HTTP, the static server and the browser check) |
+| `container/` | Container images (`Dockerfile`, and `Dockerfile.box` and `Dockerfile.fetch` for v8's boxes), `build-runner.mjs` (v7 builds and v8 validations), `box/` (the box's host name, and the probe), stack readers `stack-frames.mjs`, and `adapters/` (function calls in JavaScript and TypeScript, Python, Ruby and PHP, HTTP, the static server and the browser check) |
 | `public/` | Dashboard |
 | `test/` | `node --test` suite with fake Workers AI and Artifacts; `test/helpers/room.js` holds the room fixtures that run the real Container runner script |
 | `scripts/check.mjs` | Syntax check behind `npm run check` |

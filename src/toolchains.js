@@ -34,7 +34,8 @@ export const TOOLCHAINS = Object.freeze([
     identifier:'^[A-Za-z_$][A-Za-z0-9_$]{0,63}$', reserved:'await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield',
     names_look_like:'camelCase',
     // v8 S3 review: the names a splitter may give this toolchain, and the
-    // commands that fetch packages (refused while packages is 'none').
+    // commands that fetch packages (package_runners: no v8 code reads them;
+    // packages are allowed, and the box installs them by the row's install).
     aliases:['js','node','nodejs','javascript','ecmascript','mjs','cjs'],
     package_runners:[['npx'],['npm','exec'],['npm','x'],['npm','install'],['npm','i'],['npm','ci'],['npm','add']],
     import_line:"const { {name} } = require('./{name}');", import_line_esm:"import { {name} } from './{name}';",
@@ -63,7 +64,9 @@ export const TOOLCHAINS = Object.freeze([
     line_comment:'//', block_comment:['/*','*/'], strings:['"',"'",'`'], image:'build' }),
   Object.freeze({ id:'python', name:'Python', extensions:['.py'], native:null,
     manifests:['pyproject.toml','requirements.txt','setup.cfg','setup.py','Pipfile','Pipfile.lock','poetry.lock','tox.ini','pip.conf','.python-version','__pycache__/','.venv/','venv/'],
-    syntax:['python3','-m','py_compile','{files}'], executables:['python3','pytest'], shebang:['python'],
+    // compileall compiles every file it is given and prints each one's error
+    // (py_compile stops at the first), so one run observes them all.
+    syntax:['python3','-m','compileall','-q','{files}'], executables:['python3','pytest'], shebang:['python'],
     run_file:['python3','{path}'], test:['python3','-m','pytest','-q'], project_test_markers:['test_*.py','*_test.py','tests/'],
     identifier:'^[A-Za-z_][A-Za-z0-9_]{0,63}$', reserved:'False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield',
     names_look_like:'snake_case',
@@ -145,11 +148,31 @@ for(const name of process.argv.slice(1)){
 }
 process.exit(bad?1:0);
 `;
+// The Rust install's externs, read in the tree after cargo build (its JSON
+// messages in build.json): each crate the tree's Cargo.toml asks for, as
+// rustc's --extern name=its library, and -L for what they depend on.
+const RUST_EXTERNS = `
+import json, os, subprocess
+meta = json.loads(subprocess.check_output(['cargo', 'metadata', '--format-version', '1', '--no-deps']))
+asked = {(d.get('rename') or d['name']).replace('-', '_') for d in meta['packages'][0]['dependencies']}
+print('-L dependency=' + os.path.join(os.getcwd(), 'target', 'debug', 'deps'))
+for line in open('build.json'):
+    m = json.loads(line)
+    name = m.get('target', {}).get('name', '').replace('-', '_')
+    if m.get('reason') == 'compiler-artifact' and name in asked:
+        for f in m['filenames']:
+            if f.endswith(('.rlib', '.so')): print('--extern ' + name + '=' + f)
+`;
 const SH_SYNTAX = 'for f do case "$(head -n 1 "./$f")" in "#!"*bash*) bash -n "./$f";; *) sh -n "./$f";; esac || s=1; done; exit ${s:-0}';
 export const COMPILE_ROWS = Object.freeze([
-  Object.freeze({ id:'typescript', name:'TypeScript', extensions:['.ts','.mts','.cts'], requires:{node:'22.18.0'},
+  Object.freeze({ id:'typescript', name:'TypeScript', extensions:['.ts','.mts','.cts'], requires:{node:'22.18.0'}, run_file:['node','{path}'],
     parse_mode:{by_extension:{'.mts':'module','.cts':'script'}, scope:{manifest:'package.json', field:'type', values:{module:'module', commonjs:'script'}}, otherwise:'either'},
-    syntax:['node','--experimental-vm-modules','--no-warnings','-e',TS_SYNTAX,'{files}'] }),
+    syntax:['node','--experimental-vm-modules','--no-warnings','-e',TS_SYNTAX,'{files}'],
+    // Node loads a TypeScript file with its types stripped, so the JavaScript
+    // call adapter calls its functions, and its packages install as the
+    // JavaScript row's (node_modules above every fresh copy).
+    call_adapter:['node','/opt/adapters/call.mjs'], stack:'v8',
+    install:{argv:['npm','install','--no-save','--no-package-lock','--ignore-scripts','--no-audit','--no-fund','--prefix','{scratch}','{packages}'], tree:'node_modules', env:{}} }),
   Object.freeze({ id:'shell', name:'shell', extensions:['.sh','.bash'], shebang:['sh','dash','bash'], requires:{sh:'',bash:''},
     syntax:['sh','-c',SH_SYNTAX,'sh','{files}'] }),
   // Owner 2026-10-15 05:16 ("Any code type"): the other languages the box
@@ -159,18 +182,34 @@ export const COMPILE_ROWS = Object.freeze([
   // runs it with the command's arguments); a row is installed when the box's
   // inventory lists its tool (requires, read from the executables on the
   // box's PATH).
+  // install (as the rows above): Go's packages are modules, which a go.mod
+  // the install writes in the folder above every fresh copy requires (go run
+  // finds it there), with the module cache as the tree.
   Object.freeze({ id:'go', name:'Go', extensions:['.go'], requires:{gofmt:''}, run_file:['go','run','{path}'],
+    install:{argv:['sh','-c','cd "$0" && export GOMODCACHE="$1" && shift && go mod init checks && go get "$@"','{scratch}','{tree}','{packages}'], tree:'go-modules', env:{GOMODCACHE:'{tree}'}},
     syntax:['sh','-c','gofmt -e "$@" >/dev/null','sh','{files}'] }),
-  Object.freeze({ id:'rust', name:'Rust', extensions:['.rs'], requires:{rustfmt:''}, run_file:['sh','-c','d=$(mktemp -d) && rustc --edition 2021 -o "$d/main" "$0" && exec "$d/main" "$@"','{path}'],
+  // Rust's packages are crates: the install builds them in a Cargo library
+  // of its own (the tree) and lists, for rustc, each one it asked for
+  // (externs: --extern name=its library, and where their dependencies are).
+  Object.freeze({ id:'rust', name:'Rust', extensions:['.rs'], requires:{rustfmt:''}, run_file:['sh','-c','d=$(mktemp -d) && rustc --edition 2021 $(cat "${RUST_EXTERNS:-/dev/null}") -o "$d/main" "$0" && exec "$d/main" "$@"','{path}'],
+    install:{argv:['sh','-c','cd "$0" && py="$1" && shift && cargo init -q --lib --vcs none --name checks_deps . && cargo add -q "$@" && cargo build -q --message-format=json > build.json && python3 -c "$py" > externs','{tree}',RUST_EXTERNS,'{packages}'], tree:'rust-crates', env:{RUST_EXTERNS:'{tree}/externs'}},
     syntax:['sh','-c','for f do rustfmt --edition 2021 --emit stdout "./$f" >/dev/null || s=1; done; exit ${s:-0}','sh','{files}'] }),
   Object.freeze({ id:'c', name:'C', extensions:['.c','.h'], requires:{gcc:''}, run_file:['sh','-c','d=$(mktemp -d) && gcc -o "$d/main" "$0" && exec "$d/main" "$@"','{path}'], syntax:['gcc','-fsyntax-only','{files}'] }),
   Object.freeze({ id:'cpp', name:'C++', extensions:['.cc','.cpp','.cxx','.hpp','.hh'], requires:{'g++':''}, run_file:['sh','-c','d=$(mktemp -d) && g++ -o "$d/main" "$0" && exec "$d/main" "$@"','{path}'], syntax:['g++','-fsyntax-only','{files}'] }),
+  // Java's packages are Maven artifacts (group:artifact:version), copied as
+  // jars into the tree, which CLASSPATH names to javac and java.
   Object.freeze({ id:'java', name:'Java', extensions:['.java'], requires:{javac:''}, run_file:['java','{path}'],
+    install:{argv:['sh','-c','for p do mvn -q -B dependency:copy -Dartifact="$p" -DoutputDirectory="$0" || exit 1; done','{tree}','{packages}'], tree:'java-packages', env:{CLASSPATH:'{tree}/*'}},
     syntax:['sh','-c','d=$(mktemp -d) && javac -d "$d" "$@"; s=$?; rm -rf "$d"; exit $s','sh','{files}'] }),
   Object.freeze({ id:'ruby', name:'Ruby', extensions:['.rb'], shebang:['ruby'], requires:{ruby:''}, run_file:['ruby','{path}'],
+    call_adapter:['ruby','/opt/adapters/call.rb'], stack:'ruby',
     install:{argv:['gem','install','--no-document','--install-dir','{tree}','{packages}'], tree:'ruby-gems', env:{GEM_PATH:'{tree}'}},
     syntax:['sh','-c','for f do ruby -c "./$f" >/dev/null || s=1; done; exit ${s:-0}','sh','{files}'] }),
+  // PHP's packages are Composer's, required into the tree; an ini file there
+  // (PHP_INI_SCAN_DIR, beside PHP's own) loads their autoloader first.
   Object.freeze({ id:'php', name:'PHP', extensions:['.php'], shebang:['php'], requires:{php:''}, run_file:['php','{path}'],
+    call_adapter:['php','/opt/adapters/call.php'], stack:'php',
+    install:{argv:['sh','-c','cd "$0" && composer require --no-interaction --no-progress --quiet "$@" && printf \'auto_prepend_file="%s"\\n\' "$0/vendor/autoload.php" > autoload.ini','{tree}','{packages}'], tree:'php-packages', env:{PHP_INI_SCAN_DIR:':{tree}'}},
     syntax:['sh','-c','for f do php -l "./$f" >/dev/null || s=1; done; exit ${s:-0}','sh','{files}'] })
 ]);
 // Stack-frame readers by a row's stack field (named groups path, line and
@@ -185,6 +224,12 @@ const extensionOf = path => {
 export function runRowOf(path) {
   const ext = extensionOf(path);
   return ext && [...TOOLCHAINS, ...COMPILE_ROWS].find(t => t.run_file && (t.extensions || []).includes(ext)) || null;
+}
+// The row whose call adapter calls the functions of a file of its language,
+// or null: the box has no call adapter for it.
+export function callRowOf(path) {
+  const ext = extensionOf(path);
+  return ext && [...TOOLCHAINS, ...COMPILE_ROWS].find(t => t.call_adapter && (t.extensions || []).includes(ext)) || null;
 }
 // The row whose extensions cover the file, or null (a language no row knows).
 export function toolchainOf(path) {

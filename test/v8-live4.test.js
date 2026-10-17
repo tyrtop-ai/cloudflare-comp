@@ -42,7 +42,8 @@ const clefWith = ({split = () => false, low = () => false} = {}) => {
   };
 };
 // One adapter run against a page served here: the adapter's JSON lines.
-async function runAdapter(html, checks) {
+// deadline_ms: the verification's time the adapter has (no step has a time of its own).
+async function runAdapter(html, checks, deadline_ms = 30_000) {
   const server = createServer((q, s) => { s.writeHead(200, {'content-type': 'text/html'}); s.end(html); });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -53,27 +54,28 @@ async function runAdapter(html, checks) {
       p.stdout.on('data', d => text += d);
       p.on('error', reject);
       p.on('close', () => resolve(text));
-      p.stdin.end(JSON.stringify({step_ms: 1500, check_ms: 10_000, origins: [base], checks: checks.map(c => ({...c, base_url: base}))}));
+      p.stdin.end(JSON.stringify({deadline_ms, origins: [base], checks: checks.map(c => ({...c, base_url: base}))}));
     });
     return out.trim().split('\n').map(l => JSON.parse(l)).filter(x => 'passed' in x);
   } finally { server.close(); }
 }
 
-test('1: the adapter in real Chromium: expect_element passes when the page has a match (its text as expect_text reads it), and a miss lists the candidates', {skip: browserReady || false}, async () => {
+test('1: the adapter in real Chromium: expect_element passes when the page has a match (its text as written), and a miss lists the candidates', {skip: browserReady || false}, async () => {
   const html = '<!doctype html><html><body><h1>To-do</h1><input type="text" placeholder="Task"><button>Add</button><ul id="list"></ul></body></html>';
-  const [ok, miss, absent, gone] = await runAdapter(html, [
+  const [ok, absent] = await runAdapter(html, [
     {id: 'ok', steps: [{goto: '/'}, {expect_element: {selector: 'input[type=text]'}}, {expect_element: {selector: 'button', text: 'Add'}}, {expect_element: {selector: 'ul#list'}}]},
-    {id: 'miss', steps: [{goto: '/'}, {expect_element: {selector: 'button', text: 'Remove'}}]},
-    {id: 'absent', steps: [{goto: '/'}, {expect_no_element: {selector: 'li'}}]},
-    {id: 'gone', steps: [{goto: '/'}, {expect_no_element: {selector: 'button', text: 'Add'}}]}]);
+    {id: 'absent', steps: [{goto: '/'}, {expect_no_element: {selector: 'li'}}]}]);
+  // What never comes is waited for until the verification's time runs out (infrastructure): each alone, with a short one.
+  const [[miss], [gone]] = await Promise.all([
+    runAdapter(html, [{id: 'miss', steps: [{goto: '/'}, {expect_element: {selector: 'button', text: 'Remove'}}]}], 10_000),
+    runAdapter(html, [{id: 'gone', steps: [{goto: '/'}, {expect_no_element: {selector: 'button', text: 'Add'}}]}], 10_000)]);
   assert.equal(ok.passed, true, JSON.stringify(ok));
-  assert.equal(miss.passed, false);
-  assert.equal(miss.miss, true);
+  assert.deepEqual([miss.passed, miss.miss, miss.infrastructure], [false, true, true]);
   assert.deepEqual(miss.offers.elements, ['button "Add"']);
-  assert.match(miss.detail, /^step 2 \(expect button with "Remove"\): no button with the text "Remove" on the page; elements of that kind found: button "Add"/);
+  assert.match(miss.detail, /^step 2 \(expect button with "Remove"\): the page had no button with the text "Remove"; elements of that kind found: button "Add"/);
   assert.equal(absent.passed, true);
-  assert.equal(gone.passed, false);
-  assert.match(gone.detail, /the page still has 1 button with the text "Add"/);
+  assert.deepEqual([gone.passed, gone.infrastructure], [false, true]);
+  assert.match(gone.detail, /the page still had 1 button with the text "Add"/);
 });
 
 // ------------------------------------------------------------ 2: packages, pure

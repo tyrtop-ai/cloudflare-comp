@@ -1,4 +1,4 @@
-// JavaScript call adapter (v8 §4.6): calls named functions of one bundle
+// JavaScript (and TypeScript) call adapter (v8 §4.6): calls named functions of one bundle
 // module in ONE process, step after step, keeping saved results, and reports
 // each step as a JSON line. The runner (build-runner.mjs verifyChecks) owns the
 // comparison: steps arrive without their expectations.
@@ -53,7 +53,7 @@ const request = parse(lines[0] || '{}');
 const steps = [...(Array.isArray(request.steps) ? request.steps : []), ...lines.slice(1).map(l => parse(l))];
 
 const errorText = e => e instanceof Error ? `${e.name}: ${e.message}` : `thrown: ${safeText(e)}`;
-const stackText = e => e instanceof Error && typeof e.stack === 'string' ? e.stack.slice(0, 4000) : '';
+const stackText = e => e instanceof Error && typeof e.stack === 'string' ? e.stack : '';
 function safeText(v) { try { return stringify(v) ?? String(v); } catch { return String(v); } }
 // A value as JSON text: Map and Set as an object and a list, a BigInt as a
 // string, undefined as null, a cycle cut to the text "[Circular]".
@@ -88,14 +88,16 @@ function substitute(arg, saved) {
   return arg;
 }
 
+// A TypeScript file (.ts, .mts, .cts) loads as Node loads it: its types
+// stripped, as the JavaScript file of the same kind.
 async function load(modulePath) {
   const abs = path.resolve(process.cwd(), modulePath);
-  if (abs.endsWith('.cjs')) return createRequire(abs)(abs);
+  if (abs.endsWith('.cjs') || abs.endsWith('.cts')) return createRequire(abs)(abs);
   try { return await import(pathToFileURL(abs).href); }
   catch (e) {
     // An ES module import of a CommonJS file that only require() reads
     // (for instance one requiring a JSON file by a bare path).
-    if (/ERR_REQUIRE_ESM|ERR_UNKNOWN_FILE_EXTENSION/.test(String(e?.code)) || !abs.endsWith('.js')) throw e;
+    if (/ERR_REQUIRE_ESM|ERR_UNKNOWN_FILE_EXTENSION/.test(String(e?.code)) || !(abs.endsWith('.js') || abs.endsWith('.ts'))) throw e;
     return createRequire(abs)(abs);
   }
 }
@@ -107,7 +109,7 @@ const lookup = (ns, name) => {
   return null;
 };
 const exported = ns => [...new Set([...Object.keys(ns || {}), ...Object.keys(ns?.default && typeof ns.default === 'object' ? ns.default : {})])]
-  .filter(k => k !== 'default' && typeof (ns[k] ?? ns.default?.[k]) === 'function').slice(0, 12);
+  .filter(k => k !== 'default' && typeof (ns[k] ?? ns.default?.[k]) === 'function');
 
 let ns;
 try { ns = await load(String(request.module || '')); }

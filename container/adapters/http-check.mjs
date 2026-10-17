@@ -3,8 +3,12 @@
 // deliverables need no network beyond their own loopback. Also imported by
 // build-runner.mjs for its pure helpers.
 // stdin (JSON): {"ready":{"url","ms"}} → {"ready":true|false,"status"?,"error"?}
-//            or {"base_url","steps","step_ms","check_ms"} → {"passed":true,"ms"}
-//            | {"passed":false,"ms","step","label","reason","body"}.
+//            or {"base_url","steps","deadline_ms"} → {"passed":true,"ms"}
+//            | {"passed":false,"ms","step","label","reason","body","timed_out"?}.
+// No request has a time of its own: each waits for its answer until the
+// verification's time runs out (deadline_ms, what the runner has left; none
+// when absent). That end is the runtime's clock (timed_out), never the
+// server's failure.
 import {request as httpRequest} from 'node:http';
 import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
@@ -42,18 +46,18 @@ export function substituteSaved(value, saved) {
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, substituteSaved(v, saved)]));
   return value;
 }
-export function localRequest(url, {method = 'GET', body, ms = 5000} = {}) {
+export function localRequest(url, {method = 'GET', body, ms = Infinity} = {}) {
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? null : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
-    const req = httpRequest(url, {method, timeout: ms, headers: payload ? {'content-type': typeof body === 'string' ? 'text/plain' : 'application/json', 'content-length': payload.length} : {}}, res => {
-      const chunks = []; let size = 0;
-      res.on('data', c => { size += c.length; if (size <= 2_000_000) chunks.push(c); });
+    const req = httpRequest(url, {method, ...(Number.isFinite(ms) ? {timeout: ms} : {}), headers: payload ? {'content-type': typeof body === 'string' ? 'text/plain' : 'application/json', 'content-length': payload.length} : {}}, res => {
+      const chunks = [];
+      res.on('data', c => { chunks.push(c); });
       res.on('end', () => resolve({status: res.statusCode, text: Buffer.concat(chunks).toString('utf8')}));
       res.on('error', reject);
     });
-    const hard = setTimeout(() => req.destroy(new Error(`no answer within ${ms} ms`)), ms);
+    const hard = Number.isFinite(ms) ? setTimeout(() => req.destroy(Object.assign(new Error(`no answer within ${ms} ms`), {timedOut: true})), ms) : null;
     req.on('close', () => clearTimeout(hard));
-    req.on('timeout', () => req.destroy(new Error(`no answer within ${ms} ms`)));
+    req.on('timeout', () => req.destroy(Object.assign(new Error(`no answer within ${ms} ms`), {timedOut: true})));
     req.on('error', reject);
     req.end(payload || undefined);
   });
@@ -72,22 +76,23 @@ export async function pollReady(url, ms) {
   }
 }
 
-export async function runHttpSteps({base_url, steps, step_ms = 5000, check_ms = 20000}) {
-  const t = Date.now(), end = t + check_ms, saved = new Map(), origin = new URL(base_url).origin;
+export async function runHttpSteps({base_url, steps, deadline_ms}) {
+  const t = Date.now(), saved = new Map(), origin = new URL(base_url).origin;
+  const end = deadline_ms !== undefined && deadline_ms !== null && Number.isFinite(Number(deadline_ms)) ? t + Math.max(0, Number(deadline_ms)) : Infinity;
   const list = Array.isArray(steps) ? steps : [];
   for (const [i, s] of list.entries()) {
     const method = String(s?.method || 'GET').toUpperCase(), p = String(substituteSaved(String(s?.path || '/'), saved)), e = s?.expect && typeof s.expect === 'object' ? s.expect : {};
     // body: the whole answer, as the server gave it.
-    const fail = (reason, body = '') => ({passed: false, ms: Date.now() - t, step: i + 1, label: `${method} ${p}`, reason, body});
+    const fail = (reason, body = '', extra = {}) => ({passed: false, ms: Date.now() - t, step: i + 1, label: `${method} ${p}`, reason, body, ...extra});
     // A path, never another origin.
     if (!p.startsWith('/') || p.startsWith('//')) return fail('the path must start with a single /');
     const url = new URL(p, base_url);
     if (url.origin !== origin) return fail('the path leaves the served origin');
-    const ms = Math.min(step_ms, end - Date.now());
-    if (ms <= 0) return fail(`not reached within ${Math.round(check_ms / 1000)} s`);
+    const ms = end - Date.now();
+    if (ms <= 0) return fail('not reached: the verification\'s time ran out', '', {timed_out: true});
     let res;
     try { res = await localRequest(url.href, {method, body: s.body === undefined ? undefined : substituteSaved(s.body, saved), ms}); }
-    catch (err) { return fail(`no answer: ${err?.message || err}`); }
+    catch (err) { return fail(err?.timedOut ? 'no answer before the verification\'s time ran out' : `no answer: ${err?.message || err}`, '', err?.timedOut ? {timed_out: true} : {}); }
     let json; try { json = JSON.parse(res.text); } catch {}
     if (typeof s.save === 'string' && s.save) saved.set(s.save, json === undefined ? res.text : json);
     if (Number.isInteger(e.status) && res.status !== e.status) return fail(`status ${res.status}, expected ${e.status}`, res.text);

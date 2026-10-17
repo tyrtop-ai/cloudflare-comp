@@ -16,10 +16,12 @@ ARG BOX_BROWSER=0
 # read (src/toolchains.js COMPILE_ROWS: Go, Rust, C, C++, Java, Ruby, PHP),
 # each with what compiles and runs it (rustc, gcc and g++ build a file a
 # check runs), and the package managers the rows install packages with: pip
-# for Python, gem (with ruby) for Ruby, npm with the Node base. Channels
-# only, no versions pinned: the inventory records what each box had.
+# for Python, gem (with ruby) for Ruby, npm with the Node base (JavaScript
+# and TypeScript), go for Go's modules, cargo for Rust's crates, maven for
+# Java's artifacts, composer (with unzip, which it unpacks with) for PHP's.
+# Channels only, no versions pinned: the inventory records what each box had.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pytest python3-pip ca-certificates iputils-ping \
-    golang-go gcc g++ libc6-dev default-jdk-headless ruby php-cli rustc cargo rustfmt \
+    golang-go gcc g++ libc6-dev default-jdk-headless ruby php-cli rustc cargo rustfmt maven composer unzip \
  && rm -rf /var/lib/apt/lists/*
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright NODE_PATH=/usr/local/lib/node_modules
 RUN if [ "$BOX_BROWSER" = "1" ]; then npm install -g playwright && playwright install --with-deps --only-shell chromium \

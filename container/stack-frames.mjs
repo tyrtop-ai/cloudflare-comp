@@ -4,15 +4,20 @@
 // it beside build-runner.mjs and the Worker bundles it from here.
 //
 // A toolchain row's `stack` field names its reader here: a line regex with
-// the named groups path, line and fn.
+// the named groups path, line and fn, or a list of them (a trace whose
+// lines read two ways), read in the order the trace prints its lines.
 export const STACKS = Object.freeze({
   v8:     '^\\s+at (?:(?<fn>.+?) \\()?(?:file://)?(?<path>/[^():]+):(?<line>\\d+):\\d+\\)?$',
-  python: '^\\s+File "(?<path>[^"]+)", line (?<line>\\d+), in (?<fn>.+)$'
+  python: '^\\s+File "(?<path>[^"]+)", line (?<line>\\d+), in (?<fn>.+)$',
+  // A backtrace line: /path:line:in 'fn' (Ruby 3.4) or `fn' (before).
+  ruby:   '^\\s*(?:from )?(?<path>/[^:\\s]+):(?<line>\\d+):in [`\'](?:[^\'#.]*[#.])?(?<fn>[^\']+)\'',
+  // A Throwable as PHP prints it: the throw site (in /path:line), then its trace (#n /path(line): fn(...)).
+  php:    Object.freeze([' in (?<path>/[^:\\s]+):(?<line>\\d+)$', '^#\\d+ (?<path>/[^(]+)\\((?<line>\\d+)\\): (?<fn>[^(\\s]+)\\('])
 });
 
 // Where each reader's trace starts: V8 prints the innermost frame (the
 // throw site) first, a Python traceback prints it last.
-export const STACK_INNERMOST = Object.freeze({v8: 'first', python: 'last'});
+export const STACK_INNERMOST = Object.freeze({v8: 'first', python: 'last', ruby: 'first', php: 'first'});
 
 // The frames of a stack trace, as bundle paths: a frame's absolute path is
 // mapped to the longest bundle path it ends with; a frame outside the bundle
@@ -23,12 +28,13 @@ export const STACK_INNERMOST = Object.freeze({v8: 'first', python: 'last'});
 // is never the bundle's call.py). innermostFirst: the throw site first,
 // whatever order the language prints.
 export function stackFrames(text, files, row, {root = '', innermostFirst = false} = {}) {
-  const source = row && STACKS[row.stack];
-  if (!source) return [];
+  const sources = row && STACKS[row.stack] ? [].concat(STACKS[row.stack]) : [];
+  if (!sources.length) return [];
   const paths = Array.isArray(files) ? files : files instanceof Map || files instanceof Set ? [...files.keys()] : Object.keys(files || {});
   const byLength = [...paths].sort((a, b) => b.length - a.length), frames = [];
   const prefix = root ? root.replace(/\/+$/, '') + '/' : '';
-  for (const m of String(text ?? '').matchAll(new RegExp(source, 'gm'))) {
+  const matches = sources.flatMap(source => [...String(text ?? '').matchAll(new RegExp(source, 'gm'))]).sort((a, b) => a.index - b.index);
+  for (const m of matches) {
     const abs = m.groups.path;
     let hit;
     if (prefix) hit = abs.startsWith(prefix) && paths.includes(abs.slice(prefix.length)) ? abs.slice(prefix.length) : undefined;

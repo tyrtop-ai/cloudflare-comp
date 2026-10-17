@@ -394,8 +394,8 @@ export async function verifyBuild(request,{runStage=run}={}) {
 }
 // ---------------------------------------------------------------------------
 // v8 verification of a level's validations (spec §4.1 step 4, §4.4-4.7): mode 'checks'. One exec
-// runs the stages in order: syntax per toolchain row, install (the
-// packages the agents' rows list), project checks, start the runs, command / call /
+// runs the stages in order: install (the packages the agents' rows list),
+// syntax per toolchain row, project checks, start the runs, command / call /
 // http checks, browser checks, stop the runs. Every check runs even after one
 // fails. Toolchain rows arrive as data in the request (src/toolchains.js);
 // nothing here branches on a language.
@@ -420,7 +420,17 @@ export async function verifyBuild(request,{runStage=run}={}) {
 // the expected values can still return them; that is why the room must
 // never show a requirement's check to the workers (S4b).
 // ---------------------------------------------------------------------------
-export const CHECK_LIMITS=Object.freeze({total_ms:200_000,check_ms:20_000,step_ms:5_000});
+// Time. No check, step, request or run has a time of its own (owner,
+// 2026-10-17 00:25 and 2026-10-15 23:16: no caps the runtime picked): each
+// lasts until it ends, or until the verification's time runs out. That
+// time, total_ms, is what the exec around the runner leaves it to report in
+// (src/box.js boxBuildCommand: the GNU timeout of the one exec). A check the
+// verification's end stops is the runtime's clock, never a worker's failure:
+// its result is marked infrastructure, with what it observed until then.
+export const CHECK_LIMITS=Object.freeze({total_ms:200_000});
+// What a check process is given past the verification's end to print what
+// it observed (an adapter's own records) before the runner stops it.
+const REPORT_MS=5000;
 // Per check process: RLIMIT_NPROC counts every thread of the user (a Node
 // process alone has about 11), RLIMIT_DATA bounds the heap and private
 // mappings (RLIMIT_AS would break WebAssembly's large reservations).
@@ -445,7 +455,6 @@ export function userThreads(uid=process.getuid?.()) {
 }
 const withThreadLimit=argv=>argv.includes(NPROC_ARG)?argv.map(a=>a===NPROC_ARG?`--nproc=${userThreads()+CHECK_RLIMITS.nproc}`:a):argv;
 const CHECK_KINDS=new Set(['file','command','call','http','browser']);
-const READY_MS=10_000;
 const ADAPTER_DIR=fileURLToPath(new URL('./adapters/',import.meta.url));
 const HTTP_CHECK=path.join(ADAPTER_DIR,'http-check.mjs');
 // A row names its adapter at its image path (/opt/adapters/…); outside the
@@ -455,7 +464,7 @@ const clamp=(v,lo,hi,d)=>Number.isFinite(Number(v))&&v!==null&&v!==''?Math.max(l
 export function checkLimits(raw) {
   const o=raw&&typeof raw==='object'?raw:{};
   // The total stays inside the exec's 240 s timeout, with room to report.
-  return {total_ms:clamp(o.total_ms,1000,220_000,CHECK_LIMITS.total_ms),check_ms:clamp(o.check_ms,500,60_000,CHECK_LIMITS.check_ms),step_ms:clamp(o.step_ms,200,30_000,CHECK_LIMITS.step_ms)};
+  return {total_ms:clamp(o.total_ms,1000,220_000,CHECK_LIMITS.total_ms)};
 }
 // A value as a check's detail shows it: whole.
 const show=v=>{let t;try{t=JSON.stringify(v);}catch{t=String(v);}return t===undefined?'undefined':t;};
@@ -680,23 +689,6 @@ export function redactPaths(text,dirs,base) {
   if(base)out=out.replace(new RegExp(escapeRe(base.replace(/\/+$/,''))+'/checks-[A-Za-z0-9._-]*','g'),'<work>');
   return out;
 }
-// A stack's frames in the adapters (and the loaders they call: Node's
-// internals, Python's importlib) are the runner's, not the deliverable's:
-// those lines, and the source and caret lines Python prints under each, are
-// dropped.
-const RUNNER_FRAME=/^\s+at .*node:internal\/|^\s*File "(?:<frozen importlib[^"]*>|[^"]*\/importlib\/[^"]*)"/;
-export function stripAdapterFrames(text) {
-  const lines=String(text??'').split('\n'),out=[];
-  for(let i=0;i<lines.length;i++) {
-    const l=lines[i];
-    if(l.includes(ADAPTER_DIR)||l.includes('/opt/adapters/')||RUNNER_FRAME.test(l)) {
-      if(/^\s*File "/.test(l))while(i+1<lines.length&&/^\s{4,}\S/.test(lines[i+1])&&!/^\s*File "/.test(lines[i+1]))i++;
-      continue;
-    }
-    out.push(l);
-  }
-  return out.join('\n');
-}
 function framesOf(text,files,rows,root) {
   const out=[];
   for(const row of rows)for(const f of stackFrames(text,files,row,{root,innermostFirst:true}))if(!out.some(x=>x.path===f.path&&x.line===f.line))out.push(f);
@@ -731,7 +723,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
   let infrastructure_issue='',ns=null;
   const inventory={node:process.versions.node,python:null,sh:null,bash:null,chromium:null,playwright:null,network:'on',runs_network:'on',limits:null,hostname:null,hostname_ok:null,hostname_longest_label:null,hostname_status:null,getfqdn:null,executables:null};
   const env=checkEnvironment();
-  const redact=(text,...dirs)=>stripAdapterFrames(redactPaths(text,[...dirs,scratch],base));
+  const redact=(text,...dirs)=>redactPaths(text,[...dirs,scratch],base);
   const stage=async(name,fn)=>{const t=Date.now();const out=(await fn())||{};stages.push({name,passed:out.passed!==false,ms:Date.now()-t,...(out.detail?{detail:redact(out.detail)}:{})});};
   const result=(c,passed,ms,detail='',extra={})=>{checks.push({id:c.id,kind:c.kind,passed,ms,detail:passed?'':redact(detail),frames:[],...extra});};
   const notRun=c=>result(c,false,0,`not run: the verification's ${Math.round(limits.total_ms/1000)} s budget was spent`,{infrastructure:true});
@@ -763,44 +755,16 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
     // v8 live 5: the host name, as a check sees it (with the checks' wrappers).
     Object.assign(inventory,await hostnameInventory({prefix:checkPrefix,cwd:scratch,env,python:!!inventory.python}));
 
-    // 2. Syntax: one process per row, its files in one command line. A
-    // compiler that stops at the first bad file (py_compile) is run again on
-    // the files after it, so every bad file is named.
-    for(const s of plan.syntax) {
-      const row=rows.find(r=>r.id===s?.toolchain),names=(Array.isArray(s?.files)?s.files:[]).filter(n=>Object.hasOwn(files,n));
-      if(!row?.syntax||!names.length)continue;
-      await stage('syntax:'+row.id,async()=>{
-        const box=await fresh('syntax');
-        try {
-          let rest=names,count=0,bad=0,timedOut=false,read=false;
-          while(rest.length&&left()>0) {
-            count++;
-            const r=await execCheck(row.syntax.flatMap(x=>x==='{files}'?rest:[x]),{cwd:box.dir,env:box.env,prefix:checkPrefix,ms:Math.max(1000,Math.min(60_000,left()))});
-            if(r.code===0&&!r.timedOut){read=true;break;}
-            timedOut||=r.timedOut;
-            const out=redact(r.stdout+r.stderr,box.dir,box.root),hits=sourcePaths(out,Object.fromEntries(rest.map(n=>[n,1])));
-            for(const p of hits.length?hits:rest.slice(0,1)) {
-              const from=Math.max(0,out.indexOf(p)),next=hits.map(h=>out.indexOf(h,from+p.length)).filter(i=>i>from).sort((a,b)=>a-b)[0];
-              issues.push({path:p,kind:'source',stage:'syntax',detail:`${row.id} syntax: ${out.slice(from,next).trim().replace(/\s*\n\s*/g,' | ')}`});
-              bad++;
-            }
-            if(!hits.length||r.timedOut)break;
-            rest=rest.slice(Math.max(...hits.map(h=>rest.indexOf(h)))+1);read=!rest.length;
-          }
-          // v8 ship-verified: a step that read none of its files (the time was spent) compiled nothing: it never passes.
-          if(!bad&&!read){infrastructure_issue||=`the syntax step of ${row.id} did not run: the verification's time was spent`;return {passed:false,detail:'not run: the time was spent'};}
-          return bad?{passed:false,detail:timedOut?'timed out':`${bad} file(s) do not compile`}:{detail:`${names.length} file(s)${count>1?`, ${count} runs`:''}`};
-        } finally {await box.dispose();}
-      });
-    }
-    // 3. Install: the packages the agents' rows list (plan.install: per row,
+    // 2. Install: the packages the agents' rows list (plan.install: per row,
     // its names), each row by its install command, into one tree beside the
     // fresh copies (install.tree, under the scratch folder: a folder above
     // every copy, so the language's own lookup finds it, and install.env
     // names it to the checks). The install has the box's network; the checks
     // after it run as before (without it where the platform allows a network
     // namespace). The tree is made read-only once installed. What the install
-    // printed is the stage's detail and the report's installed entry.
+    // printed is the stage's detail and the report's installed entry. It
+    // runs before the syntax step, so a compiler that reads a file's imports
+    // (javac) reads them with the packages there.
     for(const x of plan.install) {
       const row=rows.find(r=>r.id===x?.toolchain),names=(Array.isArray(x?.packages)?x.packages:[]).map(String).filter(Boolean);
       if(!names.length)continue;
@@ -813,6 +777,26 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
         if(passed){for(const [k,v] of Object.entries(row.install.env||{}))env[k]=String(v).replaceAll('{tree}',tree);await execCheck(['chmod','-R','a-w',tree],{cwd:scratch,env,ms:10_000});}
         installed.push({toolchain:row.id,packages:names,passed,...(passed?{}:{detail:r.timedOut?`timed out after ${seconds(r.ms)}${out?`: ${out}`:''}`:`exit ${r.code}${out?`: ${out}`:''}`})});
         return passed?{detail:names.join(' ')}:{passed:false,detail:installed.at(-1).detail};
+      });
+    }
+    // 3. Syntax: one process per row, its files in one command line. What it
+    // printed is the issue, whole, as the compiler printed it, with the files
+    // it compiled: whose file it is to fix is the managers' routing, never
+    // read from the compiler's words here.
+    for(const s of plan.syntax) {
+      const row=rows.find(r=>r.id===s?.toolchain),names=(Array.isArray(s?.files)?s.files:[]).filter(n=>Object.hasOwn(files,n));
+      if(!row?.syntax||!names.length)continue;
+      await stage('syntax:'+row.id,async()=>{
+        // v8 ship-verified: a step that read none of its files (the time was spent) compiled nothing: it never passes.
+        if(left()<=0){infrastructure_issue||=`the syntax step of ${row.id} did not run: the verification's time was spent`;return {passed:false,detail:'not run: the time was spent'};}
+        const box=await fresh('syntax');
+        try {
+          const r=await execCheck(row.syntax.flatMap(x=>x==='{files}'?names:[x]),{cwd:box.dir,env:box.env,prefix:checkPrefix,ms:Math.max(1,left())});
+          if(r.code===0&&!r.timedOut)return {detail:`${names.length} file(s)`};
+          if(r.timedOut||r.spawn_error){infrastructure_issue||=`the syntax step of ${row.id} ${r.timedOut?"was still running when the verification's time ran out":`could not start: ${r.stderr.trim()}`}`;return {passed:false,detail:r.timedOut?'not finished: the time ran out':'could not start'};}
+          issues.push({files:names,toolchain:row.id,kind:'source',stage:'syntax',detail:observation(`${row.id} syntax: exit ${r.code}`,[['stdout',redact(r.stdout,box.dir,box.root)],['stderr',redact(r.stderr,box.dir,box.root)]])});
+          return {passed:false,detail:`exit ${r.code}`};
+        } finally {await box.dispose();}
       });
     }
     // 4. The project's own checks: each a command that must exit 0.
@@ -828,13 +812,13 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
           const target=path.join(box.dir,name);await mkdir(path.dirname(target),{recursive:true});await writeFile(target,content,'utf8');
         }
         if(resolved.direct)await chmod(path.join(box.dir,resolved.direct),0o755);
-        const r=await execCheck(resolved.argv,{cwd:box.dir,env:box.env,prefix:checkPrefix,ms:Math.max(200,Math.min(limits.check_ms,left())),stdin:typeof c.stdin==='string'?c.stdin:''});
+        const r=await execCheck(resolved.argv,{cwd:box.dir,env:box.env,prefix:checkPrefix,ms:Math.max(1,left()),stdin:typeof c.stdin==='string'?c.stdin:''});
         const stdout=redact(r.stdout,box.dir,box.root),stderr=redact(r.stderr,box.dir,box.root);
         const frames=framesOf(r.stderr+'\n'+r.stdout,files,rows,box.dir),e=c.expect&&typeof c.expect==='object'?c.expect:{};
         const strays=r.strays?`; ${r.strays} process(es) it left behind were killed`:'';
-        const fail=detail=>result(c,false,r.ms,observation(`${label}: ${detail}${strays}`,[['stdout',stdout],['stderr',stderr]]),{frames});
+        const fail=(detail,extra={})=>result(c,false,r.ms,observation(`${label}: ${detail}${strays}`,[['stdout',stdout],['stderr',stderr]]),{frames,...extra});
         if(r.spawn_error)return fail('could not start');
-        if(r.timedOut)return fail(`timed out after ${seconds(r.ms)}`);
+        if(r.timedOut)return fail(`still running when the verification's time ran out (after ${seconds(r.ms)})`,{infrastructure:true});
         const norm=s=>String(s).replace(/\r\n/g,'\n').trimEnd();
         // No exit named: 0, or any non-zero exit when the check reads
         // stderr (an error case); a check names exit:0 when it means it.
@@ -889,13 +873,13 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
       }
     }
     async function startRun(spec) {
-      const t=Date.now(),until=t+Math.min(READY_MS,Math.max(500,left()));
+      const t=Date.now(),until=deadline;
       const box=await fresh('run');
       if(spec.static===true) {
         const p=startProcess([...enter(),'node',path.join(ADAPTER_DIR,'static-server.mjs'),box.dir,'0'],{cwd:box.dir,env:box.env});
         let port=0;
-        while(!port&&Date.now()<until+5000&&!p.exited()){const m=p.log().match(/^\{"port":(\d+)\}/m);if(m)port=Number(m[1]);else await sleep(25);}
-        if(!port){p.stop();await box.dispose();return {id:spec.id,error:observation('the static server did not start',[['output',p.log()]])};}
+        while(!port&&Date.now()<until&&!p.exited()){const m=p.log().match(/^\{"port":(\d+)\}/m);if(m)port=Number(m[1]);else await sleep(25);}
+        if(!port){p.stop();await box.dispose();return {id:spec.id,error:observation('the static server did not start',[['output',p.log()]]),infrastructure:true};}
         // The static server is the runner's own: its output is no part of what a check observes.
         return {id:spec.id,base_url:`http://127.0.0.1:${port}/`,process:p,box,ms:Date.now()-t,runner:true};
       }
@@ -915,7 +899,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
         p.stop();await box.dispose();
         return w.exited||p.exited()
           ?{id:spec.id,error:observation(`${label} exited (code ${code}) before it answered GET ${ready}`,[['output',out]]),frames}
-          :{id:spec.id,error:observation(`${label} did not answer GET ${ready} within ${seconds(Date.now()-t)}`,[['output',out]]),frames};
+          :{id:spec.id,error:observation(`${label} had not answered GET ${ready} when the verification's time ran out (after ${seconds(Date.now()-t)})`,[['output',out]]),frames,infrastructure:true};
       }
       return {id:spec.id,base_url,process:p,box,ms:Date.now()-t};
     }
@@ -954,9 +938,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
         await writeFile(nonceFile,nonce,{mode:0o600});
         // The steps without their expectations: only what to call, with what, and what to save.
         const input=JSON.stringify({module,steps:steps.map(s=>({call:s.call,args:Array.isArray(s.args)?s.args:[],...(typeof s.save==='string'?{save:s.save}:{})}))})+'\n';
-        // step_ms per step, and 5 s to start the interpreter and load the
-        // module (a cold Python on half a vCPU takes most of a second).
-        const ms=Math.max(200,Math.min(limits.check_ms,5000+steps.length*limits.step_ms,left()));
+        const ms=Math.max(1,left());
         const r=await execCheck([...row.call_adapter.map(adapterPath),nonceFile],{cwd:box.dir,env:box.env,prefix:checkPrefix,ms,stdin:input});
         const records=r.stdout.split('\n').map(l=>{try{return JSON.parse(l);}catch{return null;}}).filter(x=>x&&x.nonce===nonce);
         const load=records.find(x=>x.load===false),worker=records.find(x=>Number.isInteger(x.worker_exit)),byStep=new Map(records.filter(x=>Number.isInteger(x.step)).map(x=>[x.step,x]));
@@ -964,12 +946,12 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
         const done=records.some(x=>x.done===true)&&r.code===0&&!r.timedOut&&!r.signal&&!worker;
         const stderr=redact(r.stderr,box.dir,box.root),exitText=`exit ${worker?worker.worker_exit:r.code}${r.signal?`, ${r.signal}`:''}`;
         // What it raised, with its stack, and what it wrote to stderr, whole.
-        const fail=(detail,stack='')=>result(c,false,r.ms,observation(detail,[['stack',redact(stack,box.dir,box.root)],['stderr',stderr]]),{frames:framesOf(stack||r.stderr,files,rows,box.dir)});
+        const fail=(detail,stack='',extra={})=>result(c,false,r.ms,observation(detail,[['stack',redact(stack,box.dir,box.root)],['stderr',stderr]]),{frames:framesOf(stack||r.stderr,files,rows,box.dir),...extra});
         if(load)return fail(`${module} does not load: ${redact(load.error,box.dir,box.root)}`,load.stack);
         for(const [i,s] of steps.entries()) {
           const rec=byStep.get(i),call=`${s.call}(${(Array.isArray(s.args)?s.args:[]).map(a=>show(a)).join(', ')})`;
           if(!rec) {
-            if(r.timedOut)return fail(`${call} in ${module} did not return within ${seconds(r.ms)}`);
+            if(r.timedOut)return fail(`${call} in ${module} had not returned when the verification's time ran out (after ${seconds(r.ms)})`,'',{infrastructure:true});
             return fail(`the process ended before ${call} in ${module} returned (${exitText})`);
           }
           if(rec.missing)return fail(redact(rec.error,box.dir,box.root));
@@ -980,7 +962,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
         }
         // Every step answered: the adapter must also have finished and
         // exited by itself, which a module that exits the process never lets it do.
-        if(!done)return fail(`the process ended before the call adapter finished (${exitText}${r.timedOut?', timed out':''})`);
+        if(!done)return r.timedOut?fail(`the call adapter had not finished when the verification's time ran out (after ${seconds(r.ms)})`,'',{infrastructure:true}):fail(`the process ended before the call adapter finished (${exitText})`);
         return result(c,true,r.ms);
       } finally {await box.dispose();}
     }
@@ -988,14 +970,13 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
       if(left()<=0)return notRun(c);
       const run=runs.get(c.serve),t=Date.now();
       if(!run)return result(c,false,0,`no run named ${c.serve}`);
-      if(run.error)return result(c,false,0,`run ${run.id}: ${run.error}`,{frames:run.frames||[]});
-      const ms=Math.max(200,Math.min(limits.check_ms,left()));
-      const r=await execCheck(['node',HTTP_CHECK],{cwd:scratch,env,ms:ms+2000,prefix:enter(),stdin:JSON.stringify({base_url:run.base_url,steps:Array.isArray(c.steps)?c.steps:[],step_ms:limits.step_ms,check_ms:ms})});
+      if(run.error)return result(c,false,0,`run ${run.id}: ${run.error}`,{frames:run.frames||[],...(run.infrastructure?{infrastructure:true}:{})});
+      const r=await execCheck(['node',HTTP_CHECK],{cwd:scratch,env,ms:Math.max(1,left()),prefix:enter(),stdin:JSON.stringify({base_url:run.base_url,steps:Array.isArray(c.steps)?c.steps:[],deadline_ms:Math.max(0,left()-REPORT_MS)})});
       let x=null;try{x=JSON.parse(r.stdout.trim().split('\n').at(-1));}catch{}
       if(x?.passed)return result(c,true,Date.now()-t);
       const log=run.process?.log()||'',frames=framesOf(log,files,rows,run.box?.dir),server=['server output',run.runner?'':redact(log,run.box?.dir,run.box?.root)];
-      if(!x)return result(c,false,Date.now()-t,observation(r.timedOut?`did not finish within ${seconds(r.ms)}`:`the HTTP client failed (exit ${r.code})`,[['stderr',r.stderr],server]),{frames,infrastructure:!r.timedOut});
-      return result(c,false,Date.now()-t,observation(`step ${x.step} ${x.label}: ${x.reason}${run.process?.exited()?' (the server exited)':''}`,[['response',x.body],server]),{frames});
+      if(!x)return result(c,false,Date.now()-t,observation(r.timedOut?`had not finished when the verification's time ran out (after ${seconds(r.ms)})`:`the HTTP client failed (exit ${r.code})`,[['stderr',r.stderr],server]),{frames,infrastructure:true});
+      return result(c,false,Date.now()-t,observation(`step ${x.step} ${x.label}: ${x.reason}${run.process?.exited()?' (the server exited)':''}`,[['response',x.body],server]),{frames,...(x.timed_out?{infrastructure:true}:{})});
     }
 
     // 7. Browser checks: one Chromium, a context per check, only the served
@@ -1007,13 +988,13 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
         const run=runs.get(c.serve);
         if(left()<=0)notRun(c);
         else if(!run)result(c,false,0,`no run named ${c.serve}`);
-        else if(run.error)result(c,false,0,`run ${run.id}: ${run.error}`,{frames:run.frames||[]});
+        else if(run.error)result(c,false,0,`run ${run.id}: ${run.error}`,{frames:run.frames||[],...(run.infrastructure?{infrastructure:true}:{})});
         else ready.push({c,run});
       }
       if(ready.length) {
         const origins=[...runs.values()].filter(r=>r.base_url).map(r=>new URL(r.base_url).origin);
-        const input=JSON.stringify({step_ms:limits.step_ms,check_ms:limits.check_ms,origins,checks:ready.map(({c,run})=>({id:c.id,base_url:run.base_url,steps:Array.isArray(c.steps)?c.steps:[]}))});
-        const ms=Math.max(1000,Math.min(left(),15_000+ready.length*(limits.check_ms+5000)));
+        const input=JSON.stringify({deadline_ms:Math.max(0,left()-REPORT_MS),origins,checks:ready.map(({c,run})=>({id:c.id,base_url:run.base_url,steps:Array.isArray(c.steps)?c.steps:[]}))});
+        const ms=Math.max(1,left());
         const box=await fresh('browser');
         try {
           const r=await execCheck(['node',path.join(ADAPTER_DIR,'browser-check.mjs')],{cwd:box.root,env:browserEnvironment({TMPDIR:box.tmp,TMP:box.tmp,TEMP:box.tmp,HOME:box.tmp}),ms,stdin:input,prefix:enter()});
@@ -1029,7 +1010,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
               // The process ended (or was stopped) before this check reported.
               const running=started.filter(id=>!lines.some(l=>l.id===id&&'passed' in l)).at(-1);
               result(c,false,0,running===c.id?`did not finish: the browser stage ended (${r.timedOut?`after ${seconds(r.ms)}`:`exit ${r.code}`}) while this check was running`
-                :`not reached: the browser stage ended while ${running?`check ${running}`:'the browser'} was running`,{infrastructure:running!==c.id});
+                :`not reached: the browser stage ended while ${running?`check ${running}`:'the browser'} was running`,{infrastructure:running!==c.id||r.timedOut});
             }
             else if(x.passed)result(c,true,x.ms);
             else {

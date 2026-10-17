@@ -100,7 +100,7 @@ async function runOn(room, list, bundle) {
   const {plan, toolchains, local} = checkPlan(room.specOf(box), files, {rows: room.installedToolchains(), placed: bundle.placed, paths: bundle.link?.paths});
   for (const [id, x] of local) out.push({id, passed: !!x.passed, detail: x.detail});
   if (plan.checks.length) {
-    const rep = await verifyChecks({mode: 'checks', fingerprint: 'x', snapshot_hash: await snapshotHash(ship), files: ship, plan: {...plan, syntax: []}, toolchains, limits: {total_ms: 60000, check_ms: 20000, step_ms: 4000}}, {isolation: []});
+    const rep = await verifyChecks({mode: 'checks', fingerprint: 'x', snapshot_hash: await snapshotHash(ship), files: ship, plan: {...plan, syntax: []}, toolchains, limits: {total_ms: 60000}}, {isolation: []});
     for (const c of rep.checks) out.push({id: c.id, passed: !!c.passed, detail: c.detail});
   }
   return out;
@@ -337,8 +337,9 @@ test('norow: the base\'s TypeScript and shell scripts are compiled by their rows
   assert.deepEqual(['tools/fix.ts', 'tools/run.sh'].map(p => room.syntaxOf(p, top.files)?.row?.id), ['typescript', 'shell']);
   assert.ok(boxes.some(b => b.syntax.includes('tools/fix.ts') && b.syntax.includes('tools/run.sh')));
   const issues = JSON.stringify(room.problems('1=1').map(p => p.detail));
-  assert.match(issues, /typescript syntax: tools\/fix\.ts: Expression expected/);
-  assert.match(issues, /shell syntax: tools\/run\.sh: 2: Syntax error/);
+  // Each row's syntax step: what it printed, whole (owner 2026-10-16 05:39, 19:44: no file is read out of the compiler's words).
+  assert.match(issues, /typescript syntax: exit 1\\n--- stdout\\ntools\/fix\.ts: Expression expected/);
+  assert.match(issues, /shell syntax: exit 1\\n--- stderr\\n\.\/tools\/run\.sh: 2: Syntax error/);
   assert.deepEqual(room.read(`compile_issues:${m}`, null).paths.sort(), ['tools/fix.ts', 'tools/run.sh']);
   assert.notEqual(room.get('status'), 'complete', tail(room));
   assert.equal(room.runFinished(), false);
