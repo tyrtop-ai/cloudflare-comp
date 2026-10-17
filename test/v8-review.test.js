@@ -133,7 +133,8 @@ test('F7 (v8 live 6): two pieces placing one path, and a contract a job adds at 
   assert.deepEqual(two.level.division.placed_by_several, [{path: 'words.py', pieces: ['Shouter', 'Louder']}]);
   const one = stated({contracts: C, validations: VALIDATIONS, pieces: [{label: 'Loud', task: 'Write shout and loud', contracts: ['shout', 'loud']}, {label: 'Rest', task: 'the rest', contracts: ['whisper', 'soft', 'NOTES.md']}]});
   assert.deepEqual([one.done, one.level.division.placed_by_several], [{complete: true}, undefined], 'one piece may define two functions in one file');
-  const job = stated({contracts: [{name: 'reverse', kind: 'function', path: 'shout.py', does: 'reverses a word'}], validations: [call('r1', ['reverse'], 'reverse', 'ab', 'ba'), call('r2', ['reverse'], 'reverse', 'a', 'a'), call('r3', ['reverse'], 'reverse', 'xyz', 'zyx')], pieces: []}, {have: [CONTRACTS[0]]});
+  // A job at a level that may not divide (piece is not offered): its contracts, with no pieces.
+  const job = stated({contracts: [{name: 'reverse', kind: 'function', path: 'shout.py', does: 'reverses a word'}], validations: [call('r1', ['reverse'], 'reverse', 'ab', 'ba'), call('r2', ['reverse'], 'reverse', 'a', 'a'), call('r3', ['reverse'], 'reverse', 'xyz', 'zyx')], pieces: []}, {have: [CONTRACTS[0]], divide: false});
   assert.deepEqual([job.done, job.level.division.placed_already], [{complete: true}, [{contract: 'reverse', path: 'shout.py', has: 'shout'}]]);
 });
 test('F7 (v8 live 6): Clef reads which files each piece places; a division that places one file from two pieces is its to judge, and when it says NO the splitter divides again and the next division is admitted', {skip}, async () => {
@@ -172,7 +173,7 @@ test('F8: a contract\'s examples come only from validations that exercise it its
   assert.equal(exercises({kind: 'browser', serve: 'index.html', steps: [{goto: '/'}]}, {name: 'new.html', kind: 'page', path: 'new.html'}), false);
   const two = VALIDATIONS.filter(v => v.id !== 's3');
   assert.deepEqual(contractExamples(shout, two.filter(v => v.serves.includes('shout'))), ['shout("hi") → "HI!"', 'shout("a") → "A!"']);
-  assert.deepEqual(stated({contracts: CONTRACTS, validations: two, pieces: []}).done, {complete: false, missing: ['shout has 2 different examples of 3: calls of shout, each call one example.']});
+  assert.deepEqual(stated({contracts: CONTRACTS, validations: two, pieces: PARTS.map(({kids: _, ...p}) => p)}).done, {complete: false, missing: ['shout has 2 different examples of 3: calls of shout, each call one example.']});
 });
 test('F8: the worker of shout reads only shout\'s own examples, never a sibling\'s call', {skip}, async () => {
   const two = VALIDATIONS.filter(v => v.id !== 's3'), s3 = VALIDATIONS.find(v => v.id === 's3'), heard = [];

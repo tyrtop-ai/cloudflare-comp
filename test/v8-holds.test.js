@@ -131,11 +131,13 @@ test('a manager that queues itself again and again asking no model stops at a ro
 const REVERSE = {name: 'reverse', kind: 'function', path: 'reverse.py', does: 'reverses a word', inputs: [{name: 's', is: 'a word'}], outputs: 'the word reversed'};
 const REVERSED = [call('r1', ['reverse'], 'reverse', 'abc', 'cba'), call('r2', ['reverse'], 'reverse', 'a', 'a'), call('r3', ['reverse'], 'reverse', 'Yo', 'oY')];
 const REVERSE_PY = 'def reverse(s):\n    return str(s)[::-1]\n';
+// The room's manager divides, so the extension's splitter proposes a division: two pieces of reverse, which Clef's review finds too small.
+const REVERSE_PIECES = [{label: 'Reverser', task: 'Write reverse', contracts: ['reverse']}, {label: 'Reverser of one letter', task: 'Write reverse for a word of one letter', contracts: ['reverse']}];
 test('a change whose extension cannot be stated holds the room, which never says complete, and the export never says passed for it; Continue gives the splitter fresh attempts, the change lands, and its prompt is done', {skip}, async () => {
   let fail = true;
   const base = splitFor();
-  const split = user => user.contracts_you_have ? (fail ? 'not json at all' : {contracts: [REVERSE], validations: REVERSED, pieces: []}) : base(user);
-  const r = await toolkit({split, leaf: leafOf({answers: {reverse: REVERSE_PY}}), clef: clefFor(undefined, {'^route_to_': 0.1})});
+  const split = user => user.contracts_you_have ? (fail ? 'not json at all' : {contracts: [REVERSE], validations: REVERSED, pieces: REVERSE_PIECES}) : base(user);
+  const r = await toolkit({split, leaf: leafOf({answers: {reverse: REVERSE_PY}}), clef: clefFor(undefined, {'^route_to_': 0.1, '^split_size$': (_k, state) => /reverses a word/.test(state.assignment || '') ? 0.2 : 0.9})});
   assert.equal(r.room.get('status'), 'complete');
   assert.equal((await r.room.appFiles()).passed, true);
   const out = await r.room.amend('Also add a function that reverses a word.');
@@ -156,6 +158,7 @@ test('a change whose extension cannot be stated holds the room, which never says
   const after = await exported(r.room);
   assert.equal(after.app.passed, true);
   assert.equal(after.files.get('reverse.py'), REVERSE_PY);
+  assert.deepEqual(r.room.splitAttempts(m.Root).filter(a => String(a.job || '').startsWith('extend:') && a.pieces).map(a => [a.pieces, a.outcome]), [[2, 'handed down']], 'Clef\'s review decided the extension\'s division');
   assert.equal(r.room.promptRows().at(-1).status, 'done', 'the change\'s prompt is this run\'s');
 });
 

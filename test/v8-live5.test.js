@@ -14,6 +14,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {levelRoom, again, deliver, events} from './helpers/levels.js';
+import {levelCalls} from './helpers/room.js';
 import {CLEF, RETRY, clefText} from '../src/prompts.js';
 import {gateLine} from '../src/contracts.js';
 // After the room helper registered the cloudflare: loader.
@@ -36,9 +37,9 @@ const VALIDATIONS = [
 const piece = (label, contracts, task = `Write ${contracts.map(c => c.path).join(' and ')}`) => ({label, task, contracts: contracts.map(c => c.name)});
 const TWO = [piece('Guide', [GUIDE]), piece('Questions and tips', [FAQ, TIPS])];
 const THREE = [piece('Guide', [GUIDE]), piece('Questions', [FAQ]), piece('Tips', [TIPS])];
-// The room's manager states the level; a manager whose contracts were given restates them, with no pieces of its own.
-const splitWith = (pieces = () => TWO) => (user, n) => user.contracts_you_deliver
-  ? {contracts: user.contracts_you_deliver, validations: [], pieces: []}
+// The room's manager states the level; a manager whose contracts were given restates them, with the pieces lower gives it.
+const splitWith = (pieces = () => TWO, lower = () => []) => (user, n) => user.contracts_you_deliver
+  ? {contracts: user.contracts_you_deliver, validations: [], pieces: lower(user, n)}
   : {contracts: [GUIDE, FAQ, TIPS], validations: VALIDATIONS, pieces: pieces(user, n)};
 // A worker writes the files its prompt delivers, from FILES (or a scripted answer per path list).
 const leafWith = (answers = {}) => {
@@ -64,9 +65,9 @@ const clefFor = ({pre = () => 0.05, review = [], other = () => 0.9} = {}) => {
 };
 // The room's manager is above the floor (p); the managers below it are caught.
 const topOnly = p => state => state.assignment === GOAL ? p : 0.05;
-async function room5({pre = topOnly(0.6), review, pieces, answers, settings = {}, other} = {}) {
+async function room5({pre = topOnly(0.6), review, pieces, lower, answers, settings = {}, other} = {}) {
   const c = clefFor({pre, review, other});
-  const r = await levelRoom({prompt: GOAL, split: splitWith(pieces), leaf: leafWith(answers), clef: c.answer, settings});
+  const r = await levelRoom({prompt: GOAL, split: splitWith(pieces, lower), leaf: leafWith(answers), clef: c.answer, settings});
   return {...r, seen: c.seen};
 }
 const passed = room => Object.values(room.read('validation_status', {})).filter(s => s.passed === true).length;
@@ -96,12 +97,14 @@ test('live 5: the pre-grade reads the assignment and the row\'s contracts, one l
 
 test('live 5: a lower manager\'s splitter receives its row\'s contracts, and Clef reviews a proposal in one call: validity, size, each piece\'s scope and each validation', async () => {
   const lowerPre = state => state.assignment === GOAL || state.assignment === 'Write FAQ.md and TIPS.md' ? 0.6 : 0.05;
-  const {room, calls, seen} = await room5({pre: lowerPre, review: [{valid: 0.81, size: 0.77}]});
+  // The lower manager's pre-grade lets it divide too, so its splitter proposes a division of its own.
+  const {room, calls, seen} = await room5({pre: lowerPre, review: [{valid: 0.81, size: 0.77}], lower: () => [piece('Questions', [FAQ]), piece('Tips', [TIPS])]});
   assert.equal(room.get('status'), 'complete', tail(room));
   const lower = calls.split.find(u => u.contracts_you_deliver);
   assert.deepEqual(lower.contracts_you_deliver.map(c => c.name), ['FAQ.md', 'TIPS.md']);
   assert.equal(lower.max_pieces, DEFAULT_ROOM_SETTINGS.max_children);
-  assert.equal(seen.review.length, 1, 'one review call for the one proposal');
+  assert.deepEqual(seen.review.map(r => r.state.assignment), [GOAL, 'Write FAQ.md and TIPS.md'], 'one review call for each proposal');
+  assert.deepEqual(seen.review[1].state.pieces.map(p => [p.label, p.contracts]), [['Questions', ['FAQ.md']], ['Tips', ['TIPS.md']]]);
   const r = seen.review[0];
   assert.deepEqual(Object.keys(r.questions).slice(0, 4), ['split_valid', 'split_size', 'within_0', 'within_1']);
   assert.deepEqual(Object.keys(r.questions).slice(4, 6), ['exercises_0', 'implementable_0']);
@@ -140,12 +143,24 @@ test('live 5: a pre-grade at or below the floor saves a given level\'s splitter 
   assert.deepEqual([a.attempt, a.p, a.floor, a.caught], [0, 0.05, 0.1, true]);
 });
 
-test('live 5: a splitter that proposes no pieces hands the whole level down to one worker', async () => {
-  const {room, calls} = await room5({pieces: () => []});
+test('live 5: once the pre-grade lets the level divide, the splitter\'s done with no pieces hears that the level lacks its division; it declares pieces in the same session, and Clef\'s review alone decides', async () => {
+  const heard = [];
+  const split = (user, _n, _system, {round, results, tools}) => {
+    if (user.contracts_you_deliver) return {contracts: user.contracts_you_deliver, validations: [], pieces: []};
+    if (round === 1) return levelCalls({contracts: [GUIDE, FAQ, TIPS], validations: VALIDATIONS, pieces: []}, {user, tools});
+    heard.push(results);
+    return [...TWO.map(p => ({name: 'piece', arguments: p})), {name: 'done', arguments: {}}];
+  };
+  const c = clefFor({pre: topOnly(0.6)});
+  const {room, calls} = await levelRoom({prompt: GOAL, split, leaf: leafWith(), clef: c.answer});
   assert.equal(room.get('status'), 'complete', tail(room));
-  assert.equal(calls.split.length, 1);
-  assert.match(events(room, 'hand_down')[0].body, /^Its splitter proposed no pieces, so the level goes to one worker\. 9 validation\(s\) of its own\.$/);
-  assert.deepEqual(kids(room).map(c => c.role), ['worker']);
+  assert.equal(calls.split.length, 1, 'one session');
+  assert.deepEqual(heard[0].at(-1), {name: 'done', result: {complete: false, missing: ['the division has 0 pieces of at least 2, each declared with piece.']}});
+  // The division reaches Clef's review, which admits it; nothing hands the level down past it.
+  assert.deepEqual(c.seen.review.map(r => r.state.pieces.map(p => p.label)), [['Guide', 'Questions and tips']]);
+  assert.deepEqual(attemptsOf(room).filter(a => a.attempt > 0).map(a => [a.pieces, a.outcome]), [[2, 'admitted']]);
+  assert.deepEqual(kids(room).map(k => [k.label, k.role]), [['Guide', 'manager'], ['Questions and tips', 'manager']]);
+  assert.ok(!events(room, 'hand_down').some(e => e.actor === room.roomManager()));
   assert.equal(passed(room), 9);
 });
 

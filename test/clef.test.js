@@ -195,12 +195,15 @@ test('v8: the splitter is ROLE.splitter + FORMAT.splitter with its functions, it
   const {systemPrompt, TOOLS} = await import('../src/prompts.js');
   const {splitLevel} = await import('../src/splitter.js');
   const calls = [];
-  const page = {name: 'index.html', kind: 'page', path: 'index.html', does: 'the page'};
-  const answers = [{response: JSON.stringify({contracts: [page], validations: [], pieces: []})}, {tool_calls: [{name: 'contract', arguments: page}, {name: 'done', arguments: {}}]}];
+  const page = {name: 'index.html', kind: 'page', path: 'index.html', does: 'the page'}, notes = {name: 'NOTES.md', kind: 'doc', path: 'NOTES.md', does: 'notes on the page'};
+  // Piece is offered, so the level the calls state is a division.
+  const answers = [{response: JSON.stringify({contracts: [page], validations: [], pieces: []})}, {tool_calls: [{name: 'contract', arguments: page}, {name: 'contract', arguments: notes},
+    {name: 'piece', arguments: {label: 'Page', task: 'Write the page.', contracts: ['index.html']}}, {name: 'piece', arguments: {label: 'Notes', task: 'Write the notes.', contracts: ['NOTES.md']}}, {name: 'done', arguments: {}}]}];
   const env = {PIPELINE: 'v8', MODEL_NAME: '@cf/qwen/qwen3-30b-a3b-fp8', AI: {run: async (_name, args) => { calls.push(JSON.parse(JSON.stringify(args))); return answers[calls.length - 1]; }}};
   const request = {assignment: 'A one-page site', box: {programs: ['node'], toolchains: [{id: 'text', extensions: ['.html']}]}, max_pieces: 4};
   const out = await splitLevel(env, request);
-  assert.deepEqual(out.level.contracts.map(c => c.name), ['index.html']);
+  assert.deepEqual(out.level.contracts.map(c => c.name), ['index.html', 'NOTES.md']);
+  assert.deepEqual(out.level.pieces.map(p => p.label), ['Page', 'Notes']);
   assert.equal(calls.length, 2);
   for (const c of calls) { assert.equal(c.messages[0].content, systemPrompt('splitter')); assert.deepEqual(c.tools, TOOLS.splitter); }
   assert.deepEqual(JSON.parse(calls[0].messages[1].content), request);

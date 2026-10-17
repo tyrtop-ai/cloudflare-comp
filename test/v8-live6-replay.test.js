@@ -8,7 +8,7 @@
 // as the call of its kind's function, its pieces, then done), and the test reads what each function answers: what
 // the old reader read past silently (a run on a function, a file or a
 // document; a name that is not declared; a piece that delivers nothing) is a
-// result inside the session, and done says what the owner's rules still need.
+// result inside the session, and done says what the level still lacks.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
