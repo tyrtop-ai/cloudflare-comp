@@ -181,8 +181,8 @@ export async function reviewLevel(env, {assignment, contracts = [], pieces = [],
 // a complaint or a change, each function call it may make (answer with a
 // contract, route_to a child, extend its level, ask_parent) is one typed
 // option, and Clef scores each one with one noul question over the
-// manager's own files (its contracts, its children's labels, tasks and
-// contracts, and the item). options: [{key, question}], the key Clef's
+// manager's own files (its assignment and contracts, its children's labels
+// and contracts, and the item). options: [{key, question}], the key Clef's
 // question key (e.g. route_to_1) and the question its instructions.
 // [p per option], in order; the caller calls the highest.
 export const CHOICE_QUESTIONS = 96;

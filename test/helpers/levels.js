@@ -15,8 +15,8 @@ export const clefBy = p => input => ({answers: Object.fromEntries(Object.keys(in
 // scores it from the state it reads: a complaint goes to the child that
 // wrote a file it names or delivers a contract it concerns (else its
 // splitter rebuilds what no child delivers); an ask is answered by the
-// contract it names, else the first offered, else the level is extended,
-// and asked one level up last; a change goes to the first child. null: the
+// contract it names, else the first offered, and asked one level up last;
+// a change goes to the first child. null: the
 // key is no choice's.
 export function choiceP(key, state = {}) {
   const item = state.item || {}, kid = state.children?.[Number(key.split('_').pop())];
@@ -26,7 +26,6 @@ export function choiceP(key, state = {}) {
   }
   if (item.kind === 'ask') {
     if (/^answer_\d+$/.test(key)) { const c = state.contracts_offered?.[Number(key.split('_').pop())]?.contract || ''; return item.expected_name && new RegExp(`(^|\\s)${item.expected_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(c) ? 0.95 : 0.9; }
-    if (key === 'extend') return 0.85;
     if (key === 'ask_parent') return 0.1;
   }
   if (item.kind === 'change') {

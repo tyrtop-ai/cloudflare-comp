@@ -3,8 +3,6 @@
 // (src/index.js applyChange), which routes it; nothing here reads a room or
 // a model.
 
-// The text the goal may grow to with its changes, and the queue's bounds.
-export const EFFECTIVE_GOAL_LIMIT = 8000, MAX_QUEUED = 20, PROMPT_LIMIT = 4000;
 export const PROMPT_STATES = Object.freeze(['queued', 'running', 'done', 'failed', 'skipped']);
 export const QUEUE_ON_FAIL = Object.freeze(['stop', 'continue']);
 
@@ -21,7 +19,7 @@ export function effectiveGoal(goal, changes = []) {
 // most 60% of the room (the newest first, the newest one clipped if it
 // alone is too long), and the goal's head the rest; what is left out is
 // marked.
-export function goalView(goal, changes = [], limit = EFFECTIVE_GOAL_LIMIT) {
+export function goalView(goal, changes = [], limit) {
   const whole = effectiveGoal(goal, changes), n = Math.max(40, Number(limit) || 0);
   if (whole.length <= n) return whole;
   const list = (Array.isArray(changes) ? changes : []).map(c => String(c ?? '').trim()).filter(Boolean).map((c, i) => `Change ${i + 1}: ${c}`);
@@ -38,11 +36,11 @@ export function goalView(goal, changes = [], limit = EFFECTIVE_GOAL_LIMIT) {
   return [head, tail].filter(Boolean).join('\n\n').slice(0, n);
 }
 
-// A prompt's text as the queue and /api/amend take it: trimmed, 8 to
-// PROMPT_LIMIT characters. {text} or {error}.
+// A prompt's text as the queue and /api/amend take it: trimmed, at least
+// 8 characters (as a goal), and as long as the person writes it. {text} or {error}.
 export function promptText(raw) {
   const text = typeof raw === 'string' ? raw.trim() : '';
-  if (text.length < 8 || text.length > PROMPT_LIMIT) return {error: `A prompt must have 8–${PROMPT_LIMIT} characters`};
+  if (text.length < 8) return {error: 'A prompt must have at least 8 characters'};
   return {text};
 }
 

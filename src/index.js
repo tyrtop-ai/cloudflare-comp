@@ -19,7 +19,7 @@ import { contractText, assignedPiece, fileGateError, writerPathError, deliveredF
 import { buildPathError } from '../container/build-path.mjs';
 import { toolchainById, toolchainOf, TOOLCHAINS, COMPILE_ROWS, installed as installedRows, browserProject, parseModeOf, scopeManifestOf, codeRowOf, pageScripts, pageModes } from './toolchains.js';
 // v8 S9: amendments and the prompt queue.
-import { effectiveGoal, goalView, promptText, reorderError, EFFECTIVE_GOAL_LIMIT, MAX_QUEUED, QUEUE_ON_FAIL } from './amend.js';
+import { effectiveGoal, goalView, promptText, reorderError, QUEUE_ON_FAIL } from './amend.js';
 import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS } from './checks.js';
 import { getArtifactStore } from './artifact-store.js';
 import { RETRY, MESSAGES, BASE_LABEL, CLEF, clefText } from './prompts.js';
@@ -304,11 +304,6 @@ export const splitterRecord = out => JSON.stringify({reason: out.reason, rounds:
 // v8: a Clef mark below this reads as a doubt about a validation: shown
 // beside it, and first in a hold's text; the validation is never removed.
 export const VALIDATION_DOUBT_BAR = 0.5;
-// v8: the turns a run may take in a row that call no model (managers,
-// builders, compilers: none spends the budget), per live row and in all
-// beyond that; past it the room holds (turns_without_model) with the rows
-// that took them. A manager loop that asks no model can never spin.
-export const FREE_TURNS_PER_ROW = 8, FREE_TURNS_BASE = 40;
 // One room hold per row it names (a grant has one of its own).
 const holdKey = h => h.kind === 'base_confirm' ? 'base_confirm' : h.agent ? `agent:${h.agent}` : `kind:${h.kind}`;
 // v8: every row's id is <role>-<hex16>: the first 16 hex digits of the
@@ -736,7 +731,7 @@ export class ControlRoom extends DurableObject {
   async handPrompt({prompt='', task='', interfaces=[]}={}) {
     const n=Number(query(this.db(),'SELECT COUNT(*) AS n FROM prompt_handlers')[0].n)+1,id=`${HANDLER_PREFIX}${n}`;
     const create=!this.node('root');
-    this.db().exec('INSERT INTO prompt_handlers(id,kind,prompt,prompt_id,root,created_root,spawned_at,ended_at) VALUES (?,?,?,?,?,?,?,NULL)',id,'goal',clip(prompt,EFFECTIVE_GOAL_LIMIT),'','root',create?1:0,Date.now());
+    this.db().exec('INSERT INTO prompt_handlers(id,kind,prompt,prompt_id,root,created_root,spawned_at,ended_at) VALUES (?,?,?,?,?,?,?,NULL)',id,'goal',clip(prompt,8000),'','root',create?1:0,Date.now());
     try { if(create)await this.provision('root',id,'Root objective',task,interfaces,[],[]); }
     finally {
       this.db().exec('UPDATE prompt_handlers SET ended_at=? WHERE id=?',Date.now(),id);
@@ -822,8 +817,6 @@ export class ControlRoom extends DurableObject {
   // A model or Clef call's record (src/model.js traced), as a span.
   traceCall(r, envRole) {
     const {kind,name,start_ms,end_ms,...attrs}=r||{};
-    // The run's generative model calls so far (drive's bound on turns that ask none).
-    if((kind||'model')==='model')this.generated=(this.generated||0)+1;
     this.span(kind||'model',name||'call',start_ms||Date.now(),end_ms||Date.now(),{...attrs,model_role:envRole});
   }
   spans(after=0, limit=1000) { return query(this.db(),'SELECT id,ts,agent,step,kind,name,start_ms,end_ms,attrs FROM spans WHERE id>? ORDER BY id LIMIT ?',after,limit).map(spanRow); }
@@ -7885,10 +7878,7 @@ export class ControlRoom extends DurableObject {
       // Work-conserving: replace each completed slot immediately, without
       // waiting for slower inferences from the same dispatch wave.
       // A stop request dispatches nothing new; turns already running finish.
-      const stopping=()=>this.get('stop_requested')==='1'||spinning;
-      // v8: the turns in a row that called no model, by row (FREE_TURNS_PER_ROW).
-      const v8=this.v8(),free=new Map();
-      let spinning=false,calls=this.generated;
+      const stopping=()=>this.get('stop_requested')==='1';
       while (tally(), active.size || !stopping()&&(spent<cap || this.read('queue',[]).some(id=>!this.spendsTurn(id)&&this.node(id)?.status==='ready'))) {
         while (!stopping() && active.size<this.settings().parallel) {
           tally();
@@ -7903,19 +7893,6 @@ export class ControlRoom extends DurableObject {
           // Manager routing is local bookkeeping + optional cheap Clef. Do not
           // spend a generative inference turn or block a finished hierarchy.
           if(this.spendsTurn(id)){spent++;this.budgetSpent=spent>=cap;}
-          else if(v8) {
-            if(this.generated!==calls){calls=this.generated;free.clear();}
-            free.set(id,(free.get(id)||0)+1);
-            const n=[...free.values()].reduce((a,b)=>a+b,0),bound=FREE_TURNS_BASE+FREE_TURNS_PER_ROW*this.liveSubtree(this.roomManager()||id).length;
-            if(n>bound) {
-              spinning=true;
-              this.save('queue',addFirst(this.read('queue',[]),id));this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
-              const top=[...free].sort((a,b)=>b[1]-a[1]),row=this.node(top[0][0]);
-              this.set(`escalated:${row.id}`,'turns_without_model');
-              this.holdRoom('turns_without_model',clip(`The room took ${n-1} turns in a row that asked no model (most by "${row.label}": ${top[0][1]}; ${top.slice(1,5).map(([x,k])=>`"${this.node(x)?.label||x}": ${k}`).join(', ')||'no other row'}), so it stops for you to look. Continue goes on from where it stopped.`,900),{agent:row.id});
-              break;
-            }
-          }
           this.event('system','dispatch',`Launching agent ${id} in free slot (${active.size+1}/${this.settings().parallel}).`);
           const task=this.runSelectedTurn(id,step);
           active.add(task);
@@ -8003,8 +7980,8 @@ export class ControlRoom extends DurableObject {
     // the splitters assign it like any other requirement. (The MOCK_AI
     // legacy fixtures run without it.)
     // v7.15.13 (run18): the requirement and Root's promise name the methods the goal states start() returns.
-    // Under v8 the goal is stored as the user wrote it.
-    const v8=this.v8(),whole=clip(goal,GOAL_LIMIT),task=this.live()&&!v8?`${whole} ${goalStartRequirement(whole)}`:v8?whole:goal;
+    // Under v8 the goal is stored as the user wrote it, whole.
+    const v8=this.v8(),whole=clip(goal,GOAL_LIMIT),task=this.live()&&!v8?`${whole} ${goalStartRequirement(whole)}`:goal;
     this.set('goal',this.live()?task:clip(goal,GOAL_LIMIT));
     // v8 S9: the goal's first revision (each change applied later adds one).
     this.db().exec('INSERT INTO goal_revisions(rev,prompt,text,effective,ts) VALUES (1,?,?,?,?)','',this.get('goal'),this.get('goal'),Date.now());
@@ -8167,10 +8144,6 @@ export class ControlRoom extends DurableObject {
     if(!this.started()||!['complete','failed','paused','running','error'].includes(this.get('status','idle')))return 'Start a run first: a change applies to a run that exists.';
     return '';
   }
-  // The goal with these changes added, against EFFECTIVE_GOAL_LIMIT.
-  goalTooLong(texts) {
-    return this.started()&&effectiveGoal(this.baseGoal(),[...this.goalChanges(),...texts]).length>EFFECTIVE_GOAL_LIMIT;
-  }
   // POST /api/prompts: one prompt at the end of the queue. A room that has
   // finished takes it at once (by the alarm), as the queue's next prompt.
   async addPrompt(raw, budget=null) {
@@ -8178,9 +8151,6 @@ export class ControlRoom extends DurableObject {
     if(t.error)return {error:t.error};
     if(this.started()&&!this.v8())return {error:'Amendments and queued prompts need a room started on the v8 pipeline.'};
     if(this.earlierRoom())return {error:EARLIER_ROOM,status:409};
-    const queued=this.promptRows("status='queued'");
-    if(queued.length>=MAX_QUEUED)return {error:`The queue holds at most ${MAX_QUEUED} prompts.`,status:409};
-    if(this.goalTooLong([...queued.map(p=>p.text),t.text]))return {error:`The goal with every queued change would pass ${EFFECTIVE_GOAL_LIMIT} characters; start a new project from this room's result instead.`,status:409};
     const id=crypto.randomUUID();
     this.db().exec("INSERT INTO prompts(id,seq,text,status,kind,budget,goal_rev,outcome,created,version) VALUES (?,?,?,'queued','queued',?,NULL,'{}',?,0)",id,this.promptSeq(true),t.text,budget,Date.now());
     this.event('system','prompt_queued',clip(`Queued: ${t.text}`,600));
@@ -8198,7 +8168,6 @@ export class ControlRoom extends DurableObject {
     if(version!==undefined&&version!==null&&Number(version)!==Number(row.version??0))return {error:'This prompt was changed since you read it; reload it and edit again.',status:409};
     const t=text===undefined?{text:row.text}:promptText(text);
     if(t.error)return {error:t.error};
-    if(this.goalTooLong(this.promptRows("status='queued'").map(p=>p.id===row.id?t.text:p.text)))return {error:`The goal with every queued change would pass ${EFFECTIVE_GOAL_LIMIT} characters; shorten the prompt.`,status:409};
     this.db().exec("UPDATE prompts SET text=?,budget=?,edited=?,version=version+1 WHERE id=? AND status='queued'",t.text,budget===undefined?row.budget:budget,Date.now(),row.id);
     return {prompt:this.promptRows('id=?',row.id)[0],...this.promptsHead()};
   }
@@ -8593,7 +8562,7 @@ export class ControlRoom extends DurableObject {
   // valid: each NO is a new session with its objection (larger pieces, or a
   // different division), up to SPLIT_ATTEMPTS attempts. A pending job (level_job:<id>:
   // a rebuild of what an archived child delivered, or an extension for a
-  // change or an ask none of its children covers) is an attempt of the same
+  // change none of its children covers) is an attempt of the same
   // kind on a level that has its design, under the same pre-grade: Clef
   // grades a manager once, and a caught manager's jobs are not divided either.
   async splitStep(id, job=null) {
@@ -8739,18 +8708,14 @@ export class ControlRoom extends DurableObject {
   }
   // What an admitted level still owes, each step safe to run again, so the
   // turn after a restart runs what is left: the person's confirmation for
-  // the existing files its contracts change, its children's rows, and the
-  // answer to the ask that started it (once: an asker that no longer waits
-  // for it is not answered again). Its job is cleared, and the manager
-  // waits, when all of it is done.
+  // the existing files its contracts change and its children's rows. Its
+  // job is cleared, and the manager waits, when all of it is done.
   async finishLevel(id) {
     const job=this.read(`level_job:${id}`,null);
     if(!job?.admitted)return;
     const {contracts}=job.admitted;
     await this.baseContracts(id,[{interfaces:contracts}]);
     await this.spawnLevel(id);
-    if(job.ask&&query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND topic=?',job.ask.worker,job.ask.key).length)
-      await this.answerAsk(job.ask,contracts.find(c=>c.name===job.ask.name)||contracts[0]);
     this.save(`level_job:${id}`,null);
     this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
   }
@@ -8908,17 +8873,18 @@ export class ControlRoom extends DurableObject {
   // complaint or a change it holds, each function call it may make is one
   // typed option, Clef scores each (one noul question per option, over the
   // manager's own files), and the runtime calls the highest. Its functions:
-  //   children()       its level file: each live child's label, task and the contracts it delivers;
+  //   children()       its level file: each live child's label and the contracts it delivers (the
+  //                    piece prompts its splitter wrote are the builder's and the workers', not its);
   //   my_contracts()   its entry in its parent's level file: its assignment and contracts;
   //   answer(contract) to an asker: a contract its children deliver (none of the asker's own line);
   //   route_to(child)  hands a complaint or a change to a child;
   //   ask_parent(need) the same ask one level up; at the room, the asker is archived;
-  //   extend(need)     hands the need to its splitter as a level job.
+  //   extend(...)      hands a change, or a complaint naming a contract no live child delivers, to its splitter as a level job.
   // A walk up the tree is a chain of ask_parent calls, each one manager's
   // choice. What the manager reads is its files only (levelDesign, designOf).
   managerView(m) {
     const level=this.levelDesign(m),mine=this.designOf(m),live=new Set(this.liveChildren(m).map(c=>c.id)),byName=new Map((level?.contracts||[]).map(c=>[c.name,c]));
-    const children=(level?.children||[]).filter(c=>live.has(c.id)).map(c=>({id:c.id,role:c.role,label:c.label,task:c.prompt,contracts:c.delivers.map(n=>byName.get(n)).filter(Boolean)}));
+    const children=(level?.children||[]).filter(c=>live.has(c.id)).map(c=>({id:c.id,role:c.role,label:c.label,contracts:c.delivers.map(n=>byName.get(n)).filter(Boolean)}));
     return {assignment:mine.prompt,mine:mine.contracts,children,contracts:level?.contracts||[]};
   }
   // The contracts m's level file says its children deliver (an archived child's too).
@@ -8938,7 +8904,7 @@ export class ControlRoom extends DurableObject {
     if(item.kind==='ask') {
       const line=view.children.find(c=>this.within(item.worker,c.id)),seen=new Set();
       for(const c of view.children)if(c!==line)for(const k of c.contracts)if(!seen.has(k.name)){const j=seen.size;seen.add(k.name);out.push({fn:'answer',contract:k,key:`answer_${j}`,question:clefText('answer',{j}),call:`answer(${k.name})`});}
-      out.push({fn:'extend',key:'extend',question:CLEF.extend_ask,call:'extend(need)'},{fn:'ask_parent',key:'ask_parent',question:CLEF.ask_parent,call:'ask_parent(need)'});
+      out.push({fn:'ask_parent',key:'ask_parent',question:CLEF.ask_parent,call:'ask_parent(need)'});
       return out;
     }
     view.children.forEach((c,i)=>out.push({fn:'route_to',child:c,key:`route_to_${i}`,question:clefText(item.kind==='change'?'route_change':'route_complaint',{i}),call:`route_to("${c.label}")`}));
@@ -8962,7 +8928,7 @@ export class ControlRoom extends DurableObject {
     const state={item:item.kind==='ask'?{kind:'ask',need:item.need,expected_name:item.name||''}:{kind:item.kind,text:item.text,
         ...(item.kind==='complaint'?{concerns:{contracts:(item.serves||[]).map(named),files:[...new Set((item.parties||[]).map(x=>x.owner_path||x.path).filter(Boolean))]}}:{})},
       assignment:view.assignment,my_contracts:lines(view.mine),
-      children:view.children.map((c,i)=>({slot:i,label:c.label,task:c.task,contracts:lines(c.contracts),...(item.kind==='complaint'?{wrote:wrote(c)}:{})})),
+      children:view.children.map((c,i)=>({slot:i,label:c.label,contracts:lines(c.contracts),...(item.kind==='complaint'?{wrote:wrote(c)}:{})})),
       ...(offered.length?{contracts_offered:offered.map((o,j)=>({slot:j,contract:contractLine(o.contract)}))}:{}),
       options:options.map(o=>o.call)};
     const what=item.kind==='ask'?`the ask for ${item.name||`"${clip(item.need,120)}"`}`:`the ${item.kind}`;
@@ -9049,9 +9015,8 @@ export class ControlRoom extends DurableObject {
   }
   // ---------- asks ----------
   // An ask a worker sent (workerAsk), held by manager m: m's choice answers
-  // it with a contract its children deliver, extends its level with what
-  // gives it (its splitter; finishLevel answers the asker), or asks its own
-  // parent the same. At the room (the parent of the manager it created), an
+  // it with a contract its children deliver (none of the asker's own line),
+  // or asks its own parent the same. At the room (the parent of the manager it created), an
   // ask no manager up to it holds archives the asker with its subtree, and
   // its manager's splitter rebuilds what it delivered (rebuildOrphans).
   async routeAsk(m, ask) {
@@ -9062,11 +9027,6 @@ export class ControlRoom extends DurableObject {
     const pick=await this.managerChoice(m,{kind:'ask',worker:ask.worker,need:ask.need,name:ask.name||''},held);
     if(!pick)return;
     if(pick.fn==='answer')return this.answerAsk(ask,pick.contract);
-    if(pick.fn==='extend') {
-      this.save(`level_job:${m}`,{kind:'extend',key:ask.key,text:ask.need,label:clip(ask.name||ask.need,60),own:[],ask});
-      this.event(m,'level_extend',clip(`"${this.node(m)?.label||m}" hands ${want} to its splitter, which extends the level.`,500),ask.worker);
-      return void this.wake(m);
-    }
     const up=this.agentAbove(m);
     if(up) {
       this.insertProblem({...held,holder:up});
@@ -9550,7 +9510,8 @@ export default {
       if (url.pathname==='/api/file' && request.method==='GET') return json(await stub.fileContent(url.searchParams.get('agent'),url.searchParams.get('path')));
       if (url.pathname==='/api/run' && request.method==='POST') {
         const goal=String(payload.goal||'').trim();
-        if (goal.length<8 || goal.length>GOAL_LIMIT) return json({error:`Goal must have 8–${GOAL_LIMIT} characters`},400);
+        // A v8 goal is taken as long as the person writes it; v7's keeps its limit.
+        if (payload.settings?.pipeline==='v8'?goal.length<8:goal.length<8 || goal.length>GOAL_LIMIT) return json({error:payload.settings?.pipeline==='v8'?'Goal must have at least 8 characters':`Goal must have 8–${GOAL_LIMIT} characters`},400);
         // v8 S8b: what the run starts from, and this deployment's host, which the goal's links never reach.
         const started=await stub.start(goal,normalizeTurnBudget(payload.budget??20),payload.settings||{},room,{base:payload.base??null,selfHosts:[url.host,...selfHostsOf(env)],...(Array.isArray(payload.grants)?{grants:payload.grants}:{})});
         return json(started,started.error?started.status||400:200);

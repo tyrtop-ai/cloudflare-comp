@@ -2,8 +2,8 @@
 // answers them all (no-card review F6); a row whose escalation is
 // outstanding waits for Continue, no manager is done while one from its
 // subtree is outstanding, and the room never completes with a change that
-// has not landed (F2); a manager loop that asks no model always ends at a
-// hold (F3). The stop probes of the card era (crosswait, selfwait,
+// has not landed (F2); the runtime holds no room for the turns that ask no
+// model (F3: the owner set no such bound). The stop probes of the card era (crosswait, selfwait,
 // waitprobe2) are ported to the levels: a complaint a worker leaves its
 // files as they were for stays its, and the repairs and rebuilds go on until
 // the room's turn budget ends, with nothing held; Continue goes on.
@@ -11,7 +11,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {choiceP} from './helpers/levels.js';
 import {toolkit, liveRoom, events, again, clefFor, splitFor, leafOf, logged, at, tail, runsBy, live, exported, call, FILES, GOAL, skip} from './helpers/toolkit.js';
-const {FREE_TURNS_BASE, FREE_TURNS_PER_ROW} = await import('../src/index.js');
 
 const BAD = {shout: 'def shout(s):\n    return str(s).upper()\n', whisper: 'def whisper(s):\n    return str(s).lower()\n'};
 const holds = room => room.roomHolds().map(h => [h.kind, h.agent]);
@@ -57,7 +56,7 @@ test('selfwait: two branches whose workers leave their files as they were: each 
 const X = [call('x1', ['shout', 'whisper'], 'shout', 'hey', 'HEY!!'), call('x2', ['shout', 'whisper'], 'shout', 'b', 'B!!'), call('x3', ['shout', 'whisper'], 'shout', 'Oh', 'OH!!')];
 const withX = split => user => { const a = split(user); return user.contracts_you_deliver ? a : {...a, validations: [...a.validations, ...X]}; };
 for (const [name, other] of [['crosswait: Clef gives the room\'s complaint to the other part', true], ['selfwait: Clef gives it to the part that writes shout', false]]) test(`${name}; its worker changes nothing, so the room's manager compiles again and the complaint goes to the same part every round, until the budget ends; nothing holds, and Continue runs the room's validations again`, {skip}, async () => {
-  const pick = (key, state) => { const kids = (state.children || []).map(c => c.task); const quiet = kids.findIndex(t => /quiet/.test(t)), i = Number(key.split('_').pop()); return (i === quiet) === other ? 0.9 : 0.1; };
+  const pick = (key, state) => { const kids = (state.children || []).map(c => c.label); const quiet = kids.findIndex(t => /Quiet/.test(t)), i = Number(key.split('_').pop()); return (i === quiet) === other ? 0.9 : 0.1; };
   const r = await toolkit({split: withX(splitFor()), clef: clefFor(undefined, {'^route_to_\\d+$': (k, state) => state.item?.kind === 'complaint' && state.children.length === 3 ? pick(k, state) : choiceP(k, state)}), budget: 36});
   const m = at(r.room), routed = events(r.room, 'complaint_routed').filter(e => e.actor === m.Root);
   assert.ok(routed.length > 0 && routed.every(e => e.recipient === (other ? m['Quiet part'] : m['Loud part'])), tail(r.room));
@@ -75,7 +74,7 @@ test('waitprobe2: the room\'s complaint goes to Notes, whose worker rewrites its
   const XN = X.map(v => ({...v, serves: ['shout', 'NOTES.md']}));
   let notes = 0;
   const split = user => { const a = splitFor()(user); return user.contracts_you_deliver ? a : {...a, validations: [...a.validations, ...XN]}; };
-  const pick = (key, state) => { const i = Number(key.split('_').pop()); return /NOTES/.test(state.children?.[i]?.task || '') ? 0.9 : 0.1; };
+  const pick = (key, state) => { const i = Number(key.split('_').pop()); return (state.children?.[i]?.contracts || []).some(c => /NOTES/.test(c)) ? 0.9 : 0.1; };
   const r = await toolkit({split, clef: clefFor(undefined, {'^route_to_\\d+$': (k, state) => state.children.length === 3 ? pick(k, state) : choiceP(k, state)}), leaf: leafOf({answers: {'NOTES.md': () => `# Notes\n\nCall shout to shout and whisper to whisper (${++notes}).\n`}}), budget: 40});
   assert.ok(notes > 7, `Notes was given the complaint round after round (${notes} writes), past the six rounds the room used to stop at`);
   assertBudget(r.room, 'end');
@@ -106,12 +105,14 @@ test('a rebuild cycle (every rebuilt worker asks again for what no manager cover
   assert.ok(Number(r.room.get('step')) - steps <= 60 && events(r.room).length - count <= 600, 'bounded by the budget Continue gives');
 });
 
-test('a manager that queues itself again and again asking no model stops at a room hold naming it, after a bounded number of turns; Continue goes on, and the room completes once it no longer loops', {skip}, async () => {
+test('a manager that queues itself again and again asking no model is never held for it: the room goes on past the bound it once had, and completes once it no longer loops', {skip}, async () => {
   const r = liveRoom({split: splitFor(), leaf: leafOf(), clef: clefFor(), executor: logged([]), room_id: 'spin'});
   const turn = r.room.levelManagerTurn.bind(r.room);
-  let spins = 0, spinning = true;
+  // Past the old bound (40 turns and 8 per live row) for this room's rows.
+  let spins = 0;
+  const SPINS = 200;
   r.room.levelManagerTurn = async id => {
-    if (spinning && r.room.node(id)?.label === 'Louder' && r.room.levelDesign(id)) {
+    if (spins < SPINS && r.room.node(id)?.label === 'Louder' && r.room.levelDesign(id)) {
       spins++;
       r.room.db().exec("UPDATE agents SET status='ready' WHERE id=?", id);
       r.room.save('queue', [...r.room.read('queue', []), id]);
@@ -121,13 +122,7 @@ test('a manager that queues itself again and again asking no model stops at a ro
   };
   await r.room.start(GOAL, 80, {pipeline: 'v8'}, 'spin');
   await r.drain();
-  const m = at(r.room), rows = r.room.liveSubtree(m.Root).length;
-  assert.equal(r.room.get('status'), 'paused', tail(r.room));
-  assert.deepEqual(holds(r.room), [['turns_without_model', m.Louder]]);
-  assert.match(r.room.roomHolds()[0].text, /asked no model \(most by "Louder"/);
-  assert.ok(spins <= FREE_TURNS_BASE + FREE_TURNS_PER_ROW * rows, `bounded: ${spins} turns`);
-  spinning = false;
-  await again(r, 40);
+  assert.equal(spins, SPINS);
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
   assert.deepEqual(r.room.roomHolds(), []);
 });
@@ -168,24 +163,22 @@ test('a change whose extension cannot be stated: its splitter goes on in a new s
   assert.equal(r.room.promptRows().at(-1).status, 'done', 'the change\'s prompt is this run\'s');
 });
 
-test('an ask in scope at a manager whose splitter cannot extend its level: its splitter goes on in a new session each turn until the room\'s budget ends, nothing is held, the asker waits with no answer, and the room never completes; Continue extends the level and answers the asker by name', {skip}, async () => {
-  let fail = true;
-  const base = splitFor();
-  const split = user => user.contracts_you_have ? (fail ? 'not json at all' : {contracts: [{...REVERSE}], validations: REVERSED, pieces: []}) : base(user);
-  const leaf = leafOf({answers: {reverse: REVERSE_PY, loud: user => (user.world.answers || []).length ? 'from shout import shout\nfrom reverse import reverse\n\n\ndef loud(s):\n    return shout(s) + shout(s)\n' : FILES.loud},
-    control: (user, n) => user.prompt.deliver.some(c => c.name === 'loud') && !(user.world.answers || []).length ? {summary: 'need reverse', wait: true, ask: [{need: 'reverses a word', name: 'reverse'}]} : null});
-  const r = await toolkit({split, leaf, clef: clefFor(undefined, {'^answer_': 0.1})});
-  const m = at(r.room), worker = r.room.children(m.Louder).find(c => c.role === 'worker');
-  assert.equal(r.room.get('status'), 'paused', tail(r.room));
-  assert.deepEqual(holds(r.room), [], 'nothing is held: the splitter goes on');
-  assert.ok(r.room.splitterRows().filter(x => x.outcome === 'context').length > 1, 'a new session each turn, from what it declared');
-  assert.equal(r.room.node(worker.id).status, 'waiting');
-  assert.deepEqual(r.room.read(`fn_answers:${worker.id}`, []), [], 'no answer reached the asker');
-  assert.equal(r.room.planned(), false, 'v7\'s request machinery is not a v8 room\'s');
-  fail = false;
-  await again(r, 40);
+test('an ask no child\'s contract gives is never met by growing a level: no splitter extends one, each manager up to the room calls ask_parent, the asker is archived, and its rebuild delivers what it did; the room completes', {skip}, async () => {
+  let asked = false;
+  const leaf = leafOf({control: user => {
+    if (!user.prompt.deliver.some(c => c.name === 'loud') || asked) return null;
+    asked = true;
+    return {summary: 'need reverse', wait: true, ask: [{need: 'reverses a word', name: 'reverse'}]};
+  }});
+  const r = await toolkit({leaf, clef: clefFor(undefined, {'^answer_': 0.1, '^ask_parent$': 0.95})});
+  const m = at(r.room);
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
-  const answers = r.room.read(`fn_answers:${worker.id}`, []);
-  assert.deepEqual(answers.map(a => a.kind), ['provided']);
-  assert.match(answers[0].text, /Refer to it exactly as: from reverse import reverse, and use it rather than writing your own\./);
+  assert.ok(!events(r.room, 'level_extend').length, 'no level grows for an ask');
+  assert.ok(!r.room.splitAttempts(m.Louder).some(a => String(a.job || '').startsWith('extend:')) && !r.room.splitAttempts(m.Root).some(a => String(a.job || '').startsWith('extend:')));
+  assert.deepEqual(events(r.room, 'manager_choice').map(e => e.actor), [m.Louder, m['Loud part'], m.Root]);
+  assert.ok(events(r.room, 'manager_choice').every(e => /: ask_parent\(need\)/.test(e.body)));
+  const workers = r.room.children(m.Louder).filter(c => c.role === 'worker');
+  assert.deepEqual(workers.map(c => c.status), ['archived', 'done']);
+  assert.deepEqual(r.room.read(`fn_answers:${workers[0].id}`, []), [], 'no answer reached the asker');
+  assert.deepEqual(r.room.designOf(workers[1].id).contracts.map(c => c.name), r.room.designOf(workers[0].id).contracts.map(c => c.name));
 });

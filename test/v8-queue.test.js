@@ -240,7 +240,7 @@ test('queue: add, edit, reorder and remove change only queued prompts; a stale r
   const {room, drain} = docRoom();
   // Before a run: prompts wait for one.
   const a = (await room.addPrompt('first follow-up prompt')).prompt, b = (await room.addPrompt('second follow-up prompt')).prompt, c = (await room.addPrompt('third follow-up prompt')).prompt;
-  assert.equal((await room.addPrompt('short')).error, 'A prompt must have 8–4000 characters');
+  assert.equal((await room.addPrompt('short')).error, 'A prompt must have at least 8 characters');
   assert.deepEqual(states(room).map(x => x[0]), ['first follow-up prompt', 'second follow-up prompt', 'third follow-up prompt']);
   assert.equal(room.editPrompt(b.id, {text: 'second prompt, edited', version: 0}).prompt.text, 'second prompt, edited');
   assert.equal(room.editPrompt(b.id, {text: 'an edit from a stale read', version: 0}).status, 409);
@@ -328,6 +328,21 @@ test('v7 rooms are unchanged: no amendment and no queued prompt',async()=>{
 });
 
 
+// ------------------------------------------------------------ the goal, whole
+test('a v8 goal is taken as long as the person writes it: /api/run passes it on, and the room stores it whole; a v7 goal keeps its limit',async()=>{
+  const goal=DOC_GOAL+' '+'Say how long each step takes, and why. '.repeat(300);
+  const seen=[];
+  const stub=new Proxy({},{get:(_,k)=>async(...args)=>{seen.push([k,args[0]]);return {ok:true};}});
+  const env={APP_TOKEN:'t',ROOMS:{getByName:()=>stub}};
+  const run=settings=>worker.fetch(new Request('https://x.test/api/run',{method:'POST',headers:{authorization:'Bearer t','content-type':'application/json'},body:JSON.stringify({room:'room-12345',goal,budget:5,settings})}),env);
+  assert.equal((await run({pipeline:'v8'})).status,200);
+  assert.deepEqual(seen,[['start',goal.trim()]]);
+  assert.equal((await run({pipeline:'v7'})).status,400);
+  const {room,drain}=docRoom();
+  await room.start(goal.trim(),5,{pipeline:'v8'});await drain();
+  assert.equal(room.get('goal'),goal.trim());
+});
+
 // ------------------------------------------------------------ the HTTP routes
 test('routes: /api/amend and /api/prompts reach the room with their bodies',async()=>{
   const seen=[];
@@ -369,15 +384,19 @@ test('review: a prompt queued before a v7 Start is skipped, saying why',async()=
 });
 
 
-test('review: an edit keeps the goal limit and carries its version; a budget that is no budget is a 400',async()=>{
+test('review: the queue takes every prompt as the person writes it (no count, prompt length or goal length refuses one); an edit carries its version; a budget that is no budget is a 400',async()=>{
   const {room,drain}=docRoom();
   await room.start(DOC_GOAL,20,{pipeline:'v8'});await drain();
   room.set('queue_stopped','held for the test');
   const a=(await room.addPrompt('short follow-up number 0')).prompt;
-  assert.ok((await room.addPrompt('y'.repeat(3990))).prompt);
-  assert.equal(room.editPrompt(a.id,{text:'x'.repeat(4000)}).status,409,'past the effective-goal limit');
-  const e1=room.editPrompt(a.id,{text:'edited once, here',version:0});
-  assert.equal(e1.prompt.version,1);
+  for(let i=0;i<24;i++)assert.ok((await room.addPrompt(`a long follow-up ${i} `+'y'.repeat(9000))).prompt,`prompt ${i}`);
+  assert.equal(room.promptRows("status='queued'").length,25);
+  assert.equal(room.editPrompt(a.id,{text:'x'.repeat(20000)}).prompt.text.length,20000);
+  assert.equal(room.promptRows('id=?',a.id)[0].version,1);
+  const e0=room.editPrompt(a.id,{text:'edited back, here',version:1});
+  assert.equal(e0.prompt.version,2);
+  const e1=room.editPrompt(a.id,{text:'edited once, here',version:2});
+  assert.equal(e1.prompt.version,3);
   assert.equal(room.editPrompt(a.id,{text:'a stale edit, here',version:0}).status,409);
   assert.equal(room.promptRows('id=?',a.id)[0].text,'edited once, here');
   const env={APP_TOKEN:'t',ROOMS:{getByName:()=>room}};
