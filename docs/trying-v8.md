@@ -43,7 +43,7 @@ The room creates one manager from your prompt, and the manager's splitter states
 
 **"A static web page with a to-do list."**
 - The level should have a page contract (`index.html`) served as it is, and browser validations.
-- The browser validations are the most likely to hit infrastructure problems (Chromium starting on `standard-1`). A validation marked `infrastructure` means the box side failed, not the page: no worker gets a complaint for it, and the compiler runs it again until it can observe it.
+- The browser validations are the most likely to hit infrastructure problems (Chromium starting on `standard-1`). A validation marked `infrastructure` means the box side failed, not the page: no worker gets a complaint for it, and the compiler runs it again until it can observe it, each run a turn of the room's budget, with no hold.
 
 **"Build a small issue tracker that lets someone create, view, update, and delete tickets."** (the old default)
 - No `start()` requirement is added in v8. The splitter chooses the shape, and the contracts it declares (routes, a page, a command) say what it chose.
@@ -58,7 +58,7 @@ In the **Benchmarks** panel:
 - **Grading:** a failed grade goes back into the room as a complaint, like anything else, and the room works on it until the task passes or its budget is spent.
 - Use the same model pickers and turn budget as for the rooms above.
 
-Press **Run benchmark**. It keeps going with the page closed. A task room is an ordinary room whose prompt is the task's prompt: for most HumanEval tasks Clef's pre-grade should keep the level whole, so one worker writes the function. A task's outcome is what the room and the grader observed: graded (passed or failed), failed, or held. Stopped and held tasks are counted apart from the graded ones.
+Press **Run benchmark**. It keeps going with the page closed. A task room is an ordinary room whose prompt is the task's prompt: for most HumanEval tasks Clef's pre-grade should keep the level whole, so one worker writes the function. A task's outcome is what the room and the grader observed: graded (passed or failed), or a failure when the room failed, held or ran out of turns. A task that was stopped, whose room stopped with an error, or whose grader could not run is counted apart from the scored ones.
 
 ## 5. What to send back
 
