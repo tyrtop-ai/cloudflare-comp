@@ -23,7 +23,6 @@ The room creates one manager from your prompt, and the manager's splitter states
 
 | Hold | Meaning | What to do |
 |---|---|---|
-| `base_confirm` | A contract would change a file of the repo the room started from, and only you can grant that | Select the files to grant and press Continue, or send a follow-up prompt that leaves the file out |
 | `split_capacity` | An extension added a worker to a room already at its agent limit, or the limit is below what the room holds (a division, hand-down or rebuild within the limits is always created) | Raise the limit and press Continue |
 | any other | Something nothing below could settle reached the room; its text says what | Read the text. Continue wakes the row it names, or send a follow-up prompt |
 
@@ -32,7 +31,7 @@ The room creates one manager from your prompt, and the manager's splitter states
 **"Add a README explaining how to run it."** Set **Start from** to a public GitHub repo, a small one of yours.
 - The **Sources and base** panel should show how many files were read and what was skipped.
 - The level should have `README.md` as a doc contract with a judge validation (Clef reads the file and answers its question yes or no).
-- If the repo already has a README, the room holds at `base_confirm`: only you grant changing an existing file.
+- If the repo already has a README, the worker whose contract names it rewrites it: the room changes its own copy, and the export is a new branch.
 - **Download app (.zip)** should be the repo plus the new README. `.recursive/RUN.md` lists what wasn't carried over.
 
 **"A Python CLI that converts temperatures."**
