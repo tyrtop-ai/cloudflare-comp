@@ -338,6 +338,22 @@ test('a complaint the worker was handed stays in its view until a session of it 
   assert.deepEqual(seen.at(-1), ['the page is blank']);
 });
 
+test('the join leaves no file out and chooses no file over another: two pieces whose levels place a file at one path each ship their copy in the writer\'s own folder', async () => {
+  const {room, top, a, b, wa, wb, PAGE} = await tree(recorded().clef);
+  // B's level places index.html too, so A's piece and B's piece both place it.
+  await room.updateLevel(b.id, l => ({...l, contracts: [...l.contracts, PAGE], children: l.children.map(c => ({...c, delivers: [...c.delivers, 'index.html']}))}));
+  await room.putFile(wa.id, 'index.html', '<p>A</p>\n');
+  await room.putFile(wb.id, 'index.html', '<p>B</p>\n');
+  await room.putFile(wb.id, 'styles.css', 'p {}\n');
+  const piece = await room.joinPiece(top.id, null), atA = packagePath('Page', 'index.html', wa.id), atB = packagePath('Styles', 'index.html', wb.id);
+  assert.equal(piece.files.get(atA), '<p>A</p>\n');
+  assert.equal(piece.files.get(atB), '<p>B</p>\n');
+  assert.equal(piece.files.has('index.html'), false, 'neither copy is chosen');
+  assert.equal(piece.files.get('styles.css'), 'p {}\n');
+  assert.deepEqual([piece.by.get(atA), piece.by.get(atB)], [a.id, b.id]);
+  assert.match(events(room, 'bundle_conflict')[0].body, /^Two pieces place a file at the same path, so each copy stands in its writer's own folder: index\.html/);
+});
+
 test('a manager reads its children and contracts from its level files only, never from the rows\' copies: a copy that says otherwise changes nothing it is shown or chooses', async () => {
   const {asked, clef} = recorded();
   const {room, top, a, b, wa, PAGE} = await tree(clef);

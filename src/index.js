@@ -3717,52 +3717,55 @@ export class ControlRoom extends DurableObject {
     return this.subtree(id).slice(1).map(x=>this.node(x)).filter(x=>x&&!isRuntimeNode(x)&&!this.manager(x.id)&&!gone(x));
   }
   // A manager's piece: the runtime copies its children's work into one
-  // bundle, each file where the level files place it: a worker's delivered
-  // files (a placed file at the path its contract names, any other under
-  // <parts root>/<package directory>/) or a child manager's piece as its
-  // builder stored it (piece_files: its renames and its own files with it).
-  // A child manager whose builder has stored no piece is joined as its files
-  // stand. Then what this level's builder made of them (builtWork): each
-  // renamed file's text where the delivered text is still the one the rename
-  // was made from, and the builder's own files. Returns the bundle
-  // (bundleFiles' shape) with raw, the files as copied.
+  // bundle, each file where the level files place it: every file of a
+  // worker's own repository (a placed file at the path its contract names,
+  // any other under <parts root>/<package directory>/, its own folder) or a
+  // child manager's piece as its builder stored it (piece_files: its renames
+  // and its own files with it). A child manager whose builder has stored no
+  // piece is joined as its files stand. Two copies placed at one path with
+  // different texts each stand in their writer's own folder, so no file is
+  // left out and none is chosen over another (copies with one text are one file). Then what this level's builder made of
+  // them (builtWork): each renamed file's text where the delivered text is
+  // still the one the rename was made from, and the builder's own files.
+  // Returns the bundle (bundleFiles' shape) with raw, the files as copied.
   async joinPiece(m, bid=this.builderOf(m)?.id||null) {
-    const files=new Map(),origin=new Map(),placed=new Set(),by=new Map(),found=[],stray=[];
-    // Which child delivers which contract, and the path each places, as the level files say (designOf).
-    const leaves=this.pieceLeaves(m),placedBy=new Map(),design=new Map(leaves.map(l=>[l.id,this.designOf(l.id)]));
-    for(const leaf of leaves)for(const c of design.get(leaf.id).contracts)if(c.path&&!placedBy.has(c.path))placedBy.set(c.path,leaf);
-    const take=(at,content,o,isPlaced,child)=>{
-      if(files.has(at)){found.push(`${at} (${(o?.owner&&this.node(o.owner)?.label)||child.label})`);return;}
-      files.set(at,content);by.set(at,child.id);if(o)origin.set(at,o);if(isPlaced)placed.add(at);
-    };
+    const files=new Map(),origin=new Map(),placed=new Set(),by=new Map(),copies=[],root=this.partsRoot();
+    // Each copy: where it is placed (at), and its writer's own folder (home).
+    const copy=(at,content,o,isPlaced,child,home)=>copies.push({at,content,o,isPlaced,child,home});
+    const labelOf=id=>{try{return this.designOf(id).label;}catch{return this.node(id)?.label||id;}};
+    const homeOf=(o,at,child)=>o?.owner?packagePath(labelOf(o.owner),o.owner_path,o.owner,root):packagePath(child.label,at,child.id,root);
     for(const c of this.children(m).filter(c=>!isRuntimeNode(c)&&!['retired','failed','archived'].includes(c.status))) {
       if(this.manager(c.id)) {
         const cb=this.builderOf(c.id),stored=cb&&this.read(`piece:${cb.id}`,null);
         if(stored) {
           for(const r of query(this.db(),'SELECT path,content,owner,owner_path,placed FROM piece_files WHERE builder=? ORDER BY path',cb.id)) {
-            // A copy of a path a piece outside that child places is left out here, as a worker's is.
-            if(r.owner&&!r.placed&&placedBy.has(r.owner_path)&&placedBy.get(r.owner_path).id!==r.owner){stray.push(`${r.owner_path} (written by ${this.node(r.owner)?.label||r.owner}, placed by ${placedBy.get(r.owner_path).label})`);continue;}
-            take(r.path,r.content,r.owner?{owner:r.owner,owner_path:r.owner_path}:null,!!r.placed,c);
+            const o=r.owner?{owner:r.owner,owner_path:r.owner_path}:null;
+            copy(r.path,r.content,o,!!r.placed,c,homeOf(o,r.path,c));
           }
           continue;
         }
         const inner=await this.joinPiece(c.id,null);
-        for(const [at,content] of inner.raw)take(at,content,inner.origin.get(at)||null,inner.placed.has(at),c);
+        for(const [at,content] of inner.raw){const o=inner.origin.get(at)||null;copy(at,content,o,inner.placed.has(at),c,homeOf(o,at,c));}
         continue;
       }
-      const placing=design.get(c.id)||this.designOf(c.id),own=new Set(placing.contracts.map(x=>x.path).filter(Boolean));
+      const placing=this.designOf(c.id),own=new Set(placing.contracts.map(x=>x.path).filter(Boolean));
       // Every file of the worker's own repository is its own, at the path it wrote.
       for(const f of this.files(c.id)) {
-        // v8 S4b review: a copy of a path another piece's contract places is
-        // never shipped.
-        if(!own.has(f.path)&&placedBy.has(f.path)&&placedBy.get(f.path).id!==c.id){stray.push(`${f.path} (written by ${c.label}, placed by ${placedBy.get(f.path).label})`);continue;}
-        const place=own.has(f.path),at=place?f.path:packagePath(placing.label,f.path,c.id,this.partsRoot());
-        take(at,await this.indexedContent(c.id,f.path),{owner:c.id,owner_path:f.path},place,c);
+        const place=own.has(f.path),home=packagePath(placing.label,f.path,c.id,root);
+        copy(place?f.path:home,await this.indexedContent(c.id,f.path),{owner:c.id,owner_path:f.path},place,c,home);
       }
     }
+    // The texts placed at each path: copies with one text are one file.
+    const texts=new Map();
+    for(const x of copies)texts.set(x.at,(texts.get(x.at)||new Set()).add(x.content));
+    const twice=[];
+    for(const x of copies) {
+      const moved=texts.get(x.at).size>1&&x.home!==x.at,at=moved?x.home:x.at;
+      if(moved)twice.push(`${x.at} (${(x.o?.owner&&this.node(x.o.owner)?.label)||x.child.label}'s at ${at})`);
+      files.set(at,x.content);by.set(at,x.child.id);if(x.o)origin.set(at,x.o);if(x.isPlaced&&!moved)placed.add(at);
+    }
     const actor=bid||m;
-    if(found.length)this.noteOnce(actor,'bundle_conflict',`Two pieces place a file at the same path; the first is kept: ${found.join(', ')}.`);
-    if(stray.length)this.noteOnce(actor,'bundle_stray',`Left out of the project: a copy of a path another piece's contract places: ${stray.join(', ')}.`);
+    if(twice.length)this.noteOnce(actor,'bundle_conflict',`Two pieces place a file at the same path, so each copy stands in its writer's own folder: ${twice.join(', ')}.`);
     this.addBase(m,files,origin,placed);
     const raw=new Map(files),work=bid?this.builtWork(bid):null,glue=new Map(),left=[];
     for(const [p,r] of Object.entries(work?.renamed||{}))if(by.has(p)&&r?.base===textHash(files.get(p)))files.set(p,r.text);
