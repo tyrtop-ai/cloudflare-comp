@@ -220,7 +220,7 @@ test('an ask goes to the asker\'s manager as one choice among its functions, eac
   assert.equal(said[0][1], 'On the ask for getTicket: ask_parent(need) p=0.950; the others: grant(getTicket, JavaScript) p=0.200, grant(getTicket, Python) p=0.200.');
   assert.equal(said[2][1], 'On the ask for getTicket: answer(getTicket) p=0.950; the others: answer(createTicket) p=0.900, grant(getTicket, JavaScript) p=0.200, grant(getTicket, Python) p=0.200, ask_parent(need) p=0.100.');
   assert.equal(events(room, 'ask_parent').length, 2);
-  // The answer reached the asker: the contract, how to refer to it, and its entry calls it.
+  // The answer reached the asker: the contract as declared, and its entry calls it.
   const answers = room.read(`fn_answers:${w.id}`, []);
   assert.equal(answers.length, 2, 'each ask its own answer');
   for (const a of answers) assert.ok(/^fn getTicket \([0-9a-f]{8}\)$/.test(a.key) && a.kind === 'provided', a.key);
