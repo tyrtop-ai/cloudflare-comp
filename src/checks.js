@@ -10,10 +10,14 @@ import { failureHead } from './problems.js';
 import { clip } from './protocol.js';
 import { runsOf } from './validations.js';
 
-// The time a verification has (container/build-runner.mjs CHECK_LIMITS,
-// which also clamps what it is sent): what the box's one exec leaves the
-// runner to report in. No check or step has a time of its own.
-export const CHECK_LIMITS = Object.freeze({total_ms: 200_000});
+// The time a verification has is the room's setting check_seconds, which
+// the person sets beside the turn budget (src/index.js normalizeRoomSettings,
+// the dashboard's Verification time); every compile sends it (checkLimitsOf)
+// and the box's own times derive from it (src/box.js boxTimes). No check or
+// step has a time of its own. DEFAULT_CHECK_SECONDS is the setting's value in
+// a room (or a benchmark run) that has not set it.
+export const DEFAULT_CHECK_SECONDS = 200;
+export const checkLimitsOf = settings => ({total_ms: 1000 * (Number(settings?.check_seconds) > 0 ? Number(settings.check_seconds) : DEFAULT_CHECK_SECONDS)});
 // The checks the Worker runs itself (file) or has Clef answer (judge); the
 // box runs every other kind.
 export const WORKER_CHECKS = Object.freeze(['file', 'judge']);

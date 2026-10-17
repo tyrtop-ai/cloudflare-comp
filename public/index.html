@@ -53,6 +53,9 @@
             <input id="max-depth" type="range" min="0" max="1000" step="1" value="0" data-min="1" data-max="1000" /></div>
           <div class="range-control"><label for="max-children">Pieces per split <input id="max-children-value" class="count" type="number" inputmode="numeric" min="2" max="64" step="1" value="7" aria-label="Pieces per split, exact value" /></label>
             <input id="max-children" type="range" min="0" max="1000" step="1" value="0" data-min="2" data-max="64" /></div>
+          <div class="range-control"><label for="check-seconds">Verification time, seconds (v8) <input id="check-seconds-value" class="count" type="number" inputmode="numeric" min="1" max="86400" step="1" value="200" aria-label="Verification time in seconds, exact value" /></label>
+            <input id="check-seconds" type="range" min="0" max="1000" step="1" value="0" data-min="1" data-max="86400" /></div>
+          <p class="helper">How long one compile's checks of a level may run, in all. What the project does within it is what the checks observe: a command still running, a page that never showed what a step expects, a server that never answered, all go back to the workers as failures.</p>
           <label for="model">Manager model (splits, decisions, linking)</label>
           <select id="model">
             <option value="@cf/qwen/qwen3-30b-a3b-fp8">Qwen3 A3B · 3B active (default)</option>

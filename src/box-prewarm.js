@@ -16,15 +16,15 @@
 //     only part of them) discards it and opens its own;
 //   - it holds one of the room's BOX_CONCURRENCY slots from its open until
 //     its compile ends or it is discarded; with no slot free, no prewarm;
-//   - nobody's box for long: one no compile took within PREWARM_IDLE_MS, or
-//     still open when the run ends, is stopped (and its own alarm destroys it
-//     BOX_LIFETIME_MS after it opened, whatever happens to the room).
+//   - nobody's box for long: one no compile took within its life (boxTimes'
+//     life, from the verification's time the room sets), or still open when
+//     the run ends, is stopped (and its own alarm destroys it then, whatever
+//     happens to the room).
 // Spans (kind 'box'): prewarm (its open, start to ready) and prewarm_unused
 // (a discard, with the reason); the compile's container span says
 // box.prewarmed and how long the compile waited for it (waited_ms).
-import {freshBox, compileBoxSpec, BOX_COLD_MS} from './box.js';
+import {freshBox, compileBoxSpec, boxTimes, BOX_COLD_MS} from './box.js';
 
-export const PREWARM_IDLE_MS = 240_000;
 const BOX_CHECKS = new Set(['command', 'call', 'http', 'browser']);
 const NO_CODE = new Set(['doc', 'data', 'file']);
 const sameSpec = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -42,11 +42,12 @@ export function levelBoxSpec(spec) {
 const once = f => { let done = false; return () => { if (!done) { done = true; f(); } }; };
 
 // namespace: BOXES; slot(): a release function for one of the room's box
-// slots, or null when none is free (never waits); span(kind, name, start,
-// end, attrs); waitUntil(promise).
+// slots, or null when none is free (never waits); totalMs(): the
+// verification's time the room sets (its compiles' limits.total_ms); span(kind,
+// name, start, end, attrs); waitUntil(promise).
 export class BoxPrewarm {
-  constructor({namespace, slot, span = () => {}, waitUntil = () => {}, idleMs = PREWARM_IDLE_MS}) {
-    Object.assign(this, {namespace, slot, span, waitUntil, idleMs});
+  constructor({namespace, slot, totalMs, span = () => {}, waitUntil = () => {}}) {
+    Object.assign(this, {namespace, slot, totalMs, span, waitUntil});
     this.entry = null;
   }
   get spec() { return this.entry?.spec || null; }
@@ -57,13 +58,15 @@ export class BoxPrewarm {
     if (!spec) { this.discard('the validations run nothing in a box'); return false; }
     if (this.entry && sameSpec(this.entry.spec, spec)) return true;
     if (this.entry) this.discard(`the validations now need the ${spec.image} image`);
+    let total, life;
+    try { total = this.totalMs(); life = boxTimes(total).life; } catch { return false; }
     const release = this.slot?.();
     if (!release) return false;
     let box;
     try { box = freshBox(this.namespace); }
     catch { release(); return false; }
     const entry = {spec, box, began: Date.now(), release: once(release), opened: null};
-    entry.ready = Promise.resolve().then(() => box.open(spec)).then(opened => {
+    entry.ready = Promise.resolve().then(() => box.open(spec, total)).then(opened => {
       entry.opened = opened;
       entry.ready_at = Date.now();
       this.span('box', 'prewarm', entry.began, entry.ready_at, {box: {name: opened?.name, fresh: opened?.fresh === true, internet: opened?.internet, image: opened?.image, instance: opened?.instance,
@@ -78,7 +81,7 @@ export class BoxPrewarm {
       entry.release();
       return null;
     });
-    entry.timer = setTimeout(() => { if (this.entry === entry) this.discard(`no compile took it within ${Math.round(this.idleMs / 1000)} s`); }, this.idleMs);
+    entry.timer = setTimeout(() => { if (this.entry === entry) this.discard(`no compile took it within its life (${Math.round(life / 1000)} s)`); }, life);
     entry.timer?.unref?.();
     this.entry = entry;
     return true;

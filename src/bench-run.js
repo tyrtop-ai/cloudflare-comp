@@ -33,7 +33,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { loadDataset, benchPolicy, roomOutcome, gradeOutcome, aggregate, compareRuns, taskDigest, BENCH_LIMITS } from './bench.js';
 import { freshBox, compileBoxSpec } from './box.js';
-import { checkPlan, CHECK_LIMITS } from './checks.js';
+import { checkPlan, checkLimitsOf } from './checks.js';
 import { snapshotHash, validateBoxFiles } from './build-verification.js';
 import { TOOLCHAINS } from './toolchains.js';
 
@@ -197,7 +197,7 @@ export class BenchRun extends DurableObject {
     try { app = await this.env.ROOMS.getByName(t.room).appFiles(); } catch (e) { return {infrastructure: clip(`the room's files could not be read: ${e?.message || e}`)}; }
     if (!app || app.error) return {passed: false, detail: `the room shipped no files: ${app?.error || 'no answer'}`};
     const files = new Map((app.files || []).filter(f => typeof f?.content === 'string' && !f.path.startsWith('.recursive/')).map(f => [f.path, f.content]));
-    return gradeBundle(this.env, parse(t.grader, null), files);
+    return gradeBundle(this.env, parse(t.grader, null), files, checkLimitsOf(this.get('settings', {})));
   }
   // The counts of the current attempt, on top of the stopped attempts' (prior).
   record(t, s) {
@@ -336,14 +336,14 @@ export class BenchRun extends DurableObject {
 // checkPlan, mode 'checks'). {passed, detail} or {infrastructure}; detail is
 // the box's whole observation of a failed grading (what it says failed, then
 // the exit, stdout and stderr it reports), the complaint the room gets.
-export async function gradeBundle(env, grader, files) {
+export async function gradeBundle(env, grader, files, limits = checkLimitsOf({})) {
   if (!grader?.check) return {infrastructure: grader?.unrunnable || 'the task has no grader'};
   if (!env?.BOXES) return {infrastructure: 'BOXES binding unavailable: the grader runs only in a fresh box with the internet off'};
   let snapshot;
   try { snapshot = validateBoxFiles(files); } catch (e) { return {passed: false, detail: `the shipped files cannot be carried: ${e?.message || e}`}; }
   const {plan, toolchains} = checkPlan({contracts: [], validations: [grader]}, files, {rows: TOOLCHAINS}), run = {...plan, syntax: []};
   try {
-    const {box: opened, ...report} = await freshBox(env.BOXES).compile(compileBoxSpec(run), {fingerprint: await snapshotHash(files), files: Object.fromEntries(snapshot), mode: 'checks', plan: run, toolchains, limits: CHECK_LIMITS}) || {};
+    const {box: opened, ...report} = await freshBox(env.BOXES).compile(compileBoxSpec(run), {fingerprint: await snapshotHash(files), files: Object.fromEntries(snapshot), mode: 'checks', plan: run, toolchains, limits}) || {};
     if (opened?.fresh !== true || opened?.internet !== false) return {infrastructure: 'the box did not confirm a fresh start with the internet off'};
     const c = (report.checks || []).find(x => x?.id === grader.id);
     if (!c || c.infrastructure) return {infrastructure: clip(c?.detail || report.infrastructure_issue || 'the grader did not run')};

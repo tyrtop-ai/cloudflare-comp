@@ -11,6 +11,7 @@
 // texts before the report leaves.
 import {DurableObject, WorkerEntrypoint} from 'cloudflare:workers';
 import {freshBox, BOX_HOSTNAME} from './box.js';
+import {checkLimitsOf} from './checks.js';
 
 export const PROBE_ITEMS = Object.freeze(['start', 'exec', 'network', 'caps', 'unshare', 'env', 'hostname', 'snapshot', 'browser', 'relay', 'fanout', 'private']);
 export const PROBE_LIMITS = Object.freeze({samples: [1, 10], defaultSamples: 5, fanout: 30, relayRounds: 20, execRounds: 20});
@@ -59,7 +60,8 @@ export class BoxProbe extends DurableObject {
   boxes() { return this.env.BOXES; }
   async withBox(spec, f) {
     const box = freshBox(this.boxes());
-    try { const opened = await box.open(spec); return await f(box, opened); }
+    // A probed box is given the time a room's compile is by default (its ready wait and backstop alarm, src/box.js boxTimes).
+    try { const opened = await box.open(spec, checkLimitsOf({}).total_ms); return await f(box, opened); }
     finally { try { await box.close(); } catch {} }
   }
   async run({only = [], samples = PROBE_LIMITS.defaultSamples} = {}) {

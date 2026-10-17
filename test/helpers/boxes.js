@@ -56,7 +56,7 @@ export class FakeContainer {
       return p;
     }
     // The runner, under the box's host name (box-<16 hex>): its request goes to run(request, this).
-    if (argv[0] === 'timeout' && argv.slice(-BOX_RUNNER.length).join(' ') === BOX_RUNNER.join(' ')) {
+    if (argv.slice(0, BOX_HOSTNAME.length).join(' ') === BOX_HOSTNAME.join(' ') && argv.slice(-BOX_RUNNER.length).join(' ') === BOX_RUNNER.join(' ')) {
       const at = argv.indexOf(BOX_HOSTNAME.at(-1));
       if (at < 0 || !BOX_NAME.test(argv[at + 1]) || argv[at + 2] !== '--') return fakeProcess(() => ({exitCode: 2, stderr: 'the runner was not started under the box\'s host name'}));
       this.hostname = argv[at + 1];

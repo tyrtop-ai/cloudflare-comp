@@ -10,7 +10,9 @@ import {fakeBoxes, FakeContainer, FAKE_IMAGES, POISON_ENV} from './helpers/boxes
 import {taskFromRow, roomOutcome} from '../src/bench.js';
 import {MULTIPLE_JS} from './helpers/bench-fixtures.js';
 // After the helpers registered the cloudflare:workers loader.
-const {Box, boxSpec, boxStartOptions, boxExecOptions, freshBox, compileBoxSpec, BOX_PATH, BOX_LIFETIME_MS, boxBuildCommand, boxName, BOX_COLD_MS} = await import('../src/box.js');
+const {Box, boxSpec, boxStartOptions, boxExecOptions, freshBox, compileBoxSpec, BOX_PATH, boxTimes, boxBuildCommand, boxName, BOX_COLD_MS} = await import('../src/box.js');
+// The verification's time a room sends (its check_seconds setting); every box time derives from it.
+const T = 200_000;
 
 const TEMP_GOAL = 'A command-line tool that converts a temperature from Celsius to Fahrenheit, with a short usage guide.';
 // The level the converter's splitter states: the command and its guide, three examples each.
@@ -80,22 +82,25 @@ test('the Box class never reads env, and every start and exec in src/box.js goes
 test('a Box is single-use: open starts it once with the internet off; a second open, or a Container already running, is refused', async () => {
   const ns = fakeBoxes({run: async () => ({})});
   const box = freshBox(ns), [{container, storage}] = ns.boxes;
-  const opened = await box.open({image: 'check'});
+  const opened = await box.open({image: 'check'}, T);
   assert.deepEqual([opened.fresh, opened.internet, opened.image, opened.instance], [true, false, 'check', 'standard-1']);
   assert.ok(Number.isFinite(opened.start_ms) && Number.isFinite(opened.ready_ms));
   assert.equal(opened.cold, false, 'a box ready at once is warm');
   assert.deepEqual(container.options, {image: FAKE_IMAGES.check, instance: 'standard-1', enableInternet: false});
-  assert.ok(storage.alarm >= Date.now() + BOX_LIFETIME_MS - 5000, 'the backstop alarm is set');
-  await assert.rejects(box.open({image: 'check'}), e => e.code === 'used');
+  assert.ok(storage.alarm >= Date.now() + boxTimes(T).life - 5000, 'the backstop alarm is set, from the verification\'s time');
+  assert.deepEqual(boxTimes(T), {ready: T, exec: 2 * T, life: 3 * T});
+  for (const bad of [undefined, null, '', 0, -1, 'x']) assert.throws(() => boxTimes(bad), e => e.code === 'bad_request', `no time of its own: ${bad}`);
+  await assert.rejects(freshBox(fakeBoxes({run: async () => ({})})).open({image: 'check'}), e => e.code === 'bad_request', 'a box is opened only with the verification\'s time');
+  await assert.rejects(box.open({image: 'check'}, T), e => e.code === 'used');
   await box.close();
   assert.equal(container.running, false);
-  await assert.rejects(box.open({image: 'check'}), e => e.code === 'used', 'a closed box is never reopened');
+  await assert.rejects(box.open({image: 'check'}, T), e => e.code === 'used', 'a closed box is never reopened');
   assert.equal(container.starts, 1);
   // A Durable Object whose storage says it was opened (after an eviction) is refused too.
   const again = new Box({container: new FakeContainer(), storage: {...storage, get: async k => storage.map.get(k)}, exports: {}}, POISON_ENV);
-  await assert.rejects(again.open({image: 'check'}), e => e.code === 'used');
+  await assert.rejects(again.open({image: 'check'}, T), e => e.code === 'used');
   const running = new FakeContainer(); running.running = true;
-  await assert.rejects(new Box({container: running, storage: {async get() {}, async put() {}}, exports: {}}, POISON_ENV).open({image: 'check'}), e => e.code === 'not_fresh');
+  await assert.rejects(new Box({container: running, storage: {async get() {}, async put() {}}, exports: {}}, POISON_ENV).open({image: 'check'}, T), e => e.code === 'not_fresh');
 });
 
 // v8 live 2: the first box after a deploy waited 9.7 to 14.7 s for its image; one over 5 s is recorded cold.
@@ -105,7 +110,7 @@ test('a box whose ready_ms is over 5 s is recorded cold', async () => {
   let t = now();
   Date.now = () => (t += 2600);
   try {
-    const opened = await box.open({image: 'check'});
+    const opened = await box.open({image: 'check'}, T);
     assert.ok(opened.ready_ms > BOX_COLD_MS, String(opened.ready_ms));
     assert.equal(opened.cold, true);
   } finally { Date.now = now; await box.close(); }
@@ -115,7 +120,7 @@ test('Box.compile runs the build runner once in its own box and destroys it, als
   const requests = [];
   const ns = fakeBoxes({run: async req => { requests.push(req); return {fingerprint: req.fingerprint, snapshot_hash: req.snapshot_hash, mode: 'checks', passed: true, checks: []}; }});
   const box = freshBox(ns);
-  const r = await box.compile(compileBoxSpec({checks: []}), {fingerprint: 'f1', files: {'a.js': '1;\n'}, mode: 'checks', plan: {checks: []}, toolchains: [], limits: {a: 1}, secret: 'never'});
+  const r = await box.compile(compileBoxSpec({checks: []}), {fingerprint: 'f1', files: {'a.js': '1;\n'}, mode: 'checks', plan: {checks: []}, toolchains: [], limits: {total_ms: T}, secret: 'never'});
   assert.deepEqual([r.passed, r.box.fresh, r.box.internet], [true, true, false]);
   assert.deepEqual(Object.keys(requests[0]).sort(), ['files', 'fingerprint', 'limits', 'mode', 'options', 'plan', 'snapshot_hash', 'toolchains'], 'the request BuildExecutor sends, nothing more');
   const {container} = ns.boxes[0];
@@ -126,14 +131,14 @@ test('Box.compile runs the build runner once in its own box and destroys it, als
   assert.equal(container.running, false);
   // The runner fails: the box is destroyed all the same.
   const bad = fakeBoxes({run: async () => { throw new Error('Container is not running'); }});
-  await assert.rejects(freshBox(bad).compile({image: 'check'}, {fingerprint: 'f', files: {'a.js': '1;\n'}}), /Container is not running/);
+  await assert.rejects(freshBox(bad).compile({image: 'check'}, {fingerprint: 'f', files: {'a.js': '1;\n'}, limits: {total_ms: T}}), /Container is not running/);
   assert.equal(bad.boxes[0].container.destroyed, 1);
   // A forged attestation is refused.
   const forged = fakeBoxes({run: async () => ({fingerprint: 'other', snapshot_hash: 'x', mode: 'checks', checks: []})});
-  await assert.rejects(freshBox(forged).compile({image: 'check'}, {fingerprint: 'f', files: {'a.js': '1;\n'}}), /attestation/);
+  await assert.rejects(freshBox(forged).compile({image: 'check'}, {fingerprint: 'f', files: {'a.js': '1;\n'}, limits: {total_ms: T}}), /attestation/);
   // The alarm destroys a box its caller never closed.
   const left = fakeBoxes({run: async () => ({})}), lone = freshBox(left);
-  await lone.open({image: 'check'});
+  await lone.open({image: 'check'}, T);
   await lone.alarm();
   assert.equal(left.boxes[0].container.running, false);
 });
