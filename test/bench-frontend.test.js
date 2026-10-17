@@ -80,7 +80,7 @@ test('the runs list, one run\'s results with a link to each task\'s room, and a 
   // A deleted room and a clamped concurrency are said so.
   const later = context.benchResultsMarkup({...RUN, concurrency_asked: 8, executors: 4, keep_rooms: 'none',
     tasks: [{...RUN.tasks[0], room_deleted: true}]});
-  assert.match(later, /2 at once \(asked 8; 4 Container slots\) · keeps none rooms/);
+  assert.match(later, /2 at once \(asked 8; BENCH_EXECUTORS 4\) · keeps none rooms/);
   assert.doesNotMatch(context.benchResultsMarkup({...RUN, feedback: 'once'}), /feedback/, 'a run stored with the old grading choice shows none');
   assert.match(later, /<td><span class="faint">room deleted<\/span><\/td>/);
   assert.match(runs, /<td class="num">– \/ –<\/td><td class="num">–<\/td>/);
@@ -182,7 +182,7 @@ test('pasted or uploaded JSON lines are sent as text; the runs list views, stops
   assert.match(p.elements.get('bench-results').innerHTML, /difference <b class="bench-diff up">\+100\.0 pts/);
 });
 
-test('the panel names the Container slots it is capped at, keeps the label off huggingface.co file URLs, and Delete removes a run', async () => {
+test('the panel names the BENCH_EXECUTORS cap and that each compile has its own box (owner 2026-10-15 15:52, "their own little testing box"), keeps the label off huggingface.co file URLs, and Delete removes a run', async () => {
   assert.match(html, /<select id="bench-keep">[\s\S]*<option value="failed">Keep the rooms that did not pass, delete the passed ones \(default\)<\/option>[\s\S]*<option value="none">/);
   assert.match(html, /Dataset URL <span class="faint">\(a JSON lines file, or a datasets-server\.huggingface\.co rows URL, on any host FETCH_ALLOW allows\)/);
   const requests = [];
@@ -196,5 +196,5 @@ test('the panel names the Container slots it is capped at, keeps the label off h
   await p.fire('bench-runs', 'click', {target: {closest: () => ({dataset: {benchDelete: 'abcdef012345'}})}});
   await new Promise(r => setTimeout(r, 0));
   assert.deepEqual(p.requests.find(r => r.init?.method === 'DELETE') && [p.requests.find(r => r.init?.method === 'DELETE').url, p.requests.find(r => r.init?.method === 'DELETE').init.headers.Authorization], ['/api/bench/abcdef012345', 'Bearer app-token']);
-  assert.match(p.elements.get('bench-slots').textContent, /capped at 4, the deployment's Container slots/);
+  assert.match(p.elements.get('bench-slots').textContent, /^Rooms at once is capped at 4, the deployment's BENCH_EXECUTORS setting\. Each compile of a task room runs in its own fresh box\.$/);
 });
