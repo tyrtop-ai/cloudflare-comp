@@ -54,7 +54,7 @@ const README_MD = '# Temperature converter\n\nRun `python3 temp.py 100` to conve
 const tempSplit = user => user.assignment === README_CHANGE ? README_LEVEL : user.contracts_you_deliver ? {contracts: user.contracts_you_deliver, validations: [], pieces: []} : LEVEL;
 const tempLeaf = user => {
   const names = user.prompt.deliver.map(c => c.name);
-  if (names.includes('temp')) return deliver({'temp.py': user.complaints.includes(KELVIN_CHANGE) || user.files.some(f => f.content === K_TEMP) ? K_TEMP : F_TEMP});
+  if (names.includes('temp')) return deliver({'temp.py': user.prompt.task.includes(KELVIN_CHANGE) || user.files.some(f => f.content === K_TEMP) ? K_TEMP : F_TEMP});
   if (names.includes('README.md')) return deliver({'README.md': README_MD});
   return deliver({'USAGE.md': USAGE_MD});
 };
@@ -62,7 +62,7 @@ const tempLeaf = user => {
 const tempClef = usualClef({'^route_to_\\d+$': (k, state) => state.item?.kind !== 'change' ? choiceP(k, state) : /kelvin/.test(state.item.text) && (state.children?.[Number(k.split('_').pop())]?.contracts || []).some(l => /^command temp\b/.test(l)) ? 0.9 : 0.1,
   '^split_size$': (_k, state) => state.assignment === README_CHANGE ? 0.2 : 0.9});
 
-test('queue: prompts queued while the first run goes wait for it; then the alarm applies each: a README no child covers is the room\'s manager\'s splitter\'s extension, a new piece with its own validations; kelvin reaches the converter\'s worker only, verbatim', {skip: !hasPython && 'python3 is not installed'}, async () => {
+test('queue: prompts queued while the first run goes wait for it; then the alarm applies each: a README no child covers is the room\'s manager\'s splitter\'s extension, a new piece with its own validations; kelvin reaches the converter\'s worker only, in its prompt, verbatim', {skip: !hasPython && 'python3 is not installed'}, async () => {
   const {room, calls, drain, alarms, fire} = queueRoom({split: tempSplit, leaf: tempLeaf, clef: tempClef});
   await room.start(GOAL, 40, {pipeline: 'v8'});
   const a = await room.addPrompt(README_CHANGE), b = await room.addPrompt(KELVIN_CHANGE);
@@ -104,7 +104,7 @@ test('queue: prompts queued while the first run goes wait for it; then the alarm
   const app = await room.appFiles();
   assert.equal(app.passed, true);
   assert.deepEqual(app.files.map(f => f.path).filter(p => !p.startsWith('.recursive/')).sort(), ['README.md', 'USAGE.md', 'temp.py']);
-  // Then kelvin, by the alarm again: it concerns temp, so it reaches the converter's worker only, as the person wrote it.
+  // Then kelvin, by the alarm again: it concerns temp, so it reaches the converter's worker only, in its prompt as the person wrote it.
   assert.equal(alarms.length, 2);
   const turns = calls.leaf.length;
   await fire();
@@ -112,7 +112,8 @@ test('queue: prompts queued while the first run goes wait for it; then the alarm
   assert.equal(room.goalRev(), 3);
   const after = calls.leaf.slice(turns);
   assert.equal(after.length, 1, JSON.stringify(after.map(u => [u.prompt.deliver.map(c => c.name), u.complaints])) + tail(room));
-  assert.deepEqual(after[0].complaints, [KELVIN_CHANGE]);
+  assert.deepEqual(after[0].complaints, []);
+  assert.ok(after[0].prompt.task.endsWith(`\n\n${KELVIN_CHANGE}`), after[0].prompt.task);
   assert.deepEqual(after[0].prompt.deliver.map(c => c.name), ['temp']);
   assert.deepEqual(revisions(room, workerUnder(room, guide.id).id), before.guide);
   assert.ok(passing(room));
@@ -159,7 +160,7 @@ const GUIDE_MD = '# Green tea\n\nHeat water to 80 degrees and steep for 2 minute
 const CUPS = 'also say how many cups it makes';
 // The worker writes the guide; with the cups change it adds a line.
 function docRoom() {
-  const leaf = user => deliver({'GUIDE.md': GUIDE_MD + (user.complaints.includes(CUPS) ? '\nMakes 2 cups.\n' : '')});
+  const leaf = user => deliver({'GUIDE.md': GUIDE_MD + (user.prompt.task.includes(CUPS) ? '\nMakes 2 cups.\n' : '')});
   return queueRoom({split: () => DOC_LEVEL, leaf, clef: usualClef({'^should_split$': 0.05})});
 }
 

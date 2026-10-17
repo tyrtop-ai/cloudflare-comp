@@ -229,12 +229,14 @@ test('an ask goes to the asker\'s manager as one choice among its functions, eac
   assert.equal(said[0][1], 'On the ask for getTicket: ask_parent(need) p=0.950; the others: grant(getTicket, JavaScript) p=0.200, grant(getTicket, Python) p=0.200.');
   assert.equal(said[2][1], 'On the ask for getTicket: answer(getTicket) p=0.950; the others: answer(createTicket) p=0.900, grant(getTicket, JavaScript) p=0.200, grant(getTicket, Python) p=0.200, ask_parent(need) p=0.100.');
   assert.equal(events(room, 'ask_parent').length, 2);
-  // The answer reached the asker: the contract as declared, and its entry calls it.
+  // The answer reached the asker: the contract as declared, which it may call from then on; its entry stays as its splitter wrote it.
   const answers = room.read(`fn_answers:${w.id}`, []);
   assert.equal(answers.length, 2, 'each ask its own answer');
   for (const a of answers) assert.ok(/^fn getTicket \([0-9a-f]{8}\)$/.test(a.key) && a.kind === 'provided', a.key);
   assert.match(answers[0].text, /^function getTicket\(id\) in store\.js: [^]*\.$/);
-  assert.deepEqual(room.levelDesign(rp.id).children.find(c => c.id === w.id).calls, ['createTicket', 'getTicket']);
+  assert.deepEqual(room.levelDesign(rp.id).children.find(c => c.id === w.id).calls, ['createTicket']);
+  assert.deepEqual(room.assignmentOf(w.id).calls, ['createTicket', 'getTicket']);
+  assert.deepEqual(calls.leaf.filter(isReport).at(-1).prompt.call.map(c => c.name), ['createTicket', 'getTicket']);
   assert.ok(calls.leaf.filter(isReport).at(-1).world.answers.includes(answers[0].text), 'its next turn starts with the answer');
 });
 
@@ -432,7 +434,8 @@ test('a manager reads its children and contracts from its level files only, neve
   assert.ok(!JSON.stringify(asked[0].state).includes('decoy'), 'nothing from the rows\' copies');
   assert.deepEqual(room.read(`fn_answers:${wa.id}`, []).map(x => x.key), ['fn styles.css']);
   assert.match(room.read(`fn_answers:${wa.id}`, [])[0].text, /^file styles\.css: the page styles\.$/);
-  assert.deepEqual(room.levelDesign(a.id).children[0].calls, ['styles.css'], 'its entry in its manager\'s level file calls it');
+  assert.deepEqual(room.levelDesign(a.id).children[0].calls, [], 'its entry in its manager\'s level file stays as its splitter wrote it');
+  assert.deepEqual(room.callableOf(wa.id).map(c => c.name), ['styles.css'], 'it may call what it was answered with');
   assert.ok(PAGE);
 });
 

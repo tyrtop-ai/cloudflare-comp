@@ -8331,16 +8331,14 @@ export class ControlRoom extends DurableObject {
     const n=this.node(id);
     return n?{label:n.label,prompt:n.task,contracts:this.promisedOf(id),calls:this.v8()?parse(n.uses,[]):normalizeUses(parse(n.uses,[]))}:{label:'',prompt:'',contracts:[],calls:[]};
   }
-  // A change to one child's entry in its manager's level file (its prompt,
-  // the names it may call): change(entry) gives the fields that change, read
-  // from the entry as the file holds it when the manager writes it again.
-  async amendEntry(id, change) {
-    const up=this.agentAbove(id);
-    if(!up||!this.levelIndex(up))return;
-    await this.updateLevel(up,level=>{
-      const entry=level?.children.find(c=>c.id===id);
-      return entry?{...level,children:level.children.map(c=>c===entry?{...c,...change(c)}:c)}:null;
-    });
+  // A row's assignment as it stands: what its entry gives (designOf), its
+  // prompt followed by each change routed to it since (its revisions,
+  // revise), and the names it may call, its entry's and each contract an
+  // answered ask gave it (its answers, answerAsk). Its manager's level file
+  // stays as its splitter wrote it.
+  assignmentOf(id) {
+    const design=this.designOf(id),answered=this.read(`fn_answers:${id}`,[]).map(a=>a.call).filter(Boolean);
+    return {...design,prompt:[design.prompt,...this.read(`revisions:${id}`,[])].join('\n\n'),calls:[...new Set([...design.calls,...answered])]};
   }
   // The managers whose level files the room holds, in the order of the tree.
   levelManagers() { return this.allNodes().filter(n=>this.levelIndex(n.id)).map(n=>n.id); }
@@ -8382,8 +8380,8 @@ export class ControlRoom extends DurableObject {
   }
   // Every contract of the tree's levels, for the facts reading names and languages.
   treeContracts() { return this.levelManagers().flatMap(id=>this.levelDesign(id)?.contracts||[]); }
-  // The names a row may call (its entry's calls), each as the nearest level above it defines it.
-  callableOf(id) { return this.namedContracts(this.agentAbove(id),this.designOf(id).calls); }
+  // The names a row may call (its assignment's calls), each as the nearest level above it defines it.
+  callableOf(id) { return this.namedContracts(this.agentAbove(id),this.assignmentOf(id).calls); }
   // Each name as the nearest level file from row `from` up defines it.
   namedContracts(from, names) {
     const out=[];
@@ -8408,7 +8406,7 @@ export class ControlRoom extends DurableObject {
   // kind on a level that has its design, under the same pre-grade: Clef
   // grades a manager once, and a caught manager's jobs are not divided either.
   async splitStep(id, job=null) {
-    const given=this.designOf(id),own=job?job.own||[]:given.contracts,cfg=this.splitConfig(),started=Date.now(),r3=x=>Math.round(x*1000)/1000;
+    const given=this.assignmentOf(id),own=job?job.own||[]:given.contracts,cfg=this.splitConfig(),started=Date.now(),r3=x=>Math.round(x*1000)/1000;
     this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
     if(!job&&!this.splitAttempts(id).some(a=>a.attempt===0)) {
       const pre=await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:cfg.floor,SPLIT_FLOOR:cfg.floor},given.prompt,null,this.gateContracts(id)),caught=pre.probability<=cfg.floor;
@@ -8498,7 +8496,7 @@ export class ControlRoom extends DurableObject {
   // level as it was. A job's level adds to the file, which stays as it was
   // otherwise; a job for an ask answers its asker with the contract it named.
   async admitLevel(id, level, {why='', job=null}={}) {
-    const n=this.node(id),given=this.designOf(id),own=job?job.own||[]:given.contracts,prior=this.levelDesign(id);
+    const n=this.node(id),given=this.assignmentOf(id),own=job?job.own||[]:given.contracts,prior=this.levelDesign(id);
     // What its level file does not list never landed: a reservation of children, validations and their ids are released, and this admission takes their place.
     const listed=new Set([...(prior?.children||[]),...(prior?.archived||[])].map(c=>c.id)),held=new Set((prior?.validations||[]).map(v=>v.id));
     for(const b of this.levelBatches(id))if(!(await this.batchIds(id,b)).some(x=>listed.has(x)))this.db().exec('DELETE FROM spawn_batches WHERE batch_key=?',b.batch_key);
@@ -8707,15 +8705,15 @@ export class ControlRoom extends DurableObject {
   // manager's own files), and the runtime calls the highest. Its functions:
   //   children()       its level file: each live child's label and the contracts it delivers (the
   //                    piece prompts its splitter wrote are the builder's and the workers', not its);
-  //   my_contracts()   its entry in its parent's level file: its assignment and contracts;
+  //   my_contracts()   its assignment (its row's) and its contracts (its entry in its parent's level file);
   //   answer(contract) to an asker: a contract its children deliver (none of the asker's own line);
   //   route_to(child)  hands a complaint or a change to a child;
   //   ask_parent(need) the same ask one level up; at the room, the asker is archived;
   //   extend(...)      hands a change, or a complaint naming a contract no live child delivers, to its splitter as a level job.
   // A walk up the tree is a chain of ask_parent calls, each one manager's
-  // choice. What the manager reads is its files only (levelDesign, designOf).
+  // choice. What the manager reads is its files only (levelDesign), and its row's assignment (assignmentOf).
   managerView(m) {
-    const level=this.levelDesign(m),mine=this.designOf(m),live=new Set(this.liveChildren(m).map(c=>c.id)),byName=new Map((level?.contracts||[]).map(c=>[c.name,c]));
+    const level=this.levelDesign(m),mine=this.assignmentOf(m),live=new Set(this.liveChildren(m).map(c=>c.id)),byName=new Map((level?.contracts||[]).map(c=>[c.name,c]));
     const children=(level?.children||[]).filter(c=>live.has(c.id)).map(c=>({id:c.id,role:c.role,label:c.label,contracts:c.delivers.map(n=>byName.get(n)).filter(Boolean)}));
     return {assignment:mine.prompt,mine:mine.contracts,children,contracts:level?.contracts||[]};
   }
@@ -8868,25 +8866,14 @@ export class ControlRoom extends DurableObject {
     }
     await this.archive(ask.worker,`${want} is held by no manager up to the room`);
   }
-  // The asker hears the contract that gives what it asked for, and may call
-  // it by name from now on: its entry in its manager's level file, and those
-  // of the managers between it and the level whose children deliver it,
-  // name it among their calls.
-  async answerAsk(ask, c, text=null) {
+  // The asker hears the contract that gives what it asked for, in its
+  // answers, and may call it by name from now on (assignmentOf reads it
+  // there); no level file changes.
+  answerAsk(ask, c) {
     const n=this.node(ask.worker);
     if(!n||!c)return;
-    if(!text&&!this.designOf(n.id).contracts.some(f=>f.name===c.name)) {
-      const callers=[n.id];
-      // Its manager calls it too, so the levels between them link it.
-      for(let x=this.agentAbove(n.id);x&&!this.levelContracts(x).some(f=>f.name===c.name);x=this.agentAbove(x))callers.push(x);
-      for(const x of callers) {
-        const uses=parse(this.node(x)?.uses,[]);
-        if(uses.includes(c.name))continue;
-        this.db().exec('UPDATE agents SET uses=? WHERE id=?',JSON.stringify([...uses,c.name]),x);
-        await this.amendEntry(x,e=>({calls:[...new Set([...e.calls,c.name])]}));
-      }
-    }
-    this.answerAsker(n.id,ask,text||MESSAGES.provided({contract:contractLine(c)}),c.name);
+    const own=this.designOf(n.id).contracts.some(f=>f.name===c.name);
+    this.answerAsker(n.id,ask,MESSAGES.provided({contract:contractLine(c)}),c.name,own?{}:{call:c.name});
   }
   // The package p manager m granted the asker: it is listed on every row of
   // the asker's line that does not list it (m's and those above it too, for
@@ -8902,10 +8889,10 @@ export class ControlRoom extends DurableObject {
     this.event(m,'package_granted',clip(`"${this.node(m)?.label||m}" granted ${p.name} to "${n.label}".`,400),n.id);
     this.answerAsker(n.id,ask,MESSAGES.package_granted({need:ask.need,names:packageLine(p),many:false}),p.name);
   }
-  // The asker hears the answer to its ask: in its answers from now on, and in a message that wakes it once nothing it asked is open.
-  answerAsker(id, ask, value, what) {
+  // The asker hears the answer to its ask: in its answers from now on (with the name it may call, for a contract), and in a message that wakes it once nothing it asked is open.
+  answerAsker(id, ask, value, what, extra={}) {
     this.db().exec('DELETE FROM route_workers WHERE worker=? AND topic=?',id,ask.key);
-    this.recordAnswer(id,{key:ask.key,kind:'provided',text:value});
+    this.recordAnswer(id,{key:ask.key,kind:'provided',text:value,...extra});
     this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:route',id,'[route:provided] '+JSON.stringify({id:ask.request_id||crypto.randomUUID(),key:ask.key,value}));
     this.event(id,'ask_answered',clip(`${what}: ${value}`,500));
     if(!query(this.db(),'SELECT request_id FROM route_workers WHERE worker=?',id).length)this.wake(id);
@@ -8953,20 +8940,21 @@ export class ControlRoom extends DurableObject {
     const tasks=[...new Set(last.values())];
     // What the rows it replaces were handed (the names their entries call, their packages and refs) is handed to what rebuilds them.
     const from=tasks.length?tasks:[this.node(m)],names=new Set(orphans.map(c=>c.name));
-    const uses=[...new Set(from.flatMap(k=>this.designOf(k.id).calls))].filter(x=>!names.has(x));
+    const uses=[...new Set(from.flatMap(k=>this.assignmentOf(k.id).calls))].filter(x=>!names.has(x));
     const packages=[...new Set(from.flatMap(k=>this.packagesOf(k.id).map(p=>p.name)))],refs=[...new Set(from.flatMap(k=>this.sourceRefs(k.id)))];
-    this.save(`level_job:${m}`,{kind:'rebuild',key:crypto.randomUUID(),text:tasks.map(k=>this.designOf(k.id).prompt).join('\n\n')||this.designOf(m).prompt,label:tasks[0]?.label||this.node(m).label,own:orphans,uses,packages,refs});
+    this.save(`level_job:${m}`,{kind:'rebuild',key:crypto.randomUUID(),text:tasks.map(k=>this.assignmentOf(k.id).prompt).join('\n\n')||this.assignmentOf(m).prompt,label:tasks[0]?.label||this.node(m).label,own:orphans,uses,packages,refs});
     this.event(m,'level_rebuild',clip(`No live child of "${this.node(m)?.label||m}" delivers ${orphans.map(c=>c.name).join(', ')}; its splitter rebuilds ${orphans.length>1?'them':'it'}.`,600));
     return true;
   }
   // ---------- changes ----------
   // A change on m's row: before m's split it is part of m's assignment; after
   // it, m's choice hands it to a child (route_to), verbatim, or to its
-  // splitter, which extends the level (extend).
+  // splitter, which extends the level (extend). A worker it reaches takes it
+  // into its assignment, as m does before its split: its prompt says it from
+  // then on.
   async routeChange(m, text, flags={}) {
-    const n=this.node(m);
-    // Before its level: the change joins its assignment, on its row and in its entry of its manager's level file.
-    if(!this.levelIndex(m)){const task=`${n.task}\n\n${text}`;this.db().exec('UPDATE agents SET task=? WHERE id=?',task,m);await this.amendEntry(m,()=>({prompt:this.node(m).task}));this.event(m,'change_taken','The change is part of its assignment, which its splitter reads.');return;}
+    // Before its level: the change joins its assignment, on its row, which its splitter reads (assignmentOf).
+    if(!this.levelIndex(m)){this.revise(m,text);this.event(m,'change_taken','The change is part of its assignment, which its splitter reads.');return;}
     const held={kind:'change',stage:'change',source:flags.change?'room':m,input:flags.change||'',parties:[],detail:text,facts:{text},flags};
     const pick=await this.managerChoice(m,{kind:'change',text},held);
     if(!pick)return;
@@ -8977,9 +8965,11 @@ export class ControlRoom extends DurableObject {
     }
     const c=this.node(pick.child.id);
     this.event(m,'change_routed',clip(`The change concerns "${c.label}": ${text}`,900),c.id);
-    if(this.isWorker(c)){this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:change',c.id,`[complaint] ${text}`);this.wake(c.id);}
+    if(this.isWorker(c)){this.revise(c.id,text);this.event(c.id,'change_taken','The change is part of its assignment: its prompt says it.');this.wake(c.id);}
     else {this.insertProblem({holder:c.id,kind:'change',stage:'change',source:m,input:'',parties:[],detail:text,facts:{text},flags});this.wake(c.id);}
   }
+  // A change taken into a row's assignment: recorded on its row (revisions:<id>), its prompt says it after what its entry says.
+  revise(id, text) { this.save(`revisions:${id}`,[...this.read(`revisions:${id}`,[]),text]); }
   // ---------- the worker ----------
   // A worker's request: its prompt (its task, what it delivers under which
   // names and paths, each with every example rendered from the validations
@@ -8988,9 +8978,10 @@ export class ControlRoom extends DurableObject {
   // routed to it that it has not answered with done (heldComplaints),
   // verbatim, and its world: what it can ask for by name and
   // the answers it has, the chunks of linked pages and the existing files it
-  // holds. The prompt is the one its manager's level file holds for it (designOf).
+  // holds. The prompt is its assignment (assignmentOf): what its manager's
+  // level file holds for it, then each change its row took since.
   workerView(id, inbox=[], ownFiles=[]) {
-    const design=this.designOf(id),byId=this.validationsById(),callable=this.callableOf(id);
+    const design=this.assignmentOf(id),byId=this.validationsById(),callable=this.callableOf(id);
     // How it is reached when something serves it: its files as they are, or its command listening on the port in PORT. A command's own command line, which nothing serves, is its file's.
     const runText=c=>!c.run?'':c.run.static?'its files are served as they are':c.run.port?`${c.run.run} starts it, listening on the port in PORT; ready when ${c.run.ready||'/'} answers`:'';
     // A contract as declared: its name, kind, path, what it does, takes and gives.

@@ -250,7 +250,7 @@ test('a manager commits its level file when it admits its level and on every cha
   assert.deepEqual(events(room, 'level_written').map(e => e.actor), [m, m, m]);
 });
 
-test('an answered ask changes the entries that call it: the asker\'s in its manager\'s file and its manager\'s in the room\'s manager\'s file; the worker\'s next prompt calls it', async () => {
+test('an answered ask leaves every level file as its splitter wrote it: the asker hears the contract in its answers, and its next prompt calls it', async () => {
   const store = new CommitStore();
   let asked = false;
   const leaf = user => {
@@ -263,15 +263,17 @@ test('an answered ask changes the entries that call it: the asker\'s in its mana
   const {room, calls} = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf, clef, store});
   assert.equal(room.get('status'), 'complete', trail(room));
   const m = room.roomManager(), rp = room.children(m).find(c => c.label === 'Ticket report'), w = room.liveChildren(rp.id)[0];
-  assert.deepEqual(levelOf(room, rp.id).children.find(c => c.id === w.id).calls, ['createTicket', 'getTicket']);
-  assert.deepEqual(levelOf(room, m).children.find(c => c.id === rp.id).calls, ['createTicket', 'getTicket']);
-  // The commit the rows keep is the file's last.
-  for (const x of [m, rp.id]) assert.equal(room.levelIndex(x).commit, store.log.filter(l => l.name === room.node(x).repo_name && l.path === LEVEL_FILE).at(-1).commit);
+  assert.deepEqual(levelOf(room, rp.id).children.find(c => c.id === w.id).calls, ['createTicket']);
+  assert.deepEqual(levelOf(room, m).children.find(c => c.id === rp.id).calls, ['createTicket']);
+  // Each file was written once, by its splitter's admission.
+  for (const x of [m, rp.id]) assert.equal(store.log.filter(l => l.name === room.node(x).repo_name && l.path === LEVEL_FILE).length, 1);
+  assert.deepEqual(room.read(`fn_answers:${w.id}`, []).map(a => a.call), ['getTicket']);
+  assert.deepEqual(room.assignmentOf(w.id).calls, ['createTicket', 'getTicket']);
   const last = calls.leaf.filter(u => u.prompt.deliver.some(c => c.name === 'report')).at(-1);
   assert.deepEqual(last.prompt.call.map(c => c.name), ['createTicket', 'getTicket']);
 });
 
-test('a change that reaches a manager before its level joins its assignment: its row, and its entry in its manager\'s level file, which its splitter reads', async () => {
+test('a change that reaches a manager before its level joins its assignment on its row, which its splitter reads; its manager\'s level file stays as its splitter wrote it', async () => {
   const {room} = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf: trackerLeaf});
   assert.equal(room.get('status'), 'complete', trail(room));
   const m = room.roomManager(), c = room.children(m).find(x => x.label === 'Ticket store'), revision = () => room.db().exec('SELECT revision FROM artifact_files WHERE agent=? AND path=?', m, LEVEL_FILE).toArray()[0].revision;
@@ -280,10 +282,11 @@ test('a change that reaches a manager before its level joins its assignment: its
   const before = revision();
   await room.routeChange(c.id, 'Tickets also keep the time they were created.');
   const want = `${pieces[0].task}\n\nTickets also keep the time they were created.`;
-  assert.equal(room.node(c.id).task, want);
-  assert.equal(levelOf(room, m).children.find(x => x.id === c.id).prompt, want);
-  assert.equal(revision(), before + 1);
-  assert.equal(room.designOf(c.id).prompt, want, 'what its splitter is given');
+  assert.deepEqual(room.read(`revisions:${c.id}`, []), ['Tickets also keep the time they were created.'], 'on its row');
+  assert.equal(levelOf(room, m).children.find(x => x.id === c.id).prompt, pieces[0].task);
+  assert.equal(revision(), before);
+  assert.equal(room.designOf(c.id).prompt, pieces[0].task, 'the splitter\'s design');
+  assert.equal(room.assignmentOf(c.id).prompt, want, 'what its splitter is given');
 });
 
 test('a copy that is not the file\'s is read again from the file: a corrupted copy, a stale commit, and a file the repository changed', async () => {
@@ -425,16 +428,13 @@ const entryAtBirth = room => {
   };
 };
 
-test('two changes to one level file at once both land: two sibling archives from overlapping turns leave both archived in the file, and two calls added to one entry at once are both there', async () => {
+test('two changes to one level file at once both land: two sibling archives from overlapping turns leave both archived in the file', async () => {
   const store = new SlowStore(), {room} = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf: trackerLeaf, store});
   assert.equal(room.get('status'), 'complete', trail(room));
   const m = room.roomManager(), before = levelOf(room, m), kids = room.liveChildren(m), [storePiece, reportPiece] = kids;
   room.set('status', 'paused');
   store.slow = true;
-  // Two calls added to the report piece's entry at once (two answered asks).
-  await Promise.all(['getTicket', 'listTickets'].map(name => room.amendEntry(reportPiece.id, e => ({calls: [...new Set([...e.calls, name])]}))));
-  assert.deepEqual(levelOf(room, m).children.find(c => c.id === reportPiece.id).calls, ['createTicket', 'getTicket', 'listTickets']);
-  const amended = levelOf(room, m).children;
+  const amended = before.children;
   // Both siblings archived at once, as two parallel worker turns would (askUp, then archive).
   await Promise.all(kids.map(k => room.archive(k.id, 'out of scope at every manager')));
   const after = levelOf(room, m);
@@ -447,9 +447,8 @@ test('two changes to one level file at once both land: two sibling archives from
   rowsListed(room, m);
 });
 
-test('an extension admitted while another turn amends an entry of the same level file keeps both: the amended prompt and the new worker\'s entry, at every overlap; no row exists without its entry', async () => {
+test('an extension admitted while another turn archives a child of the same level keeps both: the archived entry and the new worker\'s entry, at every overlap; no row exists without its entry', async () => {
   const LIST = {name: 'listTickets', kind: 'function', does: 'lists every ticket', outputs: 'the tickets', path: 'list.js'};
-  const AMENDED = 'Keep tickets in memory: create them and read them back by id. Each keeps the time it was created.';
   for (const delay of [0, 5, 10, 15, 30]) {
     const store = new SlowStore(), {room} = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf: trackerLeaf, store});
     assert.equal(room.get('status'), 'complete', trail(room));
@@ -461,14 +460,14 @@ test('an extension admitted while another turn amends an entry of the same level
     room.save(`level_job:${m}`, job);
     await Promise.all([
       room.admitLevel(m, {contracts: [LIST], validations: [], pieces: []}, {job}),
-      new Promise(r => setTimeout(r, delay)).then(() => room.amendEntry(storePiece.id, () => ({prompt: AMENDED})))
+      new Promise(r => setTimeout(r, delay)).then(() => room.archive(storePiece.id, 'out of scope at every manager'))
     ]);
     const file = levelOf(room, m), list = room.liveChildren(m).find(c => c.label === 'Ticket list');
-    assert.equal(file.children.find(c => c.id === storePiece.id).prompt, AMENDED, `the amendment (overlap ${delay} ms)`);
+    assert.deepEqual(file.archived.map(c => c.id), [storePiece.id], `the archive (overlap ${delay} ms)`);
     assert.deepEqual(file.children.find(c => c.id === list?.id)?.delivers, ['listTickets'], `the extension's worker (overlap ${delay} ms)`);
     assert.deepEqual(file.contracts.map(c => c.name), ['createTicket', 'getTicket', 'report', 'listTickets']);
     assert.equal(room.designOf(list.id).prompt, 'List every ticket.');
-    assert.equal(room.designOf(storePiece.id).prompt, AMENDED);
+    assert.equal(room.designOf(storePiece.id).label, storePiece.label, 'the archived entry, as it stood');
     assert.equal(room.read(`level_job:${m}`, null), null, 'the job is done');
     rowsListed(room, m);
   }
