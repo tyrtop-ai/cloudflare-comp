@@ -47,10 +47,8 @@ export const TOOLCHAINS = Object.freeze([
     // none here. The standard library is part of the language: always there,
     // never listed or granted. stdlib_provides names a few of its modules
     // (since: the first runtime version that has it), read with stdlib_names
-    // as the language's own. stands_for and third_party: third-party names
-    // the rows know as packages, so an ask by one is a package ask.
-    // module_prefix: the prefix the runtime's own modules may carry (node:fs
-    // is fs).
+    // as the language's own. module_prefix: the prefix the runtime's own
+    // modules may carry (node:fs is fs).
     // install: how the compiler's box installs the packages an agent's row
     // lists (container/build-runner.mjs, stage 3): its command ({packages}:
     // the names; {scratch}: the folder above every fresh copy of the files),
@@ -62,14 +60,6 @@ export const TOOLCHAINS = Object.freeze([
       {name:'node:assert',provides:'assertions for tests'},{name:'node:child_process',provides:'running commands'},{name:'node:events',provides:'events'},{name:'node:readline',provides:'reading input line by line'},
       {name:'node:os',provides:'operating system facts'},{name:'node:util',provides:'utilities and command-line arguments (parseArgs)'},{name:'node:zlib',provides:'compression'},{name:'node:stream',provides:'streams'},
       {name:'node:timers',provides:'timers'},{name:'node:process',provides:'environment and exit status'},{name:'node:sqlite',provides:'database in a file',since:'22.13'}],
-    stands_for:{express:'HTTP server',koa:'HTTP server',fastify:'HTTP server',hapi:'HTTP server','@hapi/hapi':'HTTP server',restify:'HTTP server',connect:'HTTP server','body-parser':'HTTP server',cors:'HTTP server','serve-static':'HTTP server',
-      axios:'HTTP client','node-fetch':'HTTP client',got:'HTTP client',superagent:'HTTP client',request:'HTTP client',uuid:'hashing and random ids',nanoid:'hashing and random ids',
-      sqlite3:'database in a file','better-sqlite3':'database in a file',mocha:'tests',jest:'tests',vitest:'tests',chai:'assertions for tests',supertest:'tests',
-      commander:'utilities and command-line arguments (parseArgs)',yargs:'utilities and command-line arguments (parseArgs)',minimist:'utilities and command-line arguments (parseArgs)',
-      'fs-extra':'files and folders',rimraf:'files and folders',mkdirp:'files and folders',dotenv:'environment and exit status',lodash:'utilities and command-line arguments (parseArgs)'},
-    // Other third-party names a run or a file may name: a package, never a part of the project.
-    third_party:['react','react-dom','vue','angular','svelte','next','typescript','ts-node','nodemon','ws','socket.io','mongoose','mongodb','pg','mysql','mysql2','redis','sequelize','prisma','knex',
-      'ejs','pug','handlebars','mustache','moment','dayjs','date-fns','chalk','inquirer','jsonwebtoken','bcrypt','bcryptjs','passport','multer','cheerio','puppeteer','playwright','sharp','winston','morgan','helmet','joi','zod','yup'],
     line_comment:'//', block_comment:['/*','*/'], strings:['"',"'",'`'], image:'build' }),
   Object.freeze({ id:'python', name:'Python', extensions:['.py'], native:null,
     manifests:['pyproject.toml','requirements.txt','setup.cfg','setup.py','Pipfile','Pipfile.lock','poetry.lock','tox.ini','pip.conf','.python-version','__pycache__/','.venv/','venv/'],
@@ -108,13 +98,6 @@ export const TOOLCHAINS = Object.freeze([
       {name:'secrets',provides:'secure tokens'},{name:'subprocess',provides:'running commands'},{name:'threading',provides:'threads'},{name:'socketserver',provides:'network servers'},
       {name:'sys',provides:'process arguments and exit status'},{name:'time',provides:'time and sleeping'},{name:'configparser',provides:'config files'},{name:'xml.etree.ElementTree',provides:'XML'},
       {name:'base64',provides:'base64'},{name:'zipfile',provides:'zip archives'},{name:'tempfile',provides:'temporary files'},{name:'textwrap',provides:'wrapping text'}],
-    stands_for:{flask:'HTTP server',django:'HTTP server',fastapi:'HTTP server',bottle:'HTTP server',tornado:'HTTP server',aiohttp:'HTTP server',starlette:'HTTP server',cherrypy:'HTTP server',
-      pyramid:'HTTP server',sanic:'HTTP server',falcon:'HTTP server',werkzeug:'HTTP server',uvicorn:'HTTP server',gunicorn:'HTTP server',requests:'HTTP client',httpx:'HTTP client',urllib3:'HTTP client',
-      jinja2:'text templates',mako:'text templates',sqlalchemy:'database in a file',peewee:'database in a file',pymysql:'database in a file',psycopg2:'database in a file',pandas:'CSV files',
-      click:'command-line arguments',typer:'command-line arguments',docopt:'command-line arguments',dateutil:'dates and times',arrow:'dates and times',pendulum:'dates and times',
-      pydantic:'data classes',attrs:'data classes',yaml:'config files',toml:'config files',bs4:'reading web pages',lxml:'XML',numpy:'math'},
-    third_party:['scipy','matplotlib','seaborn','pil','pillow','rich','colorama','tabulate','tqdm','boto3','redis','pymongo','celery','openai','scrapy','selenium','sklearn','scikit-learn',
-      'tensorflow','torch','keras','nltk','spacy','marshmallow','wtforms','flask_sqlalchemy','flask_cors','flask_restful','flask_login','rest_framework','dotenv','termcolor','prettytable','pyfiglet','emoji','markdown','simplejson','ujson','orjson','six'],
     call_adapter:['python3','-I','-X','utf8','/opt/adapters/call.py'], stack:'python', stdlib:'/opt/toolchain/python-stdlib.txt', image:'build' }),
   Object.freeze({ id:'text', name:'text', manifests:[], aliases:['html','htm','css','markdown','md','json','yaml','yml','toml','csv','svg','txt','plain','plaintext','doc','docs','documentation'], extensions:['.md','.txt','.html','.htm','.css','.json','.svg','.yml','.yaml','.toml','.csv'], native:null,
     syntax:null, executables:[], extractor:null, link:'placed', stack:null,
@@ -125,11 +108,12 @@ export const TOOLCHAINS = Object.freeze([
 // The manifests of toolchains this deployment has no row for: a worker never
 // writes one either, since nothing here would read it as intended.
 export const OTHER_MANIFESTS = Object.freeze(['go.mod','go.sum','Cargo.toml','Cargo.lock','Gemfile','Gemfile.lock','composer.json','composer.lock','pom.xml','build.gradle','build.gradle.kts','settings.gradle','Package.swift','mix.exs','deno.json','deno.jsonc']);
-// v8 ship-verified (L1): rows for code a project may hold (the base's, most
-// often) in a language no row above writes: only what compiles it, so no
-// contract names one and no worker writes one. requires: the inventory's tools
-// it needs, each at least the version given ('' for any); syntax: the box's
-// command, as a row above has it; shebang: as a row above has it. The
+// v8 ship-verified (L1): rows for the other code the box's image installs a
+// toolchain for: what compiles a file of it, how one runs (run_file) and how
+// its packages install (install), as the rows above have them. requires: the
+// inventory's tools it needs, each at least the version given ('' for any).
+// Code in a language no row describes is a file like any other: a check
+// runs it as written, with whatever the box has (resolveCommand). The
 // TypeScript row compiles each file as the box's Node loads it (type
 // stripping, by default from Node 22.18): its types stripped, then read
 // as an ES module or CommonJS by its extension or its package.json "type"
@@ -170,27 +154,25 @@ export const COMPILE_ROWS = Object.freeze([
     syntax:['sh','-c',SH_SYNTAX,'sh','{files}'] }),
   // Owner 2026-10-15 05:16 ("Any code type"): the other languages the box
   // image installs (container/Dockerfile.box), each compiled by its own
-  // tool's syntax-only reading, and run_file, how a file of it runs when it
-  // has one; a row is installed when the box's inventory lists its tool
-  // (requires, read from the executables on the box's PATH).
+  // tool's syntax-only reading, and run_file, how a file of it runs (a
+  // compiled language builds it into the check's own temporary folder, then
+  // runs it with the command's arguments); a row is installed when the box's
+  // inventory lists its tool (requires, read from the executables on the
+  // box's PATH).
   Object.freeze({ id:'go', name:'Go', extensions:['.go'], requires:{gofmt:''}, run_file:['go','run','{path}'],
     syntax:['sh','-c','gofmt -e "$@" >/dev/null','sh','{files}'] }),
-  Object.freeze({ id:'rust', name:'Rust', extensions:['.rs'], requires:{rustfmt:''},
+  Object.freeze({ id:'rust', name:'Rust', extensions:['.rs'], requires:{rustfmt:''}, run_file:['sh','-c','d=$(mktemp -d) && rustc --edition 2021 -o "$d/main" "$0" && exec "$d/main" "$@"','{path}'],
     syntax:['sh','-c','for f do rustfmt --edition 2021 --emit stdout "./$f" >/dev/null || s=1; done; exit ${s:-0}','sh','{files}'] }),
-  Object.freeze({ id:'c', name:'C', extensions:['.c','.h'], requires:{gcc:''}, syntax:['gcc','-fsyntax-only','{files}'] }),
-  Object.freeze({ id:'cpp', name:'C++', extensions:['.cc','.cpp','.cxx','.hpp','.hh'], requires:{'g++':''}, syntax:['g++','-fsyntax-only','{files}'] }),
+  Object.freeze({ id:'c', name:'C', extensions:['.c','.h'], requires:{gcc:''}, run_file:['sh','-c','d=$(mktemp -d) && gcc -o "$d/main" "$0" && exec "$d/main" "$@"','{path}'], syntax:['gcc','-fsyntax-only','{files}'] }),
+  Object.freeze({ id:'cpp', name:'C++', extensions:['.cc','.cpp','.cxx','.hpp','.hh'], requires:{'g++':''}, run_file:['sh','-c','d=$(mktemp -d) && g++ -o "$d/main" "$0" && exec "$d/main" "$@"','{path}'], syntax:['g++','-fsyntax-only','{files}'] }),
   Object.freeze({ id:'java', name:'Java', extensions:['.java'], requires:{javac:''}, run_file:['java','{path}'],
     syntax:['sh','-c','d=$(mktemp -d) && javac -d "$d" "$@"; s=$?; rm -rf "$d"; exit $s','sh','{files}'] }),
   Object.freeze({ id:'ruby', name:'Ruby', extensions:['.rb'], shebang:['ruby'], requires:{ruby:''}, run_file:['ruby','{path}'],
+    install:{argv:['gem','install','--no-document','--install-dir','{tree}','{packages}'], tree:'ruby-gems', env:{GEM_PATH:'{tree}'}},
     syntax:['sh','-c','for f do ruby -c "./$f" >/dev/null || s=1; done; exit ${s:-0}','sh','{files}'] }),
   Object.freeze({ id:'php', name:'PHP', extensions:['.php'], shebang:['php'], requires:{php:''}, run_file:['php','{path}'],
     syntax:['sh','-c','for f do php -l "./$f" >/dev/null || s=1; done; exit ${s:-0}','sh','{files}'] })
 ]);
-// v8 ship-verified (L1): the extensions of code in a language no row
-// compiles: a shipped file with one of them, or with a #! line no row's
-// shebang names, is code nothing compiled.
-export const OTHER_CODE = Object.freeze(['.tsx','.jsx','.vue','.svelte','.coffee','.kt','.kts','.scala','.groovy','.clj','.cs','.fs','.vb','.swift','.m','.mm',
-  '.zsh','.ksh','.fish','.ps1','.bat','.cmd','.pl','.pm','.lua','.r','.dart','.ex','.exs','.erl','.hs','.ml','.jl','.nim','.zig']);
 // Stack-frame readers by a row's stack field (named groups path, line and
 // fn) and the frame reader: shared with the Container (container/stack-frames.mjs).
 export {STACKS, stackFrames} from '../container/stack-frames.mjs';
@@ -267,20 +249,16 @@ export function shebangOf(text) {
 // v8 ship-verified (L1): the row that compiles a file, as the rows' data
 // says: by its extension, else (a file with none of a row's) by the
 // interpreter its #! line names (shebang). {row} for a row with a syntax
-// step; {row: null, why} for code no row compiles (OTHER_CODE, a #! line no
-// row's shebang names, or one its own row's shebang does not); null for a
-// file that is not code.
+// step; null for any other file: one no row describes, or one whose #! line
+// names an interpreter its row's shebang does not (it is not that row's
+// language), is a file like any other, run by a check as written.
 export function codeRowOf(path, text, rows) {
   const ext = extensionOf(path), interp = shebangOf(text);
   const compiles = r => !!(r && (r.native || r.syntax?.length));
   const byExt = ext ? rows.find(r => (r.extensions || []).includes(ext)) : null;
-  if (byExt) {
-    if (!compiles(byExt)) return null;
-    if (interp && byExt.shebang && !byExt.shebang.includes(interp)) return {row: null, why: `its #! line names ${interp}, which no toolchain row compiles`};
-    return {row: byExt};
-  }
-  if (interp) { const r = rows.find(x => compiles(x) && (x.shebang || []).includes(interp)); return r ? {row: r} : {row: null, why: `its #! line names ${interp}, which no toolchain row compiles`}; }
-  return OTHER_CODE.includes(ext) ? {row: null, why: `no toolchain row compiles ${ext} files`} : null;
+  if (byExt) return compiles(byExt) && !(interp && byExt.shebang && !byExt.shebang.includes(interp)) ? {row: byExt} : null;
+  const r = interp ? rows.find(x => compiles(x) && (x.shebang || []).includes(interp)) : null;
+  return r ? {row: r} : null;
 }
 // v8 ship-verified (M2): the scripts a page runs, read with a row's
 // page_scripts: [{mode, src, at, line}] for each script element of a type

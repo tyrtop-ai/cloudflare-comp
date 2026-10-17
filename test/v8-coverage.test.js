@@ -144,20 +144,24 @@ test('exportsame: the export is byte for byte the bundle of the room\'s manager\
   assert.equal(r.room.read(`verified:${m.Root}`, null).digest, app.digest);
 });
 
-test('the base\'s files the box cannot hold (a binary, one past the box\'s bytes) ship, with no hold, and the export names them; a hidden path is a file like any other, in every box', {skip}, async () => {
+// Owner 2026-10-17 00:25 ("I don't understand the need"): the box has no size of its own; only what it cannot hold as text stays out.
+test('the base\'s files the box cannot hold (a binary) ship, with no hold, and the export names them; a large text file is in the box like any other; a hidden path is a file like any other, in every box', {skip}, async () => {
   const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00, 0x01]).toString('base64');
-  const r = await toolkit({base: {'logo.bin': {base64: bytes, reason: 'binary'}, '.pytest.ini': '[pytest]\naddopts = -x\n', 'big.txt': 'x'.repeat(4_194_200) + '\n', 'README.md': '# Base\n'}, budget: 80});
+  const big = 'x'.repeat(4_194_200) + '\n';
+  const r = await toolkit({base: {'logo.bin': {base64: bytes, reason: 'binary'}, '.pytest.ini': '[pytest]\naddopts = -x\n', 'big.txt': big, 'README.md': '# Base\n'}, budget: 80});
   const m = at(r.room), bundle = await r.room.bundleFiles(m.Root);
-  assert.deepEqual(bundle.unsent.map(u => u.path).sort(), ['big.txt', 'logo.bin']);
+  assert.deepEqual(bundle.unsent.map(u => u.path).sort(), ['logo.bin']);
+  assert.equal(bundle.files.get('big.txt'), big, 'past the old 4 MiB, in the bundle');
   assert.equal(bundle.files.get('.pytest.ini'), '[pytest]\naddopts = -x\n', 'a hidden path is the project\'s file, in its bundle');
   // The room completes on what its final compiler observed: no hold for the person.
   assert.equal(r.room.read('paused_state', null), null, tail(r.room));
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
-  assert.ok(!r.boxes.some(b => ['big.txt', 'logo.bin'].some(p => p in b.files)), 'never in a box');
+  assert.ok(!r.boxes.some(b => 'logo.bin' in b.files), 'never in a box');
+  assert.ok(r.boxes.some(b => b.files['big.txt'] === big), 'the box holds the large text file');
   assert.ok(r.boxes.some(b => b.files['.pytest.ini'] === '[pytest]\naddopts = -x\n'), 'the box holds it');
   const app = await r.room.appFiles();
   assert.equal(app.passed, true);
-  assert.deepEqual([...app.unchecked].sort(), ['big.txt', 'logo.bin']);
+  assert.deepEqual([...app.unchecked].sort(), ['logo.bin']);
   assert.equal(app.files.find(f => f.path === 'logo.bin').content_base64, bytes);
 });
 
@@ -170,11 +174,15 @@ test('packages across pieces: each piece holds its parent\'s packages of its lan
   const r = await toolkit({split, leaf, clef});
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
   const m = at(r.room), names = id => r.room.packagesOf(id).map(p => p.name), worker = label => r.room.children(m[label]).find(c => c.role === 'worker').id;
-  // Packages are allowed: a name a split gives that no row holds (numpy for Shouter) is granted from the top, listed on every row of the line.
-  assert.deepEqual(Object.fromEntries(['Root', 'Loud part', 'Quiet part', 'Shouter', 'Louder', 'Whisperer', 'Softener'].map(l => [l, names(m[l])])),
-    {Root: ['pytest', 'numpy'], 'Loud part': ['pytest', 'numpy'], 'Quiet part': ['pytest'], Shouter: ['pytest', 'numpy'], Louder: ['pytest'], Whisperer: ['pytest'], Softener: ['pytest']});
+  // A name a split gives that no row holds (numpy for Shouter) is Shouter's ask of its manager, as a worker's is: the runtime grants nothing itself.
+  // Here Shouter's level passes on what it has before its manager takes the ask up, and its pass closes it; a grant, if any, is a manager's choice.
+  const held = id => names(id).filter(n => n !== 'numpy');
+  assert.deepEqual(Object.fromEntries(['Root', 'Loud part', 'Quiet part', 'Shouter', 'Louder', 'Whisperer', 'Softener'].map(l => [l, held(m[l])])),
+    {Root: ['pytest'], 'Loud part': ['pytest'], 'Quiet part': ['pytest'], Shouter: ['pytest'], Louder: ['pytest'], Whisperer: ['pytest'], Softener: ['pytest']});
   assert.match(events(r.room, 'packages_planned').find(e => e.actor === m['Loud part']).body, /"Shouter" gets pytest and asks for numpy/);
-  assert.ok(events(r.room, 'package_answer').some(e => e.actor === m.Shouter && /^numpy: /.test(e.body)), 'the split\'s name no row holds is the piece\'s ask, answered');
+  const [numpy] = r.room.problems("kind='ask'").filter(p => p.facts.name === 'numpy');
+  assert.deepEqual([numpy.holder, numpy.source], [m['Loud part'], m.Shouter], 'the split\'s name no row holds is the piece\'s ask of its manager');
+  assert.equal(events(r.room, 'package_granted').filter(e => /numpy/.test(e.body)).length, events(r.room, 'manager_choice').filter(e => /^On the ask for numpy: grant/.test(e.body)).length, 'only a manager\'s choice grants it');
   const louder = r.room.read(`fn_answers:${worker('Louder')}`, []);
   assert.deepEqual(louder.map(a => [a.key, a.kind]), [['fn pytest', 'provided']]);
   assert.match(louder[0].text, /your packages hold pytest/i);

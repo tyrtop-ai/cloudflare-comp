@@ -60,11 +60,11 @@ const CHECK_TOOLS = [
     parameters: {type: 'object', properties: {serves: SERVES, serve: text('The declared contract to start: one that states its run.'), steps: {type: 'array', description: 'The requests, in order.', items: {type: 'object', properties: {
       method: {type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], description: 'GET when not given.'}, path: text('The path requested, starting with a single /.'), body: {type: ANY, description: 'The JSON body sent.'}, save: text('A name later paths and bodies read as $name for the JSON this request answers.'),
       expect: {type: 'object', properties: {status: {type: 'integer'}, body_has: texts('Texts the answer contains.'), json_has: {type: ANY, description: 'A JSON value the answer\'s JSON contains.'}}}}, required: ['path']}}}, required: ['serves', 'serve', 'steps']}},
-  {name: 'browser_check', description: 'Declares a validation that starts a declared contract that states how it runs and drives it in a browser: one scenario of steps, in order. One scenario is one example.' + CHECK_RESULT,
+  {name: 'browser_check', description: 'Declares a validation that starts a declared contract that states how it runs and drives it in a browser: one scenario of steps, in order, from a blank page (open one with goto). Each step runs exactly as written. One scenario is one example.' + CHECK_RESULT,
     parameters: {type: 'object', properties: {serves: SERVES, serve: text('The declared contract to start: one that states its run.'), steps: {type: 'array', description: 'The steps, in order; each holds exactly one of its fields.', items: {type: 'object', properties: {
       goto: text('A path to open, starting with a single /.'), reload: {type: 'boolean'}, press: text('A key to press.'),
-      fill: {type: 'object', properties: {label: {type: 'string'}, placeholder: {type: 'string'}, role: {type: 'string'}, name: {type: 'string'}, text: {type: 'string'}}, description: 'The field (by label, placeholder, role and name, or name) and the text to enter.'},
-      click: {type: 'object', properties: {role: {type: 'string'}, name: {type: 'string'}, text: {type: 'string'}, label: {type: 'string'}}, description: 'What to click.'},
+      fill: {type: 'object', properties: {label: {type: 'string'}, placeholder: {type: 'string'}, role: {type: 'string'}, name: {type: 'string'}, text: {type: 'string'}}, description: 'The field and the text to enter. The field is the first shown one that matches every one given of: label, its label; placeholder; role, its ARIA role, with name its accessible name; name without role, its name attribute. Each matches exactly as written.'},
+      click: {type: 'object', properties: {role: {type: 'string'}, name: {type: 'string'}, text: {type: 'string'}, label: {type: 'string'}}, description: 'What to click: the first shown element that matches every one given of: role, its ARIA role, with name its accessible name; name without role, its name attribute; text, its text; label, its label. Each matches exactly as written.'},
       expect_text: text('A text that appears.'), expect_no_text: text('A text that does not appear.'),
       expect_count: {type: 'object', properties: {role: {type: 'string'}, text: {type: 'string'}, n: {type: 'integer'}}, description: 'How many elements of a role, or holding a text, there are.'},
       expect_element: {type: 'object', properties: {selector: {type: 'string'}, text: {type: 'string'}}, required: ['selector'], description: 'An element by a simple selector (a tag, then any of #id, .class, [attribute] and [attribute=value]), holding a text if given.'},
@@ -199,7 +199,6 @@ export const MESSAGES = Object.freeze({
   available_package: ({provides}) => provides ? `an installed package for ${provides}` : 'an installed package',
   package_yours: ({names, many}) => `Your packages hold ${names}: use ${it(many)} as ${many ? 'they are' : 'it is'}.`,
   package_granted: ({names, many}) => `${names} ${many ? 'are' : 'is'} now in your packages, and the box installs ${many ? 'them' : 'it'}: use ${it(many)}.`,
-  package_stdlib: ({name}) => `${name} is part of the language's standard library: import it and use it as it is.`,
   available_own: () => 'what you deliver',
   available_use: () => 'a name you may call',
   available_base: () => 'an existing file: the answer quotes its text',

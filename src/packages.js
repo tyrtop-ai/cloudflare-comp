@@ -5,8 +5,9 @@
 // no row lists it, no ask is needed for it and none grants it. Root's row
 // holds what the image installs; a split gives each piece a part of its
 // parent's, as it gives contracts; an ask by a name its row does not hold
-// goes up the line as a contract ask does, and a third party's name no row
-// holds is granted from the top (packages are allowed, 22:12): the compiler's
+// goes to its manager as a contract ask does, whose choice grants a package
+// its row holds or asks one level up; at the top of the line a name no row
+// holds may be granted new (packages are allowed, 22:12), and the compiler's
 // box installs it. Pure: no room, no model.
 import {TOOLCHAINS, toolchainById, toolchainOf} from './toolchains.js';
 
@@ -63,20 +64,6 @@ export function inStdlib(name, row) {
 }
 // The row whose standard library holds a name, or null.
 export const stdlibRow = (name, rows = TOOLCHAINS) => rows.find(r => inStdlib(name, r)) || null;
-// Whether the rows know a name as a package (H2: an ask is a package's by its
-// name alone): a module of a standard library, one a row installs (packages
-// or site_modules), or a third party's name a row knows (stands_for,
-// third_party). The row's id, or ''.
-export function packageLanguage(name, rows = TOOLCHAINS) {
-  const n = String(name ?? '').trim(), low = n.toLowerCase();
-  if (!n || n.startsWith('.')) return '';
-  const top = low.split(/[./]/)[0];
-  const row = rows.find(r => (r.packages || []).some(p => bare(p.name, r) === bare(n, r)) || String(r.site_modules || '').split(/\s+/).includes(topOf(n, r)))
-    || rows.find(r => r.stands_for && (Object.hasOwn(r.stands_for, low) || Object.hasOwn(r.stands_for, top)))
-    || rows.find(r => (r.third_party || []).includes(low) || (r.third_party || []).includes(top)) || stdlibRow(n, rows);
-  return row?.id || '';
-}
-
 // ------------------------------------------------------------ holding a name
 // The packages a list holds by name: the name itself, the name with or
 // without its row's module_prefix, or the modules under a dotted parent
@@ -102,7 +89,8 @@ export const pieceLanguages = contracts => {
 // none), and the names it was given that its parent's row lists in those
 // languages (v8 live 4 review: added to that set, never replacing it); a
 // given name its parent's row does not list is an ask, which goes up as a
-// worker's would (a module of a standard library needs none: it is there).
+// worker's does, to its manager (a module of a standard library needs none:
+// it is part of the language, always there).
 export function piecePackages(piece, parentHeld = [], rows = TOOLCHAINS) {
   const langs = pieceLanguages(piece?.interfaces), fits = p => !langs || !p.language || langs.includes(p.language);
   const own = parentHeld.filter(fits), given = packageNames(piece?.packages), packages = [...own], asks = [];

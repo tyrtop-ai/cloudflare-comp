@@ -114,8 +114,6 @@ export function noneText(name, cat = []) {
   const names = [...cat].filter(e => e.kind !== 'package').sort((a, b) => rank(a) - rank(b)).map(e => e.name);
   return MESSAGES.broker_none({name: String(name), names: names.join(', ')});
 }
-// v8 live 4: a package ask's answer (src/index.js packageAsk): what the asker's line holds for it.
-export const packageAnswer = ({id, name, text}) => shapeAnswer({id, name, kind: 'package', label: BROKER_LABEL.package, value: text});
 export const noneAnswer = ({id, name, catalogue: cat = []}) =>
   shapeAnswer({id, name, kind: 'none', status: 'none', label: BROKER_LABEL.none, value: noneText(name, cat)});
 // An answer as the worker's answers carry it: {name, label, value, next?, facts?}.

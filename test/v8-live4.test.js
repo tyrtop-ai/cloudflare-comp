@@ -16,7 +16,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { liveRoom, events, rowId } from './helpers/room.js';
-import { installedPackages, installedLine, heldByName, packageLanguage, stdlibRow, piecePackages } from '../src/packages.js';
+import { installedPackages, installedLine, heldByName, stdlibRow, piecePackages } from '../src/packages.js';
 import { catalogue } from '../src/broker.js';
 import { MESSAGES } from '../src/prompts.js';
 import { TOOLCHAINS } from '../src/toolchains.js';
@@ -80,7 +80,7 @@ test('1: the adapter in real Chromium: expect_element passes when the page has a
 // v8 live 4 review: a language's standard library is part of the language
 // (never listed on a row, asked for or granted); a row's packages are what
 // the image installs beyond it.
-test('2: the installed set: what the rows install beyond their standard libraries; a name is a package\'s by the rows', () => {
+test('2: the installed set: what the rows install beyond their standard libraries; the runtime keeps no list of third-party names', () => {
   const held = installedPackages(TOOLCHAINS, {node: '24.22.0', python: '3.11.2'});
   assert.deepEqual(held, [{name: 'pytest', language: 'python', provides: 'tests'}]);
   assert.equal(installedLine(held, {python: '3.11.2'}), 'Python 3.11.2: pytest');
@@ -90,13 +90,8 @@ test('2: the installed set: what the rows install beyond their standard librarie
   assert.equal(stdlibRow('flask'), null);
   assert.deepEqual(heldByName([{name: 'urllib.request', language: 'python'}, {name: 'urllib.parse', language: 'python'}], 'urllib').map(p => p.name), ['urllib.request', 'urllib.parse']);
   assert.deepEqual(heldByName([{name: 'node:fs', language: 'javascript'}], 'fs').map(p => p.name), ['node:fs'], 'the row\'s module_prefix');
-  // A name is a package's by its name alone: the rows know it.
-  assert.equal(packageLanguage('flask'), 'python');
-  assert.equal(packageLanguage('json'), 'python');
-  assert.equal(packageLanguage('node:fs'), 'javascript');
-  assert.equal(packageLanguage('express'), 'javascript');
-  assert.equal(packageLanguage('parse_input'), '');
-  assert.equal(packageLanguage('package.json'), '');
+  // Owner 2026-10-16 20:38/20:43: no word lists of third-party names: which package a need takes is the managers' choice.
+  for (const row of TOOLCHAINS) assert.ok(!('stands_for' in row) && !('third_party' in row), row.id);
   // A piece's packages: its parent's of its language, with the names it was given; an unlisted name is an ask, a standard library's needs none.
   const parent = [...held, {name: 'requests', language: 'python', provides: 'HTTP client'}, {name: 'express', language: 'javascript', provides: 'HTTP server'}];
   const server = piecePackages({interfaces: [{name: 'app.py', kind: 'file', path: 'app.py'}], packages: ['pytest', 'json', 'flask']}, parent);
@@ -122,41 +117,47 @@ test('2: the room\'s manager is created with the installed set; a v7 room\'s row
   assert.deepEqual(v7.room.catalogue('root'), []);
 });
 
-test('2: a package name a split gives goes up its line: a row that holds it grants it; a third party\'s name no row holds is granted from the top, on every row of the line; a standard library\'s is the language\'s; a worker\'s ask by such a name goes to its manager', async () => {
+test('2: a package a piece needs is asked of its manager, whose functions grant it: a package its row holds, or, at the top of the line, a name no row holds, new, in a language whose box installs packages; a grant is listed on every row down to the asker, and the box installs it', async () => {
   const {room} = liveRoom({});
   room.save('settings', {...room.settings(), pipeline: 'v8'});
   const pytest = {name: 'pytest', language: 'python', provides: 'tests'}, requests = {name: 'requests', language: 'python', provides: 'HTTP client'};
   await room.provision(TOP, null, 'Root objective', TRACKER_GOAL, [], [], [pytest, requests], 'manager', {seq: 1});
   await room.provision(BACKEND, TOP, 'Backend', 'the backend', [], [], [pytest], 'manager', {seq: 1});
   await room.provision(SERVER, BACKEND, 'Server', 'the server', [], [], [], 'worker', {seq: 1});
-  // Granted by its manager, which holds it.
-  const own = room.packageAsk(SERVER, {name: 'pytest'});
-  assert.equal(own.how, 'granted');
-  assert.deepEqual(room.packagesOf(SERVER).map(p => p.name), ['pytest']);
-  assert.match(events(room, 'package_granted').at(-1).body, /^"Backend" granted pytest to "Server" for pytest\.$/);
-  // Its own row's: pointed to.
-  assert.equal(room.packageAsk(SERVER, {name: 'pytest'}).how, 'yours');
-  // httpx: no row holds it. Packages are allowed: it is granted as asked (never another package for its need), from the top, listed on every row of the line.
-  const http = room.packageAsk(SERVER, {name: 'httpx'});
-  assert.equal(http.how, 'granted');
-  assert.deepEqual(http.names, ['httpx']);
-  assert.equal(http.text, MESSAGES.package_granted({names: 'httpx', many: false}));
+  const calls = (m, name) => room.managerOptions(m, {kind: 'ask', worker: SERVER, need: 'an HTTP client', name}, room.managerView(m)).map(o => o.call);
+  // A manager grants what its row holds, or asks one level up; only the top of the line may grant a name no row holds.
+  assert.deepEqual(calls(BACKEND, 'httpx'), ['grant(pytest)', 'ask_parent(need)']);
+  const installing = room.compileRows().filter(r => r.install).map(r => `grant(httpx, ${r.name})`);
+  assert.ok(installing.length >= 2, installing.join());
+  assert.deepEqual(calls(TOP, 'httpx'), ['grant(pytest)', 'grant(requests)', ...installing, 'ask_parent(need)']);
+  assert.deepEqual(calls(TOP, 'requests'), ['grant(pytest)', 'grant(requests)', 'ask_parent(need)'], 'a name its row holds is granted as held');
+  // The top's grant of a new name: listed on every row of the line, the top's too; the box installs it.
+  const ask = {worker: SERVER, key: 'fn httpx', need: 'an HTTP client', name: 'httpx', request_id: 'r1'};
+  await room.grantPackage(TOP, ask, {name: 'httpx', language: 'python'}, {fresh: true});
   for (const row of [TOP, BACKEND, SERVER]) assert.ok(room.packagesOf(row).some(p => p.name === 'httpx' && p.language === 'python'), row);
-  assert.match(events(room, 'package_granted').at(-1).body, /^"Root objective" granted httpx to "Server" for httpx\.$/);
-  // The compiler's box installs what a row lists beyond the image and the standard library.
+  assert.match(events(room, 'package_granted').at(-1).body, /^"Root objective" granted httpx to "Server"\.$/);
   assert.deepEqual(room.packageInstalls(SERVER), [{toolchain: 'python', packages: ['httpx']}]);
   assert.deepEqual(room.packageInstalls(TOP), [{toolchain: 'python', packages: ['requests', 'httpx']}]);
-  // The language's standard library: named as part of it, never granted.
-  const socket = room.packageAsk(SERVER, {name: 'socket'});
-  assert.deepEqual([socket.how, socket.text], ['language', MESSAGES.package_stdlib({name: 'socket'})]);
-  assert.ok(!room.packagesOf(SERVER).some(p => p.name === 'socket'));
-  // A name the rows do not know as a package's: no package answer, so the ask goes on as a contract ask.
-  assert.equal(room.packageAsk(SERVER, {name: 'parse_input'}), null);
-  assert.equal(room.askKind(SERVER, 'parse_input', 'reads the input').kind, 'contract');
+  // A manager's grant of what its row holds: listed on the rows below it, never above.
+  await room.grantPackage(BACKEND, {...ask, key: 'fn pytest', name: 'pytest'}, pytest);
+  assert.ok(room.packagesOf(SERVER).some(p => p.name === 'pytest'));
   // A worker's ask by a package's name is its manager's (its grant), never the runtime's.
   room.db().exec("UPDATE agents SET phase='implement' WHERE id=?", SERVER);
   for (const name of ['matplotlib', 'flask']) {
     assert.equal(room.askKind(SERVER, name).kind, 'contract');
     assert.equal(room.brokerAnswer(SERVER, {key: `fn ${name}`, name, question: 'the web framework'}), false);
   }
+});
+
+test('2: a package name a split gives that its parent\'s row does not list is the new piece\'s ask of its manager: no runtime walk of the line, no word list, no grant', async () => {
+  const {room} = liveRoom({});
+  room.save('settings', {...room.settings(), pipeline: 'v8'});
+  await room.provision(TOP, null, 'Root objective', TRACKER_GOAL, [], [], [{name: 'pytest', language: 'python', provides: 'tests'}], 'manager', {seq: 1});
+  const [made] = await room.spawn(TOP, [{label: 'Backend', task: 'the backend', role: 'manager', interfaces: [], packages: [], package_asks: ['flask']}], 'k-flask');
+  assert.deepEqual(room.packagesOf(made.id), [], 'nothing is granted by the runtime');
+  assert.ok(!room.packagesOf(TOP).some(p => p.name === 'flask'));
+  assert.match(events(room, 'ask_sent').at(-1).body, /^Asked for flask \(the package flask\)\.$/);
+  // The ask is the manager's to choose on (its grant, or its own ask one level up), as a worker's is.
+  const [held] = room.problemsHeld(TOP).filter(p => p.kind === 'ask');
+  assert.deepEqual([held.source, held.facts.name], [made.id, 'flask']);
 });

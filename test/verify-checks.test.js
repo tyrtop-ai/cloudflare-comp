@@ -26,8 +26,10 @@ const ROWS=JSON.parse(JSON.stringify(TOOLCHAINS));
 const hasPython=spawnSync('python3',['--version']).status===0;
 const run=async(files,plan,extra={})=>verifyChecks({mode:'checks',fingerprint:'f',snapshot_hash:await snapshotHash(files),files,toolchains:ROWS,plan,limits:{total_ms:120_000,check_ms:15_000,step_ms:4000},...extra});
 const byId=report=>Object.fromEntries(report.checks.map(c=>[c.id,c]));
-// A failure detail is one line (as the box observed it; nothing clips it).
-const short=c=>{if(process.env.SHOW_DETAILS)console.log(`[${c.id}] ${c.detail}`);assert.ok(!c.detail.includes('\n'),c.detail);};
+// A failure's detail is the whole observation, as the box observed it (owner,
+// 2026-10-16 19:41: the worker gets it whole): nothing clips or excerpts it,
+// and it names bundle paths, never the runner's folder.
+const short=c=>{if(process.env.SHOW_DETAILS)console.log(`[${c.id}] ${c.detail}`);assert.ok(!c.detail.includes(tmpdir()+'/checks-'),c.detail);assert.ok(!('output' in c)&&!('observed' in c),'the detail is the one observation');};
 
 test('file checks: exists, non-empty, has each string, parses as JSON; failures name the file',async()=>{
   const files={'README.md':'# Word count\n\nUsage: python3 wc.py < file\n','data/config.json':'{"top": 3}','bad.json':'{"top": 3,}','empty.txt':' \n'};
@@ -98,11 +100,11 @@ test('command checks: a Python CLI reads stdin, prints, exits; fixtures beside i
   const c=byId(report);
   assert.equal(report.stages.find(s=>s.name==='syntax:python')?.passed,true,JSON.stringify(report.stages));
   for(const id of ['R1','R2','R3','R6'])assert.equal(c[id].passed,true,`${id}: ${c[id].detail}`);
-  assert.equal(c.R4.detail,'python3 wc.py: printed "2", expected "3"');
-  assert.match(c.R5.detail,/^ratio\.py: exit 1, expected 0; stderr: .*ZeroDivisionError: division by zero.* \(at ratio\.py:5\)$/);
+  assert.equal(c.R4.detail,'python3 wc.py: printed "2", expected "3"\n--- stdout\n2');
+  // The whole of what it wrote: the traceback, every frame of it, as Python printed it.
+  assert.match(c.R5.detail,/^ratio\.py: exit 1, expected 0\n--- stderr\nTraceback \(most recent call last\):\n  File "ratio\.py", line 7, in <module>\n[\s\S]*  File "ratio\.py", line 5, in ratio\n[\s\S]*ZeroDivisionError: division by zero$/);
   assert.deepEqual(c.R5.frames,[{path:'ratio.py',line:5,fn:'ratio'},{path:'ratio.py',line:7,fn:'<module>'}],'the raising frame first');
-  assert.ok(!c.R5.output.includes(tmpdir()+'/checks-'),'the output names bundle paths, not the check folder');
-  assert.match(c.R7.detail,/^no-such-tool-here --x: .*(ENOENT|No such file)/,'what the box does not have, the run observes');
+  assert.match(c.R7.detail,/^no-such-tool-here --x: [\s\S]*(ENOENT|No such file)/,'what the box does not have, the run observes');
   assert.match(c.R8.detail,/timed out after 2 s/);
   assert.equal(c.R9.detail,"fixture wc.py would replace the bundle's wc.py");
   for(const x of report.checks.filter(x=>!x.passed))short(x);
@@ -211,7 +213,7 @@ test('call checks: JavaScript functions in one process, saved results read by la
   const c=byId(report);
   assert.equal(c.R1.passed,true,c.R1.detail);
   assert.equal(c.R2.passed,true,c.R2.detail);
-  assert.match(c.R3.detail,/^toggle\(99\) in components\/todos\/todos\.mjs raised Error: no todo 99 \(at components\/todos\/todos\.mjs:11\)$/);
+  assert.equal(c.R3.detail,'toggle(99) in components/todos/todos.mjs raised Error: no todo 99\n--- stack\nError: no todo 99\n    at toggle (components/todos/todos.mjs:11:17)');
   assert.deepEqual(c.R3.frames[0],{path:'components/todos/todos.mjs',line:11,fn:'toggle'});
   assert.equal(c.R4.detail,'components/todos/todos.mjs has no function remove (it exports: add, list, toggle)');
   assert.equal(c.R5.detail,'list() in components/todos/todos.mjs returned [{"id":1,"title":"a","done":false}], expected []');
@@ -247,7 +249,7 @@ test('call checks: Python functions keep a saved object across steps, await coro
     {id:'R5',kind:'call',adapter:'python',module:'components/counter/count.py',steps:[{call:'count_words',args:['a']}]}]},{isolation:[]});
   const c=byId(report);
   assert.equal(c.R1.passed,true,c.R1.detail);
-  assert.match(c.R2.detail,/^boom\(0\) in components\/counter\/count\.py raised ZeroDivisionError: integer division or modulo by zero \(at components\/counter\/count\.py:34\)$/);
+  assert.match(c.R2.detail,/^boom\(0\) in components\/counter\/count\.py raised ZeroDivisionError: integer division or modulo by zero\n--- stack\nTraceback \(most recent call last\):\n  File "components\/counter\/count\.py", line 30, in boom\n    return helper\(x\)\n  File "components\/counter\/count\.py", line 34, in helper\n[\s\S]*ZeroDivisionError: integer division or modulo by zero$/,'the whole traceback, without the adapter\'s frames');
   assert.deepEqual(c.R2.frames,[{path:'components/counter/count.py',line:34,fn:'helper'},{path:'components/counter/count.py',line:30,fn:'boom'}],'the raising frame first; the adapter\'s own frames are left out');
   assert.equal(c.R3.detail,'add_words("$c", "x y") in components/counter/count.py returned 2, expected 3');
   assert.match(c.R4.detail,/^components\/counter\/broken\.py does not load: SyntaxError: /);
@@ -316,11 +318,11 @@ test('http checks: a Node server deliverable started with PORT, polled until rea
       {id:'R3',kind:'http',serve:'api',steps:[{method:'GET',path:'/crash',expect:{status:200}}]}]},{isolation:[]});
   const c=byId(report);
   assert.equal(c.R1.passed,true,c.R1.detail);
-  assert.equal(c.R2.detail,'step 1 POST /todos: status 400, expected 201');
-  assert.match(c.R3.detail,/^step 1 GET \/crash: no answer: .* \(at server\.mjs:20\)$/);
-  assert.match(c.R3.output,/TypeError: Cannot read properties of undefined/);
-  assert.match(c.R4.detail,/^run down: node broken-server\.mjs exited \(code 1\) before it answered GET \/: .*nowhere\.mjs/);
-  assert.equal(c.R5.detail,'step 1 GET /todos/1: the JSON lacks {"done":true}; it was {"id":1,"title":"Buy milk","done":false}');
+  assert.equal(c.R2.detail,'step 1 POST /todos: status 400, expected 201\n--- response\n{"error":"title is required"}');
+  assert.match(c.R3.detail,/^step 1 GET \/crash: no answer: .*\n--- server output\n[\s\S]*server\.mjs:20[\s\S]*TypeError: Cannot read properties of undefined/);
+  assert.deepEqual(c.R3.frames[0],{path:'server.mjs',line:20,fn:c.R3.frames[0].fn});
+  assert.match(c.R4.detail,/^run down: node broken-server\.mjs exited \(code 1\) before it answered GET \/\n--- output\n[\s\S]*nowhere\.mjs/);
+  assert.equal(c.R5.detail,'step 1 GET /todos/1: the JSON lacks {"done":true}\n--- response\n{"id":1,"title":"Buy milk","done":false}');
   assert.equal(report.stages.find(s=>s.name==='runs').passed,false);
   assert.equal(report.stages.at(-1).name,'stop');
   for(const x of report.checks.filter(x=>!x.passed))short(x);
@@ -380,26 +382,25 @@ test('browser checks: a static todo page served from the bundle, driven by label
     {id:'R4',kind:'browser',serve:'web',steps:[{goto:'/oops.html'},{click:{role:'button',name:'Go'}},{expect_text:'done'}]},
     {id:'R5',kind:'browser',serve:'web',steps:[{goto:'/missing.html'}]}]},{limits:{total_ms:120_000,check_ms:15_000,step_ms:1500},isolation:[]});
   const c=byId(report);
-  assert.equal(c.R1.passed,true,c.R1.detail+'\n'+c.R1.output);
+  assert.equal(c.R1.passed,true,c.R1.detail);
   assert.equal(c.R2.passed,true,'a fresh context: R1\'s localStorage is gone');
-  assert.match(c.R3.detail,/^step 2 \(expect_text "ready"\): the page never showed "ready" within 1500 ms; blocked non-served request https:\/\/cdn\.example\.com\/lib\.js$/);
-  assert.match(c.R3.output,/blocked: https:\/\/cdn\.example\.com\/lib\.js/);
-  assert.match(c.R4.detail,/^step 3 \(expect_text "done"\): the page never showed "done" within 1500 ms; page error: TypeError: Cannot read properties of null.* \(at oops\.js:3\)$/);
+  // The whole observation: the page's text, every console error and blocked request (the static server is the runner's: no output of its own).
+  assert.match(c.R3.detail,/^step 2 \(expect_text "ready"\): the page never showed "ready" within 1500 ms; blocked non-served request https:\/\/cdn\.example\.com\/lib\.js\n--- page text\nLoading…\n--- console errors\n[\s\S]*blocked: https:\/\/cdn\.example\.com\/lib\.js$/);
+  assert.match(c.R4.detail,/^step 3 \(expect_text "done"\): the page never showed "done" within 1500 ms; page error: TypeError: Cannot read properties of null[^\n]*\n--- page text\nGo\n--- console errors\nTypeError: Cannot read properties of null/);
   assert.deepEqual(c.R4.frames[0],{path:'oops.js',line:3,fn:'explode'});
-  assert.match(c.R4.output,/--- page text\nGo/);
-  assert.match(c.R5.detail,/^step 1 \(goto "\/missing\.html"\): \/missing\.html answered HTTP 404$/);
+  assert.match(c.R5.detail,/^step 1 \(goto "\/missing\.html"\): \/missing\.html answered HTTP 404\n--- page text\n/);
   assert.ok(report.inventory.chromium,'the Chromium version is recorded');
   for(const x of report.checks.filter(x=>!x.passed))short(x);
 });
 
 // v8 live 2: the to-do page had <input id="task-input" placeholder="Add a new
-// task"> and no label, the tracker <input id="title" placeholder="Title">;
-// both checks began with fill (no goto) and timed out on `fill {label}`.
-// Locators are semantic and strict (live 2 review): an exact label or
-// aria-label, an exact placeholder, a name or id whose words are the label's,
-// then a unique whole-word part; a click only among its role's elements; a
-// check opens "/" first. A miss lists what the page offers, as its interface
-// (labels, placeholders, names, texts); several partial matches are named.
+// task"> and no label, the tracker <input id="title" placeholder="Title">.
+// Owner 2026-10-16 20:38: each step runs exactly as the splitter wrote it,
+// with no matching of the runtime's: a target is every field it gives, each
+// exactly as written (Playwright's getByLabel, getByPlaceholder, getByRole
+// and getByText, exact; name alone, the name attribute), the first shown
+// match acted on; no role aliases, no word or part matching, no goto put
+// first. A miss lists what the page offers.
 const LIVE_TODO=`<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8" /><title>To-Do List</title><link rel="stylesheet" href="styles.css" /></head>
 <body><div class="todo-container"><h1>To-Do List</h1>
@@ -431,38 +432,36 @@ const PROBES={
   'price.html':`<!doctype html><html><body><input aria-label="Price excluding tax" id=a><button onclick="document.body.append('Total '+a.value)">Calc</button></body></html>`,
   'attr.html':`<!doctype html><html><body><input id="last-name"><input id="first-name"><button onclick="document.body.append('Hello '+document.getElementById('last-name').value)">Go</button></body></html>`};
 
-test('browser checks (live 2): fields by exact label or aria-label, placeholder, name or id words, or a unique whole-word part; buttons by their role; a miss or several partial matches list the page\'s fields and buttons',{skip:browserReady||false},async()=>{
+test('browser checks: each step runs exactly as written: a field by its exact label, placeholder, ARIA role and name, or name attribute; no alias, part or word match, and no goto put first; a miss lists the page\'s fields and buttons',{skip:browserReady||false},async()=>{
   const files={'index.html':LIVE_TODO,'styles.css':'body{margin:0}\n','tracker.html':LIVE_TRACKER,'shapes.html':SHAPES,'one.html':ONE,'two.html':TWO,...PROBES};
   const report=await run(files,{runs:[{id:'serve',static:true}],checks:[
-    {id:'T1',kind:'browser',serve:'serve',steps:[{fill:{label:'Task',text:'Sample task'}},{click:{role:'button',name:'Add'}},{expect_text:'Sample task'}]},
-    {id:'T2',kind:'browser',serve:'serve',steps:[{goto:'/tracker.html'},{fill:{label:'Title',text:'Test Ticket'}},{fill:{label:'Description',text:'Test description'}},{click:{role:'button',name:'create'}},{expect_text:'Test Ticket: Test description'}]},
-    {id:'T3',kind:'browser',serve:'serve',steps:[{goto:'/shapes.html'},{fill:{label:'Task title',text:'Walk'}},{fill:{label:'due date',text:'Friday'}},{click:{text:'Save'}},{expect_text:'saved Walk by Friday'}]},
-    {id:'T5',kind:'browser',serve:'serve',steps:[{goto:'/two.html'},{fill:{label:'Email',text:'a@b.example'}}]},
-    {id:'T6',kind:'browser',serve:'serve',steps:[{goto:'/two.html'},{click:{role:'button',name:'Submit'}}]},
-    // No fallback to the only field, to text that is no button, or to a name or id that merely holds the label's word.
-    {id:'ONLY_FIELD',kind:'browser',serve:'serve',steps:[{goto:'/name.html'},{fill:{label:'Email',text:'ada@example.com'}}]},
-    {id:'ONE_UNLABELLED',kind:'browser',serve:'serve',steps:[{goto:'/one.html'},{fill:{label:'Search',text:'kiwi'}}]},
-    {id:'NO_BUTTON',kind:'browser',serve:'serve',steps:[{goto:'/nobutton.html'},{click:{role:'button',name:'Save'}}]},
-    {id:'ATTR_WORDS',kind:'browser',serve:'serve',steps:[{goto:'/attr.html'},{fill:{label:'Name',text:'Ada'}}]},
-    // Exact first: "Delete" over "Delete all", "Name" over "Username"; a unique whole-word part when no exact one exists.
+    // As written, on the page as it is.
+    {id:'T1',kind:'browser',serve:'serve',steps:[{goto:'/'},{fill:{placeholder:'Add a new task',text:'Sample task'}},{click:{role:'button',name:'Add'}},{expect_text:'Sample task'},{expect_count:{role:'listitem',n:1}}]},
+    {id:'T2',kind:'browser',serve:'serve',steps:[{goto:'/tracker.html'},{fill:{placeholder:'Title',text:'Test Ticket'}},{fill:{placeholder:'Description',text:'Test description'}},{click:{role:'button',name:'Create Ticket'}},{expect_text:'Test Ticket: Test description'}]},
+    {id:'T3',kind:'browser',serve:'serve',steps:[{goto:'/shapes.html'},{fill:{name:'taskTitle',text:'Walk'}},{fill:{label:'Due date for the task',text:'Friday'}},{click:{text:'Save changes'}},{expect_text:'saved Walk by Friday'}]},
+    {id:'BOTH',kind:'browser',serve:'serve',steps:[{goto:'/user.html'},{fill:{role:'textbox',name:'Name',label:'Name',text:'Ada'}},{click:{role:'button',name:'Go'}},{expect_text:'Hi Ada'}]},
+    // The first of the exact matches: "Delete", never "Delete all".
     {id:'DELETE_ONE',kind:'browser',serve:'serve',steps:[{goto:'/del.html'},{click:{role:'button',name:'Delete'}},{expect_no_text:'eggs'},{expect_text:'milk'}]},
-    {id:'DELETE_ALL_ONLY',kind:'browser',serve:'serve',steps:[{goto:'/delall.html'},{click:{role:'button',name:'delete'}},{expect_no_text:'milk'}]},
     {id:'NAME_EXACT',kind:'browser',serve:'serve',steps:[{goto:'/user.html'},{fill:{label:'Name',text:'Ada'}},{click:{role:'button',name:'Go'}},{expect_text:'Hi Ada'}]},
-    {id:'ARIA_PART',kind:'browser',serve:'serve',steps:[{goto:'/price.html'},{fill:{label:'Price',text:'10'}},{click:{text:'Calc'}},{expect_text:'Total 10'}]},
-    // Several fields hold the label only in part: the step fails, naming them.
-    {id:'AMBIGUOUS',kind:'browser',serve:'serve',steps:[{goto:'/names.html'},{fill:{label:'Name',text:'Ada'}}]}]},{limits:{total_ms:120_000,check_ms:15_000,step_ms:1500},isolation:[]});
+    // No goto put first: the browser starts on a blank page.
+    {id:'NO_GOTO',kind:'browser',serve:'serve',steps:[{fill:{placeholder:'Add a new task',text:'Sample task'}}]},
+    // No reinterpretation: a label is no placeholder, case and whole names count, a role is the ARIA role as written.
+    {id:'LABEL_NOT_PLACEHOLDER',kind:'browser',serve:'serve',steps:[{goto:'/tracker.html'},{fill:{label:'Title',text:'x'}}]},
+    {id:'CASE',kind:'browser',serve:'serve',steps:[{goto:'/delall.html'},{click:{role:'button',name:'delete all'}}]},
+    {id:'PART',kind:'browser',serve:'serve',steps:[{goto:'/price.html'},{fill:{label:'Price',text:'10'}}]},
+    {id:'PART_NAMES',kind:'browser',serve:'serve',steps:[{goto:'/names.html'},{fill:{label:'Name',text:'Ada'}}]},
+    {id:'ID_WORDS',kind:'browser',serve:'serve',steps:[{goto:'/attr.html'},{fill:{label:'Last name',text:'Ada'}}]},
+    {id:'ALIAS',kind:'browser',serve:'serve',steps:[{goto:'/'},{click:{role:'btn',name:'Add'}}]},
+    {id:'TEXT_NOT_BUTTON',kind:'browser',serve:'serve',steps:[{goto:'/nobutton.html'},{click:{role:'button',name:'Saved'}}]},
+    {id:'T5',kind:'browser',serve:'serve',steps:[{goto:'/two.html'},{fill:{label:'Email',text:'a@b.example'}}]}]},{limits:{total_ms:120_000,check_ms:15_000,step_ms:1500},isolation:[]});
   const c=byId(report);
-  for(const id of ['T1','T2','T3','DELETE_ONE','DELETE_ALL_ONLY','NAME_EXACT','ARIA_PART'])assert.equal(c[id].passed,true,`${id}: ${c[id].detail}\n${c[id].output}`);
-  for(const id of ['T5','T6','ONLY_FIELD','ONE_UNLABELLED','NO_BUTTON','ATTR_WORDS','AMBIGUOUS'])assert.equal(c[id].passed,false,id);
-  // A miss names the field it looked for and what the page offers, which a worker may read.
-  assert.match(c.T5.detail,/^step 2 \(fill the field labelled "Email" with "a@b\.example"\): no field labelled "Email" on the page; fields found: label "Name" name "a", placeholder "Phone" name "b"; buttons and links found: "Send", "Help"$/);
-  assert.equal(c.T5.observed.miss,true);
-  assert.deepEqual(c.T5.observed.offers,{fields:[{label:'Name',placeholder:'',name:'a'},{label:'',placeholder:'Phone',name:'b'}],buttons:[{role:'button',text:'Send'},{role:'link',text:'Help'}]});
-  assert.match(c.T6.detail,/^step 2 \(click the button "Submit"\): no button "Submit" on the page; fields found: /);
-  assert.match(c.NO_BUTTON.detail,/no button "Save" on the page/);
-  assert.match(c.ATTR_WORDS.detail,/no field labelled "Name" on the page; fields found: name "last-name", name "first-name"/);
-  assert.match(c.AMBIGUOUS.detail,/^step 2 \(fill the field labelled "Name" with "Ada"\): 2 fields match "Name" only in part: label "First name" name "f", label "Last name" name "l"/);
-  assert.deepEqual(c.AMBIGUOUS.observed.ambiguous,['label "First name" name "f"','label "Last name" name "l"']);
+  for(const id of ['T1','T2','T3','BOTH','DELETE_ONE','NAME_EXACT'])assert.equal(c[id].passed,true,`${id}: ${c[id].detail}`);
+  for(const id of ['NO_GOTO','LABEL_NOT_PLACEHOLDER','CASE','PART','PART_NAMES','ID_WORDS','ALIAS','TEXT_NOT_BUTTON','T5'])assert.equal(c[id].passed,false,id);
+  assert.match(c.NO_GOTO.detail,/^step 1 \(fill the element with placeholder "Add a new task" with "Sample task"\): no element with placeholder "Add a new task" on the page; fields found: none; buttons and links found: none/);
+  // A miss names the target as written and what the page offers, which a worker may read.
+  assert.match(c.T5.detail,/^step 2 \(fill the element with label "Email" with "a@b\.example"\): no element with label "Email" on the page; fields found: label "Name" name "a", placeholder "Phone" name "b"; buttons and links found: "Send", "Help"\n/);
+  assert.match(c.CASE.detail,/no element with role "button" named "delete all" on the page; fields found: none; buttons and links found: "Delete all"/);
+  assert.match(c.ID_WORDS.detail,/no element with label "Last name" on the page; fields found: name "last-name", name "first-name"/);
   for(const x of report.checks.filter(x=>!x.passed))short(x);
 });
 
@@ -557,7 +556,7 @@ test('forgery: a module that patches the adapter\'s globals or walks its frames,
   const steps=[{call:'add',args:[2,3],expect:5}];
   const report=await run(files,{checks:[{id:'R1',kind:'call',module:'patch.js',steps},{id:'R2',kind:'call',module:'walk.py',steps},{id:'R3',kind:'call',module:'early.mjs',steps}]},{isolation:[]});
   const c=byId(report);
-  assert.equal(c.R1.detail,'add(2, 3) in patch.js raised Error: not implemented (at patch.js:3)');
+  assert.equal(c.R1.detail,'add(2, 3) in patch.js raised Error: not implemented\n--- stack\nError: not implemented\n    at add (patch.js:3:31)');
   assert.match(c.R2.detail,/^walk\.py does not load: AttributeError: 'NoneType' object has no attribute 'f_locals'/);
   assert.match(c.R3.detail,/^the process ended before add\(2, 3\) in early\.mjs returned \(exit 0\)/);
 });
@@ -568,13 +567,13 @@ test('error cases and redaction: stderr_has without exit wants a failure exit; d
   const report=await run(files,{checks:[{id:'R1',kind:'command',run:'cli.py x',expect:{stderr_has:['usage']}},{id:'R2',kind:'command',run:'cwd.py'},
     {id:'R3',kind:'call',module:'m.py',steps:[{call:'f',args:[0],expect:1}]},{id:'R4',kind:'call',module:'bad.py',steps:[{call:'f',args:[]}]}]},{isolation:[]});
   const c=byId(report);
-  assert.equal(c.R1.detail,'cli.py x: exit 0, expected a failure exit (non-zero)');
-  assert.equal(c.R2.detail,'cwd.py: exit 3, expected 0; stderr: . tmp');
+  assert.equal(c.R1.detail,'cli.py x: exit 0, expected a failure exit (non-zero)\n--- stderr\nusage: cli.py N');
+  assert.equal(c.R2.detail,'cwd.py: exit 3, expected 0\n--- stderr\n. tmp');
   for(const x of report.checks) {
-    assert.ok(!(x.detail+x.output).includes(tmpdir()+'/checks-'),`${x.id} names the runner's folder: ${x.detail} ${x.output}`);
-    assert.ok(!/adapters\/call\.|importlib/.test(x.output),`${x.id} shows runner frames: ${x.output}`);
+    assert.ok(!x.detail.includes(tmpdir()+'/checks-'),`${x.id} names the runner's folder: ${x.detail}`);
+    assert.ok(!/adapters\/call\.|importlib/.test(x.detail),`${x.id} shows runner frames: ${x.detail}`);
   }
-  assert.match(c.R3.output,/File "m\.py", line 2, in f/);
+  assert.match(c.R3.detail,/File "m\.py", line 2, in f/);
 });
 
 test('resource limits: where prlimit runs, a check cannot write a file past 64 MB, and the report records the limits',{skip:!hasPython&&'python3 is not installed'},async t=>{
@@ -590,8 +589,7 @@ test('project checks run first as commands that must exit 0; the time budget mar
   const c=byId(report);
   assert.deepEqual(report.checks.map(x=>x.id),['P1','P2','R1']);
   assert.equal(c.P1.passed,true);
-  assert.equal(c.P2.detail,'python3 fail.py: exit 1, expected 0');
-  assert.match(c.P2.output,/1 failed, 2 passed/);
+  assert.equal(c.P2.detail,'python3 fail.py: exit 1, expected 0\n--- stdout\n1 failed, 2 passed');
   assert.equal(report.stages.find(s=>s.name==='project').passed,false);
   const late=await run({'a.py':'import time\ntime.sleep(5)\n'},{checks:[{id:'R1',kind:'command',run:'a.py'},{id:'R2',kind:'command',run:'a.py'}]},{limits:{total_ms:1000,check_ms:60_000},isolation:[]});
   assert.match(byId(late).R1.detail,/timed out/);
@@ -609,6 +607,25 @@ test('any code type: a bundle file no row runs runs by its #! line; a command is
   assert.equal(c.R2.passed,true,c.R2.detail);
   assert.equal(c.R3.passed,false,'a file with no #! line does not start, as observed');
   assert.match(c.R3.detail,/^notes\.txt: /);
+});
+
+const hasGcc=spawnSync('gcc',['--version']).status===0;
+test('any code type: a compiled language\'s file runs by its row\'s run_file, built in the check\'s own folder',{skip:!hasGcc&&'gcc is not installed'},async()=>{
+  const {COMPILE_ROWS}=await import('../src/toolchains.js');
+  const files={'hello.c':'#include <stdio.h>\nint main(int argc, char **argv) { printf("hello %s\\n", argc > 1 ? argv[1] : "nobody"); return 0; }\n'};
+  const c=byId(await run(files,{checks:[{id:'R1',kind:'command',run:'hello.c box',expect:{stdout:'hello box'}}]},{toolchains:[...ROWS,...JSON.parse(JSON.stringify(COMPILE_ROWS))],isolation:[]}));
+  assert.equal(c.R1.passed,true,c.R1.detail);
+});
+
+// Owner 2026-10-17 00:25 (on invented caps: "I don't understand the need"): a v8 box holds the whole bundle.
+test('the box holds the whole bundle: no file count or size of its own',async()=>{
+  const {validateBoxFiles}=await import('../src/build-verification.js');
+  const files=Object.fromEntries(Array.from({length:1700},(_,i)=>[`f/${i}.txt`,`${i}\n`]));
+  files['big.txt']='x'.repeat(5*1024*1024);
+  assert.equal(validateBoxFiles(files).size,1701);
+  assert.throws(()=>validateBoxFiles({'../out.txt':'x'}),/Unsafe build path/);
+  const report=await run(files,{checks:[{id:'R1',kind:'file',path:'big.txt',has:['xxx']},{id:'R2',kind:'file',path:'f/1699.txt',has:['1699']}]},{isolation:[]});
+  assert.deepEqual(report.checks.map(c=>[c.id,c.passed]),[['R1',true],['R2',true]]);
 });
 
 test('install: the box installs the packages a plan lists, by the row\'s install command, into one read-only tree its checks find; a failed install is observed',{skip:!hasPython&&'python3 is not installed'},async()=>{
@@ -629,6 +646,9 @@ test('install: the box installs the packages a plan lists, by the row\'s install
   assert.equal(failed.installed[0].passed,false);
   assert.match(failed.installed[0].detail,/^exit 1: no such package: fakepkg$/);
   assert.match(byId(failed).R1.detail,/ModuleNotFoundError: No module named 'fakepkg'/,'the checks run on, and say what they saw');
+  // A language whose row has no install command: the box reports it, as observed.
+  const none=await run(files,{install:[{toolchain:'python',packages:['fakepkg']}],checks:[]},{toolchains:[{...fake,install:undefined}],isolation:[]});
+  assert.deepEqual(none.installed,[{toolchain:'python',packages:['fakepkg'],passed:false,detail:'no install command for python'}]);
 });
 
 test('helpers: words, commands from the rows, json_has, limits',()=>{

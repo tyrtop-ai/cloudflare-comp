@@ -326,7 +326,7 @@ test('norow: the base\'s TypeScript and shell scripts are compiled by their rows
 });
 
 // Owner 2026-10-16 05:30: "the room should be able to tell when its done by observing the final compiler. That's it": no hold for the person.
-test('norow: TypeScript and shell that compile complete the run, each compiled in its mode; code no row compiles holds nothing, and the export names it as observed', {skip}, async () => {
+test('norow: TypeScript and shell that compile complete the run, each compiled in its mode; a file no row describes ships as a file like any other', {skip}, async () => {
   const base = {'tools/fix.ts': 'const x: number = 1;\nexport function f(a: string): string { return a; }\nconsole.log(x);\n', 'tools/run.sh': '#!/bin/bash\na=(1 2)\necho "${a[0]}"\n', 'bin/tool': '#!/usr/bin/env python3\nprint(1)\n', 'tools/old.hs': 'main = putStrLn "1"\n'};
   const {room, boxes} = await baseToolkit(base);
   const m = room.roomManager(), top = await room.bundleFiles(m);
@@ -336,9 +336,10 @@ test('norow: TypeScript and shell that compile complete the run, each compiled i
   assert.equal(room.snapshot().pause, null, 'nothing holds for the person');
   assert.equal(room.get('status'), 'complete', tail(room));
   assert.deepEqual([...room.uncompiled(top.files)], []);
+  // Owner 2026-10-15 05:16/05:17 (no code type pinning): a file no row describes is a file like any other, never marked as code nothing compiled.
   const app = await room.appFiles();
-  assert.deepEqual(app.unchecked, ['tools/old.hs']);
-  assert.match(app.note, /; 1 of them no syntax step compiled or no box held: tools\/old\.hs\.$/);
+  assert.ok(!app.unchecked?.length, JSON.stringify(app.unchecked));
+  assert.ok(app.files.some(f => f.path === 'tools/old.hs'), 'it ships');
 });
 
 test('norow: with no box inventory yet, a run whose code waits for a compile row opens the box, which reports one; the files compile in a run of their own', async () => {

@@ -27,7 +27,7 @@ import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './ass
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, parseSource, parseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, splitImports, moduleSpecifiers, boundNames, swappedCalls, isInterfaceError } from './linker.js';
 import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, promiseText, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, pieceOps, usesText, labelWrites, testPieces, testPiecesText } from './interfaces.js';
-import { snapshotHash, validateBuildFiles, validateBoxFiles, BUILD_LIMITS, normalizeBuildResult, nextDirectChild } from './build-verification.js';
+import { snapshotHash, validateBuildFiles, validateBoxFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, failureKey, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, lowestCommon, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText, readRequirement, requirementRoute, requirementText } from './problems.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
@@ -42,8 +42,8 @@ import { placeChecks, checkEntries, installedModule, checkUses, importClosure, t
 import { zipFiles } from './zip.js';
 import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, namedIn } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
-import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer, packageAnswer } from './broker.js';
-import { normalizePackages, installedPackages, heldByName, packageLanguage, stdlibRow, piecePackages, packageLine } from './packages.js';
+import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer } from './broker.js';
+import { normalizePackages, installedPackages, stdlibRow, piecePackages, packageLine } from './packages.js';
 import { caseTwin, boxPathError } from '../container/build-path.mjs';
 import { contractExamples, checkSummary, checkExamples, renderExample } from './validations.js';
 import { splitLevel } from './splitter.js';
@@ -1675,8 +1675,8 @@ export class ControlRoom extends DurableObject {
       if(!child){for(const a of planned[i].answers||[])this.recordAnswer(id,a);child=await this.provision(id,parentId,planned[i].label,planned[i].task,planned[i].interfaces||[],planned[i].uses||[],planned[i].packages||[],role,{seq});this.assignRefs(id,parentId,planned[i].refs);
         // v8 live 5: the worker a manager hands its whole assignment to reads the existing project's digest its manager held.
         if(typeof planned[i].base_digest==='string')this.save(`base_digest:${id}`,planned[i].base_digest);
-        // v8 live 4: a package the split named that its parent's row does not list is the piece's ask, as a worker's would be.
-        for(const name of planned[i].package_asks||[])this.answerPackageAsk(id,{name,need:'',key:requestKey({name})});}
+        // v8 live 4: a package the split named that its parent's row does not list is the piece's ask of its manager, as a worker's is.
+        for(const name of planned[i].package_asks||[])await this.workerAsk(id,{need:`the package ${name}`,name});}
       made.push(child);
     }
     return made;
@@ -3674,24 +3674,21 @@ export class ControlRoom extends DurableObject {
   // v8 ship-verified (M1): the base's files carried untouched (never built,
   // never seen by a model) ship with the bundle of the row that holds the
   // base, so its checks run with them and its syntax step compiles them: each
-  // that is text at a path the box holds, while the box holds them all
-  // (BUILD_LIMITS), joins the files after the builder's (carried); the others are
-  // listed with why the box cannot hold them (unsent). A piece's file at the
-  // same path (or one apart from case) ships instead.
+  // that is text at a path the box holds joins the files after the
+  // builder's (carried); the others are listed with why the box cannot hold
+  // them (unsent). A piece's file at the same path (or one apart from case)
+  // ships instead.
   addCarried(bundle) {
-    const files=bundle.files,taken=new Set(files.keys()),decode=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}),size=t=>new TextEncoder().encode(String(t??'')).length;
-    let bytes=0;
-    for(const t of files.values())bytes+=size(t);
+    const files=bundle.files,taken=new Set(files.keys()),decode=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true});
     bundle.carried=new Set();bundle.unsent=[];
     for(const r of query(this.db(),'SELECT path,bytes,sha256,reason FROM base_passthrough ORDER BY path')) {
       if(caseTwin(r.path,taken))continue;
       const data=new Uint8Array(r.bytes);
       let text=null;
       try {text=decode.decode(data);} catch {}
-      const why=text===null?'it is not UTF-8 text':boxPathError(r.path)?'its path is outside the box\'s folder':
-        files.size+1>BUILD_LIMITS.files||bytes+data.length>BUILD_LIMITS.bytes?`the box holds at most ${BUILD_LIMITS.files} files and ${BUILD_LIMITS.bytes/1048576} MiB in all`:'';
+      const why=text===null?'it is not UTF-8 text':boxPathError(r.path)?'its path is outside the box\'s folder':'';
       if(why){bundle.unsent.push({path:r.path,why:`carried untouched (${r.reason||'not built'}), and ${why}`,sha256:r.sha256});continue;}
-      files.set(r.path,text);bundle.carried.add(r.path);bytes+=data.length;
+      files.set(r.path,text);bundle.carried.add(r.path);
     }
   }
   // v8 S8b (§7.1): the project's base files under every piece's, byte for
@@ -4177,8 +4174,8 @@ export class ControlRoom extends DurableObject {
   }
   // A file's syntax step, as data: the row that compiles it (codeRowOf, among
   // every row there is), with the box's command (syntax) or the Worker's own
-  // parser (native, NATIVE_SYNTAX); null for a file that is not code; {row:
-  // null, why} for code no installed row compiles. v8 M3 review 2 (M2), v8
+  // parser (native, NATIVE_SYNTAX); null for a file no row describes; {row:
+  // null, why} for code of a row the box has not installed. v8 M3 review 2 (M2), v8
   // ship-verified (M2): mode, the modes its runtimes read it in, joined by
   // '+': the one its row's runtime reads it in at its path (parseModeOf; ''
   // for a row with no parse_mode) and each a page among these files loads
@@ -4189,7 +4186,7 @@ export class ControlRoom extends DurableObject {
     if(!c&&!page)return null;
     const row=rows.find(r=>r.id===(page||c.row)?.id);
     // unconfirmed: a compile row the box's inventory has not reported on yet.
-    if(!row)return {row:null,why:c?.why||`no installed toolchain row compiles ${page?`the scripts ${path} runs`:path} (${(page||c.row).name})`,unconfirmed:!!(page||c?.row)&&!this.read('toolchain_inventory',null)};
+    if(!row)return {row:null,why:`no installed toolchain row compiles ${page?`the scripts ${path} runs`:path} (${(page||c.row).name})`,unconfirmed:!this.read('toolchain_inventory',null)};
     let mode='page';
     if(!page) {
       const own=parseModeOf(path,files,row),loads=row.page_scripts?pageModesOf(files,row).get(path):null;
@@ -6338,66 +6335,6 @@ export class ControlRoom extends DurableObject {
     this.recordAnswer(id,{key:ask.key,kind:'broker',text:viewAnswer(answer)});
     this.event(id,'broker_answer',clip(answer.status==='answered'?`${answer.name}: ${answer.kind}, ${answer.value.length} characters, labelled "${answer.label}".`:`${answer.name}: no catalogue entry; answered with the names available.`,400));
     return true;
-  }
-  // v8 live 4 (review): a package ask by name, resolved against what
-  // exists, with no side effect (applied by packageAsk). The ask goes up the
-  // asker's line (its own row, its manager's, and up): the first row holding
-  // a package by that name answers, and a row above the asker grants it. A
-  // module of the language's standard library is named as part of it.
-  // Packages are allowed (owner, 2026-10-15 22:12): a third party's name no
-  // row holds is granted from the top of the line, listed on every row down
-  // to the asker as interfaces are (22:11), and the compiler's box installs
-  // it (packageInstalls). null: the name is no package's. Its callers are a split's package names
-  // (a worker's ask goes to its manager, whose grant gives a package). {how: 'yours'|'granted'|'language', at,
-  // line, hits, names, fresh}.
-  resolvePackage(id, {name=''}={}) {
-    const rows=this.installedToolchains(),line=[];
-    for(let x=this.node(id);x;x=x.parent?this.node(x.parent):null)line.push(x);
-    if(!line.length||!name)return null;
-    // The language the name is in: the rows', else the asker's own packages' or the levels' code languages, when one.
-    const own=[...new Set(this.packagesOf(id).map(p=>p.language).filter(Boolean))],code=contractLanguages(this.treeContracts());
-    const known=packageLanguage(name,rows),lang=known||(own.length===1?own[0]:code.length===1?code[0]:'');
-    for(let i=0;i<line.length;i++) {
-      const hits=heldByName(this.packagesOf(line[i].id).filter(p=>!lang||!p.language||p.language===lang),name,rows);
-      if(hits.length)return {how:i===0?'yours':'granted',at:i,line,hits,names:hits.map(p=>p.name)};
-    }
-    if(!known)return null;
-    if(stdlibRow(name,rows.filter(r=>r.id===lang)))return {how:'language',at:-1,line,hits:[],names:[name]};
-    return {how:'granted',at:line.length-1,line,hits:[{name,language:lang}],names:[name],fresh:true};
-  }
-  // A package ask resolved (resolvePackage) and applied: a grant is added to
-  // every row between the holder and the asker (and to the holder, for a
-  // name granted fresh from the top), so a piece's packages stay a part of
-  // its parent's; each hop logs package_relayed. The answer names what
-  // exists for it. Returns {how, text, names} or null.
-  packageAsk(id, {name=''}={}) {
-    const r=this.resolvePackage(id,{name});
-    if(!r)return null;
-    const {line,at,hits}=r,asker=line[0],many=r.names.length>1,names=hits.map(packageLine).join(', ');
-    for(let i=0;i+1<line.length&&(at<0||i<at);i++)this.event(line[i+1].id,'package_relayed',clip(`"${line[i].label}" asked for ${name}, beyond its own packages; asked "${line[i+1].label}".`,400),line[i].id);
-    if(r.how==='yours')return {how:'yours',names:r.names,text:MESSAGES.package_yours({names,many})};
-    if(r.how==='granted') {
-      for(let j=r.fresh?at:at-1;j>=0;j--) {
-        const own=normalizePackages(parse(this.node(line[j].id)?.packages,[])),add=hits.filter(p=>!own.some(q=>q.name===p.name));
-        if(add.length)this.db().exec('UPDATE agents SET packages=? WHERE id=?',JSON.stringify(normalizePackages([...own,...add])),line[j].id);
-      }
-      this.event(line[at].id,'package_granted',clip(`"${line[at].label}" granted ${r.names.join(', ')} to "${asker.label}" for ${name}.`,400),asker.id);
-      return {how:'granted',names:r.names,text:MESSAGES.package_granted({names,many})};
-    }
-    return {how:'language',names:r.names,text:MESSAGES.package_stdlib({name})};
-  }
-  // A package name a split gives that its parent's row does not list:
-  // answered like a broker answer, labelled, among the worker's answers,
-  // with a message that wakes it.
-  answerPackageAsk(id, {name='', need='', key='', wake=true}={}) {
-    const a=this.packageAsk(id,{name});
-    if(!a)return null;
-    const req=brokerRequest({from:id,kind:'package',name,need});
-    const answer=packageAnswer({id:req.id,name,text:a.text});
-    if(wake)this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:broker',id,'[route:broker] '+JSON.stringify({id:req.id,key:key||requestKey({need,name}),kind:'package',status:answer.status}));
-    this.recordAnswer(id,{key:key||requestKey({need,name}),kind:'broker',text:viewAnswer(answer)});
-    this.event(id,'package_answer',clip(`${answer.name}: ${a.how==='yours'?'in its own packages':a.how==='granted'?`granted ${a.names.join(', ')}`:'part of its language'}.`,400));
-    return a;
   }
   // The answers a worker got to its asks, one per topic: a v8 worker's view
   // carries every one, whole, as its answers; a v7 turn reads the newest 8
@@ -8843,8 +8780,15 @@ export class ControlRoom extends DurableObject {
       const line=view.children.find(c=>this.within(item.worker,c.id)),seen=new Set();
       for(const c of view.children)if(c!==line)for(const k of c.contracts)if(!seen.has(k.name)){const j=seen.size;seen.add(k.name);out.push({fn:'answer',contract:k,key:`answer_${j}`,question:clefText('answer',{j}),call:`answer(${k.name})`});}
       // Each package its row holds that the asker's does not: grant gives it down the asker's line.
-      const held=new Set(this.packagesOf(item.worker).map(p=>p.name));
-      this.packageView(m).filter(p=>!held.has(p.name)).forEach((p,j)=>out.push({fn:'grant',package:p,key:`grant_${j}`,question:clefText('grant',{j}),call:`grant(${p.name})`}));
+      const held=new Set(this.packagesOf(item.worker).map(p=>p.name)),mine=this.packagesOf(m);
+      const grants=this.packageView(m).filter(p=>!held.has(p.name)).map(p=>({package:p}));
+      // At the top of the line (no manager above m), a name no row on it lists
+      // may be granted new, in each language whose box installs packages (owner,
+      // 2026-10-15 22:12: "why are packages not allowed now?"); the box installs it.
+      const [named]=normalizePackages(item.name?[item.name]:[]);
+      if(named&&!this.agentAbove(m)&&!mine.some(p=>p.name===named.name)&&!held.has(named.name))
+        for(const row of this.compileRows().filter(r=>r.install))grants.push({package:{name:named.name,language:row.id},fresh:row.name});
+      grants.forEach((g,j)=>out.push({fn:'grant',...g,key:`grant_${j}`,question:clefText('grant',{j}),call:`grant(${g.package.name}${g.fresh?`, ${g.fresh}`:''})`}));
       out.push({fn:'ask_parent',key:'ask_parent',question:CLEF.ask_parent,call:'ask_parent(need)'});
       return out;
     }
@@ -8871,7 +8815,7 @@ export class ControlRoom extends DurableObject {
       assignment:view.assignment,my_contracts:lines(view.mine),
       children:view.children.map((c,i)=>({slot:i,label:c.label,contracts:lines(c.contracts),...(item.kind==='complaint'?{wrote:wrote(c)}:{})})),
       ...(offered.length?{contracts_offered:offered.map((o,j)=>({slot:j,contract:contractLine(o.contract)}))}:{}),
-      ...(granted.length?{packages_offered:granted.map((o,j)=>({slot:j,package:packageLine(o.package)}))}:{}),
+      ...(granted.length?{packages_offered:granted.map((o,j)=>({slot:j,package:o.fresh?`${o.package.name} (a ${o.fresh} package, not yet installed: the box installs it)`:packageLine(o.package)}))}:{}),
       options:options.map(o=>o.call)};
     const what=item.kind==='ask'?`the ask for ${item.name||`"${clip(item.need,120)}"`}`:`the ${item.kind}`;
     let ps=[null];
@@ -8969,7 +8913,7 @@ export class ControlRoom extends DurableObject {
     const pick=await this.managerChoice(m,{kind:'ask',worker:ask.worker,need:ask.need,name:ask.name||''},held);
     if(!pick)return;
     if(pick.fn==='answer')return this.answerAsk(ask,pick.contract);
-    if(pick.fn==='grant')return this.grantPackage(m,ask,pick.package);
+    if(pick.fn==='grant')return this.grantPackage(m,ask,pick.package,{fresh:!!pick.fresh});
     const up=this.agentAbove(m);
     if(up) {
       this.insertProblem({...held,holder:up});
@@ -9000,11 +8944,12 @@ export class ControlRoom extends DurableObject {
   }
   // The package p that manager m's row holds, granted to the asker: it is
   // added to the packages of every row between m and the asker, so a piece's
-  // packages stay a part of its parent's, and the asker hears it.
-  async grantPackage(m, ask, p) {
+  // packages stay a part of its parent's, and the asker hears it. fresh: a
+  // package granted new at the top of the line, listed on m's row too.
+  async grantPackage(m, ask, p, {fresh=false}={}) {
     const n=this.node(ask.worker);
     if(!n||!p)return;
-    for(let x=n.id;x&&x!==m;x=this.agentAbove(x)) {
+    for(let x=n.id;x&&(x!==m||fresh);x=x===m?null:this.agentAbove(x)) {
       const own=normalizePackages(parse(this.node(x)?.packages,[]));
       if(!own.some(q=>q.name===p.name))this.db().exec('UPDATE agents SET packages=? WHERE id=?',JSON.stringify(normalizePackages([...own,p])),x);
     }

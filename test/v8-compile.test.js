@@ -161,12 +161,16 @@ test('L1 (norow): the rows as data: a compile row is installed only as the inven
   assert.deepEqual(rows({node: '22.22.0', executables: ['ruby']}), ['typescript', 'ruby']);
   assert.deepEqual(installed({node: '22.22.0', python: '3.11.2'}).map(r => r.id), ['javascript', 'python', 'text']);
   assert.deepEqual(['#!/usr/bin/env python3.11\n', '#!/usr/bin/env -S node --no-warnings\n', '#!/bin/sh -e\n', 'print(1)\n'].map(shebangOf), ['python', 'node', 'sh', '']);
-  const all = [...TOOLCHAINS, ...COMPILE_ROWS], row = (p, t = '') => { const c = codeRowOf(p, t, all); return c && (c.row?.id || `none: ${c.why}`); };
+  const all = [...TOOLCHAINS, ...COMPILE_ROWS], row = (p, t = '') => codeRowOf(p, t, all)?.row.id ?? null;
   assert.equal(row('bin/tool', '#!/usr/bin/env node\nconsole.log(1)\n'), 'javascript');
-  assert.equal(row('run.sh', '#!/bin/zsh\necho 1\n'), 'none: its #! line names zsh, which no toolchain row compiles');
+  // Owner 2026-10-15 05:16/05:17 ("Any code type", no "code type pinning"): code no row describes is a file like any other, never code the runtime marks as uncompilable.
+  assert.equal(row('run.sh', '#!/bin/zsh\necho 1\n'), null, 'a #! line its row\'s shebang does not name: not that row\'s language');
+  assert.equal(row('bin/tool', '#!/usr/bin/env perl\nprint 1;\n'), null);
   assert.deepEqual(['main.go', 'lib.rs', 'a.c', 'a.h', 'a.cpp', 'App.java', 'x.rb', 'x.php'].map(p => row(p)), ['go', 'rust', 'c', 'c', 'cpp', 'java', 'ruby', 'php']);
   assert.equal(row('bin/tool', '#!/usr/bin/env ruby\nputs 1\n'), 'ruby');
-  assert.equal(row('Main.hs'), 'none: no toolchain row compiles .hs files');
+  for (const p of ['Main.hs', 'App.kt', 'Program.cs', 'main.swift', 'App.tsx', 'App.jsx']) assert.equal(row(p), null, p);
+  // Each compiled language runs a file of it (run_file).
+  for (const id of ['go', 'rust', 'c', 'cpp', 'java', 'ruby', 'php']) assert.ok(COMPILE_ROWS.find(r => r.id === id).run_file, id);
   assert.equal(row('notes/README'), null);
   assert.equal(row('README.md', '# x\n'), null);
 });
