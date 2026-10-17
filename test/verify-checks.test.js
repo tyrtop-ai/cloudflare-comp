@@ -14,7 +14,8 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {register} from 'node:module';
 // A timeout reports the real time it took: at least the limit, a little more on a loaded machine.
-const timedOut=(detail,prefix,limit)=>{const m=new RegExp('^'+prefix.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'timed out after (\\d+(?:\\.\\d+)?) s$').exec(detail);assert.ok(m&&Number(m[1])>=limit&&Number(m[1])<limit+5,`${detail}: a timeout of about ${limit} s`);};
+// A timeout as the box reports it, with the processes it left behind when it left any.
+const timedOut=(detail,prefix,limit)=>{const m=new RegExp('^'+prefix.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'timed out after (\\d+(?:\\.\\d+)?) s(?:; \\d+ process\\(es\\) it left behind were killed)?$').exec(detail);assert.ok(m&&Number(m[1])>=limit&&Number(m[1])<limit+5,`${detail}: a timeout of about ${limit} s`);};
 process.env.BUILD_RUNNER_WORKDIR=tmpdir();
 register('./cloudflare-loader.mjs',import.meta.url);
 if(!process.env.PLAYWRIGHT_BROWSERS_PATH&&existsSync('/opt/pw-browsers'))process.env.PLAYWRIGHT_BROWSERS_PATH='/opt/pw-browsers';
