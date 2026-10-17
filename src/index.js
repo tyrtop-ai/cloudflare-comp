@@ -39,7 +39,7 @@ import { inheritServes, otherName, kindOf as contractKind, contractLine, gateLin
 import { branchDirectory, packageDirectory, packagePath, partsRoot, PARTS_ROOT } from './assembly.js';
 import { placeChecks, checkUses, textHash } from './piece.js';
 import { zipFiles } from './zip.js';
-import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, namedIn, existingFiles, baseFileRead } from './room-inputs.js';
+import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, namedIn, existingFiles, baseFileRead } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
 import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer } from './broker.js';
 import { normalizePackages, installedPackages, stdlibRow, piecePackages, packageLine } from './packages.js';
@@ -651,8 +651,8 @@ export class ControlRoom extends DurableObject {
   sourceRows() { return query(this.db(),'SELECT id,url,final_url,title,sha256,bytes,truncated,error,status,content_type,summary,fetched_at FROM sources ORDER BY CAST(SUBSTR(id,2) AS INTEGER)').map(r=>({...r,truncated:!!r.truncated,summary:parse(r.summary,null)})); }
   // The chunk refs a row holds (polyglot-bench §2a.4): the room's manager
   // every chunk of every source; a piece those its
-  // parent's split cited for it, never more than its parent holds
-  // (assignRefs), as with contracts. A row given none holds none.
+  // parent's splitter gave it, as it declared them (its piece function takes
+  // only refs its level holds), as with contracts. A row given none holds none.
   sourceRefs(id) { return this.node(id)?this.read(`source_refs:${id}`,null)||[]:[]; }
   // Whether a row holds the existing project (the room gives the manager it
   // creates the base and its digest, base_digest), and the digest it reads.
@@ -666,11 +666,10 @@ export class ControlRoom extends DurableObject {
   }
   heldDigest(id) { return this.holdsBase(id)?this.read(`base_digest:${id}`,null)??this.read('base',null)?.digest??null:null; }
   allRefs() { return query(this.db(),'SELECT ref FROM source_chunks ORDER BY CAST(SUBSTR(source,2) AS INTEGER),n').map(r=>r.ref); }
-  assignRefs(child, parent, raw) {
-    if(raw==null||!this.v8())return;
-    const {kept,dropped}=narrowRefs(raw,new Set(this.sourceRefs(parent)));
-    this.save(`source_refs:${child}`,kept);
-    if(kept.length||dropped.length)this.event(parent,'refs_assigned',clip(`"${this.node(child)?.label||child}" reads ${kept.length?kept.join(', '):'no source'}${dropped.length?`; not held here, so not given: ${dropped.join(', ')}`:''}.`,600),child);
+  assignRefs(child, parent, refs) {
+    if(!Array.isArray(refs)||!this.v8())return;
+    this.save(`source_refs:${child}`,refs);
+    if(refs.length)this.event(parent,'refs_assigned',clip(`"${this.node(child)?.label||child}" reads ${refs.join(', ')}.`,600),child);
   }
   // What a model reads of the sources, quoted beside SOURCE_CLAUSE: a
   // splitter the summaries of the refs it holds (and their outlines), a
@@ -8435,7 +8434,7 @@ export class ControlRoom extends DurableObject {
       ...(feedback?.reason?{previous_answer_problems:[feedback.reason],...(feedback.rejected?.length?{rejected:feedback.rejected}:{})}:{})};
     const carried=this.read(`split_carry:${id}`,null),carry=carried&&carried.key===`${kind}:${job?.key||''}`&&carried.attempt===attempt?carried:null;
     if(carry)request.declared_so_far={contracts:carry.contracts.map(({serves:_,...c})=>c),validations:carry.validations.map(v=>({id:v.id,serves:v.serves,check:v.check})),pieces:carry.pieces};
-    const out=await splitLevel(this.inferenceEnv('splitter'),request,{own,held,have,calls,rows,base:[...this.basePaths()],maxPieces:max,divide,carry,programs:this.boxPrograms(),...(typeof digest==='string'&&digest?{readBase:p=>this.readBaseFile(p)}:{})},{spend:()=>this.spendCall?this.spendCall():true});
+    const out=await splitLevel(this.inferenceEnv('splitter'),request,{own,held,have,calls,rows,base:[...this.basePaths()],maxPieces:max,divide,carry,programs:this.boxPrograms(),refs:this.sourceRefs(id),...(typeof digest==='string'&&digest?{readBase:p=>this.readBaseFile(p)}:{})},{spend:()=>this.spendCall?this.spendCall():true});
     this.db().exec('UPDATE splitters SET ended_at=?,outcome=?,output=? WHERE id=?',Date.now(),out.level?'done':out.reason,splitterRecord(out),sid);
     const l=out.level;
     this.event(id,'splitter',clip(l?`${sid} declared ${l.contracts.length} contract(s), ${l.validations.length} validation(s), ${l.pieces.length} piece(s) in ${out.rounds} round(s) and ${out.transcript.length} call(s).`:`${sid}'s session ended without done (${out.reason}) after ${out.rounds} round(s) and ${out.transcript.length} call(s).`,600));

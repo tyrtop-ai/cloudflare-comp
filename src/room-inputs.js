@@ -33,7 +33,6 @@ export const INPUT_SCHEMA = Object.freeze([
 export const CHUNK_CHARS = 6000;
 
 const clip = (v, n = 300) => String(v ?? '').slice(0, n);
-const REF = /^S([1-9]\d*)(?:#([1-9]\d*))?$/;
 const ROOM_ID = /^[a-zA-Z0-9-]{8,64}$/;
 const SHORT_REPO = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
 const utf8 = new TextEncoder();
@@ -175,20 +174,6 @@ export async function loadSources(goal, {fetch, allow, selfHosts = [], note, mor
     sha256: s.sha256 ?? null, bytes: s.bytes || 0, truncated: !!s.truncated, error: s.error ? clip(s.error, 300) : (s.text ? null : 'no text'),
     status: s.status ?? null, content_type: s.content_type ?? null, summary: summaries.find(c => c.id === s.id) || null}));
   return {rows, chunks};
-}
-
-// Refs a split gives a piece, kept to what its parent holds (the promises'
-// rule: a child gets a subset of its parent's). "S2" cites every chunk of
-// S2 its parent holds. {kept, dropped} in the order given.
-export function narrowRefs(raw, held) {
-  const have = held instanceof Set ? held : new Set(held || []), kept = [], dropped = [];
-  for (const r of Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []) {
-    const ref = String(r ?? '').trim(), m = REF.exec(ref);
-    const hits = !m ? [] : m[2] ? (have.has(ref) ? [ref] : []) : [...have].filter(x => x.startsWith(`S${m[1]}#`));
-    if (!hits.length) { if (ref) dropped.push(clip(ref, 40)); continue; }
-    for (const h of hits) if (!kept.includes(h)) kept.push(h);
-  }
-  return {kept, dropped};
 }
 
 // The project a room starts from, as its agents see it: every file of it,

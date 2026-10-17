@@ -99,7 +99,7 @@ const LEVEL = {contracts: [D.notes, D.faq, D.shout],
     has('g', 'src/shout.js', '!!'), has('h', 'src/shout.js', 'function shout'), has('i', 'src/shout.js', 'module.exports')],
   pieces: [
     {label: 'Shout keeper', task: 'Make the shout in src/shout.js louder', contracts: ['src/shout.js']},
-    {label: 'Notes writer', task: 'Write NOTES.md, notes on using the widget, from the guide', contracts: ['NOTES.md'], refs: ['S2']},
+    {label: 'Notes writer', task: 'Write NOTES.md, notes on using the widget, from the guide', contracts: ['NOTES.md'], refs: ['S2#1', 'S2#2', 'S2#3']},
     {label: 'Questions writer', task: 'Write FAQ.md, common questions about the widget', contracts: ['FAQ.md'], refs: ['S1#1']}]};
 
 test('broker: a worker reads its granted file, a chunk it holds, and the neutral answer for anything else; its own contract is answered in contract terms', async () => {

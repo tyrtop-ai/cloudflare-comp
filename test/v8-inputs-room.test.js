@@ -15,9 +15,9 @@ import {liveRoom, events, fileBlocks, levelCalls} from './helpers/room.js';
 import {lintRequests, crashAt, reopen} from './helpers/levels.js';
 import {SOURCE_CLAUSE, SOURCE_LABEL, chunkText} from '../src/fetcher.js';
 import {BASE_LABEL, MESSAGES} from '../src/prompts.js';
-import {normalizeBase, narrowRefs, keepBaseFiles, summariesFor, chunksFor, baseFromApp, loadBase, baseFileRead} from '../src/room-inputs.js';
+import {normalizeBase, keepBaseFiles, summariesFor, chunksFor, baseFromApp, loadBase, baseFileRead} from '../src/room-inputs.js';
 import {STORE_ROW_BYTES} from '../src/base.js';
-import {splitterState, splitterCall} from '../src/splitter.js';
+import {splitterState, splitterCall, levelOf} from '../src/splitter.js';
 // After helpers/room.js has registered the cloudflare: loader.
 const {default: worker} = await import('../src/index.js');
 
@@ -136,15 +136,24 @@ test('base files: every text file, whole, at any path inside the box\'s folder (
   assert.deepEqual(app.entries.map(e => [e.path, e.bytes ? [...e.bytes] : e.text]), [['.recursive/mine.md', 'm'], ['a.txt', 'a'], ['logo.png', [1, 2, 3]]]);
 });
 
-test('refs: a child keeps only refs its parent holds; a bare source id cites every held chunk of it; a splitter reads summaries cut to its refs, a worker its chunks', () => {
-  const held = new Set(['S1#1', 'S1#2', 'S1#3', 'S3#1']);
-  assert.deepEqual(narrowRefs(['S1#2', 'S9#1', 'S2#1', 'nonsense', 'S1#2'], held), {kept: ['S1#2'], dropped: ['S9#1', 'S2#1', 'nonsense']});
-  assert.deepEqual(narrowRefs(['S1'], held), {kept: ['S1#1', 'S1#2', 'S1#3'], dropped: []});
-  assert.deepEqual(narrowRefs('S3#1', held), {kept: ['S3#1'], dropped: []});
-  assert.deepEqual(narrowRefs(null, held), {kept: [], dropped: []});
-  // No count of refs: a split may cite every chunk its parent holds.
-  const many = new Set(Array.from({length: 40}, (_, i) => `S1#${i + 1}`));
-  assert.equal(narrowRefs(['S1'], many).kept.length, 40);
+// Owner 2026-10-16 20:38: "The splitter should be given interfaces and then write via those interfaces", not the runtime fixing its answer by matching.
+test('refs: piece() takes only refs its level holds, as written, and says exactly why it cannot store one; a splitter reads summaries cut to its refs, a worker its chunks', () => {
+  const held = ['S1#1', 'S1#2', 'S1#3', 'S3#1'];
+  const s = splitterState({own: [{name: 'a'}, {name: 'b'}], refs: held});
+  const put = (label, refs) => splitterCall(s, 'piece', {label, task: 't', contracts: ['a'], refs}).result;
+  for (const bad of [['S1#2', 'S9#1'], ['S1'], ['nonsense']]) {
+    const r = put('x', bad);
+    assert.match(r.error, /^refs names .*which this level does not hold: .* You hold: S1#1, S1#2, S1#3, S3#1$/, JSON.stringify(bad));
+    assert.ok(!r.error.includes('"S1#2"'), 'only the refs it does not hold are named');
+  }
+  assert.equal(s.pieces.length, 0, 'nothing is stored from a call it refused');
+  assert.match(put('x', 'S1#1').error, /refs is a list of names/);
+  assert.deepEqual(put('p1', ['S1#2', 'S3#1']), {stored: 'p1', pieces: 1});
+  // No count of refs: a piece may be given every ref its level holds; what is stored is what was declared.
+  const many = Array.from({length: 40}, (_, i) => `S1#${i + 1}`), s2 = splitterState({own: [{name: 'a'}], refs: many});
+  assert.equal(splitterCall(s2, 'piece', {label: 'all', task: 't', contracts: ['a'], refs: many}).result.stored, 'all');
+  assert.deepEqual(s2.pieces[0].refs, many);
+  assert.deepEqual(levelOf(s).pieces[0].refs, ['S1#2', 'S3#1']);
   // A splitter reads the summaries cut to its refs (a part with no note is listed all the same); a worker every chunk it holds, whole.
   const rows = [{id: 'S1', url: 'https://docs.example.com/a', title: 'A', summary: {title: 'A', summary: 'sum', outline: [{ref: 'S1#1', gist: 'g1'}, {ref: 'S1#2', gist: 'g2'}, {ref: 'S1#3'}]}},
     {id: 'S2', url: 'https://docs.example.com/b', error: 'source_refused: http 404', summary: null}];
@@ -181,8 +190,8 @@ const GUIDE_MD = '# Guide\n\n## Layout\n\nOne record per line.\n', FAQ_MD = '# F
 const LINKS_LEVEL = {contracts: DOCS,
   validations: [has('g1', 'GUIDE.md', '## Layout'), has('g2', 'GUIDE.md', '# Guide'), has('g3', 'GUIDE.md', 'One record per line'),
     has('f1', 'FAQ.md', '## Questions'), has('f2', 'FAQ.md', '# FAQ'), has('f3', 'FAQ.md', 'What is a record')],
-  pieces: [{label: 'Guide writer', task: 'Write GUIDE.md, the guide to the format', contracts: ['GUIDE.md'], refs: ['S1']},
-    {label: 'Questions writer', task: 'Write FAQ.md, the questions about the format', contracts: ['FAQ.md'], refs: ['S1#2', 'S9#1', 'S2#1']}]};
+  pieces: [{label: 'Guide writer', task: 'Write GUIDE.md, the guide to the format', contracts: ['GUIDE.md'], refs: ['S1#1', 'S1#2', 'S1#3']},
+    {label: 'Questions writer', task: 'Write FAQ.md, the questions about the format', contracts: ['FAQ.md'], refs: ['S1#2']}]};
 
 test('links in the prompt: fetched once with the owner\'s allowlist, stored and summarised, cited by the split, and each worker reads only its chunks', async () => {
   const fetch = fakeFetch({'https://docs.example.com/widget-format': () => new Response(PAGE, {headers: {'content-type': 'text/markdown; charset=utf-8'}})});
@@ -223,7 +232,8 @@ test('links in the prompt: fetched once with the owner\'s allowlist, stored and 
   const [guide, faq] = kids(room, m);
   assert.deepEqual(room.sourceRefs(guide.id), ['S1#1', 'S1#2', 'S1#3']);
   assert.deepEqual(room.sourceRefs(faq.id), ['S1#2']);
-  assert.match(events(room, 'refs_assigned').map(e => e.body).join('\n'), /"Questions writer" reads S1#2; not held here, so not given: S9#1, S2#1/);
+  // Each piece holds the refs its splitter gave it, as declared (piece() refuses a ref the level does not hold).
+  assert.match(events(room, 'refs_assigned').map(e => e.body).join('\n'), /"Questions writer" reads S1#2\./);
   // A worker reads only the chunks it holds, each whole, in its world.
   const asked = name => calls.leaf.find(u => u.prompt.deliver.some(c => c.name === name));
   const g = asked('GUIDE.md').world, q = asked('FAQ.md').world;
