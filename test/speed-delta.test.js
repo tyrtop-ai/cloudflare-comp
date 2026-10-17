@@ -143,6 +143,13 @@ test('the dashboard: one full snapshot, then deltas merged into it, every second
   assert.equal(elements.get('file-count').textContent,2);
   const merged=context.mergeDelta({agents:[agent('a')],files:[],events:[{id:1}],status:'x'},{full:false,status:'y',agents:[],files:[],events:[{id:9}],events_truncated:true});
   assert.deepEqual([merged.status,merged.events.map(e=>e.id),merged.agents.length,'full' in merged],['y',[9],1,false]);
+  // A v8 room keeps its whole history: no window of 300 events or 240 files.
+  const many=(n,f)=>Array.from({length:n},(_,i)=>f(i));
+  const v8=context.mergeDelta({events:many(300,i=>({id:i+1})),files:many(240,i=>({agent:'root',path:`f${String(i).padStart(3,'0')}`})),agents:[]},
+    {full:false,settings:{pipeline:'v8'},agents:[],events:many(5,i=>({id:301+i})),files:[{agent:'root',path:'z'}]});
+  assert.deepEqual([v8.events.length,v8.events[0].id,v8.files.length],[305,1,241]);
+  const v7=context.mergeDelta({events:many(300,i=>({id:i+1})),files:[],agents:[]},{full:false,settings:{pipeline:'v7'},agents:[],events:[{id:301}],files:[]});
+  assert.deepEqual([v7.events.length,v7.events[0].id],[300,2]);
   // Every 30th poll is a full snapshot.
   for(let i=0;i<29;i++)await context.refresh();
   assert.match(requests.at(-1),/^\/api\/state\?/);
