@@ -19,7 +19,7 @@ import { contractText, assignedPiece, fileGateError, writerPathError, deliveredF
 import { buildPathError } from '../container/build-path.mjs';
 import { toolchainById, toolchainOf, TOOLCHAINS, COMPILE_ROWS, installed as installedRows, browserProject, parseModeOf, scopeManifestOf, codeRowOf, pageScripts, pageModes } from './toolchains.js';
 // v8 S9: amendments and the prompt queue.
-import { effectiveGoal, goalView, promptText, reorderError, EFFECTIVE_GOAL_LIMIT, MAX_QUEUED, QUEUE_ON_FAIL } from './amend.js';
+import { effectiveGoal, goalView, promptText, reorderError, QUEUE_ON_FAIL } from './amend.js';
 import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS } from './checks.js';
 import { getArtifactStore } from './artifact-store.js';
 import { RETRY, MESSAGES, BASE_LABEL, CLEF, clefText } from './prompts.js';
@@ -730,7 +730,7 @@ export class ControlRoom extends DurableObject {
   async handPrompt({prompt='', task='', interfaces=[]}={}) {
     const n=Number(query(this.db(),'SELECT COUNT(*) AS n FROM prompt_handlers')[0].n)+1,id=`${HANDLER_PREFIX}${n}`;
     const create=!this.node('root');
-    this.db().exec('INSERT INTO prompt_handlers(id,kind,prompt,prompt_id,root,created_root,spawned_at,ended_at) VALUES (?,?,?,?,?,?,?,NULL)',id,'goal',clip(prompt,EFFECTIVE_GOAL_LIMIT),'','root',create?1:0,Date.now());
+    this.db().exec('INSERT INTO prompt_handlers(id,kind,prompt,prompt_id,root,created_root,spawned_at,ended_at) VALUES (?,?,?,?,?,?,?,NULL)',id,'goal',clip(prompt,8000),'','root',create?1:0,Date.now());
     try { if(create)await this.provision('root',id,'Root objective',task,interfaces,[],[]); }
     finally {
       this.db().exec('UPDATE prompt_handlers SET ended_at=? WHERE id=?',Date.now(),id);
@@ -7978,8 +7978,8 @@ export class ControlRoom extends DurableObject {
     // the splitters assign it like any other requirement. (The MOCK_AI
     // legacy fixtures run without it.)
     // v7.15.13 (run18): the requirement and Root's promise name the methods the goal states start() returns.
-    // Under v8 the goal is stored as the user wrote it.
-    const v8=this.v8(),whole=clip(goal,GOAL_LIMIT),task=this.live()&&!v8?`${whole} ${goalStartRequirement(whole)}`:v8?whole:goal;
+    // Under v8 the goal is stored as the user wrote it, whole.
+    const v8=this.v8(),whole=clip(goal,GOAL_LIMIT),task=this.live()&&!v8?`${whole} ${goalStartRequirement(whole)}`:goal;
     this.set('goal',this.live()?task:clip(goal,GOAL_LIMIT));
     // v8 S9: the goal's first revision (each change applied later adds one).
     this.db().exec('INSERT INTO goal_revisions(rev,prompt,text,effective,ts) VALUES (1,?,?,?,?)','',this.get('goal'),this.get('goal'),Date.now());
@@ -8141,10 +8141,6 @@ export class ControlRoom extends DurableObject {
     if(!this.started()||!['complete','failed','paused','running','error'].includes(this.get('status','idle')))return 'Start a run first: a change applies to a run that exists.';
     return '';
   }
-  // The goal with these changes added, against EFFECTIVE_GOAL_LIMIT.
-  goalTooLong(texts) {
-    return this.started()&&effectiveGoal(this.baseGoal(),[...this.goalChanges(),...texts]).length>EFFECTIVE_GOAL_LIMIT;
-  }
   // POST /api/prompts: one prompt at the end of the queue. A room that has
   // finished takes it at once (by the alarm), as the queue's next prompt.
   async addPrompt(raw, budget=null) {
@@ -8152,9 +8148,6 @@ export class ControlRoom extends DurableObject {
     if(t.error)return {error:t.error};
     if(this.started()&&!this.v8())return {error:'Amendments and queued prompts need a room started on the v8 pipeline.'};
     if(this.earlierRoom())return {error:EARLIER_ROOM,status:409};
-    const queued=this.promptRows("status='queued'");
-    if(queued.length>=MAX_QUEUED)return {error:`The queue holds at most ${MAX_QUEUED} prompts.`,status:409};
-    if(this.goalTooLong([...queued.map(p=>p.text),t.text]))return {error:`The goal with every queued change would pass ${EFFECTIVE_GOAL_LIMIT} characters; start a new project from this room's result instead.`,status:409};
     const id=crypto.randomUUID();
     this.db().exec("INSERT INTO prompts(id,seq,text,status,kind,budget,goal_rev,outcome,created,version) VALUES (?,?,?,'queued','queued',?,NULL,'{}',?,0)",id,this.promptSeq(true),t.text,budget,Date.now());
     this.event('system','prompt_queued',clip(`Queued: ${t.text}`,600));
@@ -8172,7 +8165,6 @@ export class ControlRoom extends DurableObject {
     if(version!==undefined&&version!==null&&Number(version)!==Number(row.version??0))return {error:'This prompt was changed since you read it; reload it and edit again.',status:409};
     const t=text===undefined?{text:row.text}:promptText(text);
     if(t.error)return {error:t.error};
-    if(this.goalTooLong(this.promptRows("status='queued'").map(p=>p.id===row.id?t.text:p.text)))return {error:`The goal with every queued change would pass ${EFFECTIVE_GOAL_LIMIT} characters; shorten the prompt.`,status:409};
     this.db().exec("UPDATE prompts SET text=?,budget=?,edited=?,version=version+1 WHERE id=? AND status='queued'",t.text,budget===undefined?row.budget:budget,Date.now(),row.id);
     return {prompt:this.promptRows('id=?',row.id)[0],...this.promptsHead()};
   }
@@ -9513,7 +9505,8 @@ export default {
       if (url.pathname==='/api/file' && request.method==='GET') return json(await stub.fileContent(url.searchParams.get('agent'),url.searchParams.get('path')));
       if (url.pathname==='/api/run' && request.method==='POST') {
         const goal=String(payload.goal||'').trim();
-        if (goal.length<8 || goal.length>GOAL_LIMIT) return json({error:`Goal must have 8–${GOAL_LIMIT} characters`},400);
+        // A v8 goal is taken as long as the person writes it; v7's keeps its limit.
+        if (payload.settings?.pipeline==='v8'?goal.length<8:goal.length<8 || goal.length>GOAL_LIMIT) return json({error:payload.settings?.pipeline==='v8'?'Goal must have at least 8 characters':`Goal must have 8–${GOAL_LIMIT} characters`},400);
         // v8 S8b: what the run starts from, and this deployment's host, which the goal's links never reach.
         const started=await stub.start(goal,normalizeTurnBudget(payload.budget??20),payload.settings||{},room,{base:payload.base??null,selfHosts:[url.host,...selfHostsOf(env)],...(Array.isArray(payload.grants)?{grants:payload.grants}:{})});
         return json(started,started.error?started.status||400:200);
