@@ -13,7 +13,7 @@ Owner, 2026-10-16: "throw out the fucking card writer. You're too attached to th
 
 ## Flow (the same at every level)
 
-1. **The room starts the run.** It creates the top manager's row: task = the prompt (the effective goal), its sources and base digest, and the installed packages. There is no card step and no handler.
+1. **The room starts the run.** It creates the top manager's row: task = the prompt (the effective goal), its sources and the base it starts from, and the installed packages. There is no card step and no handler.
 2. **Pre-grade.** One Clef call over `{assignment, contracts}`. At the top, `contracts` is empty: the top's splitter defines the level. If p ≤ `split_floor`, the runtime skips the split attempts (no proposals), and the splitter is asked only for this level's contracts and validations with no pieces.
 3. **The splitter (`splitter-<hex16>`, a short-lived step under its manager, using the manager model, since the owner calls the splitter "essentially what you're calling manager now" and says "workers are a different model") proposes, for each attempt (up to 3):**
    - `contracts`: what this level delivers. At the top these are the deliverables. Below the top, they are the manager's own contracts (given by its parent's splitter), possibly refined: a path or names chosen, examples added.
@@ -54,7 +54,7 @@ Owner, 2026-10-16: "throw out the fucking card writer. You're too attached to th
 
 ## No agent knows it is the top (owner, binding)
 
-Owner: "the top manager shouldn't even know it's a top manager. The room should be able to tell when it's done by observing the final compiler. That's it."
+Owner: "the top manager shouldn't even know it's a top manager." and "the room should be able to tell when its done by observing the final compiler. That's it"
 
 - **No top-specific behaviour in any agent or compiler.** There is no `isTop` and no `topId()` in agent logic.
   - The manager the room created is an ordinary manager whose parent is the room.
@@ -77,14 +77,14 @@ Owner: "the top manager shouldn't even know it's a top manager. The room should 
      2. The compiler's failures route (by serves, via Clef) to the part of the tree that owns that contract, which is the archived agent's manager.
      3. That manager has no live child for the contract, which is a split defect, so it goes to that manager's splitter. The splitter re-splits that level: a new piece and worker with the same contracts and validations, while the original design artifact stays as it is. Clef validates the new split like any other.
      4. The new worker writes the code, and the builder and compiler join and verify it as usual.
-   - **Status:** steps 1–2 exist today. Step 3 (the re-split when no child owns a contract) and the subtree archive do not, and they are built in this slice; (a) is only enabled together with (b).
+   - **Status:** (a) is enabled only together with (b). Steps 1–2 existed before this slice; step 3 (the re-split when no child owns a contract) and the subtree archive were built in it.
    - **Delete:** needScope's "write it yourself" answer, the end-of-line growth rule, "nobody up to Root covers it", carriersOf-based placement of asks, the uses planning, and routeFunction's growth branch. These fight this rule.
 5. **No text heuristics.** Workers see their contracts and the compiler's complaints, and the validations are their level's spec. There is nothing to hide from them.
    - Delete: the wording/value classifier (isValueText, isWording, cardScope), interface-fact masking, and "secrets" masking for ordinary validations.
    - Benchmarks need no masking: the grader runs outside the room, after it finishes.
 6. **No blocklists and no path rules.** Agents have their world: the commands that exist in their box and the files they can see. Nothing is blocked; anything else doesn't exist for them.
    - Delete: the command denylist, the shell-character rule, reserved commands, the "Interim" path rules in card.js and the file gate, and the benchmark tamper scan.
-   - What replaces them is construction: validations run in single-use, internet-off boxes; a worker's files are paths inside its own repo by the output format; the harness and the solution run in separate boxes.
+   - What replaces them is construction: validations run in single-use, internet-off boxes; a worker's files are paths inside its own repo, written through its `write_file` function; the harness and the solution run in separate boxes.
 
 ## What each ruling builds (not only what it deletes)
 
@@ -101,7 +101,7 @@ Owner: "the top manager shouldn't even know it's a top manager. The room should 
 
 ## A worker's input (owner, binding)
 
-Owner: "the workers shouldn't know about their siblings. Or about the overall project goal. It should be literally getting handed (here is your prompt, okay have fun now) after something decided it shouldn't split."
+Owner: "the workers shouldn't know about their siblings." "or about the overall project goal." "it should be literally getting handed (here is your prompt, okay have fun now) after something decided it shouldnt' split"
 
 - **What a worker gets:**
   - **The prompt it was handed.** It is written for that piece when the split was admitted, or, when nothing split, the manager's own assignment handed down whole. It holds what to deliver, under which names and paths, and the interfaces it may call by name.
@@ -111,10 +111,10 @@ Owner: "the workers shouldn't know about their siblings. Or about the overall pr
 - **What it doesn't get:** the goal, project facts, siblings or neighbour descriptions, its parent's description, other pieces' contract lines beyond the names its prompt hands it, validations, card wording, masking.
 - **Delete:** the `goal`, `project`, `neighbor_owners`, `parent` and `contracts_you_may_use` fields of view(), withContract's requirement text, v8Inputs, and the masking.
 - **The worker can't tell whether anything split** (owner: "the worker doesn't even know if it split or not"). Its prompt has the same form either way, and nothing in what it reads mentions splitting, pieces, parts, managers, siblings, a larger project or a goal.
-  - Today's texts break this. ROLE.worker says "the contracts of other parts you may use … the project facts, the goal as the limit of scope". PRINCIPLES, which every role shares, says "other parts only through their contracts", "the project facts" and "say so plainly … other part's contract". The worker-facing repair text says "Fix the cause in your part, or say plainly which other part's contract it lies in".
+  - The texts before this slice broke this. ROLE.worker said "the contracts of other parts you may use … the project facts, the goal as the limit of scope". PRINCIPLES, which every role shared, said "other parts only through their contracts", "the project facts" and "say so plainly … other part's contract". The worker-facing repair text said "Fix the cause in your part, or say plainly which other part's contract it lies in".
   - Fix: the worker's system text and every message it receives are rewritten in terms of its own prompt only: what it delivers, the names it was given to call, its files, the complaint. PRINCIPLES is split per role, so no worker-facing line describes the structure. A prompt-lint test fails on structure words in worker-facing text.
 - **Delete PRINCIPLES.** Its first line is "You are one of many agents building one project together", and every role's system prompt starts with it (`systemPrompt = PRINCIPLES + ROLE + FORMAT`). That is the opposite of the owner's rule that agents don't know other agents exist. Each role's system text is its own job and its own world only, with no shared preamble. The prompt-lint test asserts that no generative role's system text mentions other agents, parts, a project, checks written by others, or repairs reaching other owners.
-- **Examples are built from the validations** (owner: "the worker doesn't get validations. The example should be built from the validation").
+- **Examples are built from the validations** (owner: "the worker doesn't get validations." "The example sohuld be built from the validation.").
   - The worker's prompt carries examples. The runtime renders each one from a validation the splitter wrote for that contract, deterministically and without a model call: the input the validation gives and what it observes.
   - A command validation gives `python3 convert_temp.py 100 C → its output contains 212`.
   - A browser validation gives `open /create.html, fill the field labelled "Title", click the button "Create" → "Test Ticket" appears`.
@@ -126,20 +126,20 @@ Owner: "the workers shouldn't know about their siblings. Or about the overall pr
   - A contract with fewer than 3 different examples is what the splitter's `done` returns inside its own session, so the splitter adds them there. It is never padded by the runtime and never sent to a worker short.
   - Benchmark: the 3 come from the splitter's own validations of the task's prompt, as in any room.
 - **There are no "hidden tests" inside a room.** The benchmark's own tests are the grader, and the grader sits outside the system.
-  - **Today** (src/bench.js): a bench room starts from a fixed card with one deliverable and one "hidden requirement", whose check runs the benchmark's tests inside the room's compiler. A failure ends the room `benchmark_failed` without repair, and the room has no validations of its own.
-  - **Now:** a bench task room is an ordinary room. Its prompt is the task's prompt (the signature and docstring). The splitter writes that level's validations from it like any other, with 3 examples per contract, and the room iterates against its own validations only. When the room is done, the BenchRun grades the shipped bundle in the harness's own box. A failing grade goes back into the room as a complaint, until the room is done (owner, 2026-10-16 05:54: "why does it not go back? it should go back until done, just like anything else?").
+  - **Before** (src/bench.js): a bench room started from a fixed card with one deliverable and one "hidden requirement", whose check ran the benchmark's tests inside the room's compiler. A failure ended the room `benchmark_failed` without repair, and the room had no validations of its own.
+  - **Now:** a bench task room is an ordinary room. Its prompt is the task's prompt (the signature and docstring). The splitter writes that level's validations from it like any other, with 3 examples per contract, and the room iterates against its own validations only. When the room is done, the BenchRun grades the shipped bundle in the harness's own box. A failing grade goes back into the room as a complaint, until the room is done (owner, 2026-10-16 05:54: "why does it not go back?" "it should go back until done, just like anything else?").
   - **Delete:** the bench card, hidden requirements, the `hidden` flag, `benchmark_failed`, and every masking of hidden validations.
 - **The three-examples rule covers only contracts that are called or run** (owner, 2026-10-16: "only to contracts that are called or run"): functions, commands and routes. Pages, files, docs and data owe none.
 
 ## Every model works through functions (owner, 2026-10-16, binding)
 
-Owner: "every model should work that way, where the runtime should only be interfaces exposed to the models. not parsing the models output, but functions exposed to the models. for every model. For every interaction." Also: "the runtime shouldn't be enforcing any sort of process or doing any of the agents work for them. the runtime should only be exposing functions that make other agents visible or show what the workers can do."
+Owner: "every model should work that way, where the runtime should only be interfaces exposed to the models." "not parsing the models output, but functions exposed to the models. for every model. For every interaction." Also: "the runtime shouldn't be enforcing any sort of process or doing any of the agents work for them." "like the runtime should only be exposing functions that make other agents visible or show what the workers can do. That's it."
 
 - Each model works in a session of function calls (Workers AI `tools` → `tool_calls` → `tool` results). The runtime defines the functions and runs them. It never parses a model's prose or a flat answer, and never repairs, reinterprets or matches what a model wrote.
 - A function's result is all the feedback there is: it stores what was asked, or says exactly why it can't (its own argument checks), and reports what exists. A mistake is a function result inside the model's own session, not a runtime retry, a defect list or a repair.
 - What the runtime may expose: what exists in the agent's world (other agents' names and contracts it may use, its files, its packages), and what it can do (write a file, run its examples in its box, ask by name).
 - What goes: `readLevel`'s lenient reading (name resolution, twins, inferred kinds and runs, route patterns, step splitting, throws-in-expect), the splitter's defect/retry loop, the worker's file-block and control-block parsers, format fallbacks, `code_retry`, `rewriteFile`, the await fixer, the runtime's glue writer and relinking, and `linkComponents` parsing.
-- **Managers (Clef) work through functions too** (owner, 2026-10-16: "worker asks its manager (clef) where does this go, clef walks up the tree to find it, which is a function"). The runtime does not walk the tree, pick the moment, or ask Clef yes/no questions in a loop (today's `askUp`, `resolveAsk`, `routeComplaint`, `routeChange`). A manager's turn is Clef choosing among the functions it has: each available function is one of Clef's typed options, scored, and the highest is called. A walk is a chain of managers each calling `ask_parent`; the room, as the top manager's parent, archives on an ask no one above holds, then the compensating controls rebuild.
+- **Managers (Clef) work through functions too** (owner, 2026-10-16: "worker asks it manager (clef) where does it this go, clef walks up the tree to find it, which is a function"). The runtime does not walk the tree, pick the moment, or ask Clef yes/no questions in a loop (the former `askUp`, `resolveAsk`, `routeComplaint`, `routeChange`). A manager's turn is Clef choosing among the functions it has: each available function is one of Clef's typed options, scored, and the highest is called. A walk is a chain of managers each calling `ask_parent`; the room, as the top manager's parent, archives on an ask no one above holds, then the compensating controls rebuild.
 
 ### Interfaces, per role
 - **Splitter:** `contract`, `validation`, `piece`, `level`, `done`. `done` returns what the owner's rules still need (three different examples per called or run contract), or hands the level to Clef.
