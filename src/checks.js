@@ -57,8 +57,9 @@ export function callModule(check, contracts = [], files = new Map(), placed = ne
 
 // What the box is asked to run for these validations on these files, and
 // the results the Worker already knows (local: a command or function
-// contract whose file is missing; a call in a language the box has no call
-// adapter for, which is infrastructure). spec: {contracts (what the
+// contract whose file is missing; a call, stored before the splitter's
+// functions refused one, in a language the box has no call adapter for,
+// which is infrastructure). spec: {contracts (what the
 // validations run by: the command and function contracts' files, how a page
 // or route runs), validations: [{id, check}]}. rows: the installed toolchain
 // rows. placed: the bundle's placed paths (callModule, for a function
@@ -110,7 +111,10 @@ export function checkPlan(spec, files, {rows = TOOLCHAINS, placed = new Set(), c
       const {name, path, undeclared} = callModule(c, contracts, files, placed), row = path ? callRowOf(path) : null;
       const note = !path ? (undeclared ? `no file gives ${name} to a call` : `no function contract declares ${name || 'the function'}`) : !files.has(path) ? `${path}, the file of ${name}, is missing` : '';
       if (note) { local.set(v.id, {id: v.id, kind: c.kind, passed: false, detail: note, frames: [], observed: {what: 'local', note}}); continue; }
-      // A language the box has no call adapter for: the runtime cannot run the call, which is no worker's failure.
+      // A language the box has no call adapter for: the splitter's contract
+      // and call_check refuse such a function (src/validations.js uncallable),
+      // so only a call check stored before they did reaches here; the runtime
+      // cannot run it, which is no worker's failure.
       if (!row) { const why = `not run: the box has no call adapter for ${path}'s language`; local.set(v.id, {id: v.id, kind: c.kind, passed: false, infrastructure: true, detail: why, frames: [], observed: {what: 'local', note: why}}); continue; }
       if (!toolchains.some(r => r.id === row.id)) toolchains.push(row);
       checks.push({id: v.id, kind: 'call', module: path, adapter: row.id, steps: c.steps});

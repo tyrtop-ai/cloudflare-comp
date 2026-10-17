@@ -315,7 +315,8 @@ test('call checks: TypeScript, Ruby and PHP functions run through their own call
 
 // Owner 2026-10-15 05:16 ("Any code type"): Go, Rust, C, C++, Java and shell functions are called in their own language,
 // each argument built as the function's parameter type by the language's own compiler or reflection; a type the
-// language gives no way to build from JSON is the runtime's limit (infrastructure), never the file's failure.
+// language gives no way to build from JSON is what the check observed, in the compiler's words, as a failed step is (never
+// infrastructure, which the compiler would run again unchanged every turn).
 // The tool, as a check's environment runs it (rustup's rustc needs a default toolchain under the box's HOME).
 const has=cmd=>spawnSync(cmd,[cmd==='go'?'version':'--version'],{env:{PATH:process.env.PATH,HOME:'/home/builder'}}).status===0;
 const NATIVE={
@@ -363,7 +364,8 @@ for(const [id,x] of Object.entries(NATIVE))test(`call checks: a ${id} function i
   }
   if(x.unsupported) {
     const u=c[`${id}-unsupported`];
-    assert.equal(u.passed,false);assert.equal(u.infrastructure,true,u.detail);
+    // What the check observed (the compiler's words on the parameter type), as a failed step is: never infrastructure, which the compiler would run again unchanged.
+    assert.equal(u.passed,false);assert.notEqual(u.infrastructure,true,u.detail);
     assert.match(u.detail,/the call adapter cannot/);
   }
   for(const y of report.checks.filter(y=>!y.passed))short(y);

@@ -16,7 +16,7 @@ import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfa
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
-import { toolchainById, toolchainOf, TOOLCHAINS, COMPILE_ROWS, installed as installedRows, parseModeOf, scopeManifestOf, codeRowOf, pageScripts, pageModes } from './toolchains.js';
+import { toolchainById, toolchainOf, TOOLCHAINS, COMPILE_ROWS, CALL_EXTENSIONS, installed as installedRows, parseModeOf, scopeManifestOf, codeRowOf, pageScripts, pageModes } from './toolchains.js';
 // v8 S9: amendments and the prompt queue.
 import { effectiveGoal, goalView, promptText, reorderError } from './amend.js';
 import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, checkLimitsOf, DEFAULT_CHECK_SECONDS } from './checks.js';
@@ -8463,7 +8463,7 @@ export class ControlRoom extends DurableObject {
       ...(held.length?{validations_you_have:held.map(v=>({serves:v.serves,check:v.check}))}:{}),
       ...(have.length?{contracts_you_have:have.map(({serves:_,...c})=>c)}:{}),
       ...(calls.length?{contracts_you_may_call:calls.map(({serves:_,...c})=>c)}:{}),
-      box:{programs:this.boxPrograms(),toolchains:rows.map(r=>({id:r.id,extensions:r.extensions||[]}))},
+      box:{programs:this.boxPrograms(),toolchains:rows.map(r=>({id:r.id,extensions:r.extensions||[]})),calls_functions_in:CALL_EXTENSIONS},
       ...(packages.length?{your_packages:packages.map(p=>({name:p.name,...(p.provides?{provides:p.provides}:{})}))}:{}),
       ...(typeof digest==='string'&&digest?{base_note:MESSAGES.base_note(),existing_files:this.existingFiles()}:{}),
       ...this.sourceInputs(id,'summaries'),

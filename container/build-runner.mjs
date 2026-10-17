@@ -974,9 +974,8 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
             if(r.timedOut)return fail(`${call} in ${module} had not returned when ${time} ran out (after ${seconds(r.ms)})`);
             return fail(`the process ended before ${call} in ${module} returned (${exitText})`);
           }
-          if(rec.missing)return fail(redact(rec.error,box.dir,box.root));
-          // A step the adapter cannot make (a parameter type its language gives no way to build from JSON): the runtime's limit.
-          if(rec.unsupported)return fail(redact(rec.error,box.dir,box.root),'',{infrastructure:true});
+          // A name the file does not give, or a step the adapter cannot make (a parameter type the file gives it that its language has no way to build from JSON, in the compiler's words): what this check observed.
+          if(rec.missing||rec.unsupported)return fail(redact(rec.error,box.dir,box.root));
           if(s.throws===true){if(rec.ok)return fail(`${call} in ${module} returned ${show(rec.value)}, expected it to raise an error`);continue;}
           if(!rec.ok)return fail(`${call} in ${module} raised ${redact(rec.error,box.dir,box.root)}`,rec.stack);
           if(Object.hasOwn(s,'expect')&&!deepEqual(rec.value,s.expect))return fail(`${call} in ${module} returned ${show(rec.value)}, expected ${show(s.expect)}`);

@@ -398,7 +398,8 @@ test('checkPlan: command contracts run by their own path, call checks load the f
       ['add.ts','export const add = (a: number, b: number) => a + b;\n'],['up.rb','def up(s) = s.upcase\n'],['twice.php','<?php function twice($n) { return 2 * $n; }\n'],['fib.go','package main\n'],['odd.kt','fun odd() = 1\n']]),{rows:TOOLCHAINS});
   assert.deepEqual([...unreached.local.values()].map(x=>[x.id,x.passed,x.infrastructure===true,x.detail]),[
     ['U1',false,false,'gone.py, the file of gone_fn, is missing'],
-    // A language the box has no call adapter for: the runtime cannot run the call, which is no worker's failure.
+    // A language the box has no call adapter for: the splitter's contract and call_check refuse it now (test/splitter.test.js), so only a check stored before they did
+    // reaches the box's plan; the runtime cannot run it, which is no worker's failure.
     ['U8',false,true,"not run: the box has no call adapter for odd.kt's language"]]);
   // Owner 2026-10-15 05:16 ("Any code type"): a Go function is called by the box in Go.
   assert.deepEqual(unreached.plan.checks.map(c=>[c.id,c.module,c.adapter]),[['U2','words.js','javascript'],['U3','soft.py','python'],['U4','add.ts','typescript'],['U5','up.rb','ruby'],['U6','twice.php','php'],['U7','fib.go','go']]);

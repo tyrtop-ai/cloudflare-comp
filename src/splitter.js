@@ -10,7 +10,7 @@
 // assignment and the pieces as written.
 import { TOOLCHAINS, toolchainOf } from './toolchains.js';
 import { normalizeContract, kindOf, nameError, ownNameError, PLACED_KINDS, PATH_NAMED, CONTRACT_KINDS } from './contracts.js';
-import { readCheck, CHECK_FIELDS, runOf, servedRun, runsOf, unheldPath, contractExamples, checkExamples, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
+import { readCheck, uncallable, CHECK_FIELDS, runOf, servedRun, runsOf, unheldPath, contractExamples, checkExamples, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
 import { rootedPath } from '../container/build-path.mjs';
 import { session } from './session.js';
 import { systemPrompt, TOOLS, CHECK_TOOL_KINDS } from './prompts.js';
@@ -84,6 +84,8 @@ function contract(s, a) {
   if (bad) return {error: bad};
   const row = path ? toolchainOf(path) : null;
   if (row && row.id !== 'text' && !s.ids.has(row.id)) return {error: `${path} is written in ${row.id}, which the box does not run (it runs ${listed([...s.ids])})`};
+  // A function contract is known by the call checks that call it: its file is one the box has a call adapter for.
+  if (kind === 'function' && uncallable(path)) return {error: `${name} cannot be a function contract at ${path}: ${uncallable(path)}`};
   for (const k of ['does', 'outputs', 'effects']) if (a[k] !== undefined && typeof a[k] !== 'string') return {error: `${k} is a text`};
   if (a.inputs !== undefined && (!Array.isArray(a.inputs) || !a.inputs.every(x => plain(x) && typeof x.name === 'string' && x.name && (x.is === undefined || typeof x.is === 'string') && Object.keys(x).every(k => k === 'name' || k === 'is'))))
     return {error: 'inputs is a list of inputs, each with a name and what it is (is), and no other field'};
