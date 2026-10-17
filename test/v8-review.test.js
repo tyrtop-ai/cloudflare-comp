@@ -54,7 +54,7 @@ test('F4: a rebuilt worker is handed what the archived one was: its uses (the ca
   const leaf = leafOf({control: user => {
     if (!user.prompt.deliver.some(c => c.name === 'loud') || asked) return null;
     asked = true;
-    return {summary: 'need a thesaurus', wait: true, ask: [{need: 'looks up synonyms of a word online', name: 'synonyms'}]};
+    return {summary: 'need a thesaurus', wait: true, ask: [{need: 'looks up synonyms of a word online'}]};
   }});
   const r = await toolkit({leaf, clef: clefFor(undefined, {'^ask_parent$': 0.95})});
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
@@ -196,14 +196,14 @@ test('F9: Clef failing on a manager\'s choice on an ask is asked again, then the
   const leaf = leafOf({control: user => {
     if (!user.prompt.deliver.some(c => c.name === 'loud') || asked) return null;
     asked = true;
-    return {summary: 'need a thesaurus', wait: true, ask: [{need: 'looks up synonyms of a word online', name: 'synonyms'}]};
+    return {summary: 'need a thesaurus', wait: true, ask: [{need: 'looks up synonyms of a word online'}]};
   }});
   const r = await toolkit({leaf, clef: clefFor(undefined, {'^ask_parent$': () => bad ? 7 : 0.95})});
   const m = at(r.room);
   assert.equal(r.room.get('status'), 'paused', tail(r.room));
   // Louder's only child is the asker's line: ask_parent is the one function it may call, so Clef is first asked at Loud part.
   assert.deepEqual(r.room.roomHolds().map(h => [h.kind, h.agent]), [['clef_blocked', m['Loud part']]]);
-  assert.match(r.room.roomHolds()[0].text, /Clef could not answer which function answers the ask for synonyms at "Loud part": .*Nothing was decided on it; Continue asks again\./s);
+  assert.match(r.room.roomHolds()[0].text, /Clef could not answer which function answers the ask for "looks up synonyms of a word online" at "Loud part": .*Nothing was decided on it; Continue asks again\./s);
   assert.equal(events(r.room, 'clef_retry').length, 2, 'asked again twice first');
   assert.deepEqual(r.room.allNodes().filter(n => n.status === 'archived'), [], 'a failure is never read as out of scope');
   assert.deepEqual(events(r.room, 'manager_choice').map(e => e.actor), [m.Louder]);

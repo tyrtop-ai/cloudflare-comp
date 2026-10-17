@@ -228,44 +228,41 @@ test('a package granted to a worker is listed up its line, and the compiler\'s b
 });
 
 // ------------------------------------------------------------ the holds, stale results, construction
-test('a Clef error while judging is infrastructure, as observed: the room holds checks_blocked, Continue compiles again, and the room completes',async()=>{
+test('a Clef error while judging is infrastructure, as observed: nothing holds, the compiler runs the checks again at once (a turn of the budget), and the room completes',async()=>{
   let fail=1;
   const clef=input=>{if(input.questions.judge&&fail-->0)throw new Error('Clef 503 transient');return clefFor({judge:readmeJudge})(input);};
   const {room,calls,drain}=v8Room({level:README_LEVEL,clef,answers:{'README.md':[wrote('README.md',GOOD_README)]}});
   await room.start(README_GOAL,10,{pipeline:'v8'});
   await drain();
-  assert.equal(room.snapshot().pause?.kind,'checks_blocked',tail(room));
-  assert.equal(events(room,'judge_retry').length,0,'the room asks Clef no second time on its own');
-  assert.equal((await room.resume(10)).status,'running');
-  await drain();
   assert.equal(room.get('status'),'complete',tail(room));
+  assert.deepEqual(room.roomHolds(),[]);
+  assert.equal(events(room,'judge_retry').length,0,'the room asks Clef no second time on its own');
+  assert.equal(events(room,'build_infrastructure').length,1);
   assert.equal(calls.leaf.length,1);
 });
 
-test('a checks_blocked hold retries itself by the alarm (30 s, 2 min, 10 min), then waits for Continue',async()=>{
+test('checks that cannot run are run again by the compiler until it observes them, each run a turn of the room\'s budget: no retry count, no schedule, no hold; the budget ends the run, and Continue goes on',async()=>{
   const level={...TEMP_LEVEL,contracts:[{...TEMP,path:'temp.js'},USAGE],pieces:[]};
-  let down=4;
+  let down=6;
   const executor={build:async req=>{if(down-->0)throw new Error('Container is not running');return verifyChecks({...req,snapshot_hash:await snapshotHash(req.files)},{isolation:[]});}};
   const {room,ctx,drain}=v8Room({level,executor,answers:{'temp,USAGE.md':[blocks([
     {path:'temp.js',content:'function main() { console.log(String(Number(process.argv[2]) * 9 / 5 + 32)); }\nmain();\n'},{path:'USAGE.md',content:'# Usage\n\nRun `node temp.js 100` (temp.py in the Python version).\n'}])]}});
-  const alarms=[];ctx.storage.setAlarm=at=>{alarms.push(at-Date.now());};
-  await room.start(TEMP_GOAL,10,{pipeline:'v8'});
+  const alarms=[];ctx.storage.setAlarm=at=>{alarms.push(at);};
+  await room.start(TEMP_GOAL,4,{pipeline:'v8'});
   await drain();
-  assert.equal(room.snapshot().pause.kind,'checks_blocked',tail(room));
-  assert.match(room.snapshot().pause.text,/They run again automatically in 30 s \(retry 1 of 3\); Continue retries them now\.$/);
-  for(const [i,ms] of [[1,30_000],[2,120_000],[3,600_000]]) {
-    assert.ok(Math.abs(alarms[i-1]-ms)<2000,`retry ${i} in ${alarms[i-1]} ms`);
-    await room.alarm();
-    await drain();
-  }
-  // Three retries spent, still down: the hold waits for Continue.
-  assert.equal(events(room,'checks_retry').length,3);
-  assert.equal(alarms.length,3);
-  assert.equal(room.snapshot().pause.kind,'checks_blocked');
-  assert.match(room.snapshot().pause.text,/They were retried 3 times automatically; Continue retries them\.$/);
+  // The splitter's turn and the worker's, then the compiler's runs until the budget is spent.
+  assert.equal(room.get('status'),'paused',tail(room));
+  assert.deepEqual(room.roomHolds(),[]);
+  assert.equal(room.get('budget_left'),'0');
+  assert.equal(alarms.length,0);
+  const runs=events(room,'build_infrastructure').length;
+  assert.ok(runs>=2,`${runs} runs`);
+  assert.match(room.snapshot().build_infrastructure,/Container is not running/);
+  // Continue: the compiler runs them again, and once they run the room completes.
   await room.resume(10);
   await drain();
   assert.equal(room.get('status'),'complete',tail(room));
+  assert.equal(events(room,'build_infrastructure').length,6);
 });
 
 test('results from older files are stale, in the room\'s state and in RUN.md',async()=>{

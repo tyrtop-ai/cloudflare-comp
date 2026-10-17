@@ -161,7 +161,7 @@ test('the base\'s files the box cannot hold (a binary, one past the box\'s bytes
   assert.equal(app.files.find(f => f.path === 'logo.bin').content_base64, bytes);
 });
 
-test('packages across pieces: each piece holds its parent\'s packages of its languages; a name a split gives that no row holds is the piece\'s ask; a worker\'s ask for a package its row holds is answered from its row, and one for a package it lacks goes to its manager, granted by the manager whose row holds it', {skip}, async () => {
+test('packages across pieces: each piece holds its parent\'s packages of its languages; a name a split gives that no row holds is the piece\'s ask; a worker\'s ask for a package its row holds is answered from its row, and one for a package it lacks goes to its manager, which grants it', {skip}, async () => {
   const split = user => { const a = splitFor()(user); return {...a, pieces: a.pieces.map(p => p.label === 'Shouter' ? {...p, packages: ['pytest', 'numpy']} : p)}; };
   const asks = {loud: [{need: 'run tests', name: 'pytest'}], 'NOTES.md': [{need: 'run tests', name: 'pytest'}]};
   const leaf = leafOf({control: (user, n) => { const c = user.prompt.deliver.find(d => asks[d.name]); return c && n === 0 ? {summary: 'need', wait: true, ask: asks[c.name]} : null; }});
@@ -178,10 +178,10 @@ test('packages across pieces: each piece holds its parent\'s packages of its lan
   const louder = r.room.read(`fn_answers:${worker('Louder')}`, []);
   assert.deepEqual(louder.map(a => [a.key, a.kind]), [['fn pytest', 'provided']]);
   assert.match(louder[0].text, /your packages hold pytest/i);
-  // Notes writes text: its rows hold no package; its worker's ask for pytest goes to its manager, which hands it up, and the room's manager grants it.
+  // Notes writes text: its rows hold no package; its worker's ask for pytest goes to its manager, whose grant of the package the ask names lists it down the line.
   assert.deepEqual(names(worker('Notes')), ['pytest']);
   assert.deepEqual(names(m.Notes), ['pytest'], 'every row between holds it too');
-  assert.match(events(r.room, 'package_granted').find(e => e.actor === m.Root).body, /granted pytest to "Notes"/);
-  assert.ok(events(r.room, 'manager_choice').some(e => e.actor === m.Root && /^On the ask for pytest: grant\(pytest\)/.test(e.body)), 'the grant is the room manager\'s choice');
+  assert.match(events(r.room, 'package_granted').find(e => e.actor === m.Notes).body, /granted pytest to "Notes"/);
+  assert.ok(events(r.room, 'manager_choice').some(e => e.actor === m.Notes && /^On the ask for pytest: grant\(pytest\)/.test(e.body)), 'the grant is Notes\' manager\'s choice');
   assert.equal(events(r.room, 'level_extend').length, 0);
 });

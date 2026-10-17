@@ -1,7 +1,5 @@
-// v8 compiles, the parts that are data and pure functions: the import
-// closure a validation reaches, the
-// language's own modules, the modes a JavaScript file and a page's scripts
-// parse in, and the compile rows a box's inventory installs. The rooms that
+// v8 compiles, the parts that are data and pure functions: the modes a
+// JavaScript file and a page's scripts parse in, and the compile rows a box's inventory installs. The rooms that
 // use them are test/v8-ship.test.js.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,58 +8,8 @@ import {mkdtempSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {liveRoom} from './helpers/room.js';
-import {installedModule, importClosure} from '../src/piece.js';
 import {sourceParseError} from '../src/linker.js';
 import {TOOLCHAINS, COMPILE_ROWS, installed, codeRowOf, shebangOf, pageScripts, parseModeOf} from '../src/toolchains.js';
-
-
-// ------------------------------------------------------------------ L2, L6
-test('L2: the import closure enters a package through its marker and takes a folder for a package only by the row\'s marker', () => {
-  const py = TOOLCHAINS.find(r => r.id === 'python'), installed = (m, row) => installedModule(m, row, {rows: TOOLCHAINS});
-  const close = (files, entry = 'm.py') => importClosure([entry], new Map(Object.entries(files)), {rows: TOOLCHAINS, installed});
-  const inner = close({'m.py': 'from pkg import helper\n', 'pkg/__init__.py': 'from elsewhere import helper\n'});
-  assert.deepEqual(inner.reached.sort(), ['m.py', 'pkg/__init__.py']);
-  assert.deepEqual(inner.outside.map(o => o.path), ['pkg/__init__.py']);
-  const sub = close({'m.py': 'from pkg import helper\n', 'pkg/__init__.py': '', 'pkg/helper.py': 'import json\n'});
-  assert.deepEqual(sub.reached.sort(), ['m.py', 'pkg/__init__.py', 'pkg/helper.py']);
-  assert.deepEqual(sub.outside, []);
-  const notes = close({'m.py': 'import notes\n', 'notes/readme.txt': 'hi'});
-  assert.deepEqual(notes.outside.map(o => o.path), ['m.py'], 'a folder without the marker is no package');
-  const dotted = close({'m.py': 'import pkg.mod\n', 'pkg/__init__.py': '', 'pkg/mod.py': ''});
-  assert.deepEqual(dotted.reached.sort(), ['m.py', 'pkg/__init__.py', 'pkg/mod.py']);
-  // The marker is the row's: a row with another marker reads that one.
-  const other = TOOLCHAINS.map(r => r.id === 'python' ? {...r, package_marker: 'PKG.py'} : r);
-  const marked = importClosure(['m.py'], new Map(Object.entries({'m.py': 'from pkg import helper\n', 'pkg/PKG.py': '', 'pkg/helper.py': ''})), {rows: other, installed});
-  assert.deepEqual(marked.reached.sort(), ['m.py', 'pkg/PKG.py', 'pkg/helper.py']);
-  assert.equal(py.package_marker, '__init__.py');
-  // The closure reads the files as they are: a module no file at the root is reaches nothing, whatever contract it is named like.
-  const bare = close({'m.py': 'from count_words import count_words\n', 'components/p_a/counter.py': 'def count_words(t):\n    return {}\n'});
-  assert.deepEqual(bare.outside.map(o => [o.path, o.reference]), [['m.py', 'from count_words import count_words']]);
-  // A file the builder wrote at the root is a file like any other: the closure goes through it.
-  const glued = close({'m.py': 'from count_words import count_words\n', 'count_words.py': 'from components.p_a.counter import count_words\n',
-    'components/__init__.py': '', 'components/p_a/__init__.py': '', 'components/p_a/counter.py': 'def count_words(t):\n    return {}\n'});
-  assert.deepEqual(glued.reached.sort(), ['components/__init__.py', 'components/p_a/__init__.py', 'components/p_a/counter.py', 'count_words.py', 'm.py']);
-  assert.deepEqual(glued.outside, []);
-  // A piece's file that names a file beside it by its bare name reaches nothing: the box reads it from the root.
-  const beside = close({'components/p_a/counter.py': 'from textutil import words\n', 'components/p_a/textutil.py': ''}, 'components/p_a/counter.py');
-  assert.deepEqual(beside.outside.map(o => o.reference), ['from textutil import words']);
-});
-
-
-test('L6: the language\'s own modules are the row\'s data: its module prefix, standard library and packages', () => {
-  const js = TOOLCHAINS.find(r => r.id === 'javascript');
-  assert.equal(installedModule('node:fs', js), true);
-  assert.equal(installedModule('http', js), true, 'a module the row\'s standard library provides, without its prefix');
-  assert.equal(installedModule('leftpad', js), false);
-  const other = {...js, module_prefix: 'std:', stdlib_provides: js.stdlib_provides.map(x => ({...x, name: x.name.replace(/^node:/, 'std:')}))};
-  assert.equal(installedModule('std:fs', other, {rows: [other]}), true);
-  assert.equal(installedModule('node:fs', other, {rows: [other]}), false, 'the prefix is the row\'s, not the code\'s');
-  // The closure's branch is the row's way of linking.
-  const files = new Map([['a.js', 'const b = require("./b");\n'], ['b.js', 'module.exports = 1;\n']]);
-  assert.deepEqual(importClosure(['a.js'], files, {rows: TOOLCHAINS}).reached.sort(), ['a.js', 'b.js']);
-  const unlinked = TOOLCHAINS.map(r => r.id === 'javascript' ? {...r, link: 'placed'} : r);
-  assert.deepEqual(importClosure(['a.js'], files, {rows: unlinked}).reached, ['a.js']);
-});
 
 
 test('L4: the dashboard tells a builder by its role: a v8 "Builder" is its manager\'s builder, a part a split named "Builder" is a worker', async () => {

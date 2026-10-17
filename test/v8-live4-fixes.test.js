@@ -92,7 +92,7 @@ test('H2 (owner, 2026-10-16 20:43): a worker\'s ask by any name its world does n
   assert.deepEqual(room.packagesOf(SERVER), [], 'nothing granted');
 });
 
-test('H2: the manager is the interface for what exists: a package its row holds is one of its functions on an ask (grant), Clef scores it, and a grant goes down the asker\'s line; a manager without it hands the ask up', async () => {
+test('H2: the manager is the interface for what exists: a package its row holds is one of its functions on an ask (grant), Clef scores it, and a grant goes down the asker\'s line; the package an ask names is granted though no row holds it; an ask with no package to grant goes up', async () => {
   const REQUESTS = {name: 'requests', language: 'python', provides: 'HTTP client'};
   const {room} = liveRoom({clef: usualClef({'^grant_\\d+$': 0.95, '^ask_parent$': 0.6})});
   room.save('settings', {...room.settings(), pipeline: 'v8'});
@@ -107,14 +107,23 @@ test('H2: the manager is the interface for what exists: a package its row holds 
   assert.deepEqual(room.packagesOf(SERVER).map(p => p.name), ['pytest']);
   const granted = MESSAGES.package_granted({need: 'a test runner', names: 'pytest (tests)', many: false});
   assert.deepEqual(room.read(`fn_answers:${SERVER}`, []).map(a => [a.key, a.kind, a.text]), [['fn pytest', 'provided', granted]]);
-  // requests is Root's alone: Backend has no grant for it and hands it up; Root grants it to every row between.
+  // httpx: no row holds it. Packages are allowed (owner, 2026-10-15 22:12): grant(httpx), the package the ask names, is among Backend's functions;
+  // granted, it is listed on every row of the asker's line, from the top, and the box installs it.
   await room.workerAsk(SERVER, {need: 'fetch a page over HTTP', name: 'httpx'});
   await room.routeHeld(BACKEND);
-  assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for httpx: ask_parent\(need\)/);
-  await room.routeHeld(TOP);
-  assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for httpx: grant\(requests\) p=0\.950/);
-  assert.ok(room.packagesOf(BACKEND).some(p => p.name === 'requests') && room.packagesOf(SERVER).some(p => p.name === 'requests'));
-  assert.match(events(room, 'package_granted').at(-1).body, /^"Root objective" granted requests to "Server"\.$/);
+  assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for httpx: grant\(httpx\) p=0\.950; the others: ask_parent\(need\) p=0\.600\.$/);
+  for (const row of [TOP, BACKEND, SERVER]) assert.ok(room.packagesOf(row).some(p => p.name === 'httpx' && p.language === 'python'), row);
+  assert.match(events(room, 'package_granted').at(-1).body, /^"Backend" granted httpx to "Server"\.$/);
+  assert.ok(room.packageInstalls(SERVER).some(x => x.packages.includes('httpx')));
+  // requests is Root's: Backend's grant lists it on the rows between, as Root's row lists it.
+  await room.workerAsk(SERVER, {need: 'an HTTP client', name: 'requests'});
+  await room.routeHeld(BACKEND);
+  assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for requests: grant\(requests\) p=0\.950/);
+  assert.deepEqual([BACKEND, SERVER].map(row => room.packagesOf(row).find(p => p.name === 'requests')), [REQUESTS, REQUESTS]);
+  // An ask by need alone, with no package Backend holds that Server lacks: Backend hands it up.
+  await room.workerAsk(SERVER, {need: 'a way to read the config'});
+  await room.routeHeld(BACKEND);
+  assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for "a way to read the config": ask_parent\(need\)/);
   assert.equal(events(room, 'package_relayed').length, 0, 'no walk of the runtime\'s own');
 });
 

@@ -153,7 +153,7 @@ export const CLEF = Object.freeze({
   judge: 'Does this file meet the requirement? Answer NO if the file is missing, meets only part of it, or contradicts it.',
   // A contract may name an existing file only when the assignment asks to change it.
   base_change: 'Does the assignment ask to change existing file {i}, directly or by clear implication? Answer NO if it only needs it read, or asks only for new files beside it.',
-  // Whether a validation held at a piece reaches only what the piece holds, for the reach its import closure cannot show.
+  // Whether a validation held at a piece can run on the assembled piece alone: everything it reaches is the piece's, an installed package's or the language's.
   piece_reach: 'Piece {name} delivers the contracts listed and is made of the files listed. When check {i} exercises it as described, does everything it reaches come from these files, the installed packages or the language? Answer NO if it reaches what another piece provides, such as a route a page requests, a file read while it runs, or another piece\'s function.'
 });
 export const clefText = (key, vars = {}) => CLEF[key].replace(/\{(\w+)\}/g, (m, k) => k in vars ? String(vars[k]) : m);

@@ -57,9 +57,18 @@ const X = [call('x1', ['shout', 'whisper'], 'shout', 'hey', 'HEY!!'), call('x2',
 const withX = split => user => { const a = split(user); return user.contracts_you_deliver ? a : {...a, validations: [...a.validations, ...X]}; };
 for (const [name, other] of [['crosswait: Clef gives the room\'s complaint to the other part', true], ['selfwait: Clef gives it to the part that writes shout', false]]) test(`${name}; its worker changes nothing, so the room's manager compiles again and the complaint goes to the same part every round, until the budget ends; nothing holds, and Continue runs the room's validations again`, {skip}, async () => {
   const pick = (key, state) => { const kids = (state.children || []).map(c => c.label); const quiet = kids.findIndex(t => /Quiet/.test(t)), i = Number(key.split('_').pop()); return (i === quiet) === other ? 0.9 : 0.1; };
-  const r = await toolkit({split: withX(splitFor()), clef: clefFor(undefined, {'^route_to_\\d+$': (k, state) => state.item?.kind === 'complaint' && state.children.length === 3 ? pick(k, state) : choiceP(k, state)}), budget: 36});
+  const seen = [];
+  const r = await toolkit({split: withX(splitFor()), clef: clefFor(undefined, {'^route_to_\\d+$': (k, state) => { if (state.item?.kind === 'complaint' && state.children.length === 3) { seen.push(state); return pick(k, state); } return choiceP(k, state); }}), budget: 36});
   const m = at(r.room), routed = events(r.room, 'complaint_routed').filter(e => e.actor === m.Root);
   assert.ok(routed.length > 0 && routed.every(e => e.recipient === (other ? m['Quiet part'] : m['Loud part'])), tail(r.room));
+  // The routing shows the manager what came of it (owner, 2026-10-16 19:44: "3 & 4 are issues with the runtime / routing"): from the second
+  // round on, the part it handed the complaint to on these same files is shown with that complaint, its files left as they were.
+  const part = other ? 'Quiet part' : 'Loud part';
+  assert.ok(!seen[0].children.some(c => c.handed_before_and_unchanged), 'nothing before the first round');
+  const later = seen.filter(s => s.children.some(c => c.handed_before_and_unchanged));
+  assert.ok(later.length > 0, 'later rounds show it');
+  for (const s of later) assert.deepEqual(s.children.filter(c => c.handed_before_and_unchanged).map(c => c.label), [part]);
+  assert.ok(later[0].children.find(c => c.label === part).handed_before_and_unchanged.every(d => typeof d === 'string' && d.length > 0));
   assertBudget(r.room, 'end');
   assert.ok(runsBy(r.room).Root >= 2, `the room's manager compiled again after its complaint came back unchanged (${runsBy(r.room).Root})`);
   assert.equal(events(r.room, 'escalated').length, 0);

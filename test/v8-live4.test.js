@@ -150,8 +150,10 @@ test('2: a package name a split gives goes up its line: a row that holds it gran
   const socket = room.packageAsk(SERVER, {name: 'socket'});
   assert.deepEqual([socket.how, socket.text], ['language', MESSAGES.package_stdlib({name: 'socket'})]);
   assert.ok(!room.packagesOf(SERVER).some(p => p.name === 'socket'));
-  // A name the rows do not know as a package's: no package answer, so the ask goes on as a contract ask.
-  assert.equal(room.packageAsk(SERVER, {name: 'parse_input'}), null);
+  // No list of names decides what is a package (owner, 2026-10-15 22:12): a name the rows do not know is granted as given, in the line's language.
+  const any = room.packageAsk(SERVER, {name: 'parse_input'});
+  assert.deepEqual([any.how, any.names], ['granted', ['parse_input']]);
+  for (const row of [TOP, BACKEND, SERVER]) assert.ok(room.packagesOf(row).some(p => p.name === 'parse_input' && p.language === 'python'), row);
   assert.equal(room.askKind(SERVER, 'parse_input', 'reads the input').kind, 'contract');
   // A worker's ask by a package's name is its manager's (its grant), never the runtime's.
   room.db().exec("UPDATE agents SET phase='implement' WHERE id=?", SERVER);
@@ -159,4 +161,13 @@ test('2: a package name a split gives goes up its line: a row that holds it gran
     assert.equal(room.askKind(SERVER, name).kind, 'contract');
     assert.equal(room.brokerAnswer(SERVER, {key: `fn ${name}`, name, question: 'the web framework'}), false);
   }
+  // Its manager may grant the package the ask names though no row of the line holds it: granted down the line, from the top, and installed by the box.
+  const view = {assignment: '', mine: [], children: [], contracts: []};
+  const options = room.managerOptions(BACKEND, {kind: 'ask', worker: SERVER, need: 'the web framework', name: 'flask'}, view);
+  const grant = options.find(o => o.fn === 'grant' && o.package.name === 'flask');
+  assert.ok(grant, JSON.stringify(options.map(o => o.call)));
+  await room.grantPackage(BACKEND, {worker: SERVER, key: 'fn flask', need: 'the web framework', name: 'flask'}, grant.package);
+  for (const row of [TOP, BACKEND, SERVER]) assert.ok(room.packagesOf(row).some(p => p.name === 'flask' && p.language === 'python'), row);
+  assert.ok(room.packageInstalls(SERVER).find(x => x.toolchain === 'python').packages.includes('flask'));
+  assert.equal(room.node(SERVER).status !== 'archived', true);
 });
