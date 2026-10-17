@@ -65,12 +65,12 @@ export function localRequest(url, {method = 'GET', body, ms = Infinity} = {}) {
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// Poll url every 200 ms until it answers below 500, for up to ms (none: until it does).
+// Poll url every 200 ms until it answers at all (any HTTP status: the server is up), for up to ms (none: until it does).
 export async function pollReady(url, ms) {
   const end = Number.isFinite(ms) ? Date.now() + ms : Infinity;
   let last = '';
   for (;;) {
-    try { const r = await localRequest(url, {ms: Math.max(1, end - Date.now())}); if (r.status < 500) return {ready: true, status: r.status}; last = `HTTP ${r.status}`; }
+    try { const r = await localRequest(url, {ms: Math.max(1, end - Date.now())}); return {ready: true, status: r.status}; }
     catch (e) { last = String(e?.message || e); }
     if (Date.now() >= end) return {ready: false, error: last};
     await sleep(200);
