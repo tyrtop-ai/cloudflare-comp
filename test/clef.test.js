@@ -169,25 +169,26 @@ test('v8: Clef reviews a splitter\'s attempt in one batched call: split_valid, s
   await assert.rejects(reviewLevel({PIPELINE: 'v8', AI: {run: async () => ({answers: {split_valid: {noul: 0.5}}})}}, {pieces, validations}), /no valid review/);
 });
 
-test('v8: routing a complaint or a change, the scope walk and matching ask the CLEF questions over contracts of any kind', async () => {
+test('v8: a manager\'s choice is one Clef request: one noul question per function call it may make, keyed by the option, its state the manager\'s files and the item; a missing or invalid probability is an error, never a NO', async () => {
   const {CLEF, clefText} = await import('../src/prompts.js');
-  const {routeAmong, inScope, matchContracts} = await import('../src/model.js');
+  const {chooseCall} = await import('../src/model.js');
   const asked = [];
   const env = {PIPELINE: 'v8', AI: {run: async (_name, input) => { asked.push(input); return {answers: Object.fromEntries(Object.keys(input.questions).map((k, i) => [k, {noul: i ? 0.3 : 0.9}]))}; }}};
-  const children = [{task: 'Write the page', contracts: [{name: 'index.html', kind: 'page', path: 'index.html', does: 'the page'}]}, {task: 'Write the styles', contracts: [{name: 'styles.css', kind: 'file', path: 'styles.css', does: 'the page styles'}]}];
-  assert.deepEqual(await routeAmong(env, {key: 'owner', text: 'the list is unstyled', children}), [0.9, 0.3]);
-  assert.deepEqual(Object.values(asked[0].questions).map(q => q.instructions), [clefText('owner', {i: 0}), clefText('owner', {i: 1})]);
-  assert.equal(asked[0].state.question, 'the list is unstyled');
-  assert.deepEqual(asked[0].state.children[1].contracts, ['file styles.css: the page styles']);
-  await routeAmong(env, {key: 'change', text: 'Make the list dark', children});
-  assert.equal(asked[1].questions.change_0.instructions, clefText('change', {i: 0}));
-  assert.equal(asked[1].state.change, 'Make the list dark');
-  assert.equal(await inScope(env, {assignment: 'Write the page', contracts: children[0].contracts, need: 'a stylesheet', name: 'styles.css'}), 0.9);
-  assert.equal(asked[2].questions.inside.instructions, CLEF.owns_need);
-  assert.deepEqual(asked[2].state, {assigned_work: 'Write the page', contracts: ['page index.html: the page'], needed: {need: 'a stylesheet', expected_name: 'styles.css'}});
-  const hit = await matchContracts(env, {need: 'the page styles', name: 'theme'}, children.flatMap(c => c.contracts));
-  assert.equal(asked[3].questions.match_0.instructions, clefText('match', {j: 0}));
-  assert.deepEqual(hit, {index: 0, p: 0.9});
+  const state = {item: {kind: 'complaint', text: 'the list is unstyled'}, children: [{slot: 0, label: 'Page', contracts: ['page index.html: the page']}, {slot: 1, label: 'Styles', contracts: ['file styles.css: the page styles']}]};
+  const options = [{key: 'route_to_0', question: clefText('route_complaint', {i: 0})}, {key: 'route_to_1', question: clefText('route_complaint', {i: 1})}, {key: 'extend', question: CLEF.extend_complaint}];
+  assert.deepEqual(await chooseCall(env, {state, options}), [0.9, 0.3, 0.3]);
+  assert.equal(asked.length, 1, 'one request for every option');
+  assert.deepEqual(Object.entries(asked[0].questions).map(([k, q]) => [k, q.type, q.instructions]), options.map(o => [o.key, 'noul', o.question]));
+  assert.deepEqual(asked[0].state, state);
+  assert.equal(asked[0].model, 'clef-flash');
+  // The questions of the other functions are filled by key.
+  assert.match(clefText('answer', {j: 2}), /^Does contract 2 give what the request needs/);
+  assert.match(clefText('route_change', {i: 1}), /^Does this change concern what child 1 delivers/);
+  for (const k of ['extend_ask', 'extend_change', 'ask_parent']) assert.match(CLEF[k], /\?/);
+  assert.deepEqual(await chooseCall(env, {state, options: []}), []);
+  const bad = {AI: {run: async () => ({answers: {route_to_0: {noul: 0.5}, route_to_1: {noul: 7}}})}};
+  await assert.rejects(chooseCall(bad, {state, options: options.slice(0, 2)}), /no valid probability for route_to_1/);
+  await assert.rejects(chooseCall(bad, {state, options}), /no valid probability for (route_to_1|extend)/);
 });
 
 test('v8: the splitter is ROLE.splitter + FORMAT.splitter with its functions, its data the user JSON; a level written as text is never parsed: the reply hears the function names, and only calls store', async () => {

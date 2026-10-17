@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {register} from 'node:module';
 register('./cloudflare-loader.mjs',import.meta.url);
-const {parseWorkerAnswer,workerAction,hasWorkerBlocks,singleFileText}=await import('../src/worker-output.js');
+const {parseWorkerAnswer,workerAction,hasWorkerBlocks}=await import('../src/worker-output.js');
 const {decide}=await import('../src/model.js');
 
 const block=(path,content)=>`=== FILE: ${path} ===\n${content}\n=== END FILE ===\n`;
@@ -119,14 +119,6 @@ test('review probes: an old JSON action, fenced or with raw newlines in its stri
   }
 });
 
-test('review probes: the single-file answer is the file\'s text, never prose, fences or markers around it',()=>{
-  const cases=[['convert.py','Here is the corrected file:\n```python\nprint(1)\n```','print(1)'],['convert.py','```python\nprint(1)\n```\nThis fixes the bug.','print(1)'],
-    ['convert.py','=== FILE: convert.py ===\nprint(1)\n=== END FILE ===','print(1)'],['convert.py','Okay, the user wants me to fix it.\n</think>\n\nprint(1)','print(1)'],
-    ['GUIDE.md','```markdown\n# Guide\n\n```bash\nrun it\n```\n```','# Guide\n\n```bash\nrun it\n```'],['GUIDE.md','# Guide\n\n```bash\nrun it\n```','# Guide\n\n```bash\nrun it\n```'],
-    ['convert.py','=== FILE: convert.py ===\nprint(1)\nprint(2)','print(1)\nprint(2)'],['styles.css','body { margin: 0; }','body { margin: 0; }']];
-  for(const [path,answer,want] of cases)assert.equal(singleFileText({response:answer},path),want,answer);
-});
-
 test('a block whose whole content is one fence is unfenced; a fence among other lines stays',()=>{
   assert.deepEqual(parseWorkerAnswer(block('app.py','```python\nprint(1)\n```')).files,[{path:'app.py',content:'print(1)'}]);
   const md='Intro\n```js\nconst x = 1;\n```\nOutro';
@@ -197,9 +189,6 @@ test('live 2: a header missing its closing ===, or followed by a line of exactly
     assert.deepEqual(r.files,[{path:'index.html',content:html},{path:'style.css',content:css}],name);
     assert.deepEqual([r.truncated,r.control_error,r.action.done],[[],false,true],name);
   }
-  // The single-file call reads the same shapes.
-  assert.equal(singleFileText({response:`=== FILE: server.js\n===\nconst http = require('http');\n=== END FILE ===`},'server.js'),"const http = require('http');");
-  assert.equal(singleFileText({response:`=== FILE: server.js ===\n===\nconst a = 1;\nconst b = 2;`},'server.js'),'const a = 1;\nconst b = 2;');
 });
 
 // v8 live 2 review: legitimate files whose lines look like rules or markers
@@ -231,7 +220,6 @@ test('live 2 review: front matter, rules, setext and RST titles, tables, banners
     const answer=`=== FILE: ${path} ===\n${content}\n=== END FILE ===\n=== CONTROL ===\n{"summary":"x","done":true}`;
     const r=parseWorkerAnswer(answer);
     assert.deepEqual(r.files,[{path,content}],name);
-    assert.equal(singleFileText({response:`=== FILE: ${path} ===\n${content}\n=== END FILE ===`},path),content,`single file: ${name}`);
     // The v7 implementer reads a block answer through workerAction (expect json), as 0562110 did: the file exactly.
     assert.deepEqual(workerAction(answer,{expect:'json'}).files,[{path,content}],`v7: ${name}`);
   }

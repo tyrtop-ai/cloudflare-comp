@@ -1,18 +1,11 @@
-// v8 live 3: the worker's answer format, as the third set of live runs
-// showed small models write it.
-//  D. a section label right after a FILE header is the header's leftover;
-//  E. the block format is the easiest path: one worked answer of the exact
-//     shape, and the control block read as a small model writes it.
+// v8 live 3: the file-block parser, as the third set of live runs showed
+// small models write the format (v7's workers' answers are read through it
+// still; a v8 worker works through functions, src/worker.js):
+//  D. a section label right after a FILE header is the header's leftover.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { events } from './helpers/room.js';
-import { parseWorkerAnswer, singleFileText, workerAction } from '../src/worker-output.js';
-import { FORMAT } from '../src/prompts.js';
-import { lintText } from './helpers/prompt-lint.js';
-import { ANSWERS, formatCosts } from './helpers/worker-answers.js';
+import { parseWorkerAnswer, workerAction } from '../src/worker-output.js';
 
-const hasPython = spawnSync('python3', ['--version']).status === 0;
 
 // ------------------------------------------------------------ D: the parser
 test('D: a section label right after a FILE header is dropped; nowhere else, and never a marker of the format', () => {
@@ -29,48 +22,8 @@ test('D: a section label right after a FILE header is dropped; nowhere else, and
   for (const kept of ['=== Content ===', '=== CONTENT: a ===', '=== CONTENT'])
     assert.equal(parseWorkerAnswer(`=== FILE: a.txt ===\n${kept}\nx\n=== END FILE ===`).files[0].content, `${kept}\nx`, kept);
   assert.deepEqual(parseWorkerAnswer('=== FILE: a.txt ===\n=== END FILE ===\n=== CONTROL ===\n{"done":true}').files, [{path: 'a.txt', content: ''}], 'an END line right after the header still closes it');
-  // The single-file call reads it the same way.
-  assert.equal(singleFileText('=== FILE: index.html ===\n=== CONTENT ===\n<p>x</p>\n=== END FILE ===', 'index.html'), '<p>x</p>');
 });
 
-// ------------------------------------------------------------ E: the format
-test('E: the worker format is one worked answer of the exact shape, its control object on one line, and it passes the lint', () => {
-  assert.match(FORMAT.worker, /^=== FILE: notes\/overview ===\nEvery line of the file, complete\.\n=== END FILE ===\n=== CONTROL ===\n\{"summary": "Wrote notes\/overview\.", "done": true\}$/m);
-  assert.doesNotMatch(FORMAT.worker, /^- "summary":/m, 'no field list a small model can copy as its control block');
-  assert.deepEqual(lintText('FORMAT.worker', FORMAT.worker), []);
-  // The worked answer is itself read as an exact answer: no fallback, no retry.
-  const example = FORMAT.worker.split('\n').slice(1, 6).join('\n');
-  const r = workerAction(example, {expect: 'blocks'});
-  assert.deepEqual([r.files, r.done, r.summary, r.format_fallback, r.implicit_end, r.control_error], [[{path: 'notes/overview', content: 'Every line of the file, complete.'}], true, 'Wrote notes/overview.', undefined, undefined, undefined]);
-});
-
-// Measured on this set with the parser before live 3: 4 retries, 3 files written again, 9 answers with a fallback.
-test('E: a scripted, realistic answer set: retries 4 → 0, files written again 3 → 1, fallbacks 9 → 5; the JSON fallback still works', () => {
-  const c = formatCosts();
-  assert.deepEqual({answers: c.answers, retries: c.retries, fallbacks: c.fallbacks, events: c.events}, {answers: 14, retries: 0, fallbacks: 5, events: 5});
-  const kinds = Object.fromEntries(Object.entries(c.each).map(([k, v]) => [k, [v.retry, v.events.join(',')]]));
-  assert.deepEqual(kinds, {exact: [false, ''], field_list: [false, ''], field_list_no_end: [false, 'implicit_end'], no_end: [false, 'implicit_end'], label_line: [false, ''],
-    fenced_control: [false, ''], trailing_comma: [false, ''], key_lines: [false, ''], capital_booleans: [false, ''], legacy_json: [false, 'format_fallback'],
-    files_only: [false, ''], prose_around: [false, ''], open_at_stop: [false, 'code_retry'], open_after_control: [false, 'implicit_end']});
-  // Every answer delivers the file whole, with the summary and done its control block gave.
-  for (const [k, v] of Object.entries(c.each).filter(([k]) => k !== 'open_at_stop')) {
-    const f = v.raw.files.find(x => ['convert.py', 'index.html', 'app.js'].includes(x.path));
-    assert.ok(f && typeof f.content === 'string' && !/=== |"summary"|^- /m.test(f.content), `${k}: ${JSON.stringify(f)}`);
-  }
-  assert.deepEqual(['field_list', 'key_lines', 'capital_booleans', 'trailing_comma'].map(k => [c.each[k].raw.done, typeof c.each[k].raw.summary]), [[true, 'string'], [true, 'string'], [true, 'string'], [true, 'string']]);
-  assert.equal(c.each.legacy_json.raw.format_fallback, 'json');
-  // A control block that is neither json nor field lines is still asked again, and is never read as done.
-  const broken = workerAction('=== FILE: a.txt ===\nx\n=== END FILE ===\n=== CONTROL ===\nI finished the file and it is complete.', {expect: 'blocks'});
-  assert.equal(broken.control_error, true);
-  assert.equal(broken.done, false);
-  // A broken json object is never read in part as field lines.
-  assert.equal(workerAction('=== FILE: a.txt ===\nx\n=== END FILE ===\n=== CONTROL ===\n{"summary": "x", "done": tru', {expect: 'blocks'}).control_error, true);
-  // An answer the token cap cut is written again, as before.
-  const cut = workerAction({choices: [{message: {content: '=== FILE: a.txt ===\nhalf'}, finish_reason: 'length'}]}, {expect: 'blocks'});
-  assert.deepEqual(cut.truncated, ['a.txt']);
-  assert.ok(ANSWERS.open_at_stop.choices[0].finish_reason === 'stop');
-});
-const page = [{name: 'index.html', kind: 'page', path: 'index.html', does: 'the page'}];
 
 // 3. A field-line control block closes an open file only when it is a control block.
 test('review 3: a YAML file or a page about the format keeps its CONTROL and field lines; object-valued fields are read in one object', () => {

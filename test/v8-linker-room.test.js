@@ -7,7 +7,7 @@ import {existsSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {liveRoom, events, fileBlocks} from './helpers/room.js';
-import {lintRequests, callCheck} from './helpers/levels.js';
+import {lintRequests, callCheck, choiceP} from './helpers/levels.js';
 import {packageDirectory} from '../src/assembly.js';
 import {textTokens} from '../src/linker.js';
 import {toolchainById} from '../src/toolchains.js';
@@ -21,8 +21,8 @@ const browserReady=(()=>{
 })();
 const py=toolchainById('python');
 
-// Clef: a room's manager divides (its pre-grade is above the floor); every piece is caught and hands its level to one worker; the rest pass.
-const clefFor = goal => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? (String(input.state.assignment).startsWith(goal) ? 0.9 : 0.05) : 0.9}]))});
+// Clef: a room's manager divides (its pre-grade is above the floor); every piece is caught and hands its level to one worker; a manager chooses as choiceP says; the rest pass.
+const clefFor = goal => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? (String(input.state.assignment).startsWith(goal) ? 0.9 : 0.05) : choiceP(k, input.state) ?? 0.9}]))});
 // Workers by the contracts they deliver: the n-th turn gets the n-th answer (the last one repeats).
 const scripted = answers => {
   const seen = new Map();

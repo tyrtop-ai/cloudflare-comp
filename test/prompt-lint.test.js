@@ -7,9 +7,9 @@ import assert from 'node:assert/strict';
 import { ROLE, FORMAT, CLEF, RETRY, LINK_SCOPE, MESSAGES, TOOLS, promptTexts, systemPrompt, clefText } from '../src/prompts.js';
 import { lintText, lintAll, words, sentences, negations, capsWords, STRUCTURE_WORDS } from './helpers/prompt-lint.js';
 
-const ROLES = ['splitter', 'worker', 'file', 'linker'];
+const ROLES = ['splitter', 'worker', 'linker'];
 // Per-role caps: words of each format, and of the whole system prompt.
-const FORMAT_WORDS = {splitter: 60, worker: 180, file: 30, linker: 60};
+const FORMAT_WORDS = {splitter: 60, worker: 80, linker: 60};
 const SYSTEM_WORDS = 640;
 
 test('every v8 prompt text passes the lint', () => {
@@ -22,7 +22,7 @@ test('every v8 prompt text passes the lint', () => {
   assert.deepEqual(lintAll(texts), []);
 });
 
-test('the generative roles are the splitter, the worker, its single-file call and the linker; each system prompt is its own job and its format', () => {
+test('the generative roles are the splitter, the worker and the linker; each system prompt is its own job and its format', () => {
   assert.deepEqual(Object.keys(ROLE).sort(), [...ROLES].sort());
   assert.deepEqual(Object.keys(FORMAT).sort(), [...ROLES].sort());
   for (const role of ROLES) assert.equal(systemPrompt(role), `${ROLE[role]}\n\n${FORMAT[role]}`);
@@ -113,10 +113,25 @@ test('the splitter\'s functions are prompt texts too: each description and each 
   assert.ok(TOOLS.splitter.every(t => t.parameters.type === 'object'));
 });
 
+test('the worker\'s functions are prompt texts too: each description and each parameter\'s is linted, names no structure around it, and holds no filled-in value to copy; its format says to call them', () => {
+  const texts = Object.entries(promptTexts()).filter(([k]) => k.startsWith('TOOLS.worker.'));
+  assert.deepEqual([...new Set(texts.map(([k]) => k.split('.')[2]))], ['read_file', 'write_file', 'run_examples', 'ask', 'done', 'wait']);
+  assert.deepEqual(TOOLS.worker.map(t => t.name), ['read_file', 'write_file', 'run_examples', 'ask', 'done', 'wait']);
+  for (const [name, text] of texts) {
+    assert.deepEqual(lintText(name, text, {generative: true}), [], name);
+    assert.doesNotMatch(text, /"\w+"\s*:\s*["\[{]/, `${name} holds a filled-in field`);
+  }
+  assert.ok(TOOLS.worker.every(t => t.parameters.type === 'object'));
+  assert.deepEqual(Object.fromEntries(TOOLS.worker.map(t => [t.name, t.parameters.required])), {read_file: ['path'], write_file: ['path', 'content'], run_examples: [], ask: ['need'], done: ['summary'], wait: ['summary']});
+  assert.match(FORMAT.worker, /^Answer by calling your functions/);
+  assert.doesNotMatch(FORMAT.worker, /=== FILE|=== CONTROL|json object|control block/i, 'no answer format to write');
+  assert.doesNotMatch(ROLE.worker, /control block/);
+});
+
 test('Clef questions are filled by key, and run data never enters a system prompt', () => {
   assert.equal(clefText('scope', {i: 3}), CLEF.scope.replace('{i}', '3'));
-  assert.equal(clefText('match', {j: 1}), CLEF.match.replace('{j}', '1'));
+  assert.equal(clefText('answer', {j: 1}), CLEF.answer.replace('{j}', '1'));
   for (const role of ROLES) assert.doesNotMatch(systemPrompt(role), /\$\{|\{i\}|\{j\}|\{contract\}/);
   assert.equal(RETRY.too_small(9, 4), 'Your previous answer, listed in rejected, had 9 pieces, and some were too small to be worth a task of their own. Use fewer, larger pieces this time, at least 2 and at most 4, each delivering whole contracts.');
-  assert.equal(MESSAGES.not_written({why: 'a/b: the path holds a space'}), 'Not written: a/b: the path holds a space.');
+  assert.equal(MESSAGES.unchanged({path: 'a/b'}), 'unchanged: a/b is already exactly this text.');
 });

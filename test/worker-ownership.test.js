@@ -40,44 +40,31 @@ test('file-generation prompt independently authorizes local implementation decis
   assert.match(system,/comes back to you/i);
 });
 
-// v8: a worker answers under ROLE.worker + FORMAT.worker: its request is its
-// prompt, its files, its complaints and its world; files as raw blocks (§3.2).
-test('v8: the worker prompt is ROLE.worker with the file-block format, its request is the user JSON, and its answer is read as blocks',async()=>{
-  const {systemPrompt,ROLE,FORMAT}=await import('../src/prompts.js');
-  let system='',user=null;
-  const env={PIPELINE:'v8',AI:{run:async(_model,args)=>{system=args.messages[0].content;user=JSON.parse(args.messages[1].content);
-    return {response:'=== FILE: format.py ===\ndef format_title(item):\n    return str(item["title"])\n=== END FILE ===\n=== CONTROL ===\n{"summary":"Formats titles","done":true}'};}}};
+// v8: a worker works through functions under ROLE.worker + FORMAT.worker:
+// its request is its prompt, its files' paths, its complaints and its world;
+// its files are written by its write_file calls, never read from prose.
+test('v8: the worker\'s session is ROLE.worker with its functions, its request the user JSON; a file is what write_file stores',async()=>{
+  const {systemPrompt,ROLE,FORMAT,TOOLS}=await import('../src/prompts.js');
+  const {workerWorld,workerSession}=await import('../src/worker.js');
+  const requests=[];
+  const answers=[{response:'=== FILE: format.py ===\ndef f(x):\n    return x\n=== END FILE ===\n=== CONTROL ===\n{"summary":"Formats titles","done":true}'},
+    {tool_calls:[{name:'write_file',arguments:{path:'format.py',content:'def format_title(item):\n    return str(item["title"])\n'}},{name:'done',arguments:{summary:'Formats titles'}}]}];
+  const env={PIPELINE:'v8',MODEL_NAME:'@cf/qwen/qwen3-30b-a3b-fp8',AI:{run:async(_model,args)=>{requests.push(JSON.parse(JSON.stringify(args)));return answers[requests.length-1];}}};
   const view={prompt:{task:'Format items for presentation',deliver:[{name:'format_title',kind:'function',path:'format.py',examples:['format_title({"title": "a"}) returns "a"']}]},files:[],complaints:[],world:{}};
-  const result=await decide(env,view,{v8:true});
+  const written=new Map(),world=workerWorld({files:new Map(),write:async(p,c)=>{written.set(p,c);},runExamples:async()=>({examples:[]}),ask:async()=>({sent:true})});
+  const out=await workerSession(env,view,world);
+  const system=requests[0].messages[0].content;
   assert.equal(system,systemPrompt('worker'));
   assert.equal(system,`${ROLE.worker}\n\n${FORMAT.worker}`);
   assert.match(system,/write the files that deliver what your prompt asks/i);
   assert.match(system,/Refer to a name you may call exactly as its reference shows/);
-  assert.match(system,/A complaint says what was observed when your files ran: fix its cause in your files/);
-  assert.match(system,/ask for it in your control block and write meanwhile the files that are independent of it/);
-  assert.match(system,/^=== FILE: notes\/overview ===\n.+\n=== END FILE ===\n=== CONTROL ===\n\{"summary": "[^"]+", "done": true\}$/m);
-  assert.doesNotMatch(system,/LEAF CODE WRITER|Node\.js|require\(|JavaScript/);
-  assert.deepEqual(user,view);
-  assert.deepEqual(result.files,[{path:'format.py',content:'def format_title(item):\n    return str(item["title"])'}]);
-  assert.equal(result.done,true);
-  assert.equal(result.format_fallback,undefined);
-});
-
-test('v8: the single-file call is ROLE.file, with the worker\'s prompt, its files and its complaints as data',async()=>{
-  const {systemPrompt}=await import('../src/prompts.js');
-  const {rewriteFile}=await import('../src/model.js');
-  let system='',user=null;
-  const env={PIPELINE:'v8',AI:{run:async(_model,args)=>{system=args.messages[0].content;user=JSON.parse(args.messages[1].content);return {response:'```\nbody { margin: 0; }\n```'};}}};
-  const prompt={task:'Write the page styles',deliver:[{name:'styles.css',kind:'file',path:'styles.css',examples:['styles.css contains "margin"']}]};
-  const file=await rewriteFile(env,{path:'styles.css',intent:'the complete file; the previous answer was cut off before its end',prompt,
-    files:[{path:'styles.css',content:'body {'},{path:'notes.md',content:'n'}],complaints:['styles.css: unexpected end of input'],correction:'cut off'});
-  assert.equal(file,'body { margin: 0; }');
-  assert.equal(system,systemPrompt('file'));
-  assert.deepEqual(user.prompt,prompt);
-  assert.equal(user.file,'styles.css');
-  assert.equal(user.existing_file,'body {');
-  assert.equal(user.previous_rejection,'cut off');
-  assert.deepEqual(user.complaints,['styles.css: unexpected end of input']);
-  assert.deepEqual(user.your_other_files.map(f=>f.path),['notes.md']);
-  assert.doesNotMatch(system,/Cloudflare Artifacts|builder renames|third-party packages/);
+  assert.match(system,/A complaint says what was observed when your files ran: fix its cause in your files, and run your examples/);
+  assert.match(system,/^Answer by calling your functions/m);
+  assert.doesNotMatch(system,/LEAF CODE WRITER|Node\.js|require\(|JavaScript|=== FILE|control block/);
+  assert.deepEqual(JSON.parse(requests[0].messages[1].content),view);
+  for(const r of requests)assert.deepEqual(r.tools,TOOLS.worker);
+  // The file blocks written as prose in the first reply are never read: nothing is written until write_file.
+  assert.deepEqual(requests[1].messages.slice(2),[{role:'assistant',content:''},{role:'user',content:'No function was called. The functions are: read_file, write_file, run_examples, ask, done, wait.'}]);
+  assert.deepEqual([...written],[['format.py','def format_title(item):\n    return str(item["title"])\n']]);
+  assert.deepEqual(out.end,{done:true,wait:false,summary:'Formats titles'});
 });
