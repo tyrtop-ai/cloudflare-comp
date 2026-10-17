@@ -63,7 +63,13 @@ test('contract: stored exactly as given, or refused with exactly why: a kind out
   assert.equal(why({name: 'add', kind: 'function', does: 'x', params: ['a']}), 'contract has no field "params"; its fields are name, kind, path, does, inputs, outputs, effects, run');
   assert.equal(why({name: 'add', kind: 'function', does: 'x', run: {static: true}}), 'a function contract is not started, so it states no run');
   assert.equal(why({name: 'GET /items', kind: 'route', does: 'x', run: {run: 'serve-items'}}), 'its run starts "serve-items", which is neither a command contract declared so far nor a program the box has (node, npm, npx, python3, pytest)');
-  assert.equal(why({name: 'add one', kind: 'function', does: 'x'}), '"add one" is not a valid python function name');
+  // A function's name is judged by its own language alone, with no length bound and no list of built-in names; a language with no name rule, or no path, stores it as written.
+  assert.equal(why({name: 'add one', kind: 'function', path: 'calc.py', does: 'x'}), '"add one" is not a valid python function name');
+  assert.equal(why({name: 'lambda', kind: 'function', path: 'calc.py', does: 'x'}), '"lambda" is not a valid python function name (a reserved word)');
+  assert.equal(why({name: 'class', kind: 'function', path: 'src/k.js', does: 'x'}), '"class" is not a valid javascript function name (a reserved word)');
+  for (const [name, path] of [['from', 'src/a.ts'], ['delete', 'src/a.go'], ['valid?', 'lib/a.rb'], ['from_js', 'src/from.js'], ['fetch', 'src/afetch.js'], ['process', 'src/proc.js'], ['f'.repeat(70), 'src/long.js'], ['g'.repeat(70), 'long.py'], ['add one', undefined]])
+    assert.equal(splitterCall(s, 'contract', {name, kind: 'function', ...(path ? {path} : {}), does: 'x'}).result.stored, name, `${name.slice(0, 20)} at ${path}`);
+  assert.equal(splitterCall(s, 'contract', {name: 'c'.repeat(70), kind: 'command', path: 'bin/c', does: 'x'}).result.stored, 'c'.repeat(70), 'a command word of any length');
   const js = splitterState({rows: TOOLCHAINS.filter(r => r.id === 'javascript')});
   assert.equal(splitterCall(js, 'contract', {name: 'app.py', kind: 'file', path: 'app.py', does: 'x'}).result.error, 'app.py is written in python, which the box does not run (it runs javascript)');
   // A route states its run as given; with none it is stored without one.
@@ -90,6 +96,13 @@ test('a check function: serves names declared contracts exactly (the error lists
   assert.deepEqual(splitterCall(s, 'call_check', {serves: ['had'], steps: [{call: 'had', args: [1], expect: 1}]}).result.examples_so_far, {had: 1});
   assert.deepEqual(splitterCall(s, 'call_check', {serves: ['to_f'], steps: [{call: 'to_f', args: [0], expect: 32}, {call: 'to_f', args: [100], expect: 212}]}).result,
     {id: 'v4', examples: ['to_f(0) → 32', 'to_f(0) → 32; to_f(100) → 212'], examples_so_far: {to_f: 2}});
+  // An example is what it is: the same call written three times, or written again after other steps, is one example.
+  const add = splitterState({});
+  calls(add, [['contract', {name: 'add', kind: 'function', path: 'add.js', does: 'adds'}], ['contract', {name: 'reset', kind: 'function', path: 'add.js', does: 'resets'}]]);
+  const same = {call: 'add', args: [1, 1], expect: 2};
+  assert.deepEqual(splitterCall(add, 'call_check', {serves: ['add'], steps: [same, same, same]}).result, {id: 'v1', examples: ['add(1, 1) → 2'], examples_so_far: {add: 1}});
+  assert.deepEqual(splitterCall(add, 'call_check', {serves: ['add'], steps: [{call: 'reset'}, same]}).result.examples_so_far, {add: 2}, 'reset() is new; add(1, 1) → 2 after it is not');
+  assert.ok(missingOf({...add, divide: false}).includes('add has 2 different examples of 3 from the validations that serve it.'));
 });
 
 test('each check function stores a validation of its own kind from its fields at the top level; a field it does not take (a kind, a check wrapper) is refused with its own fields, and there is no validation function', () => {

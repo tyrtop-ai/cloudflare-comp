@@ -9,7 +9,7 @@
 // is Clef's review alone (src/model.js reviewLevel), which reads the
 // assignment and the pieces as written.
 import { TOOLCHAINS, toolchainOf } from './toolchains.js';
-import { normalizeContract, kindOf, nameError, PLACED_KINDS, PATH_NAMED, CONTRACT_KINDS } from './contracts.js';
+import { normalizeContract, kindOf, nameError, ownNameError, PLACED_KINDS, PATH_NAMED, CONTRACT_KINDS } from './contracts.js';
 import { readCheck, CHECK_FIELDS, runOf, servedRun, runsOf, unheldPath, contractExamples, checkExamples, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
 import { rootedPath } from '../container/build-path.mjs';
 import { session } from './session.js';
@@ -71,8 +71,8 @@ function contract(s, a) {
   if (PLACED_KINDS.has(kind) && !path) return {error: `a ${kind} contract needs the relative path of its file`};
   const unheld = path ? unheldPath(path) : '';
   if (unheld) return {error: unheld};
-  const languages = [...new Set(present(s).map(c => c.path ? toolchainOf(c.path)?.id : null).concat(path ? [toolchainOf(path)?.id] : []).filter(Boolean))];
-  const bad = nameError({name, kind, ...(path ? {path} : {})}, {rows: s.rows, languages, argvCommands: true});
+  // A function's name is its own language's (ownNameError); the other kinds' names are their kind's.
+  const bad = kind === 'function' ? ownNameError({name, path}, s.rows) : nameError({name, kind, ...(path ? {path} : {})}, {argvCommands: true});
   if (bad) return {error: bad};
   const row = path ? toolchainOf(path) : null;
   if (row && row.id !== 'text' && !s.ids.has(row.id)) return {error: `${path} is written in ${row.id}, which the box does not run (it runs ${listed([...s.ids])})`};

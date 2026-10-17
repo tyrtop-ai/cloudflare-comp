@@ -335,32 +335,34 @@ export function renderExample(check) {
   if (c.kind === 'browser') return browserExample(c.steps);
   return '';
 }
-// The examples one check gives: one per step. Each call of a call check and
-// each request of an http check is one, after the steps that run before it
-// in the same process (the state it starts from); a command check, a
-// browser scenario and a judge question is one; each text a file check
-// looks for is one.
-export function checkExamples(check) {
+// The examples one check gives, each as {key, text}: key is what the
+// example is (one call of a call check or one request of an http check, as
+// written; a command check, a browser scenario or a judge question; one
+// text a file check looks for), so a step written again is the same
+// example; text shows it after the steps that run before it in the same
+// process (the state it starts from).
+function keyedExamples(check) {
   const c = check || {};
   if (c.kind === 'call' || c.kind === 'http') {
-    const steps = c.steps || [], show = c.kind === 'call' ? callStep : requestStep;
-    return steps.map((_, i) => steps.slice(0, i + 1).map(show).join('; '));
+    const steps = (c.steps || []).map(c.kind === 'call' ? callStep : requestStep);
+    return steps.map((key, i) => ({key, text: steps.slice(0, i + 1).join('; ')}));
   }
-  if (c.kind === 'file' && c.has?.length) return c.has.map(t => fileItem(c, t));
+  if (c.kind === 'file' && c.has?.length) return c.has.map(t => ({key: fileItem(c, t), text: fileItem(c, t)}));
   const one = renderExample(c);
-  return one ? [one] : [];
+  return one ? [{key: one, text: one}] : [];
 }
-// A contract's examples: the distinct examples of every validation that
+// Each different example of a check, the first time it is written, by
+// what it is (keyedExamples): its text.
+const distinct = keyed => keyed.filter((e, i) => keyed.findIndex(x => x.key === e.key) === i);
+export const checkExamples = check => distinct(keyedExamples(check)).map(e => e.text);
+// A contract's examples: the different examples of every validation that
 // serves it (the splitter's serves, or the ids the contract carries), in
-// order, every one of them. Three is the least a splitter writes (the reader
+// order, every one of them, each counted once by what it is however many
+// times it is written. Three is the least a splitter writes (the reader
 // counts it); a worker reads them all, since its compiler checks them all.
 export function contractExamples(contract, validations) {
-  const out = [];
-  for (const v of validations || []) {
-    if (!(v?.serves || []).includes(contract?.name) && !(contract?.serves || []).includes(v?.id)) continue;
-    for (const e of checkExamples(v.check)) if (!out.includes(e)) out.push(e);
-  }
-  return out;
+  const serving = (validations || []).filter(v => (v?.serves || []).includes(contract?.name) || (contract?.serves || []).includes(v?.id));
+  return distinct(serving.flatMap(v => keyedExamples(v.check))).map(e => e.text);
 }
 
 // ------------------------------------------------------------ words

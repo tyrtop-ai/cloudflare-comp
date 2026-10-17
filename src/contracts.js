@@ -31,7 +31,7 @@ export const COMMAND_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
 // What a v8 command name must be to run as argv[0]: one word, no whitespace
 // or shell metacharacter, not an option. A level holds commands to this only
 // (facts.argvCommands); the convention above is v7's.
-export const COMMAND_WORD = /^[A-Za-z0-9_][A-Za-z0-9_.+@%-]{0,63}$/;
+export const COMMAND_WORD = /^[A-Za-z0-9_][A-Za-z0-9_.+@%-]*$/;
 // The JavaScript row's identifier rule (C1 under v7). Under v8 the caller
 // passes the toolchain rows (facts.rows); without them a function name is
 // read as JavaScript, as v7 always did.
@@ -304,6 +304,19 @@ const identifierError = (row, name) => {
   if (row.id === 'javascript' && PROTECTED_NAMES.has(name)) return 'reserved';
   return '';
 };
+// v8: why a function's name is not one its own language accepts, or '':
+// the identifier rule and reserved words of the row its path is written in
+// (rows: the installed toolchain rows), read without the length bound the
+// rows carry for v7. A function in a language with no name rule, or with no
+// path, is stored as written.
+export function ownNameError(c, rows) {
+  const row = c?.path ? rowsWithNames({rows}).find(r => (r.extensions || []).includes(extOf(c.path))) : null, name = String(c?.name ?? '');
+  if (!row) return '';
+  let re;
+  try { re = new RegExp(row.identifier.replace(/\{0,\d+\}/g, '*')); } catch { return ''; }
+  if (!re.test(name)) return `"${name}" is not a valid ${row.id} function name`;
+  return reservedOf(row).has(name) ? `"${name}" is not a valid ${row.id} function name (a reserved word)` : '';
+}
 // Why a contract's name or path breaks its kind's rule, or ''.
 export function nameError(c, facts = null) {
   const kind = kindOf(c), name = String(c?.name ?? '');
