@@ -486,3 +486,15 @@ Round 8 rechecked round 7's 11 fixes (10 closed, 1 reopened) and confirmed 17 ne
 - **Edges.** Link readers are named `reader-<hex16>` like every other agent. Bench comments say a dataset comes from any host `FETCH_ALLOW` allows.
 - **Records.** The level-file comments, rulings, how-it-works and the changelog say what writes a level file (an admission, a serves join, an archive); README and INSTALL say the box runs its image's fixed set of languages; the dashboard says the manager's splitter states its level.
 - **Waiting on the owner** (refused by the session's permission check as weakening security): the box's path and origin rules on HTTP steps and ready paths; the read-only package tree; fetching links written in follow-up prompts (a patch is ready); the fetcher's suffix lists over `FETCH_ALLOW` and its 3-redirect count. Also waiting: a representation for a base repo's symbolic links.
+
+## Round 9 of the owner's red team
+
+Round 9 rechecked round 8's 12 fixes (all closed) and confirmed 18 new findings; five fixers took them.
+
+- **Splitter.** A command contract is stored under the name the splitter gives it (no character grammar). A route's or a command's three examples are those of the checks the splitter declares as serving it: no argv[0] or path-parameter matching, so `python3 convert.py …` runs and `GET /items/<id>` routes complete. Its retry and piece texts name no reviewer and no worker.
+- **Builder.** The file at a contract's path stays the worker's delivery, with the builder's renames applied, and a complaint about it goes to that worker. A builder's file written at a delivered file's path goes in the builder's own folder, and `write_file` says where.
+- **Box.** A command check compares what the process printed, as printed, with what the splitter wrote: no CRLF or trailing-whitespace normalisation, and no rewriting of box paths in stdout, stderr, stacks or logs. The call-adapter and hostname comments say what the code does.
+- **Links.** A benchmark task's room gets the deployment's hosts, as a person's room does, so its prompt's links are read. Every `SELF_HOSTS` entry and every host given at Start is kept. A prompt's links, and every part of every page, are read at the same time.
+- **Records.** The dashboard and how-it-works say the box runs its image's languages ("Any code type" waits on the owner). The bench panel says Rooms at once is capped by `BENCH_EXECUTORS` and each compile runs in its own fresh box. rulings.md lists only the check helpers that are kept. The level-file records say the manager routes on its children's labels and contracts.
+- **The owner's 2026-10-17 rulings** are in docs/owner/rulings.md. Refused by the session's permission check in Auto mode even after them: installing npm packages with their scripts, and dropping the fetcher's content-type refusal (this round's), with the box protections, the sanitising and labels, the fetcher's guards and base_confirm from earlier rounds.
+
