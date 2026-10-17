@@ -71,10 +71,10 @@ export const logged = boxes => ({build: async req => {
   return verifyChecks({...req, snapshot_hash: await snapshotHash(req.files)}, {isolation: []});
 }});
 // The toolkit room, started and run until it settles; base: {path: text | {base64, reason}} as a previous result it starts from.
-export async function toolkit({split = splitFor(), leaf = leafOf(), clef = clefFor(), budget = 120, prompt = GOAL, base = null, room_id = 'toolkit'} = {}) {
+export async function toolkit({split = splitFor(), leaf = leafOf(), clef = clefFor(), build, budget = 120, prompt = GOAL, base = null, room_id = 'toolkit'} = {}) {
   const boxes = [];
-  if (!base) { const r = await levelRoom({prompt, split, leaf, clef, budget, executor: logged(boxes), room_id}); return {...r, boxes}; }
-  const r = liveRoom({split, leaf, clef, executor: logged(boxes), room_id});
+  if (!base) { const r = await levelRoom({prompt, split, leaf, clef, build, budget, executor: logged(boxes), room_id}); return {...r, boxes}; }
+  const r = liveRoom({split, leaf, clef, build, executor: logged(boxes), room_id});
   r.env.ROOMS = {getByName: () => ({appFiles: async () => ({kind: 'levels', passed: true, room_status: 'complete', files: Object.entries(base).map(([path, v]) => typeof v === 'string' ? {path, content: v} : {path, content_base64: v.base64, passthrough: true, reason: v.reason || 'carried'})})})};
   const s = await r.room.start(prompt, budget, {pipeline: 'v8'}, room_id, {base: {room: 'base-room-0001'}});
   if (s?.error) throw new Error(s.error);
@@ -91,7 +91,7 @@ export async function runOn(room, list, bundle) {
   for (const v of list.filter(v => v.check.kind === 'file')) out.push({id: v.id, passed: !!fileResult(v.check, files).passed});
   const box = list.filter(v => v.check.kind !== 'file' && v.check.kind !== 'judge');
   if (!box.length) return out;
-  const {plan, toolchains, local} = checkPlan(room.specOf(box), files, {rows: room.installedToolchains(), placed: bundle.placed, paths: bundle.link?.paths});
+  const {plan, toolchains, local} = checkPlan(room.specOf(box), files, {rows: room.installedToolchains(), placed: bundle.placed});
   for (const [id, x] of local) out.push({id, passed: !!x.passed, detail: x.detail});
   if (plan.checks.length) {
     const rep = await verifyChecks({mode: 'checks', fingerprint: 'x', snapshot_hash: await snapshotHash(ship), files: ship, plan: {...plan, syntax: []}, toolchains, limits: {total_ms: 60000, check_ms: 20000, step_ms: 4000}}, {isolation: []});

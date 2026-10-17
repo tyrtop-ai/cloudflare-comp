@@ -3,10 +3,9 @@ import { parse as parseJs } from './vendor/acorn.mjs';
 import { normalizeSpawn, interfaceErrors, GENERIC_NAMES, signature, promiseText, testPieces, goalAboutTests } from './interfaces.js';
 import { goalMethods } from './api-coverage.js';
 import { workerAction } from './worker-output.js';
-import { systemPrompt, CLEF, clefText, RETRY, LINK_SCOPE } from './prompts.js';
+import { CLEF, clefText } from './prompts.js';
 import { contractLine } from './contracts.js';
 import { checkSummary, internalCandidate } from './validations.js';
-import { toolchainOf } from './toolchains.js';
 export { NO_ANSWER };
 // v8 (S6): a call runs v8's prompts when the room's pipeline is v8. The room
 // says so in the env it passes (inferenceEnv's PIPELINE), so every call site
@@ -721,29 +720,23 @@ export const LINKER_SYSTEM = `You are a LINKER for code that independent workers
 // Said only when the request shows a branch built below or a file in one.
 export const LINKER_BELOW = ` A file given as an excerpt (hunks of its imports to fix and the lines that use them) instead of content lives inside a branch built below: copy each find from one hunk, long enough to occur nowhere else in the file. other_modules_exports shows a branch built below only by the modules it offers.`;
 const withoutThinking=output=>stripReasoning(contentOf(output));
-export async function linkComponents(env, {goal, files, interfaces, allPaths, diagnostic='', known_mismatches=[], scope='application', below=false, v8=false}) {
+// v7 only: v8's builder works through functions (src/builder.js).
+export async function linkComponents(env, {goal, files, interfaces, allPaths, diagnostic='', known_mismatches=[], scope='application', below=false}) {
   if (env.MOCK_AI === 'true') return {edits:[],issues:[]};
-  // v8 (S6): ROLE.linker + FORMAT.linker; the binding rules of
-  // the files' own toolchain rows travel as data (binding_rules), never in
-  // the system text.
-  const linkV8=pipelineV8(env,{v8}),rules=linkV8?[...new Set(files.map(f=>toolchainOf(f.path)?.binding_rules).filter(Boolean))]:[];
-  // v8: one text at every level (LINK_SCOPE.piece); v7 keeps its scope.
   const request=JSON.stringify({
-    ...(linkV8?{scope_means:LINK_SCOPE.piece}:{scope}),
-    ...(rules.length?{binding_rules:rules}:{}),
-    ...(linkV8?{}:{application_goal:String(goal||'').slice(0,1200)}),
+    scope,
+    application_goal:String(goal||'').slice(0,1200),
     known_mismatches:known_mismatches.length?known_mismatches:undefined,
     your_files:files.map(f=>f.excerpt?{path:f.path,excerpt:f.excerpt}:{path:f.path,content:f.content}),
     other_modules_exports:interfaces,
     all_module_paths:allPaths,
     previous_attempt_error:diagnostic||undefined
   });
-  const system=linkV8?systemPrompt('linker'):LINKER_SYSTEM+(below?LINKER_BELOW:'');
+  const system=LINKER_SYSTEM+(below?LINKER_BELOW:'');
   let output=await run(env,system,request,4096,{call:'linkComponents',role:'linker'});
   let parsed=parseObject(withoutThinking(output));
   if(parsed.parse_error) {
-    output=await (linkV8?run(env,system,JSON.stringify({...JSON.parse(request),previous_answer_problems:[RETRY.json]}),4096,{call:'linkComponents',role:'linker',retry:true}):
-      run(env,system+'\nRETRY: return strictly valid JSON with edits and issues. No markdown.',request,4096,{call:'linkComponents',role:'linker',retry:true}));
+    output=await run(env,system+'\nRETRY: return strictly valid JSON with edits and issues. No markdown.',request,4096,{call:'linkComponents',role:'linker',retry:true});
     parsed=parseObject(withoutThinking(output));
   }
   if(parsed.parse_error)return {edits:[],issues:[],parse_error:true,raw:parsed.raw};

@@ -38,20 +38,18 @@ import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
 import { inheritServes, otherName, kindOf as contractKind, contractLine, gateLine, useReferences, PLACED_KINDS, contractInputs, contractOutputs } from './contracts.js';
 import { branchDirectory, packageDirectory, packagePath, partsRoot, PARTS_ROOT } from './assembly.js';
-// v8 S5: the polyglot linker (bundle links, runtime glue, rename-only repair).
-import { linkBundle, renameFromRun, editChecks, textHash, importClosure } from './glue.js';
-import { placeChecks, checkEntries, installedModule, outsideFailure, routeNames, moduleInPiece, checkUses } from './piece.js';
-import { applyTextEdits } from './linker.js';
+import { placeChecks, checkEntries, installedModule, outsideFailure, routeNames, checkUses, importClosure, textHash } from './piece.js';
 import { unresolvedNames } from './toolchains.js';
 import { zipFiles } from './zip.js';
 import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, rootRefs, chunksFor, baseNotes, sha256Bytes, gitMode, MAX_SOURCE_CHUNKS, SOURCE_CLAUSE, summariesFor, namedIn } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
 import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer, packageAnswer } from './broker.js';
-import { normalizePackages, installedPackages, heldByName, heldForNeed, packageLanguage, languageAnswer, externalModule, readsModule, piecePackages, packageLine, needOf } from './packages.js';
+import { normalizePackages, installedPackages, heldByName, heldForNeed, packageLanguage, languageAnswer, readsModule, piecePackages, packageLine, needOf } from './packages.js';
 import { caseTwin, boxPathError } from '../container/build-path.mjs';
 import { contractExamples, checkSummary, checkExamples, renderExample } from './validations.js';
 import { splitLevel } from './splitter.js';
 import { workerWorld, workerSession } from './worker.js';
+import { builderWorld, builderSession, builderWork } from './builder.js';
 import { toBase64 } from './zip.js';
 import { ExportError, NO_TOKEN, githubExportOptions, exportToGitHub, redact } from './github-export.js';
 
@@ -529,7 +527,7 @@ export class ControlRoom extends DurableObject {
     db.exec('CREATE TABLE IF NOT EXISTS artifact_files (agent TEXT NOT NULL, path TEXT NOT NULL, revision INTEGER NOT NULL, commit_hash TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(agent,path))');
     // Export index is populated on successful Artifacts writes, not at download time.
     db.exec('CREATE TABLE IF NOT EXISTS artifact_contents (agent TEXT NOT NULL, path TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY(agent,path))');
-    // v8 M3: each builder's assembled piece, on its row: the linked files with their writer and own path, placed and glue marks.
+    // v8 M3: each builder's stored piece, on its row: the joined files with their writer and own path, placed marks, and glue for the builder's own files.
     // v8 M3 review (M4): the files a syntax step compiled cleanly, by row, step and the digest of their exact bytes.
     db.exec('CREATE TABLE IF NOT EXISTS syntax_clean (key TEXT PRIMARY KEY)');
     db.exec("CREATE TABLE IF NOT EXISTS piece_files (builder TEXT NOT NULL, path TEXT NOT NULL, content TEXT NOT NULL, owner TEXT NOT NULL DEFAULT '', owner_path TEXT NOT NULL DEFAULT '', placed INTEGER NOT NULL DEFAULT 0, glue INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(builder,path))");
@@ -1405,7 +1403,7 @@ export class ControlRoom extends DurableObject {
   async projectApp() {
     // A room made before levels exports its top row's bundle.
     const m=this.roomManager()||(this.earlierRoom()?this.topId():null);
-    const bundle=m?await this.bundleFiles(m):{files:new Map(),link:null},{files,link}=bundle;
+    const bundle=m?await this.bundleFiles(m):{files:new Map()},{files}=bundle;
     if(!files.size) {
       const status=this.get('status','idle'),why=!m?'no run has started in this room':'no piece has delivered a file yet';
       return {status:409,error:['complete','failed'].includes(status)?`No application to export: this room ended (${status}) and ${why}. Start a new room to build one.`:
@@ -1421,7 +1419,7 @@ export class ControlRoom extends DurableObject {
       last?.digest?`These files differ from the last run that passed every validation (snapshot ${last.digest.slice(0,16)}), so they have not passed as exported.`:
       'The validations have not all passed on these files yet.';
     const app={room:this.get('room_id',''),goal:this.userGoal(),room_status:this.get('status','idle'),agents:this.allNodes().length,kind:'levels',
-      entry:null,passed:!!hit,fingerprint:hit?.input??null,digest,note,...(unchecked.length?{unchecked}:{}),...(link&&Object.keys(link.paths).length?{paths:link.paths}:{})};
+      entry:null,passed:!!hit,fingerprint:hit?.input??null,digest,note,...(unchecked.length?{unchecked}:{})};
     // v8 S8b review: the export is the base plus the changes. A base file keeps
     // its mode, and says whether the room changed it (from_base); the files the
     // room carried untouched follow the hashed ones, as bytes, and RUN.md lists
@@ -3647,23 +3645,18 @@ export class ControlRoom extends DurableObject {
 
   // ---------- v8: a level's piece and its validations (S4b, §4.1) ----------
   // A manager's piece, as its compiler runs the validations on it (§4.1 step
-  // 1; v8 M3, joinPiece): its builder joins its children's assembled pieces,
-  // then links them (linkBundle, S5 §5): the JavaScript links, a page's
-  // references, and for a row with glue the runtime's shims, package markers
-  // and module path, with the rename-only fixes kept for that bundle from a
-  // run's errors (link_fixes:<row>). origin: each bundle path's writer and
-  // its own path; placed: the placed paths; glue: the runtime-written files;
-  // link: linkBundle's report.
+  // 1; v8 M3, joinPiece): its children's files, each where the level file
+  // places it, with what its builder made of them (its renames and its own
+  // files, builtWork). origin: each bundle path's writer and its own path;
+  // placed: the placed paths; by: the child each delivered file is the work
+  // of; glue: the builder's own files.
   async bundleFiles(m) {
-    if(!this.node(m))return {files:new Map(),origin:new Map(),placed:new Set(),glue:new Map(),link:null,top:m};
+    if(!this.node(m))return {files:new Map(),origin:new Map(),placed:new Set(),by:new Map(),glue:new Map(),top:m,raw:new Map()};
     return this.joinPiece(m);
   }
-  // linkBundle over a bundle's files, sorted, with the fixes kept for it.
-  linkPiece(top, files, origin, placed, contracts, {fixes={}, atomic=false}={}) {
-    const link=linkBundle(new Map([...files].sort(([a],[b])=>a<b?-1:a>b?1:0)),{pieces:new Map([...origin].map(([p,o])=>[p,o.owner])),contracts,fixes,rows:this.installedToolchains(),atomic,parts:this.partsRoot(),
-      // S8b: a base file carried untouched (not built) still holds its path: no shim goes there.
-      held:this.passthroughPaths()});
-    const bundle={files:link.files,origin,placed,glue:link.glue,link,contracts,top,raw:files};
+  // A bundle of joined files, sorted, with the base's carried files and what the box cannot hold.
+  pieceBundle(top, files, origin, placed, by, glue, raw) {
+    const bundle={files:new Map([...files].sort(([a],[b])=>a<b?-1:a>b?1:0)),origin,placed,by,glue,top,raw};
     if(this.holdsBase(top))this.addCarried(bundle);
     // A file at a path outside the box's folder (the box's own safety, boxPathError) ships, never in the box: what the person accepts unchecked.
     const hidden=[...bundle.files.keys()].filter(p=>boxPathError(p));
@@ -3677,7 +3670,7 @@ export class ControlRoom extends DurableObject {
   // never seen by a model) ship with the bundle of the row that holds the
   // base, so its checks run with them and its syntax step compiles them: each
   // that is text at a path the box holds, while the box holds them all
-  // (BUILD_LIMITS), joins the files after the link (carried); the others are
+  // (BUILD_LIMITS), joins the files after the builder's (carried); the others are
   // listed with why the box cannot hold them (unsent). A piece's file at the
   // same path (or one apart from case) ships instead.
   addCarried(bundle) {
@@ -3698,7 +3691,7 @@ export class ControlRoom extends DurableObject {
   }
   // v8 S8b (§7.1): the project's base files under every piece's, byte for
   // byte where no piece replaced them; an untouched one is nobody's work (no
-  // origin), so the link never edits it and a check's frame there is never
+  // origin), so no builder's rename reaches it and a check's frame there is never
   // routed. v8 M2: in the bundle of the row that holds the base (the top's,
   // given by its handler).
   addBase(top, files, origin, placed) {
@@ -3723,36 +3716,38 @@ export class ControlRoom extends DurableObject {
     const gone=x=>{for(let y=x;y&&y.id!==id;y=y.parent?this.node(y.parent):null)if(['retired','failed','archived'].includes(y.status))return true;return false;};
     return this.subtree(id).slice(1).map(x=>this.node(x)).filter(x=>x&&!isRuntimeNode(x)&&!this.manager(x.id)&&!gone(x));
   }
-  // A manager's piece: its builder joins its children's assembled pieces, a
-  // worker's delivered files (a placed file at the path its contract names,
-  // any other under <parts root>/<package directory>/) or a child manager's
-  // builder output as that builder stored it (piece_files), so a rename a
-  // lower builder made stays with its piece; then links the whole with its
-  // own kept fixes (link_fixes:<builder>). A child manager whose builder has
-  // stored no piece is joined as its builder would join it. Returns the bundle
-  // (bundleFiles' shape) with raw, the files before linking.
+  // A manager's piece: the runtime copies its children's work into one
+  // bundle, each file where the level files place it: a worker's delivered
+  // files (a placed file at the path its contract names, any other under
+  // <parts root>/<package directory>/) or a child manager's piece as its
+  // builder stored it (piece_files: its renames and its own files with it).
+  // A child manager whose builder has stored no piece is joined as its files
+  // stand. Then what this level's builder made of them (builtWork): each
+  // renamed file's text where the delivered text is still the one the rename
+  // was made from, and the builder's own files. Returns the bundle
+  // (bundleFiles' shape) with raw, the files as copied.
   async joinPiece(m, bid=this.builderOf(m)?.id||null) {
-    const files=new Map(),origin=new Map(),placed=new Set(),found=[],stray=[];
+    const files=new Map(),origin=new Map(),placed=new Set(),by=new Map(),found=[],stray=[];
     // Which child delivers which contract, and the path each places, as the level files say (designOf).
     const leaves=this.pieceLeaves(m),placedBy=new Map(),design=new Map(leaves.map(l=>[l.id,this.designOf(l.id)]));
     for(const leaf of leaves)for(const c of design.get(leaf.id).contracts)if(c.path&&!placedBy.has(c.path))placedBy.set(c.path,leaf);
-    const take=(at,content,o,isPlaced)=>{
-      if(files.has(at)){found.push(`${at} (${this.node(o?.owner)?.label||'the existing project'})`);return;}
-      files.set(at,content);if(o)origin.set(at,o);if(isPlaced)placed.add(at);
+    const take=(at,content,o,isPlaced,child)=>{
+      if(files.has(at)){found.push(`${at} (${(o?.owner&&this.node(o.owner)?.label)||child.label})`);return;}
+      files.set(at,content);by.set(at,child.id);if(o)origin.set(at,o);if(isPlaced)placed.add(at);
     };
     for(const c of this.children(m).filter(c=>!isRuntimeNode(c)&&!['retired','failed','archived'].includes(c.status))) {
       if(this.manager(c.id)) {
         const cb=this.builderOf(c.id),stored=cb&&this.read(`piece:${cb.id}`,null);
         if(stored) {
-          for(const r of query(this.db(),'SELECT path,content,owner,owner_path,placed FROM piece_files WHERE builder=? AND glue=0 ORDER BY path',cb.id)) {
+          for(const r of query(this.db(),'SELECT path,content,owner,owner_path,placed FROM piece_files WHERE builder=? ORDER BY path',cb.id)) {
             // A copy of a path a piece outside that child places is left out here, as a worker's is.
             if(r.owner&&!r.placed&&placedBy.has(r.owner_path)&&placedBy.get(r.owner_path).id!==r.owner){stray.push(`${r.owner_path} (written by ${this.node(r.owner)?.label||r.owner}, placed by ${placedBy.get(r.owner_path).label})`);continue;}
-            take(r.path,r.content,r.owner?{owner:r.owner,owner_path:r.owner_path}:null,!!r.placed);
+            take(r.path,r.content,r.owner?{owner:r.owner,owner_path:r.owner_path}:null,!!r.placed,c);
           }
           continue;
         }
         const inner=await this.joinPiece(c.id,null);
-        for(const [at,content] of inner.raw)take(at,content,inner.origin.get(at)||null,inner.placed.has(at));
+        for(const [at,content] of inner.raw)take(at,content,inner.origin.get(at)||null,inner.placed.has(at),c);
         continue;
       }
       const placing=design.get(c.id)||this.designOf(c.id),own=new Set(placing.contracts.map(x=>x.path).filter(Boolean));
@@ -3762,16 +3757,23 @@ export class ControlRoom extends DurableObject {
         // never shipped.
         if(!own.has(f.path)&&placedBy.has(f.path)&&placedBy.get(f.path).id!==c.id){stray.push(`${f.path} (written by ${c.label}, placed by ${placedBy.get(f.path).label})`);continue;}
         const place=own.has(f.path),at=place?f.path:packagePath(placing.label,f.path,c.id,this.partsRoot());
-        take(at,await this.indexedContent(c.id,f.path),{owner:c.id,owner_path:f.path},place);
+        take(at,await this.indexedContent(c.id,f.path),{owner:c.id,owner_path:f.path},place,c);
       }
     }
     const actor=bid||m;
     if(found.length)this.noteOnce(actor,'bundle_conflict',`Two pieces place a file at the same path; the first is kept: ${found.join(', ')}.`);
     if(stray.length)this.noteOnce(actor,'bundle_stray',`Left out of the project: a copy of a path another piece's contract places: ${stray.join(', ')}.`);
     this.addBase(m,files,origin,placed);
-    const contracts=leaves.flatMap(l=>design.get(l.id).contracts.filter(c=>contractKind(c)==='function').map(c=>({name:c.name,kind:'function',owner:l.id})));
-    return this.linkPiece(m,files,origin,placed,contracts,{fixes:bid?this.read(`link_fixes:${bid}`,{}):{}});
+    const raw=new Map(files),work=bid?this.builtWork(bid):null,glue=new Map(),left=[];
+    for(const [p,r] of Object.entries(work?.renamed||{}))if(by.has(p)&&r?.base===textHash(files.get(p)))files.set(p,r.text);
+    const taken=new Set([...files.keys(),...(this.holdsBase(m)?this.passthroughPaths():[])]);
+    for(const [p,t] of Object.entries(work?.glue||{})){if(caseTwin(p,taken)){left.push(p);continue;}files.set(p,t);glue.set(p,t);}
+    if(left.length)this.noteOnce(actor,'bundle_conflict',`Left out: a file the builder wrote at a path that now holds a delivered or existing file: ${left.join(', ')}.`);
+    return this.pieceBundle(m,files,origin,placed,by,glue,raw);
   }
+  // What a builder made of its children's files: {renamed: {path: {base,
+  // text, renames}}, glue: {path: text}} (src/builder.js builderWork).
+  builtWork(bid) { return this.read(`built:${bid}`,null); }
   // The row a check held here rolls up to: the agent above, or null when
   // the row above is the prompt handler (it holds nothing).
   agentAbove(id) { const p=this.node(id)?.parent; return p&&this.node(p)?p:null; }
@@ -3787,14 +3789,14 @@ export class ControlRoom extends DurableObject {
     return textHash(JSON.stringify([parts.sort(),this.heldDigest(id)]));
   }
   // What a manager's builder joins, as one fingerprint: each child's owned
-  // digest (a worker) or stored piece digest (a manager), the contracts the
-  // links read, the builder's kept fixes and the base. v8 M3 review 2: a
-  // worker's, the fixes kept for its own bundle (link_fixes:<worker>).
-  pieceInput(m) {
-    const kids=this.children(m).filter(c=>!isRuntimeNode(c)&&!['retired','failed','archived'].includes(c.status)),b=this.builderOf(m);
-    return textHash(JSON.stringify([kids.map(c=>this.manager(c.id)?[c.id,'piece',this.read(`piece:${this.builderOf(c.id)?.id}`,null)?.digest||'']:[c.id,'files',this.ownedDigest(c.id),this.designOf(c.id).contracts.map(x=>`${x.name}|${x.path||''}`)]),
-      b?this.read(`link_fixes:${b.id}`,{}):this.manager(m)?{}:this.read(`link_fixes:${m}`,{}),this.heldDigest(m)]));
+  // digest (a worker) or stored piece digest (a manager), the paths the
+  // level file places, and the base (joinedInput); with what its builder
+  // made of them (pieceInput).
+  joinedInput(m) {
+    const kids=this.children(m).filter(c=>!isRuntimeNode(c)&&!['retired','failed','archived'].includes(c.status));
+    return textHash(JSON.stringify([kids.map(c=>this.manager(c.id)?[c.id,'piece',this.read(`piece:${this.builderOf(c.id)?.id}`,null)?.digest||'']:[c.id,'files',this.ownedDigest(c.id),this.designOf(c.id).contracts.map(x=>`${x.name}|${x.path||''}`)]),this.heldDigest(m)]));
   }
+  pieceInput(m) { const b=this.builderOf(m); return textHash(JSON.stringify([this.joinedInput(m),b?this.builtWork(b.id):null])); }
   // v8 M3: a manager whose children are all done hands them to its builder,
   // an agent row of its own at every level (spawned the first time). True
   // when the builder's stored piece joins exactly what the children hold now.
@@ -3806,7 +3808,7 @@ export class ControlRoom extends DurableObject {
       const gen=Number(this.get(`builder_gen:${m}`,'0')),key=gen?`builder:${m}:${gen}`:`builder:${m}`;
       // A batch reserved before (a room from before the builder's label was "Builder") is replayed as it was written.
       const kept=query(this.db(),'SELECT specs FROM spawn_batches WHERE batch_key=?',key)[0];
-      [b]=await this.spawn(m,kept?parse(kept.specs,[]):[{label:BUILDER_LABEL,role:'builder',task:`Join the work of ${n.label}'s direct children into one piece: rename references so they resolve, write the toolchain glue, and store the piece for the level above.`}],key);
+      [b]=await this.spawn(m,kept?parse(kept.specs,[]):[{label:BUILDER_LABEL,role:'builder',task:`Join the work of ${n.label}'s direct children into one piece: write the glue between their interfaces and rename interface names.`}],key);
       if(!b){this.event(m,'integration_capacity','No builder slot available.');return false;}
       this.event(m,'piece_handed',`Every child of ${n.label} is done; its builder joins their work.`,b.id);
       return false;
@@ -3817,12 +3819,18 @@ export class ControlRoom extends DurableObject {
     }
     return false;
   }
-  // v8 M3: the builder's turn, the same at every level. Once its manager's
-  // subtree is settled it joins the children's pieces (joinPiece), relinks a
-  // reference only where a check held at its manager reaches it (every
-  // reference when no agent is above), asking the link model only when the
-  // runtime's renames do not join it (relinkBundle), stores the piece on its
-  // row with its digest (piece_files, piece:<builder>), and wakes its manager.
+  // v8: the builder's turn, the same at every level. Once its manager's
+  // subtree is settled, the runtime copies the children's work into one
+  // bundle where the level file places each file (joinPiece), and the
+  // builder works on it in one session of its functions (src/builder.js):
+  // it reads the files and the design artifact (its manager's level file),
+  // writes the glue between their interfaces as files of its own, and
+  // renames interface names in its copies of the children's files. What it
+  // made is kept (built:<builder>) for every later join, the piece is stored
+  // on its row with its digest (piece_files, piece:<builder>) when it calls
+  // done, and its manager is woken. A session its context window ended goes
+  // on next turn in a new one, its work so far kept; the room's turn budget
+  // bounds it.
   async pieceBuilderTurn(id) {
     const n=this.node(id),m=n.parent;
     this.db().exec('DELETE FROM pending_turns WHERE agent=?',id);
@@ -3834,35 +3842,55 @@ export class ControlRoom extends DurableObject {
       return;
     }
     this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
-    const piece=await this.assemblePiece(id,{relink:true});
-    // The children's work kept changing while it was joined: it joins again on its next turn.
-    if(!piece){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);this.wake(id);return;}
-    const renamed=(piece.link?.edits||[]).length,summary=`Joined ${piece.raw.size} file(s) of ${this.node(m)?.label||m}'s children into one piece${renamed?`, ${renamed} of them renamed`:''}${piece.glue.size?`, with ${piece.glue.size} glue file(s)`:''}.`;
-    this.db().exec("UPDATE agents SET status='done',summary=? WHERE id=?",summary,id);
-    this.event(id,'piece_linked',summary);
+    const seen=this.joinedInput(m),piece=await this.joinPiece(m,id),labels=new Map(this.children(m).map(c=>[c.id,c.label]));
+    const from=new Map([...piece.by].map(([p,c])=>[p,labels.get(c)||c]));
+    const world=builderWorld({files:new Map([...piece.files].filter(([p])=>piece.by.has(p))),from,glue:piece.glue,
+      held:new Set([...[...piece.files.keys()].filter(p=>!piece.by.has(p)&&!piece.glue.has(p)),...(this.holdsBase(m)?this.passthroughPaths():[])])});
+    this.event(id,'working',`Turn ${n.turn+1}; joining ${world.files.size} file(s) of ${this.node(m)?.label||m}'s children.`);
+    const out=await builderSession(this.inferenceEnv('builder'),this.builderView(m,world),world);
+    this.save(`built:${id}`,builderWork(world,this.builtWork(id)||{},p=>textHash(piece.raw.get(p))));
+    const renames=[...world.renamed].flatMap(([p,list])=>list.map(r=>`${p}: ${r.from} → ${r.to}`));
+    const said=[out.transcript.length?`${out.transcript.length} call(s) in ${out.rounds} round(s)`:'no call',world.written.length?`wrote ${world.written.join(', ')}`:'',
+      renames.length?`renamed ${renames.join('; ')}`:'',world.unchanged.length?`unchanged ${world.unchanged.join(', ')}`:''].filter(Boolean).join('; ');
+    this.event(id,'session',clip(out.end?`${said}; ended with done.`:`${said}; ended without done (${out.reason==='context'?'its context window was full':out.reason}).`,900));
+    // Its session ended without done, or the children's work changed while it worked: it goes on next turn, its work kept.
+    if(!out.end||this.joinedInput(m)!==seen) {
+      if(out.end)this.event(id,'piece_moving',`The work of ${this.node(m)?.label||m}'s children changed while the builder joined it; it joins it again.`);
+      this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
+      this.save('queue',addLast(this.read('queue',[]),id));
+      return;
+    }
+    this.db().exec('UPDATE agents SET summary=? WHERE id=?',clip(out.end.summary,1100),id);
+    this.event(id,'report',clip(out.end.summary,1100),m);
+    const stored=await this.assemblePiece(id);
+    // The children's work kept changing while it was stored: it joins again on its next turn.
+    if(!stored){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);this.wake(id);return;}
+    this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
+    this.event(id,'piece_linked',`Stored the piece of ${this.node(m)?.label||m}: ${stored.files.size} file(s), ${Object.keys(this.builtWork(id)?.renamed||{}).length} renamed, ${stored.glue.size} of the builder's own.`);
     this.wake(m);
   }
-  // Join, relink when asked, and store a builder's piece; one piece_link span.
-  // v8 M3 review (M1): compare and store. The piece's input and its owned
-  // digest are read before the join (and so before a link model call), and
-  // the piece is stored, with those, only when both read the same once it is
-  // joined and digested; when a child's work changed meanwhile it is joined
-  // again. null when the children kept changing (ASSEMBLE_TRIES joins): the
-  // builder joins again on its next turn.
-  async assemblePiece(bid, {relink=false}={}) {
+  // The builder's request: the design artifact (its manager's level file, as
+  // the manager's repository holds it) and the paths of the files it joins,
+  // each with the piece it came from, and its own.
+  builderView(m, world) {
+    const files=[...world.files.keys()].sort().map(p=>({path:p,piece:world.from.get(p)||''}));
+    return {design:this.levelDesign(m),files:[...files,...[...world.glue.keys()].sort().map(p=>({path:p,yours:true}))]};
+  }
+  // Join and store a builder's piece; one piece_link span. v8 M3 review
+  // (M1): compare and store. The piece's input and its owned digest are read
+  // before the join, and the piece is stored, with those, only when both
+  // read the same once it is joined and digested; when a child's work
+  // changed meanwhile it is joined again. null when the children kept
+  // changing (ASSEMBLE_TRIES joins).
+  async assemblePiece(bid) {
     const m=this.node(bid).parent,start=Date.now();
-    let relinks=0;
     for(let tries=0;tries<ASSEMBLE_TRIES;tries++) {
       const input=this.pieceInput(m),owned=this.ownedDigest(m);
       const piece=await this.joinPiece(m,bid);
-      if(relink&&!relinks) {
-        const linkable=this.linkableHere(m,piece);
-        if(linkable.length&&await this.relinkBundle(bid,piece,linkable)){relinks++;continue;}
-      }
       const digest=await snapshotHash(piece.files);
       if(this.pieceInput(m)!==input||this.ownedDigest(m)!==owned)continue;
       this.storePiece(bid,piece,{input,owned,digest});
-      this.span('piece','piece_link',start,Date.now(),{manager:m,builder:bid,depth:this.depthOf(m),files:piece.raw.size,glue:piece.glue.size,renamed:(piece.link?.edits||[]).length,relinks,...(tries?{joins:tries+1}:{})},m);
+      this.span('piece','piece_link',start,Date.now(),{manager:m,builder:bid,depth:this.depthOf(m),files:piece.raw.size,glue:piece.glue.size,renamed:Object.keys(this.builtWork(bid)?.renamed||{}).length,...(tries?{joins:tries+1}:{})},m);
       return piece;
     }
     this.event(bid,'piece_moving',`The work of ${this.node(m)?.label||m}'s children changed each time it was joined (${ASSEMBLE_TRIES} times); the builder joins it again on its next turn.`);
@@ -3879,17 +3907,6 @@ export class ControlRoom extends DurableObject {
       db.exec('INSERT INTO piece_files(builder,path,content,owner,owner_path,placed,glue) VALUES (?,?,?,?,?,?,?)',bid,path,String(content??''),o?.owner||'',o?.owner_path||'',piece.placed.has(path)?1:0,piece.glue.has(path)?1:0);
     }
     this.save(`piece:${bid}`,{input,digest,owned,files:piece.files.size,glue:[...piece.glue.keys()],ts:Date.now()});
-    this.linkNotes(bid,input,piece);
-  }
-  // The references a builder's link may join: below the top, those in a file
-  // a check held at its manager reaches; never one that names a package or
-  // the language's own (externalHit), nor (v8 M3 review, M5), below the top,
-  // one that names what another piece provides: a flat link of the whole
-  // project resolves that at the level that holds both, with no model call
-  // here and no rename kept at this level.
-  linkableHere(m, piece) {
-    const below=!!this.agentAbove(m),reach=below?this.reachedPaths(m,piece):null,out=below?this.outsideOf(m):null,rows=this.installedToolchains();
-    return (piece.link?.unresolved||[]).filter(u=>(!reach||reach.has(u.path))&&!rows.some(r=>(r.executables||[]).includes(u.module))&&!this.externalHit(u,piece)&&!(out&&this.namesOutside(u,out,piece)));
   }
   // v8 M3 review (M3, M5): what the pieces outside a row's subtree provide:
   // their contract names that no leaf inside also has, their route
@@ -3904,30 +3921,11 @@ export class ControlRoom extends DurableObject {
     }
     return {names,routes,paths,stems};
   }
-  // Whether an unresolved reference names what another piece provides (a
-  // contract, or a file by its stem) and nothing in this piece.
-  namesOutside(u, out, piece) {
-    const stem=p=>String(p).split('/').pop().replace(/\.[^.]+$/,''),rows=this.installedToolchains();
-    const names=[u.name,...(u.module?[u.module,...String(u.module).split('.')]:[]),u.specifier?stem(u.specifier):''].filter(Boolean);
-    const here=x=>(piece.contracts||[]).some(c=>c.name===x)||moduleInPiece(x,piece.files,rows);
-    return names.some(x=>(out.names.has(x)||out.stems.has(x))&&!here(x));
-  }
   // The working leaves of the whole tree (every row with no agent above, and below it).
   treeLeaves() { return this.allNodes().filter(n=>!this.agentAbove(n.id)).flatMap(n=>this.pieceLeaves(n.id)); }
-  // The files the validations a row holds reach in its piece (their entries
-  // and the import closure of those).
-  reachedPaths(id, piece) {
-    const out=new Set();
-    for(const v of this.checksOf(id)) {
-      const {entries}=checkEntries(v,this.specOf([v]),piece.files,{placed:piece.placed});
-      for(const p of this.closureOf(id,entries,piece).reached)out.add(p);
-    }
-    return out;
-  }
   closureOf(id, entries, piece) {
     const rows=this.installedToolchains(),held=[...this.packagesOf(id),...this.installedSet()];
-    return importClosure(entries,piece.files,{rows,installed:(mod,row)=>installedModule(mod,row,{held,rows}),contracts:piece.contracts||[],
-      pieces:new Map([...piece.origin].map(([p,o])=>[p,o.owner])),parts:this.partsRoot(),held:this.passthroughPaths()});
+    return importClosure(entries,piece.files,{rows,installed:(mod,row)=>installedModule(mod,row,{held,rows}),parts:this.partsRoot(),held:this.passthroughPaths()});
   }
   // v8 M3, the hard fact for one validation in a piece: what it exercises is
   // there, and the import closure of those files lies inside the piece, in
@@ -4024,7 +4022,7 @@ export class ControlRoom extends DurableObject {
   }
   // v8 M3: of the due validations a row holds, those it runs itself, the
   // others rolled up to the row above: (a) the hard fact (reachFact), then
-  // (b) Clef's judgement of the reach the linker cannot see
+  // (b) Clef's judgement of the reach the import closure cannot show
   // (CLEF.piece_reach), asked only for those that pass (a). A row whose
   // parent is the room has no row above to hand one to, and runs every one
   // it holds. v8 M3 review (L7): Clef's answer is kept per validation key
@@ -4053,21 +4051,11 @@ export class ControlRoom extends DurableObject {
     this.rollUp(id,no.map(r=>({id:r.id,why:errors.has(r.id)?'Clef could not judge what it reaches':`Clef found that it reaches something another piece provides (p=${Number(p.get(r.id)??0).toFixed(3)})`})));
     return fact.filter(r=>!no.includes(r));
   }
-  // v8 live 4: whether a reference a link or a run left unresolved names a
-  // module outside the project (a package: the standard library's, or a
-  // third party's), which no rename joins (src/packages.js externalModule).
-  // v8 live 4 review (M2): only a module-level not-found ({module}, no
-  // name) for an installed module is one; "cannot import name X from Y"
-  // never is, so a misnamed project import goes to the relink.
-  externalHit(hit, bundle) {
-    if(!this.v8()||!hit?.module||hit.name)return false;
-    return externalModule({module:hit.module},this.projectNames(bundle));
-  }
-  // The project's names a module may be taken for (its files' stems and folders, its contracts), and what is installed.
+  // The project's names a module may be taken for (its files' stems and folders, its contracts).
   projectNames(bundle) {
     return bundle.external??=(()=>{
       const paths=[...bundle.files.keys()].filter(p=>!(bundle.glue||new Map()).has(p));
-      return {stems:[...new Set(paths.flatMap(p=>p.split('/').map(s=>s.replace(/\.[^.]+$/,''))))],contracts:[...this.contractNames()],held:bundle.top?this.packagesOf(bundle.top):this.installedSet(),rows:this.installedToolchains()};
+      return {stems:[...new Set(paths.flatMap(p=>p.split('/').map(s=>s.replace(/\.[^.]+$/,''))))],contracts:[...this.contractNames()]};
     })();
   }
   // Whether a module a run could not find is a package rather than a part
@@ -4101,88 +4089,11 @@ export class ControlRoom extends DurableObject {
       }
     }
   }
-  // S5: the link of a bundle in the room's events (once per input), and the
-  // runtime-written files in meta glue_files:<id> (runtime-owned, §4.7); id:
-  // the row that linked it (a builder, or a worker's own bundle).
-  linkNotes(id, input, {link, glue}) {
-    if(!link||this.get(`link_noted:${id}`,'')===input)return;
-    this.set(`link_noted:${id}`,input);
-    this.save(`glue_files:${id}`,[...(glue||new Map()).keys()]);
-    if(link.edits.length)this.event(id,'link_auto',clip(`Linked ${link.edits.length} file(s) by renaming only: `+link.edits.map(e=>`${e.path}: ${e.renames.map(r=>r.from?`${clip(r.from,80)} → ${clip(r.to,80)}`:r.to).join(', ')}`).join('; '),900));
-    if(glue?.size)this.event(id,'link_glue',clip(`The runtime wrote ${glue.size} glue file(s) so references resolve where the defining files sit: ${[...glue.keys()].join(', ')}.`,900));
-    for(const r of link.rejected.slice(0,6))this.event(id,'link_edit_rejected',clip(`${r.path}: ${r.reason}`,500));
-  }
-  // v8 S5 (§5.2 b): what a run of the validations reported unresolved, as rename-only
-  // fixes of the readers' linked copies. hits: [{path, row, module?, name?,
-  // specifier?}] (a run's errors read with the rows' unresolved patterns, or
-  // a reference the bundle's link left unresolved). Deterministic first
-  // (renameFromRun: the one project name a missing name canonically
-  // matches), else one linker model call per reader and text, whose edits
-  // must pass the row's rename-only check. A fix is kept in link_fixes:<id>
-  // (id: the builder whose piece it is, or a worker's own bundle) for the
-  // exact text it was made for (the staged text), so the next join applies
-  // it; a worker's own file is never edited. Every level links with the same
-  // words (no level knows whether one above it exists): what no rename
-  // joins is left as it is, and the run's failure reports it as a complaint.
-  // Returns the number of readers fixed.
-  async relinkBundle(id, bundle, hits) {
-    const {files,link,contracts=[]}=bundle,fixes={...this.read(`link_fixes:${id}`,{})},tried=new Set(this.read(`link_tried:${id}`,[]));
-    const pieces=new Map([...bundle.origin].map(([p,o])=>[p,o.owner])),byPath=new Map();
-    for(const h of hits)if(files.has(h.path)&&pieces.has(h.path))byPath.set(h.path,[...(byPath.get(h.path)||[]),h]);
-    let fixed=0;
-    const keep=(path,text,renames,how)=>{
-      const base=textHash(link.staged.get(path)??files.get(path));
-      fixes[path]={base,text,renames:renames.slice(0,12)};fixed++;
-      this.event(id,'link_renamed',clip(`${path}: ${renames.map(r=>`${r.from} → ${r.to}${r.reason?` (${r.reason})`:''}`).join('; ')} (${how}; the piece's own file is unchanged).`,700));
-    };
-    for(const [path,list] of byPath) {
-      const det=renameFromRun(files,path,list.filter(h=>h.module||h.name),{contracts,pieces,parts:this.partsRoot()});
-      if(det){keep(path,det.text,det.renames,'renamed by the runtime');continue;}
-      const key=`${path}:${textHash(files.get(path))}:${textHash(JSON.stringify(list.map(h=>[h.module,h.name,h.specifier])))}`;
-      if(tried.has(key))continue;
-      tried.add(key);
-      const row=toolchainOf(path),checks=editChecks(files,path,{contracts,pieces,free:list.map(h=>h.name),parts:this.partsRoot()});
-      const facts=this.referenceFacts(),fns=this.allNodes().flatMap(x=>this.promisedOf(x.id)).filter(c=>contractKind(c)==='function');
-      const what=list.map(h=>h.specifier?`the reference '${h.specifier}' names no file of the project`:h.name&&h.module?`${h.module} offers no ${h.name}`:h.module?`nothing in the project is named ${h.module}`:`${h.name} is bound nowhere in the file`);
-      let out;
-      try {
-        out=await linkComponents(this.inferenceEnv(),{v8:true,goal:this.goalFor(1200)??this.userGoal(),files:[{path,content:files.get(path)}],
-          interfaces:useReferences(fns,facts).map(u=>`${u.contract}; refer to it as: ${u.reference}`),allPaths:[...files.keys()].filter(p=>toolchainOf(p)?.id===row?.id),
-          diagnostic:clip(`The project's run found, in ${path}: ${[...new Set(what)].join('; ')}.`,600)});
-      } catch(e) {out={edits:[]};this.event(id,'link_model_error',clip(`The linker could not be asked about ${path}: ${e?.message||e}`,400));}
-      const edits=out.edits.filter(e=>e.file===path);
-      if(!edits.length){this.event(id,'link_unresolved',clip(`${path}: ${[...new Set(what)].join('; ')}; no rename joins it, so the run's failure reports it.`,600));continue;}
-      const result=row?.id==='javascript'?applyEdits(files.get(path),edits,{knownNames:checks.knownNames}):applyTextEdits(files.get(path),edits,row,{...checks,original:files.get(path)});
-      for(const r of result.rejected.slice(0,6))this.event(id,'link_edit_rejected',clip(`${path}: ${JSON.stringify(r.edit.find).slice(0,140)} → ${JSON.stringify(r.edit.replace).slice(0,140)}: ${r.reason}`,700));
-      if(result.content!==files.get(path))keep(path,result.content,result.applied.map(e=>({from:e.find,to:e.replace,reason:'the linker'})),'renamed by the linker');
-    }
-    this.save(`link_tried:${id}`,[...tried].slice(-200));
-    if(fixed)this.save(`link_fixes:${id}`,fixes);
-    return fixed;
-  }
-  // The unresolved names a run's failures report, per reader: each failed
-  // result's text read with every row's unresolved patterns; the reader is
-  // the innermost frame of that row in a piece's file, else the one piece
-  // file whose references name the module.
-  runUnresolved(results, bundle) {
-    const out=[],seen=new Set(),pieces=bundle.origin;
-    for(const [,res] of results) {
-      if(!res||res.passed||res.infrastructure)continue;
-      // v8 live 4: a package outside the project is the failure's package ask (answerMissingModules), never a rename's.
-      const text=`${res.detail||''}\n${res.output||''}`;
-      for(const row of this.installedToolchains().filter(r=>r.unresolved?.length)) {
-        for(const hit of unresolvedNames(text,row)) {
-          if(this.externalHit(hit,bundle))continue;
-          const frame=(res.frames||[]).find(f=>pieces.has(f.path)&&toolchainOf(f.path)?.id===row.id)?.path;
-          const named=hit.module?[...bundle.files.keys()].filter(p=>pieces.has(p)&&toolchainOf(p)?.id===row.id&&new RegExp(`(?:^|\\n)\\s*(?:from|import)\\s+${hit.module.replace(/\./g,'\\.')}\\b`).test(bundle.files.get(p))):[];
-          for(const path of frame?[frame]:named.length===1?named:[]) {
-            const k=JSON.stringify([path,hit.module,hit.name]);
-            if(!seen.has(k)){seen.add(k);out.push({path,row:row.id,...hit});}
-          }
-        }
-      }
-    }
-    return out;
+  // The validation table in a sentence, for a hold's or an escalation's text (the dashboard's; no worker reads it).
+  checksSummary(head, list=this.validationRows()) {
+    const status=this.read('validation_status',{});
+    const pass=list.filter(v=>status[v.id]?.passed===true),fail=list.filter(v=>status[v.id]?.passed===false),untested=list.length-pass.length-fail.length;
+    return clip(`${head} ${pass.length} of ${list.length} validation${list.length===1?'':'s'} pass${fail.length?`; failing: ${fail.map(v=>`${v.id} (${clip(checkSummary(v.check),80)}): ${clip(status[v.id].detail,160)}`).join('; ')}`:''}${untested?`; ${untested} untested`:''}.`,1050);
   }
   // The room holds at the validations: the agent that ran them waits on the
   // hold (the hold names it), and the run ends paused with the validation
@@ -4691,7 +4602,6 @@ export class ControlRoom extends DurableObject {
     // problem has no assignee), and what it declined (v7.15.6: answered done
     // without changing a file, M4).
     const mine=this.problems('trail LIKE ?',`%"at":${JSON.stringify(m)}%`),declinedBy=(p,under)=>(p.flags.declined||[]).some(under);
-    // v8 M3: the builder relinks when it joins the piece and after a run, never on a decision: the children here are the ones a problem goes to.
     for(const c of this.children(m).filter(c=>c.status!=='retired')) {
       const kind=ctx.kindOf(c.id),view={id:c.id,label:c.label,kind,status:c.status,task:clip(c.task,400)},under=id=>id===c.id||String(id||'').startsWith(c.id+'.');
       // Its promise: what this manager answers requests from (decision 2).
@@ -7855,17 +7765,14 @@ export class ControlRoom extends DurableObject {
   // exclusive control of its own turn, while unrelated strands can infer and
   // push to distinct Artifacts repositories concurrently. SQLite mutations
   // remain synchronous in this Durable Object and cannot interleave mid-call.
-  // v8 M3: a builder's turn joins pieces without a model action (the link
-  // model only for a relink), so like a manager's it spends no turn of the budget.
-  runtimeTurn(n) { return this.v8()&&isRuntimeNode(n); }
   // Whether a row's turn spends a turn of the run's budget: one whose answer
-  // a generative model writes. v7: every row but a manager. v8: a worker,
-  // and a manager's split step (its splitter answers: before its level is
-  // admitted, or for a job not admitted yet); a manager's routing and the
-  // runtime's rows spend none.
+  // a generative model writes. v7: every row but a manager. v8: a worker, a
+  // builder (a session of its functions), and a manager's split step (its
+  // splitter answers: before its level is admitted, or for a job not
+  // admitted yet); a manager's routing spends none.
   spendsTurn(id) {
     const n=this.node(id);
-    if(!n||this.runtimeTurn(n))return false;
+    if(!n)return false;
     if(!this.v8())return !this.manager(id);
     if(!this.manager(id))return true;
     const job=this.read(`level_job:${id}`,null);
@@ -9443,9 +9350,8 @@ export class ControlRoom extends DurableObject {
   // record of its last finished compile (verified:<id>, with the bundle's
   // digest) says that every validation of its subtree passed on exactly the
   // bundle it ships up. Returns {passed} | {reported} | {held} | {moved}.
-  // relinks counts the runs this call already redid after the link fixed a
-  // reference (at most two); owned, the digest it took first.
-  async compileLevel(id, {relinks=0, begun=Date.now(), owned:taken=null}={}) {
+  // owned: the digest it took first.
+  async compileLevel(id, {begun=Date.now(), owned:taken=null}={}) {
     const above=this.agentAbove(id),depth=this.depthOf(id);
     // A level with an escalation outstanding in its subtree waits for Continue.
     if(this.escalatedBelow(id).length){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
@@ -9478,13 +9384,12 @@ export class ControlRoom extends DurableObject {
     };
     const due=v=>!this.passedOn(v,digest);
     const runs=[...await this.pieceScope(id,all.filter(v=>here.has(v.id)&&due(v)),bundle,digest),...all.filter(v=>!here.has(v.id)&&due(v))],spec=this.specOf(runs);
-    // What of the piece no syntax step compiled, and the files whose issues stand; a link issue is found on every join.
+    // What of the piece no syntax step compiled, and the files whose issues stand.
     const standing=this.read(`compile_issues:${id}`,null),fresh=this.uncompiled(box);
     if(standing?.owned===owned)for(const p of standing.paths||[])if(box.has(p))fresh.add(p);
-    const linkIssues=bundle.link?.issues||[];
     // Code whose compile row the box's inventory has not confirmed yet: the box opens, and reports it.
     const asks=this.uncompilable(box).some(x=>x.unconfirmed);
-    if(!runs.length&&!fresh.size&&!linkIssues.length&&!asks)return finish({ran:0});
+    if(!runs.length&&!fresh.size&&!asks)return finish({ran:0});
     const input=`${digest}:${all.map(v=>v.id).join(',')}`;
     if(this.read(`compile_blocked:${id}`,null)?.input===input){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
     if(!files.size)return this.escalate(id,'checks_failed',`No part of "${this.node(id)?.label||id}" delivered a file to check.`);
@@ -9493,7 +9398,7 @@ export class ControlRoom extends DurableObject {
     // The Worker's own parser for a row that has one (native), the box's syntax step for the others: each only over the files it has not compiled.
     const parsed=this.localSyntax(box,fresh);
     const compile=new Map([...fresh].map(p=>[p,this.syntaxOf(p,files)?.row]).filter(([,row])=>row));
-    const {plan,toolchains,local,container}=checkPlan(spec,box,{rows:this.installedToolchains(),placed,paths:bundle.link?.paths,compile,inventory:asks});
+    const {plan,toolchains,local,container}=checkPlan(spec,box,{rows:this.installedToolchains(),placed,compile,inventory:asks});
     const results=new Map(local);
     for(const v of runs)if(v.check?.kind==='file')results.set(v.id,{id:v.id,kind:'file',frames:[],...fileResult(v.check,files)});
     // Clef judges each document, in parallel with the box.
@@ -9512,20 +9417,9 @@ export class ControlRoom extends DurableObject {
     const left=run?.infrastructure?new Set():this.uncompiled(box),named=new Set([...(report?.issues||[]),...parsed.issues].map(i=>i.path));
     const unbuilt=[...left].filter(p=>fresh.has(p)&&!named.has(p)),newly=[...left].filter(p=>!fresh.has(p));
     const notBuilt=unbuilt.length?`the syntax step left ${unbuilt.length} file(s) uncompiled with no issue of their own (${clip(unbuilt.join(', '),200)})`:'';
-    // A name or module the run could not resolve is renamed in its reader's linked copy when a rename joins it (in the
-    // builder's piece, which it joins again), and the checks run again; below a level that sees more, never one that names
-    // what another piece provides.
-    if(relinks<2&&report) {
-      const out=above?this.outsideOf(id):null,hits=this.runUnresolved(results,bundle).filter(h=>!(out&&this.namesOutside(h,out,bundle))),key=this.builderOf(id)?.id;
-      if(hits.length&&key&&await this.relinkBundle(key,bundle,hits)) {
-        await this.assemblePiece(key);
-        this.event(id,'checks_relinked',`The run reported ${hits.length} unresolved reference(s) that a rename joins; the checks run again on the linked files.`);
-        return this.compileLevel(id,{relinks:relinks+1,begun,owned});
-      }
-    }
     if(run?.infrastructure)for(const c of plan.checks)if(!results.has(c.id))results.set(c.id,{id:c.id,passed:false,infrastructure:true,detail:`not run: ${clip(run.infrastructure,200)}`});
     // Each validation's status; the other levels' keep theirs.
-    const status=this.read('validation_status',{}),issues=[...(report?.issues||[]),...parsed.issues,...linkIssues],bad=new Set(issues.map(i=>i.path).filter(Boolean));
+    const status=this.read('validation_status',{}),issues=[...(report?.issues||[]),...parsed.issues],bad=new Set(issues.map(i=>i.path).filter(Boolean));
     if(!run?.infrastructure)this.save(`compile_issues:${id}`,{owned,digest,paths:[...bad],ts:Date.now()});
     const passes=[];
     for(const v of runs) {
@@ -9558,7 +9452,7 @@ export class ControlRoom extends DurableObject {
       this.closeProblemsFrom(id,'resolved');
       if(!runs.length)this.event(id,'piece_compiled',`Every file of ${this.node(id)?.label||id}'s piece compiles (${fresh.size} compiled now; snapshot ${digest.slice(0,14)}).`);
       else this.event(id,'checks_passed',rolled.size?`${passes.length} of the validations held here passed against snapshot ${digest.slice(0,14)}; ${[...rolled].join(', ')} rolled up.`:`Every validation due here passed (${kept.length}) against snapshot ${digest.slice(0,14)}.`);
-      if(newly.length)return this.compileLevel(id,{relinks,begun,owned});
+      if(newly.length)return this.compileLevel(id,{begun,owned});
       return finish({ran:runs.length,passed:passes.length,rolled:rolled.size});
     }
     // This run is not a verified compile.

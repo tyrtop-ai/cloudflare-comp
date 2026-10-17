@@ -46,8 +46,8 @@ export const usualClef = (overrides = {}) => clefBy((key, state, input) => {
 });
 
 // A room started from the prompt on the v8 pipeline, run until it settles.
-export async function levelRoom({prompt, split, leaf, clef = usualClef(), link, file, budget = 80, settings = {}, room_id = 'levels-test', boxes, executor, store} = {}) {
-  const r = liveRoom({split, leaf, clef, link, file, boxes, executor, room_id, store});
+export async function levelRoom({prompt, split, leaf, clef = usualClef(), build, file, budget = 80, settings = {}, room_id = 'levels-test', boxes, executor, store} = {}) {
+  const r = liveRoom({split, leaf, clef, build, file, boxes, executor, room_id, store});
   const started = await r.room.start(prompt, budget, {pipeline: 'v8', ...settings}, room_id);
   if (started?.error) throw new Error(started.error);
   await r.drain();

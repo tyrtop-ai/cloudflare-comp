@@ -142,11 +142,11 @@ def load(module_path):
     root = os.getcwd()
     absolute = os.path.join(root, module_path)
     directory = os.path.dirname(absolute)
-    # v8 S5 review: the bundle root (dotted imports, the runtime's root shims)
+    # v8 S5 review: the bundle root (dotted imports, a module at the root)
     # and, for a file placed in a folder outside components/, that folder (a
     # sibling read by its bare name, as when the file runs as a script): both
     # AFTER the standard library, so no bundle file shadows a standard module.
-    # A piece's own files refer to each other relatively (the linker's form).
+    # A file under components/ reads the files beside it relatively.
     extra = [root]
     if not module_path.startswith("components/") and directory != root:
         extra.append(directory)

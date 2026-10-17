@@ -4,12 +4,12 @@
 // someone else wrote, no repair that reaches anyone else; no text says card.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ROLE, FORMAT, CLEF, RETRY, LINK_SCOPE, MESSAGES, TOOLS, promptTexts, systemPrompt, clefText } from '../src/prompts.js';
+import { ROLE, FORMAT, CLEF, RETRY, MESSAGES, TOOLS, promptTexts, systemPrompt, clefText } from '../src/prompts.js';
 import { lintText, lintAll, words, sentences, negations, capsWords, STRUCTURE_WORDS } from './helpers/prompt-lint.js';
 
-const ROLES = ['splitter', 'worker', 'linker'];
+const ROLES = ['splitter', 'worker', 'builder'];
 // Per-role caps: words of each format, and of the whole system prompt.
-const FORMAT_WORDS = {splitter: 60, worker: 80, linker: 60};
+const FORMAT_WORDS = {splitter: 60, worker: 80, builder: 60};
 const SYSTEM_WORDS = 640;
 
 test('every v8 prompt text passes the lint', () => {
@@ -22,7 +22,7 @@ test('every v8 prompt text passes the lint', () => {
   assert.deepEqual(lintAll(texts), []);
 });
 
-test('the generative roles are the splitter, the worker and the linker; each system prompt is its own job and its format', () => {
+test('the generative roles are the splitter, the worker and the builder; each system prompt is its own job and its format', () => {
   assert.deepEqual(Object.keys(ROLE).sort(), [...ROLES].sort());
   assert.deepEqual(Object.keys(FORMAT).sort(), [...ROLES].sort());
   for (const role of ROLES) assert.equal(systemPrompt(role), `${ROLE[role]}\n\n${FORMAT[role]}`);
@@ -79,7 +79,6 @@ test('each role paragraph is at most six sentences, and each text keeps its cap'
     assert.ok(sentences(text) <= 3 && words(text) <= 70, `CLEF.${key}`);
     assert.match(text, /\?/, `CLEF.${key} asks a yes/no question`);
   }
-  for (const [key, text] of Object.entries(LINK_SCOPE)) assert.ok(words(text) <= 40, key);
   for (const [key, text] of Object.entries(promptTexts()).filter(([k]) => k.startsWith('RETRY.'))) assert.ok(words(text) <= 50, key);
 });
 
@@ -126,6 +125,21 @@ test('the worker\'s functions are prompt texts too: each description and each pa
   assert.match(FORMAT.worker, /^Answer by calling your functions/);
   assert.doesNotMatch(FORMAT.worker, /=== FILE|=== CONTROL|json object|control block/i, 'no answer format to write');
   assert.doesNotMatch(ROLE.worker, /control block/);
+});
+
+test('the builder\'s functions are prompt texts too: each description and each parameter\'s is linted, names no structure around it, and holds no filled-in value to copy; its format says to call them, and no answer is parsed', () => {
+  const texts = Object.entries(promptTexts()).filter(([k]) => k.startsWith('TOOLS.builder.'));
+  assert.deepEqual([...new Set(texts.map(([k]) => k.split('.')[2]))], ['read_file', 'write_file', 'rename', 'done']);
+  assert.deepEqual(TOOLS.builder.map(t => t.name), ['read_file', 'write_file', 'rename', 'done']);
+  for (const [name, text] of texts) {
+    assert.deepEqual(lintText(name, text, {generative: true}), [], name);
+    assert.doesNotMatch(text, /"\w+"\s*:\s*["\[{]/, `${name} holds a filled-in field`);
+  }
+  assert.ok(TOOLS.builder.every(t => t.parameters.type === 'object'));
+  assert.deepEqual(Object.fromEntries(TOOLS.builder.map(t => [t.name, t.parameters.required])), {read_file: ['path'], write_file: ['path', 'content'], rename: ['path', 'from', 'to'], done: ['summary']});
+  assert.match(FORMAT.builder, /^Answer by calling your functions/);
+  assert.doesNotMatch(FORMAT.builder + ROLE.builder, /json|edits|issues|find|replace/i, 'no answer format to write');
+  assert.ok(!('linker' in ROLE) && !('linker' in FORMAT) && !('json' in RETRY), 'no linker prompt and no answer to retry');
 });
 
 test('Clef questions are filled by key, and run data never enters a system prompt', () => {

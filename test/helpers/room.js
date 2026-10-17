@@ -97,7 +97,9 @@ export function levelCalls(level,{user={},tools=['contract','piece','level','don
 export const {verifyChecks}=await import('../../container/build-runner.mjs');
 // A live room with a scripted linker, runner and coverage check. Any other
 // model request fails the request (and so the turn, or, for a manager's
-// model, the decision: its defaults apply). leaf(user, n) answers a
+// model, the decision: its defaults apply). build(user, n, system, {round,
+// results, tools}) answers a v8 builder's session (by default it calls done
+// at once). leaf(user, n) answers a
 // worker's turn (a repair) when a test drives the room with drive();
 // file(user, n) a worker's single-file correction; manager(user, n) a
 // manager's decision (an object, or raw text); split(user, n) the splitter
@@ -108,8 +110,8 @@ export const {verifyChecks}=await import('../../container/build-runner.mjs');
 // fails open, as these rooms predate it (v7.13.3). raw holds every
 // request's system prompt and user text as sent: on the room's default
 // model the runner's and coverage's end with ' /no_think' (v7.13.4).
-export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,source=null,executor,boxes,room_id='v714-test',store:given=null}={}) {
-  const calls={link:[],runner:[],leaf:[],leafRounds:[],coverage:[],file:[],manager:[],split:[],splitRounds:[],clef:[],source:[],raw:[]};
+export function liveRoom({link=()=>({edits:[],issues:[]}),build=null,runner=()=>runnerTest,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,source=null,executor,boxes,room_id='v714-test',store:given=null}={}) {
+  const calls={link:[],build:[],buildRounds:[],runner:[],leaf:[],leafRounds:[],coverage:[],file:[],manager:[],split:[],splitRounds:[],clef:[],source:[],raw:[]};
   const AI={run:async(_model,input)=>{
     if(!input.messages) {
       if(!clef)throw new Error('unexpected Clef request');
@@ -161,7 +163,20 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
       if(typeof a!=='string')return {response:JSON.stringify(a)};
       return {tool_calls:round===1?blockCalls(a):[{name:'wait',arguments:{summary:'no more calls'}}]};
     }
-    if(v8role==='linker'){calls.link.push(user);return send(await link(user,calls.link.length,system));}
+    // v8: the builder works through functions (src/builder.js). Its fake
+    // answers each round of its session with a list of calls [{name,
+    // arguments}] (a text is a reply with no call); with no fake it calls
+    // done at once. build(user, n, system, {round, results, tools}): n counts
+    // sessions; results are the previous round's results (parsed).
+    if(v8role==='builder'&&input.tools){
+      const round=messages.filter(m=>m.role==='assistant').length+1,last=messages.map(m=>m.role).lastIndexOf('assistant');
+      const results=round>1?messages.slice(last+1).filter(m=>m.role==='tool').map(m=>({name:m.name,result:JSON.parse(m.content)})):[],tools=input.tools.map(t=>t.name);
+      if(round===1)calls.build.push(user);
+      calls.buildRounds.push({session:calls.build.length,round,results});
+      const a=await (build||usualBuilder)(user,calls.build.length,system,{round,results,tools});
+      if(Array.isArray(a))return {tool_calls:a.map(c=>({name:c.name,arguments:c.arguments??{}}))};
+      return send(a);
+    }
     if(system.startsWith('You are a LINKER')){calls.link.push(user);return {response:JSON.stringify(link(user,calls.link.length))};}
     if(system.startsWith('You check an application\'s API')){calls.coverage.push(user);const a=coverage(user,calls.coverage.length);return {response:typeof a==='string'?a:JSON.stringify(a)};}
     if(system.startsWith('You are a MANAGER')) {
@@ -192,6 +207,70 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),runner=()=>runnerTest,
   const drain=async()=>{while(pending.length)await Promise.all(pending.splice(0));};
   return {room,store,calls,builds,sql,ctx,env,drain,boxes:BOXES};
 }
+// v8: the usual builder, as a model would join files through its functions
+// (src/builder.js): it reads every file, then points each reference that
+// reaches no file at the one that delivers what it names, by the design
+// (each contract's path) or by its name: a relative path renamed to the
+// file's path from the reader; a module named like a function contract
+// that no file at the root is gets a file of its own at the root that
+// takes the name from the file defining it (and a package marker in each
+// folder on the way); a bare reference from a file in a folder to a file
+// beside it becomes relative. Then it calls done.
+export function usualBuilder(user, _n, _system, {round, results}) {
+  const done = summary => [{name: 'done', arguments: {summary}}];
+  if (round === 1) return user.files.length ? user.files.map(f => ({name: 'read_file', arguments: {path: f.path}})) : done('nothing to join');
+  if (round > 2) return done('every reference reaches what it names');
+  const texts = new Map(results.filter(r => r.name === 'read_file' && typeof r.result?.content === 'string').map(r => [r.result.path, r.result.content]));
+  const calls = joinCalls(user.design, texts);
+  return calls.length ? calls : done('every reference already reaches what it names');
+}
+const dirOf = p => p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
+const stemOf = p => p.split('/').pop().replace(/\.[^.]+$/, '');
+const relative = (from, to) => {
+  const a = dirOf(from).split('/').filter(Boolean), b = to.split('/');
+  let i = 0;
+  while (i < a.length && i < b.length - 1 && a[i] === b[i]) i++;
+  return (a.length - i ? '../'.repeat(a.length - i) : './') + b.slice(i).join('/');
+};
+const under = (from, spec) => {
+  const out = [];
+  for (const part of `${dirOf(from)}/${spec}`.split('/')) { if (!part || part === '.') continue; if (part === '..') out.pop(); else out.push(part); }
+  return out.join('/');
+};
+export function joinCalls(design, texts) {
+  const contracts = design?.contracts || [], calls = [], wrote = new Set(), paths = [...texts.keys()];
+  const has = p => texts.has(p) || wrote.has(p);
+  const target = name => { const c = contracts.find(x => x.name === name && x.path && texts.has(x.path)); if (c) return c.path; const hit = paths.filter(p => stemOf(p) === name); return hit.length === 1 ? hit[0] : null; };
+  const definer = (name, ext) => paths.find(p => p.endsWith(ext) && new RegExp(`^def\\s+${name}\\s*\\(`, 'm').test(texts.get(p))) || null;
+  const jsDefiner = (name, reader) => paths.find(p => p !== reader && /\.(?:m|c)?js$/.test(p) && new RegExp(`(?:function\\s+${name}\\s*\\(|(?:const|let|var)\\s+${name}\\s*=|exports\\.${name}\\s*=)`).test(texts.get(p))) || null;
+  for (const [p, text] of texts) {
+    if (/\.(?:m|c)?js$/.test(p) || /\.html?$/.test(p)) {
+      const seen = new Set();
+      for (const m of text.matchAll(/(require\(\s*|from\s+|import\s+|src=)(['"])((?:\.{1,2}\/)?[\w./-]+)\2/g)) {
+        const spec = m[3], at = under(p, spec), esm = !m[1].startsWith('require'), named = [`${at}.js`, `${at}.mjs`, `${at}.cjs`].find(has);
+        if (seen.has(spec) || /^[\w@]/.test(spec) && !/\.(?:m|c)?js$/.test(spec) || has(at) || !esm && (named || has(`${at}/index.js`))) continue;
+        seen.add(spec);
+        // An ES module path names its file; any other names what the design or a file delivers.
+        const to = named || target(stemOf(spec)) || jsDefiner(stemOf(spec), p) || paths.find(x => x.endsWith('/' + spec.split('/').pop()));
+        if (to && to !== p) calls.push({name: 'rename', arguments: {path: p, from: spec, to: /\.html?$/.test(p) && !/^\.{1,2}\//.test(spec) ? relative(p, to).replace(/^\.\//, '') : relative(p, to)}});
+      }
+    } else if (p.endsWith('.py')) {
+      for (const m of text.matchAll(/^from\s+([A-Za-z_][\w.]*)\s+import\s+/gm)) {
+        const top = m[1].split('.')[0];
+        if (has(`${top}.py`) || paths.some(x => x.startsWith(`${top}/`))) continue;
+        if (dirOf(p) && texts.has(`${dirOf(p)}/${top}.py`)) { calls.push({name: 'rename', arguments: {path: p, from: top, to: `.${top}`}}); continue; }
+        const at = contracts.some(c => c.name === top) ? definer(top, '.py') : null;
+        if (!at || wrote.has(`${top}.py`)) continue;
+        const folders = dirOf(at).split('/').filter(Boolean);
+        for (let i = 1; i <= folders.length; i++) { const marker = `${folders.slice(0, i).join('/')}/__init__.py`; if (!has(marker)) { wrote.add(marker); calls.push({name: 'write_file', arguments: {path: marker, content: ''}}); } }
+        wrote.add(`${top}.py`);
+        calls.push({name: 'write_file', arguments: {path: `${top}.py`, content: `from ${at.replace(/\.py$/, '').replace(/\//g, '.')} import ${top}  # noqa: F401\n`}});
+      }
+    }
+  }
+  return calls;
+}
+
 // v8 §3.2: a worker's answer in the raw file-block format, for scripted v8
 // workers. The newline before the END line is the format's, so each file's
 // text comes back exactly, its last newline included.

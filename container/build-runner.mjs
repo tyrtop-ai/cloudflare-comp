@@ -716,14 +716,7 @@ function validateCheckPlan(raw) {
   const checks=list(plan.checks).filter(c=>c&&typeof c==='object'&&typeof c.id==='string'&&c.id);
   const runs=list(plan.runs).filter(r=>r&&typeof r.id==='string'&&(r.static===true||typeof r.run==='string'||Array.isArray(r.run)||Array.isArray(r.argv)));
   const commands=plan.commands&&typeof plan.commands==='object'?plan.commands:{};
-  // v8 S5: the module path the bundle's runtime glue needs: a *PATH variable
-  // and the bundle folders it lists (safe relative paths, or '.'), joined to
-  // each check's own copy of the bundle. Nothing else of the environment is
-  // the plan's.
-  const paths={};
-  for(const [name,dirs] of Object.entries(plan.paths&&typeof plan.paths==='object'?plan.paths:{}))
-    if(/^[A-Z][A-Z0-9_]{0,30}PATH$/.test(name)&&Array.isArray(dirs))paths[name]=dirs.filter(d=>typeof d==='string'&&(d==='.'||!boxPathError(d))).slice(0,8);
-  return {syntax:list(plan.syntax),install:list(plan.install),project:list(plan.project),runs,checks,commands,paths};
+  return {syntax:list(plan.syntax),install:list(plan.install),project:list(plan.project),runs,checks,commands};
 }
 async function writeTree(dir,files) {
   for(const [name,content] of Object.entries(files)){const target=path.join(dir,name);await mkdir(path.dirname(target),{recursive:true});await writeFile(target,content,'utf8');}
@@ -736,8 +729,6 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
   const files=Object.freeze(Object.fromEntries(validate(request,boxPathError)));
   const rows=(Array.isArray(request.toolchains)?request.toolchains:[]).filter(r=>r&&typeof r.id==='string');
   const plan=validateCheckPlan(request.plan),limits=checkLimits(request.limits);
-  // S5: only a variable a row's glue names as its module path (never a loader's).
-  const glueVars=new Set(rows.map(r=>r.glue?.path_setup?.env).filter(v=>typeof v==='string'&&!/^LD_|^DYLD_/.test(v)));
   const began=Date.now(),deadline=began+limits.total_ms,left=()=>deadline-Date.now();
   const base=process.env.BUILD_RUNNER_WORKDIR||'/work';
   const scratch=await realpath(await mkdtemp(path.join(base,'checks-')));
@@ -756,7 +747,6 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
     const box={root,dir:path.join(root,'bundle'),tmp:path.join(root,'tmp')};
     await mkdir(box.tmp);await mkdir(path.join(root,'pycache'));await writeTree(box.dir,files);
     box.env={...env,TMPDIR:box.tmp,TMP:box.tmp,TEMP:box.tmp,PYTHONPYCACHEPREFIX:path.join(root,'pycache')};
-    for(const [name,dirs] of Object.entries(plan.paths))if(dirs.length&&glueVars.has(name))box.env[name]=dirs.map(d=>d==='.'?box.dir:path.join(box.dir,d)).join(path.delimiter);
     box.dispose=()=>rm(root,{recursive:true,force:true});
     return box;
   };

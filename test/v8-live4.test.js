@@ -16,7 +16,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { liveRoom, events, rowId } from './helpers/room.js';
-import { installedPackages, installedLine, stdlibHints, heldForNeed, heldByName, packageLanguage, languageAnswer, missingModule, externalModule, piecePackages } from '../src/packages.js';
+import { installedPackages, installedLine, stdlibHints, heldForNeed, heldByName, packageLanguage, languageAnswer, missingModule, piecePackages } from '../src/packages.js';
 import { catalogue } from '../src/broker.js';
 import { MESSAGES, BROKER_LABEL } from '../src/prompts.js';
 import { TOOLCHAINS } from '../src/toolchains.js';
@@ -108,15 +108,10 @@ test('2: the installed set: what the rows install beyond their standard librarie
   assert.equal(packageLanguage('express'), 'javascript');
   assert.equal(packageLanguage('parse_input'), '');
   assert.equal(packageLanguage('package.json'), '');
-  // A run's report of a missing package, and which modules the linker leaves alone.
+  // A run's report of a missing package.
   assert.deepEqual(missingModule("Traceback (most recent call last):\nModuleNotFoundError: No module named 'flask'"), {module: 'flask', row: 'python'});
   assert.deepEqual(missingModule("Error: Cannot find package 'express' imported from /w/server.js"), {module: 'express', row: 'javascript'});
   assert.equal(missingModule("Error: Cannot find module './store'"), null);
-  assert.equal(externalModule({module: 'json'}, {stems: ['app']}), true, 'the language\'s own module');
-  assert.equal(externalModule({module: 'pytest'}, {stems: ['app'], held}), true, 'an installed package');
-  assert.equal(externalModule({module: 'flask'}, {stems: ['app'], held}), false, 'a name nothing installs may be a part under another name: the linker reads it');
-  assert.equal(externalModule({module: 'tally'}, {stems: ['app', 'top_words']}), false);
-  assert.equal(externalModule({module: 'json'}, {stems: ['json']}), false, 'a project file of that name is the project\'s');
   // A piece's packages: its parent's of its language, with the names it was given; an unlisted name is an ask, a standard library's needs none.
   const parent = [...held, {name: 'requests', language: 'python', provides: 'HTTP client'}, {name: 'express', language: 'javascript', provides: 'HTTP server'}];
   const server = piecePackages({interfaces: [{name: 'app.py', kind: 'file', path: 'app.py'}], packages: ['pytest', 'json', 'flask']}, parent);

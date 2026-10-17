@@ -3,7 +3,7 @@
 // rebuilt worker is handed what the archived one was; F5 a v8 room made
 // before levels does not run, and exports; F7 one path, one owner; F8 a
 // contract's examples come from its own validations; F9 a Clef failure is
-// infrastructure, never a NO; F10 every level links with the same words;
+// infrastructure, never a NO; F10 every level's builder reads the same form;
 // and a worker's file is written to its own repository, whatever its name.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,9 +16,8 @@ import {splitterState, splitterCall, levelOf} from '../src/splitter.js';
 // A level stated through the splitter's functions (each call's result, then the level): every call must store.
 const stated = (level, world = {}) => { const s = splitterState(world), results = levelCalls(level).filter(c => c.name !== 'done').map(c => splitterCall(s, c.name, c.arguments).result);
   assert.deepEqual(results.filter(r => r.error), []); return {s, done: splitterCall(s, 'done', {}).result, level: levelOf(s)}; };
-import {LINK_SCOPE, MESSAGES} from '../src/prompts.js';
+import {MESSAGES, systemPrompt} from '../src/prompts.js';
 const {EARLIER_ROOM} = await import('../src/index.js');
-const {linkComponents} = await import('../src/model.js');
 
 const workerRequests = (calls, name) => calls.leaf.filter(u => u.prompt.deliver.some(d => d.name === name));
 
@@ -239,15 +238,19 @@ test('F9: Clef failing on a change\'s routing holds the room as infrastructure: 
 });
 
 // ------------------------------------------------------------------ F10
-test('F10: every level\'s linker request says the same about the references it may change, and none says whether another level joins the files later', async () => {
-  const seen = [];
-  const env = {PIPELINE: 'v8', AI: {run: async (_m, args) => { seen.push(JSON.parse(args.messages[1].content)); return {response: '{"edits":[],"issues":[]}'}; }}};
-  for (const scope of [undefined, 'branch', 'application']) await linkComponents(env, {goal: 'x', files: [{path: 'loud.py', content: 'from yeller import yell\n'}], interfaces: [], allPaths: ['loud.py'], ...(scope ? {scope} : {})});
-  assert.deepEqual(seen.map(u => u.scope_means), [LINK_SCOPE.piece, LINK_SCOPE.piece, LINK_SCOPE.piece]);
-  // v7's linker keeps its scope.
-  const v7 = [];
-  await linkComponents({AI: {run: async (_m, args) => { v7.push(JSON.parse(args.messages[1].content)); return {response: '{"edits":[],"issues":[]}'}; }}}, {goal: 'x', files: [{path: 'a.js', content: ''}], interfaces: [], allPaths: ['a.js'], scope: 'branch'});
-  assert.equal(v7[0].scope, 'branch');
+test('F10: every level\'s builder reads the same form, the design artifact of its level and the files it joins, and nothing says whether another level joins them later; its system text is the same at every level', {skip}, async () => {
+  const r = await toolkit();
+  assert.equal(r.room.get('status'), 'complete', tail(r.room));
+  const managers = Object.values(at(r.room)), builders = r.room.allNodes().filter(n => n.role === 'builder');
+  assert.equal(builders.length, managers.length, 'one builder at every level');
+  assert.ok(r.calls.build.length >= builders.length);
+  for (const u of r.calls.build) {
+    assert.deepEqual(Object.keys(u).sort(), ['design', 'files']);
+    assert.ok(managers.some(m => JSON.stringify(r.room.levelDesign(m)) === JSON.stringify(u.design)), 'the design is a level file as the repository holds it');
+    assert.doesNotMatch(JSON.stringify(u.files), /scope|branch|application|above|below/i);
+  }
+  const systems = new Set(r.calls.raw.filter(x => x.system.startsWith('Your role: join files')).map(x => x.system));
+  assert.deepEqual([...systems], [systemPrompt('builder')]);
 });
 
 // ------------------------------------------------------------------ files a worker writes

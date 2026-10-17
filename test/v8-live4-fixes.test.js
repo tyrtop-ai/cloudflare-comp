@@ -4,7 +4,7 @@
 //  M5  an element step reads shown elements and their text as expect_text does.
 //  H2  an ask is a package's by its name, never by its need's words.
 //  M1  the language's standard library is the language's: never listed, asked for or granted.
-//  M2  only a module-level not-found for an installed module is external.
+//  M2  a module a run could not find is a package only by the rows, never a project-like name.
 //  L5, L7, L8, L10 as the review lists them.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -111,16 +111,9 @@ test('M1: a module of the language\'s standard library is part of the language: 
   assert.ok(TOOLCHAINS.every(r => !(r.packages || []).some(p => /^node:|^http\.server$/.test(p.name))));
 });
 
-test('M2: "cannot import name X from Y" is never external; a module-level not-found is, only for an installed module', async () => {
+test('M2: a run that could not find a module the rows know as a package\'s is missing_module; a project-like name is not', async () => {
   const room = await line();
   const bundle = {files: new Map([['job_queue.py', 'class JobQueue: pass\n'], ['app.py', 'from queue import JobQueue\n']]), glue: new Map()};
-  for (const module of ['queue', 'types', 'email', 'calendar', 'token', 'code', 'select'])
-    assert.equal(room.externalHit({module, name: 'JobQueue'}, bundle), false, module);
-  assert.equal(room.externalHit({module: 'json'}, bundle), true);
-  assert.equal(room.externalHit({module: 'pytest'}, bundle), true);
-  assert.equal(room.externalHit({module: 'flask'}, bundle), false, 'nothing installs it: the linker may read it as a part');
-  assert.equal(room.externalHit({module: 'job_queue'}, bundle), false);
-  // A run that could not find a module the rows know as a package's is missing_module; a project-like name is not.
   assert.equal(room.missingPackage('flask', bundle), true);
   assert.equal(room.missingPackage('todo_store', bundle), false);
 });

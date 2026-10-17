@@ -2,12 +2,12 @@
 // pieces compile (two parts in parallel before their sibling finishes; a
 // worker writing while its piece's box runs; a builder storing only the
 // inputs it joined), passes for exact bytes (passedOn), the room's
-// manager's relink running every validation again, exportsame, the base's
+// manager's builder's rename with every validation run again, exportsame, the base's
 // files the box cannot hold, and packages across pieces.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {toolkit, liveRoom, events, again, clefFor, splitFor, leafOf, at, tail, runOn, exported, call, CONTRACTS, VALIDATIONS, PARTS, FILES, GOAL, skip} from './helpers/toolkit.js';
-import {verifyChecks, snapshotHash} from './helpers/room.js';
+import {verifyChecks, snapshotHash, usualBuilder} from './helpers/room.js';
 
 // An executor whose boxes are logged with their start and end, and held at gate(box) before they run.
 const gated = (boxes, gate = async () => {}) => ({build: async req => {
@@ -106,20 +106,29 @@ test('passedOn: a pass holds for the exact bundle it ran on and the validation a
   assert.equal(r.room.runFinished(), false);
 });
 
-// The relink probe of ship-verified, at the room's manager: loudsoft calls Shout, bound nowhere in its file.
+// The rename probe of ship-verified, at the room's manager: loudsoft calls Shout, bound nowhere in its file; the room's manager's builder renames it in its copy.
 const loudsoft = {name: 'loudsoft', kind: 'function', path: 'loudsoft.py', does: 'shouts a word once', inputs: [{name: 's', is: 'a word'}], outputs: 'the shouted word'};
 const RVAL = [...VALIDATIONS, call('x1', ['loudsoft', 'whisper'], 'loudsoft', 'hi', 'HI!'), call('x2', ['loudsoft', 'whisper'], 'loudsoft', 'a', 'A!'), call('x3', ['loudsoft', 'whisper'], 'loudsoft', 'Yo', 'YO!')];
 const RPARTS = [{...PARTS[0], task: 'Write the loud part: shout, loud and loudsoft', contracts: ['shout', 'loud', 'loudsoft'], kids: [PARTS[0].kids[0], {label: 'Louder', task: 'Write loud and loudsoft, which use shout', contracts: ['loud', 'loudsoft'], uses: ['shout']}]}, PARTS[1], PARTS[2]];
-test('a relink at the room\'s manager runs every validation of its subtree again on the relinked bundle, and the run completes with every pass on it', {skip}, async () => {
+const SHOUTY = 'from shout import shout\n\n\ndef loudsoft(s):\n    return Shout(s)\n';
+// The room's manager's builder renames Shout in loudsoft.py; every other builder is the usual one.
+const renamer = (user, n, system, ctx) => {
+  if (user.design?.children?.length !== 3) return usualBuilder(user, n, system, ctx);
+  return ctx.round === 1 ? [{name: 'rename', arguments: {path: 'loudsoft.py', from: 'Shout', to: 'shout'}}] : [{name: 'done', arguments: {summary: 'loudsoft calls shout by its name'}}];
+};
+test('a rename the room\'s manager\'s builder makes in its copy of a worker\'s file: its compiler runs every validation of its subtree on that bundle, the worker\'s file stays as written, and the run completes with every pass on it', {skip}, async () => {
   const r = await toolkit({split: splitFor({parts: RPARTS, contracts: [...CONTRACTS, loudsoft], validations: RVAL}), clef: clefFor(RPARTS.filter(p => p.kids).map(p => p.task)),
-    leaf: leafOf({extra: {loud: {'loudsoft.py': 'from shout import shout\n\n\ndef loudsoft(s):\n    return Shout(s)\n'}}, answers: {loudsoft: 'from shout import shout\n\n\ndef loudsoft(s):\n    return Shout(s)\n'}})});
+    leaf: leafOf({extra: {loud: {'loudsoft.py': SHOUTY}}, answers: {loudsoft: SHOUTY}}), build: renamer});
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
-  const m = at(r.room), relinked = events(r.room).findIndex(e => e.kind === 'checks_relinked' && e.actor === m.Root);
-  assert.ok(relinked > 0, 'the room\'s manager relinked');
-  assert.match(events(r.room, 'link_renamed').find(e => e.actor === r.room.builderOf(m.Root).id).body, /loudsoft\.py: Shout → shout/);
-  const after = events(r.room).slice(relinked).find(e => e.kind === 'checks_started' && e.actor === m.Root), all = r.room.subtreeValidations(m.Root);
-  assert.match(after.body, new RegExp(`^Running ${all.length} validation\\(s\\)`), 'every validation of its subtree, on the relinked bundle');
+  const m = at(r.room), b = r.room.builderOf(m.Root).id;
+  assert.deepEqual(r.room.builtWork(b).renamed['loudsoft.py'].renames, [{from: 'Shout', to: 'shout'}]);
+  const louder = r.room.allNodes().find(n => n.role === 'worker' && r.room.files(n.id).some(f => f.path === 'loudsoft.py'));
+  assert.equal(r.room.files(louder.id).find(f => f.path === 'loudsoft.py').revision, 1, 'the worker\'s own file is as it wrote it');
+  const started = events(r.room).filter(e => e.kind === 'checks_started' && e.actor === m.Root), all = r.room.subtreeValidations(m.Root);
+  assert.match(started.at(-1).body, new RegExp(`^Running ${all.length} validation\\(s\\)`), 'every validation of its subtree, on the bundle its builder joined');
+  assert.deepEqual(events(r.room, 'checks_relinked'), [], 'nothing relinks after a run');
   const digest = r.room.read(`verified:${m.Root}`, null).digest, bundle = await r.room.bundleFiles(m.Root);
+  assert.equal(bundle.files.get('loudsoft.py'), SHOUTY.replace('Shout(s)', 'shout(s)'));
   assert.equal(digest, await snapshotHash(bundle.files));
   for (const v of all) assert.equal(r.room.passedOn(v, digest), true, v.id);
   assert.deepEqual((await runOn(r.room, all, bundle)).filter(c => !c.passed), []);
