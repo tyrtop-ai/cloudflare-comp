@@ -740,7 +740,7 @@ test('S8b review M5: files the room does not build are carried untouched (bytes,
 const LINK_REPO = {...BASE_FILES, 'shout.js': {link: 'src/shout.js'}};
 const LINK_LEVEL = {contracts: [README],
   validations: [has('a', 'README.md', '## Run'), has('c', 'README.md', '# Widget'),
-    {id: 'd', serves: ['README.md'], check: {kind: 'command', argv: ['node', '-e', 'const fs = require("fs"); console.log(fs.lstatSync("shout.js").isSymbolicLink(), fs.readlinkSync("shout.js"), require("./shout.js").shout("hi"))'], expect: {exit: 0, stdout: 'true src/shout.js HI!'}}}], pieces: []};
+    {id: 'd', serves: ['README.md'], check: {kind: 'command', argv: ['node', '-e', 'const fs = require("fs"); console.log(fs.lstatSync("shout.js").isSymbolicLink(), fs.readlinkSync("shout.js"), require("./shout.js").shout("hi"))'], expect: {exit: 0, stdout: 'true src/shout.js HI!\n'}}}], pieces: []};
 test('a base repo\'s symbolic link is kept as it is: carried with its target, listed and read by the agents as a link, written as a link in the box, exported as mode 120000', async () => {
   const tip = await commitFiles(new MemoryFS(), '/r', LINK_REPO, 'refs/heads/main');
   const {room, calls, builds, drain} = inputsRoom({level: LINK_LEVEL, fetch: fakeFetch(repoRoutes(LINK_REPO, tip)), answers: {'README.md': [wrote([['README.md', GOOD_README]])]}});
