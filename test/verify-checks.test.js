@@ -13,6 +13,8 @@ import {createServer as createHttpServer} from 'node:http';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {register} from 'node:module';
+// A timeout reports the real time it took: at least the limit, a little more on a loaded machine.
+const timedOut=(detail,prefix,limit)=>{const m=new RegExp('^'+prefix.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'timed out after (\\d+(?:\\.\\d+)?) s$').exec(detail);assert.ok(m&&Number(m[1])>=limit&&Number(m[1])<limit+5,`${detail}: a timeout of about ${limit} s`);};
 process.env.BUILD_RUNNER_WORKDIR=tmpdir();
 register('./cloudflare-loader.mjs',import.meta.url);
 if(!process.env.PLAYWRIGHT_BROWSERS_PATH&&existsSync('/opt/pw-browsers'))process.env.PLAYWRIGHT_BROWSERS_PATH='/opt/pw-browsers';
@@ -103,7 +105,7 @@ test('command checks: a Python CLI reads stdin, prints, exits; fixtures beside i
   assert.deepEqual(c.R5.frames,[{path:'ratio.py',line:5,fn:'ratio'},{path:'ratio.py',line:7,fn:'<module>'}],'the raising frame first');
   assert.ok(!c.R5.output.includes(tmpdir()+'/checks-'),'the output names bundle paths, not the check folder');
   assert.match(c.R7.detail,/^no-such-tool-here --x: .*(ENOENT|No such file)/,'what the box does not have, the run observes');
-  assert.match(c.R8.detail,/timed out after 2 s/);
+  timedOut(c.R8.detail.slice(c.R8.detail.indexOf('timed out')),'',2);
   assert.equal(c.R9.detail,"fixture wc.py would replace the bundle's wc.py");
   for(const x of report.checks.filter(x=>!x.passed))short(x);
 });
@@ -542,7 +544,7 @@ test('process trees: a setsid() daemon holding stdout neither stalls the check n
   assert.ok(Date.now()-t<8000,`took ${Date.now()-t} ms`);
   assert.equal(byId(report).R1.passed,true,byId(report).R1.detail);
   assert.ok(byId(report).R1.ms<1500,`R1 waited ${byId(report).R1.ms} ms on the daemon's pipe`);
-  assert.equal(byId(report).R2.detail,'slow.py: timed out after 1.5 s');
+  timedOut(byId(report).R2.detail,'slow.py: ',1.5);
   const pid=Number(readFileSync(pidFile,'utf8'));rmSync(pidFile,{force:true});
   await new Promise(r=>setTimeout(r,200));
   let state='';try{state=readFileSync(`/proc/${pid}/status`,'utf8').match(/^State:\s+(\S)/m)[1];}catch{}
