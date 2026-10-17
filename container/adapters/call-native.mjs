@@ -20,12 +20,16 @@
 // language gives no way to build from JSON, for instance), in the
 // compiler's words: what the check observed, as a failed step is.
 //
-// A function is the name the file defines it by, called with the step's
+// A function is the name the file defines it by (whether it does is the
+// compiler's answer, never a pattern of the name), called with the step's
 // arguments, each built from its JSON as the function's parameter type
-// (Go: reflect and encoding/json; Rust and C/C++: the compiler's type
-// inference and template deduction over the function; Java: reflection; a
-// shell function: its arguments as words, its stdout as its value and a
-// non-zero status as its failure). A saved result passed whole ("$name")
+// (Go: reflect and encoding/json, an interface as the one type the file
+// declares that implements it; Rust and C/C++: the compiler's type
+// inference and template deduction over the function, the file's own
+// structs, enums and classes by their fields and constructors as the
+// compiler and its debug information give them; Java: reflection; a shell
+// function: its arguments as words, its stdout as its value and a non-zero
+// status as its failure). A saved result passed whole ("$name")
 // is the worker's own value when the parameter takes its type, else its
 // JSON; "$name.field" reads the saved JSON.
 //
@@ -80,6 +84,193 @@ function reachable(names, build, reach, tool, label = n => n) {
   const last = build(good, true);
   return last.code === 0 ? {missing, unsupported} : {load: `${tool}: ${last.out}`};
 }
+// C and C++: the definitions of call-cpp.hpp's by_keys and by_position for
+// the objects and arrays the steps' arguments hold (each set of keys, each
+// array length), so a class is built by its own members and initialisation;
+// the compiler says which of them a type has. A key that is no identifier
+// (or is one of C++'s keywords) names no member.
+const CPP_KEYWORDS = new Set('alignas alignof and and_eq asm auto bitand bitor bool break case catch char char8_t char16_t char32_t class compl concept const consteval constexpr constinit const_cast continue co_await co_return co_yield decltype default delete do double dynamic_cast else enum explicit export extern false float for friend goto if inline int long mutable namespace new noexcept not not_eq nullptr operator or or_eq private protected public register reinterpret_cast requires return short signed sizeof static static_assert static_cast struct switch template this thread_local throw true try typedef typeid typename union unsigned using virtual void volatile wchar_t while xor xor_eq'.split(' '));
+function cppHooks(steps) {
+  const keySets = new Map(), sizes = new Set();
+  const walk = v => {
+    if (Array.isArray(v)) { sizes.add(v.length); v.forEach(walk); }
+    else if (v && typeof v === 'object') {
+      const keys = Object.keys(v);
+      if (keys.every(k => /^[\p{L}_][\p{L}\p{N}_]*$/u.test(k) && !CPP_KEYWORDS.has(k))) keySets.set([...keys].sort().join(','), keys);
+      Object.values(v).forEach(walk);
+    }
+  };
+  for (const s of steps) s.args.forEach(walk);
+  const members = [...new Set([...keySets.values()].flat())], trait = k => `has_${members.indexOf(k)}`;
+  return ['namespace __call {',
+    ...members.map((k, i) => `template <class T, class = void> struct has_${i} : std::false_type {};\ntemplate <class T> struct has_${i}<T, std::void_t<decltype(std::declval<T&>().${k})>> : std::bool_constant<settable<decltype((std::declval<T&>().${k}))>> {};`),
+    'template <class T> int by_keys(const J& j, T& v) {',
+    ...[...keySets.values()].map(keys => `  if (same_keys(j, {${keys.map(k => JSON.stringify(k)).join(', ')}})) { if constexpr (${keys.map(k => `${trait(k)}<T>::value`).join(' && ') || 'true'}) { ${keys.map(k => `__CALL_PUT(v, ${k}, *j.get(${JSON.stringify(k)}));`).join(' ')} return 1; } }`),
+    '  return 0;', '}',
+    'template <class T> bool by_position(const J& j, std::optional<T>& out) {',
+    ...[...sizes].map(n => `  if (j.a.size() == ${n}) { if constexpr (braced<T, ${n}>) { out.emplace(T{${Array.from({length: n}, (_, i) => `Any<T>{&j.a[${i}]}`).join(', ')}}); return true; } }`),
+    '  return false;', '}', '}'].join('\n');
+}
+// The debug information gcc or rustc wrote into an object (readelf's dump
+// of its DWARF): its entries by offset, each with its tag, attributes (a
+// reference as the offset it names), children and parent.
+function debugInfo(object) {
+  const dump = run(['readelf', '--debug-dump=info', object]);
+  const dies = new Map(), stack = [];
+  let die = null;
+  for (const line of dump.out.split('\n')) {
+    const head = line.match(/^\s*<(\d+)><([0-9a-f]+)>: Abbrev Number: (\d+)(?: \((DW_TAG_\w+)\))?/);
+    if (head) {
+      const depth = Number(head[1]);
+      if (head[3] === '0') { stack.length = depth; die = null; continue; }
+      die = {off: parseInt(head[2], 16), tag: head[4], at: {}, kids: [], parent: depth ? stack[depth - 1] : null};
+      stack.length = depth;
+      if (die.parent) die.parent.kids.push(die);
+      stack[depth] = die;
+      dies.set(die.off, die);
+      continue;
+    }
+    const at = die && line.match(/^\s*<[0-9a-f]+>\s+DW_AT_(\w+)\s*:\s?(.*)$/);
+    if (at) {
+      // readelf's own forms of a value: its form, where an indirect string is, a reference and what it names.
+      let v = at[2].trim().replace(/^\([a-z_0-9]+\)\s*/, '');
+      const indirect = v.match(/^\((?:indirect|indexed|offset)[^)]*\):\s?(.*)$/);
+      if (indirect) v = indirect[1];
+      const ref = v.match(/^<0x([0-9a-f]+)>(,|$)/);
+      die.at[at[1]] = ref ? parseInt(ref[1], 16) : v;
+    }
+  }
+  return dies;
+}
+const dwarfNumber = v => { const m = String(v ?? '').match(/^-?(0x[0-9a-f]+|\d+)/i); return m ? Number(m[0]) : null; };
+// C: the types a C file's functions take and give, as gcc's debug
+// information describes them (readelf's dump of the object's DWARF), written
+// as C++ declarations of the same layout for the C++ driver (each layout
+// checked by static_assert against the sizes and offsets gcc gave), so its
+// prototypes name complete types and call-cpp.hpp builds them as C++
+// classes. It returns declarations(names): the declarations every type the
+// named functions' parameters and results reach needs, in the order they
+// need each other (a pointer needs only its target's name).
+function cTypes(dies) {
+  const BASE = {_Bool: 'bool', '__int128 unsigned': 'unsigned __int128'};
+  const base = n => BASE[n] || n.replace(/^complex /, '__complex__ ');
+  const number = dwarfNumber;
+  const tagOf = d => ({DW_TAG_structure_type: 'struct', DW_TAG_union_type: 'union', DW_TAG_enumeration_type: 'enum'})[d?.tag];
+  const out = [], forward = new Set(), done = new Set(), busy = new Set();
+  // A type's C++ text around a declarator (inner): '' is the type alone.
+  const text = (ref, inner = '') => {
+    const d = dies.get(ref), sp = inner ? ' ' + inner : '';
+    if (!d) return `void${sp}`;
+    const target = d.at.type;
+    switch (d.tag) {
+      case 'DW_TAG_base_type': return base(d.at.name) + sp;
+      case 'DW_TAG_typedef': return d.at.name + sp;
+      case 'DW_TAG_structure_type': case 'DW_TAG_union_type': case 'DW_TAG_enumeration_type':
+        return (d.at.name ? `${tagOf(d)} ${d.at.name}` : body(d)) + sp;
+      case 'DW_TAG_pointer_type': { const t = dies.get(target); return text(target, ['DW_TAG_array_type', 'DW_TAG_subroutine_type'].includes(t?.tag) ? `(*${inner})` : `*${inner}`); }
+      case 'DW_TAG_const_type': case 'DW_TAG_volatile_type': case 'DW_TAG_restrict_type': {
+        const q = {DW_TAG_const_type: 'const', DW_TAG_volatile_type: 'volatile', DW_TAG_restrict_type: '__restrict__'}[d.tag];
+        return dies.get(target)?.tag === 'DW_TAG_pointer_type' ? text(target, `${q}${sp}`) : `${q} ${text(target, inner)}`;
+      }
+      case 'DW_TAG_array_type': {
+        const dims = d.kids.filter(k => k.tag === 'DW_TAG_subrange_type').map(k => { const c = number(k.at.count), u = number(k.at.upper_bound); return `[${c ?? (u !== null ? u + 1 : '')}]`; });
+        return text(target, `${inner}${dims.join('')}`);
+      }
+      case 'DW_TAG_subroutine_type': {
+        const params = d.kids.filter(k => k.tag === 'DW_TAG_formal_parameter').map(k => text(k.at.type));
+        const rest = d.kids.some(k => k.tag === 'DW_TAG_unspecified_parameters') || !d.at.prototyped ? ['...'] : [];
+        return text(target, `${inner}(${[...params, ...rest].join(', ') || 'void'})`);
+      }
+    }
+    return `void${sp}`;
+  };
+  // A struct's, union's or enum's definition.
+  const body = d => {
+    if (d.tag === 'DW_TAG_enumeration_type') {
+      const values = d.kids.filter(k => k.tag === 'DW_TAG_enumerator').map(k => `${k.at.name} = ${number(k.at.const_value)}`);
+      return `enum${d.at.name ? ' ' + d.at.name : ''}${d.at.type ? ` : ${text(d.at.type)}` : ''} { ${values.join(', ')} }`;
+    }
+    const members = d.kids.filter(k => k.tag === 'DW_TAG_member').map(k => `${text(k.at.type, k.at.name || '')}${k.at.bit_size ? ` : ${number(k.at.bit_size)}` : ''};`);
+    return `${tagOf(d)}${d.at.name ? ' ' + d.at.name : ''} { ${members.join(' ')} }`;
+  };
+  // What a type's declaration needs first: each type it reaches, defined
+  // (a struct reached only through a pointer it is defining is its name).
+  const need = ref => {
+    const d = dies.get(ref);
+    if (!d || done.has(ref) || busy.has(ref)) return;
+    const named = tagOf(d) && d.at.name;
+    if (named && d.tag !== 'DW_TAG_enumeration_type') forward.add(`${tagOf(d)} ${d.at.name};`);
+    busy.add(ref);
+    if (d.at.type !== undefined) need(d.at.type);
+    for (const k of d.kids) if (k.at.type !== undefined) need(k.at.type);
+    busy.delete(ref); done.add(ref);
+    if (d.tag === 'DW_TAG_typedef') out.push(`typedef ${text(d.at.type, d.at.name)};`);
+    else if (named && !d.at.declaration) {
+      out.push(`${body(d)};`);
+      // The layout gcc gave it.
+      const size = number(d.at.byte_size), t = `${tagOf(d)} ${d.at.name}`;
+      if (size !== null && d.tag !== 'DW_TAG_enumeration_type') out.push(`static_assert(sizeof(${t}) == ${size}, "${t}");`);
+      for (const k of d.kids) { const at = number(k.at.data_member_location); if (k.tag === 'DW_TAG_member' && k.at.name && !k.at.bit_size && at !== null) out.push(`static_assert(__builtin_offsetof(${t}, ${k.at.name}) == ${at}, "${t}");`); }
+    }
+  };
+  const functions = new Map([...dies.values()].filter(d => d.tag === 'DW_TAG_subprogram' && d.at.name && !d.at.declaration).map(d => [d.at.name, d]));
+  return names => {
+    out.length = 0; forward.clear(); done.clear();
+    for (const n of names) { const f = functions.get(n); if (!f) continue; if (f.at.type !== undefined) need(f.at.type); for (const k of f.kids) if (k.tag === 'DW_TAG_formal_parameter') need(k.at.type); }
+    return [...forward, ...out].join('\n');
+  };
+}
+// Rust: FromJ for the file's own structs and enums, one impl per line, from
+// the debug information rustc wrote for the types the named calls'
+// functions take (FnArity::touch): each type under the crate (its path as
+// rustc's namespaces give it; a generic one for every type argument that is
+// FromJ), by its fields' names (__0, __1, ... a tuple's) and its variants'.
+// A struct is an object of its fields (a tuple struct an array of them, one
+// field the value itself); an enum, as Rust's JSON libraries (serde) write
+// one by default: a variant without fields its name, any other an object
+// with the variant's name as its one key.
+function rustImpls(dies) {
+  const ident = n => /^[\p{L}_][\p{L}\p{N}_]*$/u.test(String(n ?? ''));
+  const pathOf = d => { const p = []; for (let x = d; x && x.tag !== 'DW_TAG_compile_unit'; x = x.parent) { if (x !== d && x.tag !== 'DW_TAG_namespace') return null; p.unshift(x.at.name); } return p; };
+  const fieldsOf = d => d.kids.filter(k => k.tag === 'DW_TAG_member' && !k.at.artificial).map(k => k.at.name);
+  // A value of these fields, made by ctor, from the JSON in v.
+  const make = (fields, ctor, v) => {
+    if (!fields.length) return `Ok(${ctor} {})`;
+    if (fields.every((f, i) => f === `__${i}`)) {
+      const items = fields.map((_, i) => `__item(a, ${i})?`).join(', ');
+      return `match ${v} { J::Arr(a) if a.len() == ${fields.length} => Ok(${ctor}(${items})),${fields.length === 1 ? ` _ => Ok(${ctor}(FromJ::from_j(${v})?)),` : ''} _ => Err(want::<Self>(${v})) }`;
+    }
+    return `{ __fields::<Self>(${v}, &[${fields.map(f => JSON.stringify(f)).join(', ')}])?; Ok(${ctor} { ${fields.map(f => `${f}: __field(${v}, ${JSON.stringify(f)})?`).join(', ')} }) }`;
+  };
+  const lines = [];
+  for (const d of dies.values()) {
+    if (!['DW_TAG_structure_type', 'DW_TAG_enumeration_type'].includes(d.tag) || d.at.declaration) continue;
+    const p = pathOf(d), params = d.kids.filter(k => k.tag === 'DW_TAG_template_type_param').length;
+    if (!p || p[0] !== '__call_module' || p.length < 2 || d.kids.some(k => k.tag === 'DW_TAG_template_value_param')) continue;
+    p[p.length - 1] = params ? String(p.at(-1)).replace(/<.*$/s, '') : p.at(-1);
+    if (!p.every(ident)) continue;
+    const vars = Array.from({length: params}, (_, i) => `T${i}`), path = ['crate', ...p.slice(1)].join('::'), type = params ? `${path}<${vars.join(', ')}>` : path;
+    const head = params ? `impl<${vars.map(v => `${v}: FromJ`).join(', ')}> FromJ for ${type}` : `impl FromJ for ${type}`;
+    const missing = what => `Err(format!("{} has no variant {}", std::any::type_name::<Self>(), ${what}))`;
+    let body;
+    if (d.tag === 'DW_TAG_enumeration_type') {
+      const names = d.kids.filter(k => k.tag === 'DW_TAG_enumerator').map(k => k.at.name).filter(ident);
+      body = `match j { J::Str(s) => match s.as_str() { ${names.map(n => `${JSON.stringify(n)} => Ok(${path}::${n}),`).join(' ')} _ => ${missing('s')} }, _ => Err(want::<Self>(j)) }`;
+    } else {
+      const part = d.kids.find(k => k.tag === 'DW_TAG_variant_part');
+      if (!part) { const fields = fieldsOf(d); if (!fields.every(ident)) continue; body = fields.length ? make(fields, path, 'j') : `match j { J::Null | J::Obj(_) => Ok(${path} {}), _ => Err(want::<Self>(j)) }`; }
+      else {
+        const variants = part.kids.filter(k => k.tag === 'DW_TAG_variant').flatMap(k => k.kids.filter(m => m.tag === 'DW_TAG_member' && m.at.name)).map(m => ({name: m.at.name, fields: fieldsOf(dies.get(m.at.type) || {kids: []})}));
+        if (!variants.length || !variants.every(x => ident(x.name) && x.fields.every(ident))) continue;
+        const unit = variants.filter(x => !x.fields.length);
+        body = `match j { J::Str(s) => match s.as_str() { ${unit.map(x => `${JSON.stringify(x.name)} => Ok(${path}::${x.name} {}),`).join(' ')} _ => ${missing('s')} }, `
+          + `J::Obj(o) if o.len() == 1 => { let (k, v) = (&o[0].0, &o[0].1); match k.as_str() { ${variants.map(x => `${JSON.stringify(x.name)} => ${make(x.fields, `${path}::${x.name}`, 'v')},`).join(' ')} _ => ${missing('k')} } } _ => Err(want::<Self>(j)) }`;
+      }
+    }
+    lines.push(`${head} { fn from_j(j: &J) -> Result<Self, String> { ${body} } }`);
+  }
+  return [...new Set(lines)];
+}
 // A Rust string literal of a text.
 const rustString = t => '"' + [...String(t)].map(c => c === '\\' ? '\\\\' : c === '"' ? '\\"' : c < ' ' || c === '\x7f' ? `\\u{${c.codePointAt(0).toString(16)}}` : c).join('') + '"';
 const distinct = steps => [...new Set(steps.map(s => s.call))];
@@ -97,8 +288,12 @@ const LANGUAGES = {
       const dir = path.dirname(abs), base = './' + path.basename(abs), env = {...process.env, GOTOOLCHAIN: 'local'};
       const pkg = run(['go', 'list', '-f', '{{.Name}}', base], {cwd: dir, env});
       if (pkg.code !== 0) return {load: `go list: ${pkg.out}`};
+      // The types the file declares, by Go's parser (call-go-types.go): the driver finds the one that implements an interface parameter among them.
+      const listed = run(['go', 'run', path.join(HERE, 'call-go-types.go')], {cwd: tmp, env, input: abs});
+      if (listed.code !== 0) return {load: `go: ${listed.out}`};
+      const types = listed.out.split('\n').filter(Boolean).map(t => `\t__reflect.TypeOf((*${t})(nil)).Elem(),`).join('\n');
       const test = `zz_callcheck_${tag()}_test.go`, worker = path.join(tmp, 'worker');
-      const write = body => writeFileSync(path.join(dir, test), template('call-go.go', {__CALL_PACKAGE__: pkg.out.split('\n').pop(), '/*__CALL_NAMES__*/': body}));
+      const write = body => writeFileSync(path.join(dir, test), template('call-go.go', {__CALL_PACKAGE__: pkg.out.split('\n').pop(), '/*__CALL_NAMES__*/': body, '/*__CALL_TYPES__*/': types}));
       const go = () => run(['go', 'test', '-c', '-vet=off', '-o', worker, base, './' + test], {cwd: dir, env});
       const built = reachable(distinct(steps),
         names => { write(names.map(n => `\t${JSON.stringify(n)}: ${n},`).join('\n')); return go(); },
@@ -118,17 +313,36 @@ const LANGUAGES = {
       let externs = [];
       try { if (process.env.RUST_EXTERNS) externs = readFileSync(process.env.RUST_EXTERNS, 'utf8').split(/\s+/).filter(Boolean); } catch {}
       const lib = path.join(tmp, 'lib__call_module.rlib');
-      const rustc = (entries, emit) => {
-        writeFileSync(driver, template('call-rust.rs', {'/*__CALL_DISPATCH__*/': entries}));
+      let impls = [];
+      // emit: the library; 'obj', an object of one codegen unit (its debug information); else metadata only.
+      const rustc = (entries, emit, extra = []) => {
+        writeFileSync(driver, template('call-rust.rs', {'/*__CALL_DISPATCH__*/': entries, '/*__CALL_IMPLS__*/': impls.join('\n')}));
         return run(['rustc', '--edition', '2021', '--crate-type', 'rlib', '--crate-name', '__call_module', '-g', '-A', 'warnings',
-          `--remap-path-prefix=${root}=${abs}`, ...externs, ...(emit ? ['-o', lib] : ['--emit=metadata', '-o', path.join(tmp, 'probe.rmeta')]), root], {cwd: dir});
+          `--remap-path-prefix=${root}=${abs}`, ...externs, ...extra,
+          ...(emit === 'obj' ? ['--emit=obj', '-C', 'codegen-units=1', '-o', path.join(tmp, 'types.o')] : emit ? ['-o', lib] : ['--emit=metadata', '-o', path.join(tmp, 'probe.rmeta')]), root], {cwd: dir});
       };
       // One entry per name and number of arguments the steps call it with.
       const calls = new Map(steps.map(s => [`${s.call}/${s.args.length}`, s]));
       const entry = key => { const s = calls.get(key); return `        (${JSON.stringify(s.call)}, ${s.args.length}) => Some(__call!(args; super::${s.call}${s.args.length ? `, ${s.args.map((_, i) => i).join(', ')}` : ''})),`; };
-      const built = reachable([...calls.keys()], (keys, worker) => rustc(keys.map(entry).join('\n'), worker),
+      const reach = () => reachable([...calls.keys()], (keys, worker) => rustc(keys.map(entry).join('\n'), worker),
         key => rustc(`        ("", _) => Some(__arity_only(__arity_of(&super::${calls.get(key).call}))),`, false), 'rustc', key => calls.get(key).call);
+      let built = reach();
       if (built.load) return built;
+      // Calls that do not build: FromJ for the file's own types they take, then the calls again.
+      if (built.unsupported.size && rustc([...built.unsupported.keys()].map(k => `        (${JSON.stringify(calls.get(k).call)}, ${calls.get(k).args.length}) => __touch(&super::${calls.get(k).call}),`).join('\n'), 'obj').code === 0) {
+        impls = rustImpls(debugInfo(path.join(tmp, 'types.o')));
+        // An impl rustc refuses (a field the driver cannot see, a path that names no type) is left out: rustc's own report, by line.
+        const first = template('call-rust.rs', {'/*__CALL_DISPATCH__*/': '', '/*__CALL_IMPLS__*/': '\u0000'}).split('\n').findIndex(l => l.includes('\u0000')) + 1;
+        while (impls.length) {
+          const check = rustc('', false, ['--error-format=json']);
+          if (check.code === 0) break;
+          const bad = new Set(check.out.split('\n').flatMap(l => { try { const m = JSON.parse(l); return m.level === 'error' ? m.spans.filter(x => x.is_primary && x.file_name === driver).map(x => x.line_start - first) : []; } catch { return []; } }).filter(i => i >= 0 && i < impls.length));
+          if (!bad.size) { impls = []; break; }
+          impls = impls.filter((_, i) => !bad.has(i));
+        }
+        if (impls.length) built = reach();
+        if (built.load) return built;
+      }
       // A name the file defines whose call does not build: the worker tells
       // a call that gives another number of arguments than the function
       // takes (the file's) from one this adapter cannot build (its own).
@@ -148,9 +362,9 @@ const LANGUAGES = {
     // which takes each function's address: template deduction gives its
     // parameter types.
     build({abs, steps, tmp}) {
-      const driver = path.join(tmp, 'driver.cpp'), worker = path.join(tmp, 'worker');
+      const driver = path.join(tmp, 'driver.cpp'), worker = path.join(tmp, 'worker'), hooks = cppHooks(steps);
       const gxx = (body, linked) => {
-        writeFileSync(driver, `#define main __call_module_main\n#include ${JSON.stringify(abs)}\n#undef main\n#include ${JSON.stringify(path.join(HERE, 'call-cpp.hpp'))}\nstatic void __call_register(__call::Registry& r) {\n${body}\n}\nint main() { return __call::run(__call_register); }\n`);
+        writeFileSync(driver, `#define main __call_module_main\n#include ${JSON.stringify(abs)}\n#undef main\n#include ${JSON.stringify(path.join(HERE, 'call-cpp.hpp'))}\n${hooks}\nstatic void __call_register(__call::Registry& r) {\n${body}\n}\nint main() { return __call::run(__call_register); }\n`);
         return run(['g++', '-std=c++17', '-g', '-w', ...(linked ? ['-o', worker] : ['-fsyntax-only']), driver], {cwd: path.dirname(abs)});
       };
       // A name as the global namespace declares it (a using-directive in the file never makes it ambiguous).
@@ -166,9 +380,10 @@ const LANGUAGES = {
     // gives its parameter types. A static function is made linkable in the
     // object (objcopy), and the file's main is renamed.
     build({abs, module, steps, tmp}) {
-      const object = path.join(tmp, 'module.o'), protos = path.join(tmp, 'protos.txt'), driver = path.join(tmp, 'driver.cpp'), worker = path.join(tmp, 'worker');
+      const object = path.join(tmp, 'module.o'), protos = path.join(tmp, 'protos.txt'), driver = path.join(tmp, 'driver.cpp'), worker = path.join(tmp, 'worker'), hooks = cppHooks(steps);
       const cc = run(['gcc', '-c', '-g', '-fkeep-static-functions', '-Dmain=__call_module_main', '-aux-info', protos, '-o', object, module]);
       if (cc.code !== 0) return {load: `gcc: ${cc.out}`};
+      const types = cTypes(debugInfo(object));
       // The prototypes gcc wrote for this file's own functions, by the
       // file and the name it reports for each.
       const own = readFileSync(protos, 'utf8').split('\n').filter(l => l.startsWith(`/* ${module}:`));
@@ -177,7 +392,7 @@ const LANGUAGES = {
       for (const n of names) if (!declared(n).length) missing.set(n, '');
       const gxx = (list, linked) => {
         const decls = list.flatMap(declared).join('\n');
-        writeFileSync(driver, `#include ${JSON.stringify(path.join(HERE, 'call-cpp.hpp'))}\n#define _Bool bool\n#define restrict __restrict__\nextern "C" {\n#define static\n${decls}\n#undef static\n}\nstatic void __call_register(__call::Registry& r) {\n${list.map(n => `  r.add(${JSON.stringify(n)}, &::${n});`).join('\n')}\n}\nint main() { return __call::run(__call_register); }\n`);
+        writeFileSync(driver, `#include ${JSON.stringify(path.join(HERE, 'call-cpp.hpp'))}\n#define _Bool bool\n#define restrict __restrict__\nnamespace __c {\n${types(list)}\nextern "C" {\n#define static\n${decls}\n#undef static\n}\n}\n${hooks}\nstatic void __call_register(__call::Registry& r) {\n${list.map(n => `  r.add(${JSON.stringify(n)}, &__c::${n});`).join('\n')}\n}\nint main() { return __call::run(__call_register); }\n`);
         if (!linked) return run(['g++', '-std=c++17', '-w', '-fsyntax-only', driver]);
         const linkable = list.flatMap(n => ['--globalize-symbol', n]), copy = path.join(tmp, 'module-linkable.o');
         const oc = run(['objcopy', ...linkable, object, copy]);

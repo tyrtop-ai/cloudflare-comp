@@ -7,7 +7,9 @@
 // (static, or of one instance made by the class's constructor without
 // arguments), found by its name ("method" or "Class.method") and its number
 // of parameters; each argument is built from its JSON as the parameter's
-// declared type, read by reflection.
+// declared type, read by reflection (a class by its fields or the
+// constructor its JSON names; an interface or abstract class as the one
+// class of the bundle that implements it).
 import java.io.*;
 import java.lang.reflect.*;
 import java.math.*;
@@ -19,6 +21,7 @@ import javax.tools.*;
 
 public class CallWorker {
     static PrintStream out;
+    static ClassLoader loader;
     static final Map<String, String> sources = new HashMap<>(); // class name -> its source's path
 
     // JSON: null, Boolean, String, BigDecimal, List<Object>, LinkedHashMap<String,Object>.
@@ -165,19 +168,57 @@ public class CallWorker {
             for (int i = 0; i < rc.length; i++) { vals[i] = build(o.get(rc[i].getName()), rc[i].getGenericType()); types[i] = rc[i].getType(); }
             Constructor<?> k = c.getDeclaredConstructor(types); k.setAccessible(true); return k.newInstance(vals);
         }
-        // An object of a class: made by its constructor without arguments, each field set by its name.
-        if (!c.isInterface() && !Modifier.isAbstract(c.getModifiers()) && j instanceof Map) {
-            Constructor<?> k;
-            try { k = c.getDeclaredConstructor(); } catch (NoSuchMethodException e) { throw new Unsupported("the call adapter cannot build a " + t.getTypeName() + " from JSON (it has no constructor without arguments)"); }
-            k.setAccessible(true); Object v = k.newInstance();
-            for (Map.Entry<?, ?> e : ((Map<?, ?>) j).entrySet()) {
-                Field f = field(c, (String) e.getKey());
-                if (f == null) throw new Mismatch(c.getName() + " has no field " + e.getKey());
-                f.setAccessible(true); f.set(v, build(e.getValue(), f.getGenericType()));
+        // An interface or an abstract class: the one class of the bundle's sources that implements it.
+        if (c.isInterface() || Modifier.isAbstract(c.getModifiers())) {
+            List<Class<?>> impl = new ArrayList<>();
+            for (String n : sources.keySet()) {
+                Class<?> k;
+                try { k = Class.forName(n, false, loader); } catch (Throwable e) { continue; }
+                if (k != c && c.isAssignableFrom(k) && !k.isInterface() && !Modifier.isAbstract(k.getModifiers()) && !k.isAnonymousClass()) impl.add(k);
             }
-            return v;
+            if (impl.size() == 1) return build(j, impl.get(0));
+            List<String> names = new ArrayList<>(); for (Class<?> k : impl) names.add(k.getName()); Collections.sort(names);
+            throw new Unsupported("the call adapter cannot build a " + t.getTypeName() + " from JSON (" + (impl.isEmpty() ? "no class of the bundle implements it" : "the JSON does not say which of " + String.join(", ", names) + " it is") + ")");
         }
-        if (c.isInterface() || Modifier.isAbstract(c.getModifiers())) throw new Unsupported("the call adapter cannot build a " + t.getTypeName() + " from JSON");
+        // An object of a class: by its constructor without arguments, each field set by its name; else by the
+        // constructor whose parameters the object's keys name (javac -parameters), or that takes the array's values.
+        if (j instanceof Map) {
+            Map<?, ?> o = (Map<?, ?>) j;
+            Constructor<?> none = null;
+            try { none = c.getDeclaredConstructor(); } catch (NoSuchMethodException e) {}
+            if (none != null) {
+                none.setAccessible(true); Object v = none.newInstance();
+                for (Map.Entry<?, ?> e : o.entrySet()) {
+                    Field f = field(c, (String) e.getKey());
+                    if (f == null) throw new Mismatch(c.getName() + " has no field " + e.getKey());
+                    f.setAccessible(true); f.set(v, build(e.getValue(), f.getGenericType()));
+                }
+                return v;
+            }
+            for (Constructor<?> k : c.getDeclaredConstructors()) {
+                Parameter[] ps = k.getParameters();
+                if (ps.length != o.size()) continue;
+                Set<String> names = new HashSet<>();
+                for (Parameter p : ps) if (p.isNamePresent()) names.add(p.getName());
+                if (!names.equals(o.keySet())) continue;
+                Object[] vals = new Object[ps.length];
+                for (int i = 0; i < ps.length; i++) vals[i] = build(o.get(ps[i].getName()), ps[i].getParameterizedType());
+                k.setAccessible(true); return k.newInstance(vals);
+            }
+            throw new Mismatch(c.getName() + " has no constructor without arguments and none whose parameters are " + String.join(", ", new TreeSet<>((Set<String>) o.keySet())));
+        }
+        if (j instanceof List) {
+            List<?> a = (List<?>) j; Mismatch first = null;
+            for (Constructor<?> k : c.getDeclaredConstructors()) {
+                Type[] ps = k.getGenericParameterTypes();
+                if (ps.length != a.size() || k.isVarArgs()) continue;
+                Object[] vals = new Object[ps.length];
+                try { for (int i = 0; i < ps.length; i++) vals[i] = build(a.get(i), ps[i]); }
+                catch (Mismatch e) { if (first == null) first = e; continue; }
+                k.setAccessible(true); return k.newInstance(vals);
+            }
+            throw first != null ? first : new Mismatch(c.getName() + " has no constructor of " + a.size() + " parameters");
+        }
         throw mismatch(t, j);
     }
     static Field field(Class<?> c, String name) {
@@ -261,7 +302,7 @@ public class CallWorker {
             }
         };
         String classpath = Optional.ofNullable(System.getenv("CLASSPATH")).orElse("");
-        List<String> options = new ArrayList<>(List.of("-d", classes.toString(), "-sourcepath", argv[2], "-implicit:class", "-proc:none", "-g", "-nowarn"));
+        List<String> options = new ArrayList<>(List.of("-d", classes.toString(), "-sourcepath", argv[2], "-implicit:class", "-proc:none", "-g", "-parameters", "-nowarn"));
         if (!classpath.isEmpty()) options.addAll(List.of("-classpath", classpath));
         boolean ok = javac.getTask(null, manager, diagnostics, options, null, standard.getJavaFileObjects(file.toFile())).call();
         if (!ok) {
@@ -276,7 +317,7 @@ public class CallWorker {
             if (e.endsWith("*")) { File[] jars = new File(e.substring(0, e.length() - 1)).listFiles((d, n) -> n.endsWith(".jar")); if (jars != null) for (File jar : jars) urls.add(jar.toURI().toURL()); }
             else urls.add(new File(e).toURI().toURL());
         }
-        ClassLoader loader = new URLClassLoader(urls.toArray(new URL[0]), CallWorker.class.getClassLoader().getParent());
+        loader = new URLClassLoader(urls.toArray(new URL[0]), CallWorker.class.getClassLoader().getParent());
         // The file's classes, the one named as the file first; each top-level class is initialised here (its load).
         String stem = file.getFileName().toString().replaceAll("\\.java$", "");
         List<Class<?>> own = new ArrayList<>();

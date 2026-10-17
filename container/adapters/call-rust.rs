@@ -3,7 +3,8 @@
 // run(), which reads steps as JSON lines on stdin and answers each as a JSON
 // line. Each call is written with the step's number of arguments; the
 // compiler infers each argument's type from the function, and FromJ builds
-// a value of that type from the argument's JSON. What a call returns is
+// a value of that type from the argument's JSON (the file's own structs and
+// enums included). What a call returns is
 // written as JSON when its type is one FromJ/ToJ know, else by its Debug
 // form, else by its type's name.
 #![allow(dead_code, unused_imports, unused_macros, unused_variables, non_snake_case)]
@@ -125,6 +126,16 @@ macro_rules! from_tuple { ($($n:tt $t:ident),+) => { impl<$($t: FromJ),+> FromJ 
     match j { J::Arr(a) if a.len() == [$($n),+].len() => Ok(($($t::from_j(&a[$n])?,)+)), _ => Err(want::<Self>(j)) }
 } } } }
 from_tuple!(0 A); from_tuple!(0 A, 1 B); from_tuple!(0 A, 1 B, 2 C); from_tuple!(0 A, 1 B, 2 C, 3 D); from_tuple!(0 A, 1 B, 2 C, 3 D, 4 E); from_tuple!(0 A, 1 B, 2 C, 3 D, 4 E, 5 F);
+// The file's own structs and enums (call-native.mjs writes their FromJ from
+// the fields and variants rustc's debug information gives each): a struct
+// from an object by its fields' names (a tuple struct from an array of its
+// fields), a fieldless enum from its variant's name.
+pub fn __field<T: FromJ>(j: &J, k: &str) -> Result<T, String> { T::from_j(field(j, k).unwrap_or(&J::Null)).map_err(|e| format!("{}: {}", k, e)) }
+pub fn __item<T: FromJ>(a: &[J], i: usize) -> Result<T, String> { T::from_j(&a[i]).map_err(|e| format!("{}: {}", i, e)) }
+pub fn __fields<T>(j: &J, names: &[&str]) -> Result<(), String> {
+    match j { J::Obj(o) => match o.iter().find(|(k, _)| !names.contains(&k.as_str())) { Some((k, _)) => Err(format!("{} has no field {}", std::any::type_name::<T>(), k)), None => Ok(()) }, _ => Err(want::<T>(j)) }
+}
+/*__CALL_IMPLS__*/
 
 // A value as JSON text.
 pub trait ToJ { fn to_j(&self) -> String; }
@@ -180,11 +191,17 @@ macro_rules! __call {
     };
 }
 // A function's number of parameters, from its type.
-pub trait FnArity<M> { const N: usize; }
-macro_rules! arity { ($n:expr; $($a:ident),*) => { impl<F, R, $($a),*> FnArity<(R, $($a,)*)> for F where F: Fn($($a),*) -> R { const N: usize = $n; } } }
+// touch: a value of each of its parameter and result types, so the debug
+// information describes them (call-native.mjs reads their fields there).
+pub trait FnArity<M> { const N: usize; fn touch(); }
+macro_rules! arity { ($n:expr; $($a:ident),*) => { impl<F, R, $($a),*> FnArity<(R, $($a,)*)> for F where F: Fn($($a),*) -> R {
+    const N: usize = $n;
+    fn touch() { let __t: ($(Option<$a>,)* Option<R>,) = ($(None::<$a>,)* None,); let _ = &__t; }
+} } }
 arity!(0;); arity!(1; A1); arity!(2; A1, A2); arity!(3; A1, A2, A3); arity!(4; A1, A2, A3, A4); arity!(5; A1, A2, A3, A4, A5); arity!(6; A1, A2, A3, A4, A5, A6);
 arity!(7; A1, A2, A3, A4, A5, A6, A7); arity!(8; A1, A2, A3, A4, A5, A6, A7, A8); arity!(9; A1, A2, A3, A4, A5, A6, A7, A8, A9); arity!(10; A1, A2, A3, A4, A5, A6, A7, A8, A9, A10);
 pub fn __arity_of<F: FnArity<M>, M>(_: &F) -> usize { F::N }
+pub fn __touch<F: FnArity<M>, M>(_: &F) -> Option<Out> { F::touch(); None }
 pub fn __arity_only(_: usize) -> Out { Out::Val("null".into()) }
 // A call that does not build: another number of arguments than the
 // function's parameters is the call's failure; otherwise this adapter cannot build it.
