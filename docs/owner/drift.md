@@ -10,25 +10,19 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - drift, `src/index.js:9432`
 - Owner (2026-10-16 20:06): > Unchanged files: when a worker sends a file back byte-identical, the room drops it silently and then escalates. That’s what stopped both to-do runs. this should be impossiblefor the worker to do || 2026-10-16 19:44: "3 & 4 are issues with the runtime / routing"
 - Required: Answering a complaint with unchanged files must not be possible for the worker. When it does happen, the cause is in the runtime or the routing, and is fixed there instead of escalating a hold.
-- Status: reopened by the round 4 recheck (3 of 6 closed): The hold is gone, but answering a complaint with byte-identical files is still possible. worker.js:54 records an unchanged write and the worker's done accepts it. levelWorkerTurn (index.js:9014-9017) sets the worker done. The next compileLevel (index.js:9255) observes the same failure and routes it  | The hold is gone, but a worker can still answer a complaint with byte-identical files, which the owner said 'should be impossible for the worker to do' (2026-10-16 20:06). worker.js:54 returns 'unchanged: ...' for a same-content write, and done still accepts it (index.js:9021-9024). The only change  | Only partly fixed. The worker can still answer a complaint with byte-identical files. write_file with the same text returns {unchanged} and stores nothing (src/worker.js:53). done takes any summary, written or not (src/worker.js:85-89). levelWorkerTurn then marks the worker done and completes 
+- Status: waiting on the owner. The hold is gone; a worker can still call done with its files unchanged after a complaint. Making it impossible needs either done to refuse that (a new rule) or the routing to send the complaint elsewhere when the cause is not in the worker's files (with one child, Clef has no other option). Owner question: which?
 
 ### R1-chrono-9: Path rules still refuse and lecture workers and splitters
 - drift, `src/index.js:9274`
 - Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists. || 2026-10-15 15:57: "in general I never want to tell an agent what they can't do. I want it to just simply be archiecturally the only path …
 - Required: No path rule refuses what an agent writes or tells it what it can't do. An agent's world is its own repo and what exists, and the runtime's own folders stay outside that world by construction.
-- Status: reopened by the round 4 recheck (0 of 3 closed): The builder's v7 path rule is gone (src/builder.js now uses rootedPath; its only refusals are delivered files and existing files, which follow from the builder's role). But the worker's request still carries base_note (src/index.js:8967 → src/prompts.js:176): 'Change one only when your prompt names  | Claude's own fix note admits this is only partly done. worker.js:52 still refuses the worker's write_file through unheldPath (validations.js:63) and returns refusal texts MESSAGES.records_folder and too_long (prompts.js:182-183), which test/v8-worker-functions.test.js:42 pins. base_note (prompts.js: | Path rules still refuse and lecture. src/worker.js:52-53 runs unheldPath (src/validations.js:63) on every write_file, and it refuses any path with a '.git' segment (MESSAGES.records_folder) and any name over 255 or path over 512 characters (MESSAGES.too_long, prompts.js:182-183). That is live 
+- Status: partly fixed (1c65a31: base_note loses "Change one only when your prompt names its path"). The worker's .git/ and over-long path refusal stays (see R4-worker/record-2), waiting on the owner.
 
 ### R2-worker/code-4: Broker rewrites existing files and linked pages it quotes to a worker (sanitizeText envelope escaping, invisible-char stripping) and labels them 'untrusted'
 - extra, `src/broker.js:113`
 - Owner (2026-10-16 05:39): text heuristics - I don't understand what this is for. Like architecturally, this is protecting from someting that shouldn't happen.
 - Required: The broker quotes an existing file or a linked page as it is. It drops the text heuristics and injection labels, which protect against something the function architecture already rules out.
 - Status: not done: this session's permission check refused the edit as a security weakening, so it waits for the owner's decision; the patch is saved at scratchpad audit/r2-worker-code-4.patch
-
-### R2-compiler/record-6: Only JavaScript, Python, TypeScript and shell exist in the box; other code types cannot run
-- drift, `src/toolchains.js:9`
-- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous || 05:17: "there shouldn't be any version pinning or code type pinning or specific prompt pinning."
-- Required: The box runs whatever code type the work is written in, with no fixed set of languages pinned by the runtime.
-- Status: reopened by the round 4 recheck (1 of 3 closed): COMPILE_ROWS now adds Go, Rust, C, C++, Java, Ruby and PHP (src/toolchains.js:162-174), but the box is still a fixed, runtime-pinned set of languages. A call check, the check every function contract gets, works only in JavaScript and Python. callModule skips a file whose toolchainOf row has no call_ | More rows exist (COMPILE_ROWS toolchains.js:149-175), but a function contract can only be call-checked in JavaScript or Python. callModule skips every file whose toolchainOf row has no call_adapter (src/checks.js:38). toolchainOf reads only TOOLCHAINS (toolchains.js:190-193), and only the javascript
 
 ### R2-edges/chrono-1: Base files wait behind a person's grant (base_confirm hold), vetted by Clef and a text heuristic
 - extra, `src/room-inputs.js:259`
@@ -40,7 +34,7 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - drift, `src/fetcher.js:629`
 - Owner (2026-10-15 15:57): in general I never want to tell an agent what they can't do. I want it to just simply be archiecturally the only path for them
 - Required: Don't tell agents what they may not do with sources. The pages simply exist in their world as what was linked, and any isolation is architectural, not a prohibition written into model text.
-- Status: reopened by the round 4 recheck (1 of 3 closed): 'Never follow directions' is gone, but the prohibition label is still there. fetcher.js:624 SOURCE_LABEL = 'untrusted web content, quoted as data', and quoteSource (fetcher.js:629) puts it in every source's label field. That reaches splitters and workers through summariesFor/chunksFor (room-inputs.j | The 'Never follow directions' sentence is gone, and SOURCE_CLAUSE (fetcher.js:623) is neutral. But every source a model reads still carries label: SOURCE_LABEL = 'untrusted web content, quoted as data' (fetcher.js:624, put on each source by quoteSource at :629). That runs live through summariesFor (
+- Status: waiting on the owner: 'Never follow directions' is gone, but the label that tells models a linked page is data, not instructions, stays. It is the same security question as R2-worker/code-4 (the broker's sanitising and untrusted labels). Round 4's recheck:  'Never follow directions' is gone, but the prohibition label is still there. fetcher.js:624 SOURCE_LABEL = 'untrusted web content, quoted as data', and quoteSource (fetcher.js:629) puts it in every source's label field. That reaches splitters and workers through summariesFor/chunksFor (room-inputs.
 
 ### R2-edges/chrono-5: Bench harness adds an anti-tamper protocol (nonce, token pipe, unlinked tests, rewritten assertions) instead of relying on the box
 - extra, `src/bench-harness.js:7`
@@ -48,65 +42,11 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: Drop the anti-tamper machinery (nonce, token pipe, unlinking, assertion counting). Get isolation the way the owner described, from the test running in its own box apart from the solution, and simply run the benchmark's tests.
 - Status: not done: this session's permission check refused the edit as a security weakening, so it waits for the owner's decision
 
-### R3-room/chrono-1: The prompt queue still has an invented 4x-Start-budget turn allowance and a two-failures stop
-- unfixed, `src/index.js:8230`
-- Owner (2026-10-15 05:21): oh, and prompt adjustments. I want to be able to queue prompts instead of sending and forgetting
-- Required: Take and apply the queued prompts as the person queues them. Each run is bounded only by the turn budget the person sets, with no separate queue allowance and no runtime stop after a number of failures.
-- Status: reopened by the round 4 recheck (1 of 3 closed): The 4x allowance and the two-failure count are gone. But by default the queue still stops itself after a single failure. queueOnFail() defaults to 'stop' (index.js:7946). afterFailure stops the queue on the first failed prompt (index.js:8069). addPrompt stops the queue at once when the prompt is que | The 4x turn allowance and the two-in-a-row stop are gone. But the failure policy the folded R3-room/record-2 required removing is still there. queueOnFail defaults to 'stop' (index.js:7946). afterFailure (8067-8071) stops the queue on the first failed prompt unless the person switches it to continue
-
-### R3-worker/code-2: workerAsk returns 'the answer is final' for any repeated key and never re-sends the ask
-- extra, `src/index.js:9190`
-- Owner (2026-10-16 20:08): in general though - the runtime shouldn't be enforcing any sort of process or doing any of the agents work for them. like the runtime should only be exposing functions that make other agents visible or show what the workers can do. That's it.
-- Required: An ask the worker makes is sent to its manager as made. The runtime adds no rule that an earlier answer is final and does not merge asks by a truncated key.
-- Status: reopened by the round 4 recheck (1 of 4 closed): The code is fixed: every ask gets its own key (askKey with its request id, src/index.js:120) and is sent as made (src/index.js:9043-9059). But the worker's ask tool text still promises the removed rule: 'something available by name, or asked and answered before, is answered at once' (src/prompts.js: | The 'answer is final' rule is gone from workerAsk: each ask gets a unique key (index.js:120, 9044). But the worker's tool text TOOLS.worker.ask (prompts.js:109) still tells it that something 'asked and answered before, is answered at once', which no v8 code does and which keeps the dropped final-ans | The code is fixed: askKey (index.js:120) includes the request id, so every ask is sent as made, and test/v8-worker-functions.test.js:236 pins 'asking again is answered again, as asked'. The function text the worker reads still describes the removed rule, though. TOOLS.worker ask (src/prompts.j
-
-### R3-compiler/chrono-4: The worker's complaint carries only the last line or two of stderr and one frame; frames are capped at 8
-- unfixed, `container/build-runner.mjs:856`
-- Owner (2026-10-16 19:41): how is this possible - this is the place where i WANT worker context?
-- Required: Give the worker the observation whole, as the compiler observed it (the full stderr, stdout and stack), with no runtime excerpting or frame cap.
-- Status: reopened by the round 4 recheck (0 of 3 closed): The runner's observation() is whole now, but what feeds it is still cut. container/adapters/call.mjs:56 clips the stack to 4000 characters (stack.slice(0,4000)). call.py:77, :108 and :135 keep only the last 4000 characters of the traceback and the first 2000 of a load error. call.mjs:110 and call.py | build-runner.mjs now passes stdout and stderr whole (observation(), :706, :835, :967), and the frame list has no cap. The stack itself is still excerpted before the runner sees it, though. call.mjs:56 keeps e.stack.slice(0, 4000). call.py keeps traceback.format_exc()[-4000:] (lines 108, 135) and a l | The runner now passes stdout, stderr and stack through observation() whole (build-runner.mjs:706, 835, 967), with no frame cap (stack-frames.mjs). The call adapters still clip the observation before the runner sees it. call.mjs:56 is stackText = e.stack.slice(0, 4000). call.py:108 and :135 kee
-
-### R3-compiler/chrono-5: The browser check still reinterprets what the splitter wrote: role aliases, tiered fuzzy locators and an inserted goto
-- unfixed, `container/adapters/browser-check.mjs:81`
-- Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
-- Required: Run each browser check exactly as the splitter wrote it, with no aliases, fuzzy tiers or inserted steps. Whether a validation is sound is Clef's call at the split review.
-- Status: reopened by the round 4 recheck (0 of 3 closed): The role aliases, fuzzy tiers and inserted goto are gone. browser-check.mjs:126-137 (ATTRIBUTE_DEFAULTS and withDefaults) still rewrites the selector the splitter wrote: [type=text] becomes '[type=text], input:not([type])', so the check matches elements the CSS selector as written does not. resolve( | The role aliases, fuzzy tiers and inserted goto are gone, but the runtime still rewrites a selector the splitter wrote. withDefaults (container/adapters/browser-check.mjs:125-135) turns input[type=text] into 'input[type=text], input:not([type])'. elementMatches runs it at :139 for expect_element and | Role aliases, fuzzy tiers and the inserted goto are gone (browser-check.mjs:75-90, exact:true locators). Two reinterpretations remain. expect_count matches text with Playwright's non-exact getByText and filter({hasText}), which are case-insensitive substring matches (browser-check.mjs:209-211)
-
-### R3-compiler/chrono-6: The box still pins a fixed set of code types; .jsx, .tsx, .kt, .cs, .swift and others are listed as code nothing compiles
-- unfixed, `src/toolchains.js:192`
-- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous || 05:17: "there shouldn't be any version pinning or code type pinning or specific prompt pinning."
-- Required: The box runs whatever code type the work is written in, with no runtime-pinned list of languages.
-- Status: reopened by the round 4 recheck (1 of 3 closed): The box still pins its code types. Only the javascript and python rows have call adapters (src/toolchains.js:43, 101). callModule ignores every other language (src/checks.js:37-38), so a function contract in TypeScript, Go, Rust, Java, Ruby or PHP can never pass its call validation. TypeScript's row | OTHER_CODE is gone and Go, Rust, C, C++, Java, Ruby and PHP have rows with run_file (toolchains.js:162-174). But call checks, the check kind for function contracts, still run only for JavaScript and Python. checks.js:38 skips any file whose row lacks call_adapter, only javascript and python have one
-
-### R3-compiler/chrono-7: Packages install only for JavaScript and Python; the box drops installs for every other language silently
-- unfixed, `src/checks.js:83`
-- Owner (2026-10-15 22:12): why are packages not allowed now?
-- Required: Allow packages for the code being built: the compiler's box installs what the code needs in whatever language it is written, and packages are listed on the rows as the owner described (22:11).
-- Status: reopened by the round 4 recheck (0 of 3 closed): Only the JavaScript and Python rows (src/toolchains.js:56, :90) and Ruby (:171) have an install command. Go, Rust, C, C++, Java and PHP have none, although Dockerfile.box installs cargo and Go, so their packages can never be installed. The managers' fresh grant is offered only for rows with r.instal | Ruby gained an install row, but Go, Rust, C, C++, Java and PHP have none (src/toolchains.js:162-174), even though the image ships cargo (Dockerfile.box:22). A package for those languages reaches the box as 'no install command' (build-runner.mjs:807). A fresh grant is offered only in rows with r.inst | Packages are no longer dropped silently in checkPlan (checks.js:84-87), but install still exists only for javascript (npm), python (pip) and ruby (gem) (toolchains.js:56, 90, 171). Go, Rust, Java, PHP, C/C++, TypeScript and shell rows have no install, so the box records 'no install command for
-
-### R3-compiler/chrono-8: A split's package names are still resolved by a runtime line walk and word lists, granted fresh from the top with no manager
-- unfixed, `src/packages.js:70`
-- Owner (2026-10-16 20:43): i mean, think about it. worker asks it manager (clef) where does it this go, clef walks up the tree to find it, which is a function || 2026-10-16 20:38: "instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever" || 2026-10-16 20:08: "the runtime shouldn't be enforcing any sort of process or doing any of the agents work for them"
-- Required: A package a piece needs is asked of its manager like any other ask, and managers find or grant it through their functions. The runtime does no line walk, word-list matching or standard-library substitution of its own.
-- Status: reopened by the round 4 recheck (1 of 3 closed): The line walk and the grant from the top with no manager are gone: names a parent's row doesn't list now become sendAsk asks to the piece's manager (src/index.js:1679). piecePackages (src/packages.js:97) still word-matches each given name before anyone is asked. stdlibRow/inStdlib (packages.js:58-66 | The line walk is gone, and given names a parent lacks become asks. But piecePackages still resolves a split's names by runtime matching (src/packages.js:94-98). heldByName matches by stripping module_prefix and by dotted-parent prefix (packages.js:71-77). Any name that stdlibRow word-matches against
-
-### R3-compiler/code-1: A worker's ask for a third-party package ends in archive: managers can only grant what a row already holds, and fresh grants are allowlist-gated
-- unfixed, `src/index.js:8847`
-- Owner (2026-10-15 22:12): why are packages not allowed now? || 2026-10-15 22:11: packages should be listed in the durable object upon creation, same way as interfaces. That way it can have the same hierarchy as interfaces
-- Required: Packages are allowed and listed on the rows with the same hierarchy as interfaces. A worker's ask for a package its row lacks is granted down its line and installed by the compiler's box, and it is never archived for asking. No allowlist decides which names count as packages.
-- Status: reopened by the round 4 recheck (0 of 6 closed): A worker can still be archived for asking for a package. In managerOptions (index.js:8713-8717), a new package name can be granted only at a manager with no manager above it, and only once per toolchain row that has an install step. Only node, python and ruby have one (toolchains.js:56, 90, 171); Go | The cited code is now managerOptions (index.js:8707-8717). A manager may grant a package its row lacks only when it has no manager above it (8714: !this.agentAbove(m)), and only in languages whose compile row has an install command (8715: compileRows().filter(r=>r.install)). Every other manager can  | Partly fixed. managerOptions (index.js:8707-8716) now offers a fresh grant, but only to the manager with no agentAbove (the room's manager), only when the ask carries a name (a need with no name gets no grant option), and only in languages whose compileRows() row has install. Below the top, a 
-
 ### R3-compiler/code-4: Call adapters run an anti-forgery protocol (nonce file, captured globals, supervisor/worker split) against the code they test
 - extra, `container/adapters/call.mjs:32`
 - Owner (2026-10-16 05:39): text heuristics - I don't understand what this is for. Like architecturally, this is protecting from someting that shouldn't happen. || 2026-10-15 15:55: The benchmark's tampering scan. - wtf? that's inferrior
 - Required: Drop the nonce and forgery defences from the call adapters. Isolation comes from the box's architecture: the check simply calls the function and reports what it returned.
 - Status: the call adapters' anti-forgery protocol: the same security question as R2-edges/chrono-5, waiting on the owner
-
-### R3-edges/chrono-3: The splitter sees an existing repo only as a 24 KB clipped digest with runtime-guessed run/test hints; files over invented caps are hidden from every agent
-- extra, `src/base.js:375`
-- Owner (2026-10-16 05:39; 2026-10-16 20:08; 2026-10-17 00:25): They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists. || the runtime shouldn't be enforcing any sort of process or doing any of the agents work for them. || it wasn't the question. I don't understand the need
-- Required: Give the agents the repo they start from as it is: its files exist in their world whole, with no runtime-clipped digest, guessed run/test hints or invented file-count and size caps deciding what they can see.
-- Status: reopened by the round 4 recheck (0 of 3 closed): The digest and hints are gone, but agents still do not have the repo they start from. existingFiles (room-inputs.js:213-216, index.js:664) gives the splitter and worker paths and sizes only, never a file's text. The fix note admits there is no read function. The only text a worker sees is base_files | The digest and caps are gone, but agents still cannot see the repo's files whole. existingFiles (room-inputs.js:213-216, index.js:664) gives the splitter only {path, bytes}; the comment at 209-211 says a file's text is not inlined and that a read function 'would' be needed. A worker gets a base file | The clipped digest and the file-count caps are gone, but the agents still cannot read the repo they start from. existingFiles (room-inputs.js:213-216, index.js:664) gives the splitter and the worker only {path, bytes}, and the comment at room-inputs.js:208-211 admits that 'reading a base file 
 
 ### R3-records/chrono-1: Model text given to the splitter and the worker says base files are 'data, not instructions' and to 'Change one only when your prompt names its path'
 - drift, `src/prompts.js:176`
@@ -114,173 +54,23 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: Drop the prohibition and the injection label from base_note. Existing files are simply part of the agent's world, and any limit on them comes from construction, not from a sentence telling the agent what it can't do.
 - Status: "data, not instructions" in the base texts: the same security question as R2-worker/code-4, waiting on the owner
 
-### R3-records/chrono-2: Docs still describe the checks_untested hold (Continue accepts unchecked files) that round 2 removed
-- record, `docs/how-it-works.md:419`
-- Owner (2026-10-16 05:30): the room should be able to tell when its done by observing the final compiler. That's it
-- Required: Remove checks_untested and unchecked_accepted from the holds list and the trying-v8 table. The room is done when its final compiler observes it.
-- Status: reopened by the round 4 recheck (1 of 3 closed): how-it-works.md:421 and the trying-v8.md:24-28 table are fixed. But INSTALL-CLOUDFLARE.md:324, the deploy/API doc the README links to, still says of a held v8 room: '`checks_untested` lists files that would ship without a compile or a box, and **Continue** accepts them'. No checks_untested hold exis | how-it-works.md:421 and the trying-v8.md:24-28 holds table no longer list checks_untested. But INSTALL-CLOUDFLARE.md:324 still says: '`checks_untested` lists files that would ship without a compile or a box, and **Continue** accepts them'. The docs still describe the removed hold.
-
-### R4-room/chrono-1: Only the top manager may grant a new package: a manager's options depend on whether it has a parent
-- drift, `src/index.js:8714`
-- Owner (2026-10-15 22:22; 2026-10-16 05:30): yeah, I want all of the managers to be exactly the same. || the top manager shouldn't even know it's a top manager.
-- Required: Give every manager the same functions on an ask, whatever its depth. No option may depend on whether the manager has a manager above it.
-- Status: to be fixed (round 4 fixer)
-
-### R4-room/chrono-2: Queued prompts reach the dashboard cut to 1200 characters, and saving an edit writes the cut text back
-- drift, `src/index.js:7953`
-- Owner (2026-10-15 05:21; 2026-10-14 20:50): oh, and prompt adjustments. I want to be able to queue prompts instead of sending and forgetting || I put this goal in - getting an error about character limit:
-- Required: Give the person their queued prompt whole, so a queued prompt is applied as the person wrote and edited it, with no runtime character clip.
-- Status: to be fixed (round 4 fixer)
-
-### R4-room/chrono-3: The run loop wakes a worker that ended its session with wait (nudgeQuiescentLeaf), overriding the worker's own call
-- extra, `src/index.js:7640`
-- Owner (2026-10-16 20:08): in general though - the runtime shouldn't be enforcing any sort of process or doing any of the agents work for them. like the runtime should only be exposing functions that make other agents visible or show what the workers can do. That's it.
-- Required: Remove the nudge. A worker's wait is its own call, and the runtime only exposes functions and does what they are called with. If a wait with nothing to wait for is possible, fix that through what the worker is given, not with a runtime wake.
-- Status: to be fixed (round 4 fixer)
-
-### R4-room/code-3: The v8 prompt head still reports a room-wide repair-round cap ('repair rounds X of Y') that the owner ruled out and that bounds nothing in v8
-- record, `src/index.js:7955`
-- Owner (2026-10-16 05:54): why does it not go back? it should go back until done, just like anything else?
-- Required: Drop room_repair_rounds and room_repair_cap from the v8 prompt head, and remove the 'repair rounds X of Y' note and the ceiling comment, so the record says what the owner ruled: complaints go back until done, bounded only by the person's budget.
-- Status: to be fixed (round 4 fixer)
-
-### R4-room/record-2: Room comment still says an ask goes to the manager's splitter
-- record, `src/index.js:8207`
-- Owner (2026-10-16 05:39): If clef is able to walk up the inference tree to root and not find the scope to root, then kill that agent. But now we have compensating controls to rebuild code that is missing (right?)
-- Required: Say what the owner ruled: an ask is answered with a contract the children deliver or passed up with ask_parent, and one held nowhere up to the room archives the asker. Never 'to its splitter'.
-- Status: to be fixed (round 4 fixer)
-
-### R4-splitter/chrono-1: Splitter's responses are capped at an invented 8192 output tokens, while the worker's and builder's caps were lifted
-- extra, `src/splitter.js:187`
-- Owner (2026-10-17 00:25; 2026-10-16 19:44): it wasn't the question. I don't understand the need (answering Claude's 'The 100-call cap was my own invention') || 3 & 4 are issues with the runtime / routing (4 = 'Its answer was cut off or malformed, so the fix never landed')
-- Required: Remove the runtime-picked cap, so the splitter's responses are bounded only by what the model's context window leaves, as the worker's and builder's now are.
-- Status: to be fixed (round 4 fixer)
-
-### R4-splitter/chrono-2: Splitter is told it may declare up to max_children pieces, but a division the room cannot create becomes a split_capacity hold for the person
-- drift, `src/index.js:8496`
-- Owner (2026-10-16 19:53; 2026-10-16 05:30): why, I keep commenting that this shouldn't happen, and the runtime keeps introducing failure cases || the room should be able to tell when its done by observing the final compiler. That's it
-- Required: The runtime must not produce this failure case. A division admitted within the bound the splitter was given is created, and nothing is held, so the bound the splitter is told matches what the room can actually create.
-- Status: to be fixed (round 4 fixer)
-
-### R4-splitter/code-2: Clef's split review adds questions the owner never described: a scope question for each piece, and exercises/implementable/internal 'doubt' questions for each validation (internal chosen by a runtime file-type heuristic)
-- extra, `src/model.js:168`
-- Owner (2026-10-16 05:12): the model should be closer to here's the original model here's the pieces is this valid? (without going too small) <----this is the critical part for clef that will require tuning; also 2026-10-15 20:28: "why is clef doubting requirements for the code"
-- Required: The split review asks only what the owner described: given the original assignment and the pieces, is this a valid division, and are the pieces not too small. Drop the per-piece scope questions, the per-validation exercises/implementable/internal questions, the internalCandidate heuristic and the doubt marks in holds. Stop calling the review when there are no pieces.
-- Status: to be fixed (round 4 fixer)
-
-### R4-splitter/record-3: split_attempts keeps only the last 24 records, so the pre-grade and the attempt count can drop off and Clef grades again or retries more than twice
-- extra, `src/index.js:1499`
-- Owner (2026-10-16 05:13): there should also be a catch for "way out of bounds" e.g. pre-grading e.g. grade once -> clef rates "this doesn't need to be split" with a very high certainty, that doesn't need more model turns; also 2026-10-16 05:12: 'literally every manager tries to split, model can retry twice with different split parameter'
-- Required: Keep every split attempt of the row's task, so Clef pre-grades a manager once and each division gets exactly the two retries the owner set, with no runtime window deciding either.
-- Status: to be fixed (round 4 fixer)
-
-### R4-worker/chrono-1: Worker's ask tool still says an ask 'asked and answered before, is answered at once', the removed answer-is-final rule
-- unfixed, `src/prompts.js:109`
-- Owner (2026-10-16 20:08): in general though - the runtime shouldn't be enforcing any sort of process or doing any of the agents work for them. like the runtime should only be exposing functions that make other agents visible or show what the workers can do. That's it.
-- Required: Rewrite the ask description to say what the function does now: the ask is sent as made, and only something available by name is answered at once. Drop the 'asked and answered before' clause.
-- Status: to be fixed (round 4 fixer)
-
-### R4-worker/code-1: The join silently drops the builder's own glue file when a delivered or existing file later takes its path
-- extra, `src/index.js:3772`
-- Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
-- Required: Remove the runtime's path collision rule. The builder's file stays in its world, and the overlap is left to the builder and the compiler, rather than the runtime silently deciding which of an agent's files exist.
-- Status: to be fixed (round 4 fixer)
-
 ### R4-worker/record-2: The worker's write_file still refuses .git and over-long paths, while the changelog, docs and a test title say no path rule exists
 - unfixed, `src/worker.js:52`
 - Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
 - Required: No path rule should refuse a worker's write. Anything a repository cannot hold should be outside the worker's world by construction, not a refusal text. Until then, the changelog, docs and test title must not claim there is no path rule.
-- Status: to be fixed (round 4 fixer)
-
-### R4-compiler/chrono-1: Call checks work only for JavaScript and Python: a function in any other language gets a false 'defines no X a call reaches' complaint
-- drift, `src/checks.js:38`
-- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
-- Required: A function contract the box accepts in any language can be called by a check: the box runs the call in that language. The compiler does not report a defined function as missing because the runtime lacks an adapter for it.
-- Status: to be fixed (round 4 fixer)
+- Status: partly fixed (1c65a31: base_note no longer tells agents which existing files they may change). Still open: write_file refuses .git/ and over-long paths (unheldPath), because the artifact store, the export and the box cannot hold them; making any path holdable is shared with v7. For the owner.
 
 ### R4-compiler/chrono-2: The runtime guesses which module a call check loads by scanning every bundle file for the function name, instead of using the served contract's path
 - extra, `src/checks.js:32`
 - Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
 - Required: Run the call check against the file the splitter declared for the function contract it serves (the contract's path), as written. Don't search the bundle by name.
-- Status: to be fixed (round 4 fixer)
-
-### R4-compiler/chrono-3: Invented box time caps (200 s per verification, 20 s per check, 5 s per step) turn the box's clock into complaints against workers
-- extra, `container/build-runner.mjs:423`
-- Owner (2026-10-17 00:25): it wasn't the question. I don't understand the need
-- Required: Drop the invented time caps, so a check is bounded only by what the owner sets. A check that times out on the runtime's own clock is not sent to a worker as their failure.
-- Status: to be fixed (round 4 fixer)
-
-### R4-compiler/chrono-4: The box's syntax stage word-matches file names in compiler output to decide whom to blame, and blames the first file when the output names none
-- extra, `container/build-runner.mjs:782`
-- Owner (2026-10-16 05:39): text heuristics - I don't understand what this is for. Like architecturally, this is protecting from someting that shouldn't happen.
-- Required: Report the syntax step's output as the compiler observed it, and leave who must fix it to routing (the managers' functions). The runtime does not guess the site by matching names in the output.
-- Status: to be fixed (round 4 fixer)
-
-### R4-compiler/code-1: When Clef gives no answer on whether a piece can run a check, the runtime decides for it and rolls the check up for good (after an invented retry-once schedule)
-- extra, `src/index.js:4020`
-- Owner (2026-10-15 22:22): I want each manager, to hand to a builder to put all the interfaces together (as it is today) but as an additional step I would like clef to evalulate if the code is compilable as a piece. If so, test and compile that piece so that compilation can start earlier within its own testing box. || 2026-10-16 20:08: in general though - the runtime shouldn't be enforcing any sort of process or doing any o …
-- Required: Whether a piece can run a check is Clef's call. When Clef gives no answer, ask it again within the owner's budget, as is done for document judging. Don't treat a missing answer as a NO, and don't move the check up because of one.
-- Status: to be fixed (round 4 fixer)
+- Status: partly fixed (6514de0: callModule runs against the path the function contract declares). A function contract the splitter gave no path (the splitter's interface allows it) still finds its file by name, marked pending the owner. Owner question: must a function a call check serves declare a path?
 
 ### R4-compiler/code-3: Toolchain row comment still says package-fetching commands are refused while packages is 'none'
 - record, `src/toolchains.js:37`
 - Owner (2026-10-15 22:12): why are packages not allowed now?
 - Required: Delete the dead package_runners data and its comment, or rewrite the comment so that it no longer says package fetching is refused. Packages are allowed.
-- Status: to be fixed (round 4 fixer)
-
-### R4-compiler/record-2: Call adapters and the HTTP client clip the observation the worker reads (stack 4000 chars, load error 2000, 12 names, 2 MB body)
-- unfixed, `container/adapters/call.mjs:56`
-- Owner (2026-10-16 19:41): how is this possible - this is the place where i WANT worker context?
-- Required: Pass the stack, error and response through whole, so the worker's complaint is what the check observed with no runtime excerpting.
-- Status: to be fixed (round 4 fixer)
-
-### R4-compiler/record-3: Browser checks still loosen what the splitter wrote: fuzzy text in expect_count and a rewritten input selector
-- unfixed, `container/adapters/browser-check.mjs:209`
-- Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
-- Required: Run every browser step exactly as written (exact text, the selector as given). Whether a validation is sound is Clef's call at the split review.
-- Status: to be fixed (round 4 fixer)
-
-### R4-compiler/record-4: A worker's package ask is still only grantable in npm/pip/gem languages and only for names a regex accepts; otherwise it ends in archive
-- unfixed, `src/index.js:8715`
-- Owner (2026-10-15 22:12 / 22:11): why are packages not allowed now? || packages should be listed in the durable object upon creation, same way as interfaces. That way it can have the same hierarchy as interfaces
-- Required: Grant any package a worker asks for down its line, whatever language it is in, and have the compiler's box install it. A worker is never archived for asking for a package, and no name filter decides what is a package.
-- Status: to be fixed (round 4 fixer)
-
-### R4-compiler/record-5: Packages install only for JavaScript, Python and Ruby; other languages' packages reach the box and are not installed
-- unfixed, `src/toolchains.js:162`
-- Owner (2026-10-15 22:12): why are packages not allowed now?
-- Required: The compiler's box installs the packages the code needs in whatever language the code is written.
-- Status: to be fixed (round 4 fixer)
-
-### R4-compiler/record-8: judgeRuns comment still says a Clef error holds the room until Continue
-- record, `src/index.js:9112`
-- Owner (2026-10-15 23:16): no? there should be no stopgaps? ever?
-- Required: Say what the code does: a judgement Clef could not give is run again by the compiler, a turn of the owner's budget each time.
-- Status: to be fixed (round 4 fixer)
-
-### R4-edges/chrono-1: Dataset fetch retries a rows page on an invented schedule (500 ms, 1500 ms), picks what to retry by a regex over error text, then silently runs a partial benchmark
-- extra, `src/bench.js:249`
-- Owner (2026-10-15 23:16): no? there should be no stopgaps? ever?
-- Required: Drop the runtime's retry schedule, the error-text regex and the silent partial dataset. The benchmark is loaded as it is, or the run says plainly that it could not be read.
-- Status: to be fixed (round 4 fixer)
-
-### R4-edges/chrono-2: Benchmark size is capped by invented limits: at most 500 tasks, a 16 MB fetched dataset, a 4 MB pasted one
-- extra, `src/bench.js:25`
-- Owner (2026-10-15 05:16): 2. I want to be able to point this thing at links and benchmarks, like AI benchmarks
-- Required: Remove the runtime's task-count and dataset-size ceilings, so a benchmark the person points at is loaded whole. It is bounded only by the limit and budget the person sets.
-- Status: to be fixed (round 4 fixer)
-
-### R4-edges/chrono-3: Bench marks a task 'error' after an invented 5 failed polls of its room (MAX_POLL_ERRORS)
-- extra, `src/bench-run.js:47`
-- Owner (2026-10-15 23:16): no? there should be no stopgaps? ever?
-- Required: Remove the strike count. A room that cannot be read this tick is read again on the next, and the task's outcome is what the room and the grader observe.
-- Status: to be fixed (round 4 fixer)
-
-### R4-edges/code-4: Base repo loader decides by path-name and extension lists which files exist for the agents (vendored dirs, binary extensions, case twins)
-- extra, `src/base.js:24`
-- Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
-- Required: Keep the repo's files as they are in the agents' world, with no runtime list of directory names, extensions or case rules deciding which files are the project's. Binary content (detected as such) is the only thing that cannot be text.
-- Status: to be fixed (round 4 fixer)
+- Status: comment fixed (6514de0); deleting the dead package_runners data was refused by this session's permission check as a security weakening, so it waits for the owner's decision.
 
 ### R4-edges/code-5: Fetcher rewrites every linked page with injection heuristics: drops hidden/aria-hidden/form subtrees, strips invisible characters, escapes v7 message envelopes
 - extra, `src/fetcher.js:555`
@@ -288,57 +78,265 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: Store and quote the linked page as it reads, dropping the anti-injection hiding rules and the envelope escaping. Isolation comes from the architecture (functions, not parsed messages), not from text heuristics.
 - Status: the fetcher's injection heuristics on linked pages: the same security question as R2-worker/code-4, waiting on the owner
 
+## Fixed, awaiting recheck
+
+### R2-compiler/record-6: Only JavaScript, Python, TypeScript and shell exist in the box; other code types cannot run
+- drift, `src/toolchains.js:9`
+- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous || 05:17: "there shouldn't be any version pinning or code type pinning or specific prompt pinning."
+- Required: The box runs whatever code type the work is written in, with no fixed set of languages pinned by the runtime.
+- Fixed in: 6514de0: as R4-compiler/chrono-1, call checks are no longer JavaScript and Python only.
+
+### R3-room/chrono-1: The prompt queue still has an invented 4x-Start-budget turn allowance and a two-failures stop
+- unfixed, `src/index.js:8230`
+- Owner (2026-10-15 05:21): oh, and prompt adjustments. I want to be able to queue prompts instead of sending and forgetting
+- Required: Take and apply the queued prompts as the person queues them. Each run is bounded only by the turn budget the person sets, with no separate queue allowance and no runtime stop after a number of failures.
+- Fixed in: 8626854: the queue has no failure policy: a failed prompt is marked failed and the next is applied to the room as it stands (queueReady). queueOnFail, stopQueue, Go on, /api/prompts/policy and the "When a prompt fails" select are gone.
+
+### R3-worker/code-2: workerAsk returns 'the answer is final' for any repeated key and never re-sends the ask
+- extra, `src/index.js:9190`
+- Owner (2026-10-16 20:08): in general though - the runtime shouldn't be enforcing any sort of process or doing any of the agents work for them. like the runtime should only be exposing functions that make other agents visible or show what the workers can do. That's it.
+- Required: An ask the worker makes is sent to its manager as made. The runtime adds no rule that an earlier answer is final and does not merge asks by a truncated key.
+- Fixed in: 1c65a31: the ask text no longer describes answer-is-final; askKey includes the request id and every ask the worker's available list does not answer goes to its manager.
+
+### R3-compiler/chrono-4: The worker's complaint carries only the last line or two of stderr and one frame; frames are capped at 8
+- unfixed, `container/build-runner.mjs:856`
+- Owner (2026-10-16 19:41): how is this possible - this is the place where i WANT worker context?
+- Required: Give the worker the observation whole, as the compiler observed it (the full stderr, stdout and stack), with no runtime excerpting or frame cap.
+- Fixed in: 6d8bfdc: as R4-compiler/record-2.
+
+### R3-compiler/chrono-5: The browser check still reinterprets what the splitter wrote: role aliases, tiered fuzzy locators and an inserted goto
+- unfixed, `container/adapters/browser-check.mjs:81`
+- Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
+- Required: Run each browser check exactly as the splitter wrote it, with no aliases, fuzzy tiers or inserted steps. Whether a validation is sound is Clef's call at the split review.
+- Fixed in: aa69380: as R4-compiler/record-3.
+
+### R3-compiler/chrono-6: The box still pins a fixed set of code types; .jsx, .tsx, .kt, .cs, .swift and others are listed as code nothing compiles
+- unfixed, `src/toolchains.js:192`
+- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous || 05:17: "there shouldn't be any version pinning or code type pinning or specific prompt pinning."
+- Required: The box runs whatever code type the work is written in, with no runtime-pinned list of languages.
+- Fixed in: 6514de0: as R4-compiler/chrono-1.
+
+### R3-compiler/chrono-7: Packages install only for JavaScript and Python; the box drops installs for every other language silently
+- unfixed, `src/checks.js:83`
+- Owner (2026-10-15 22:12): why are packages not allowed now?
+- Required: Allow packages for the code being built: the compiler's box installs what the code needs in whatever language it is written, and packages are listed on the rows as the owner described (22:11).
+- Fixed in: 6514de0: as R4-compiler/record-5.
+
+### R3-compiler/chrono-8: A split's package names are still resolved by a runtime line walk and word lists, granted fresh from the top with no manager
+- unfixed, `src/packages.js:70`
+- Owner (2026-10-16 20:43): i mean, think about it. worker asks it manager (clef) where does it this go, clef walks up the tree to find it, which is a function || 2026-10-16 20:38: "instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever" || 2026-10-16 20:08: "the runtime shouldn't be enforcing any sort of process or doing any of the agents work for them"
+- Required: A package a piece needs is asked of its manager like any other ask, and managers find or grant it through their functions. The runtime does no line walk, word-list matching or standard-library substitution of its own.
+- Fixed in: 2d60e05: piecePackages gives a piece a named package only when its parent's row lists that exact name; any other name, a standard-library one included, is the piece's ask of its manager. heldByName is gone.
+
+### R3-compiler/code-1: A worker's ask for a third-party package ends in archive: managers can only grant what a row already holds, and fresh grants are allowlist-gated
+- unfixed, `src/index.js:8847`
+- Owner (2026-10-15 22:12): why are packages not allowed now? || 2026-10-15 22:11: packages should be listed in the durable object upon creation, same way as interfaces. That way it can have the same hierarchy as interfaces
+- Required: Packages are allowed and listed on the rows with the same hierarchy as interfaces. A worker's ask for a package its row lacks is granted down its line and installed by the compiler's box, and it is never archived for asking. No allowlist decides which names count as packages.
+- Fixed in: 2d60e05: the name-shape regex and the 64-name cap are gone (packages.js NAME, protocol.js packageNamesOf); any non-empty name is a package name.
+
+### R3-edges/chrono-3: The splitter sees an existing repo only as a 24 KB clipped digest with runtime-guessed run/test hints; files over invented caps are hidden from every agent
+- extra, `src/base.js:375`
+- Owner (2026-10-16 05:39; 2026-10-16 20:08; 2026-10-17 00:25): They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists. || the runtime shouldn't be enforcing any sort of process or doing any of the agents work for them. || it wasn't the question. I don't understand the need
+- Required: Give the agents the repo they start from as it is: its files exist in their world whole, with no runtime-clipped digest, guessed run/test hints or invented file-count and size caps deciding what they can see.
+- Fixed in: 0f6049d + 999eb59: the room serves any base file whole (ControlRoom.readBaseFile, room-inputs.js baseFileRead), and a worker that holds the base reads it with read_file where it has no file at the path. The splitter's read function follows with the splitter merge.
+
+### R3-records/chrono-2: Docs still describe the checks_untested hold (Continue accepts unchecked files) that round 2 removed
+- record, `docs/how-it-works.md:419`
+- Owner (2026-10-16 05:30): the room should be able to tell when its done by observing the final compiler. That's it
+- Required: Remove checks_untested and unchecked_accepted from the holds list and the trying-v8 table. The room is done when its final compiler observes it.
+- Fixed in: 19e41a2: INSTALL, how-it-works and trying-v8 say the same about checks that could not run.
+
+### R4-room/chrono-1: Only the top manager may grant a new package: a manager's options depend on whether it has a parent
+- drift, `src/index.js:8714`
+- Owner (2026-10-15 22:22; 2026-10-16 05:30): yeah, I want all of the managers to be exactly the same. || the top manager shouldn't even know it's a top manager.
+- Required: Give every manager the same functions on an ask, whatever its depth. No option may depend on whether the manager has a manager above it.
+- Fixed in: 2d60e05: every manager, at any depth, is offered the name asked for, new, in each code language the box compiles; a grant is listed on the asker's whole line.
+
+### R4-room/chrono-2: Queued prompts reach the dashboard cut to 1200 characters, and saving an edit writes the cut text back
+- drift, `src/index.js:7953`
+- Owner (2026-10-15 05:21; 2026-10-14 20:50): oh, and prompt adjustments. I want to be able to queue prompts instead of sending and forgetting || I put this goal in - getting an error about character limit:
+- Required: Give the person their queued prompt whole, so a queued prompt is applied as the person wrote and edited it, with no runtime character clip.
+- Fixed in: 8626854: promptsHead sends each prompt whole; the Edit box and its Save get the full text.
+
+### R4-room/chrono-3: The run loop wakes a worker that ended its session with wait (nudgeQuiescentLeaf), overriding the worker's own call
+- extra, `src/index.js:7640`
+- Owner (2026-10-16 20:08): in general though - the runtime shouldn't be enforcing any sort of process or doing any of the agents work for them. like the runtime should only be exposing functions that make other agents visible or show what the workers can do. That's it.
+- Required: Remove the nudge. A worker's wait is its own call, and the runtime only exposes functions and does what they are called with. If a wait with nothing to wait for is possible, fix that through what the worker is given, not with a runtime wake.
+- Fixed in: 8626854: a v8 room never calls nudgeQuiescentLeaf or nudgeQuiescentManager (a wait is the agent's own call); levelManagerTurn no longer stops after finishing an interrupted admission, the lost wake the nudge hid.
+
+### R4-room/code-3: The v8 prompt head still reports a room-wide repair-round cap ('repair rounds X of Y') that the owner ruled out and that bounds nothing in v8
+- record, `src/index.js:7955`
+- Owner (2026-10-16 05:54): why does it not go back? it should go back until done, just like anything else?
+- Required: Drop room_repair_rounds and room_repair_cap from the v8 prompt head, and remove the 'repair rounds X of Y' note and the ceiling comment, so the record says what the owner ruled: complaints go back until done, bounded only by the person's budget.
+- Fixed in: 8626854: room_repair_rounds and room_repair_cap are gone from the prompt head and the Prompts panel.
+
+### R4-room/record-2: Room comment still says an ask goes to the manager's splitter
+- record, `src/index.js:8207`
+- Owner (2026-10-16 05:39): If clef is able to walk up the inference tree to root and not find the scope to root, then kill that agent. But now we have compensating controls to rebuild code that is missing (right?)
+- Required: Say what the owner ruled: an ask is answered with a contract the children deliver or passed up with ask_parent, and one held nowhere up to the room archives the asker. Never 'to its splitter'.
+- Fixed in: 8626854: the levels overview comment says a manager answers an ask with a contract its children deliver or passes it up with ask_parent.
+
+### R4-splitter/chrono-1: Splitter's responses are capped at an invented 8192 output tokens, while the worker's and builder's caps were lifted
+- extra, `src/splitter.js:187`
+- Owner (2026-10-17 00:25; 2026-10-16 19:44): it wasn't the question. I don't understand the need (answering Claude's 'The 100-call cap was my own invention') || 3 & 4 are issues with the runtime / routing (4 = 'Its answer was cut off or malformed, so the fix never landed')
+- Required: Remove the runtime-picked cap, so the splitter's responses are bounded only by what the model's context window leaves, as the worker's and builder's now are.
+- Fixed in: 3a81ef2: splitLevel passes maxTokens Infinity; SPLITTER_TOKENS is gone.
+
+### R4-splitter/chrono-2: Splitter is told it may declare up to max_children pieces, but a division the room cannot create becomes a split_capacity hold for the person
+- drift, `src/index.js:8496`
+- Owner (2026-10-16 19:53; 2026-10-16 05:30): why, I keep commenting that this shouldn't happen, and the runtime keeps introducing failure cases || the room should be able to tell when its done by observing the final compiler. That's it
+- Required: The runtime must not produce this failure case. A division admitted within the bound the splitter was given is created, and nothing is held, so the bound the splitter is told matches what the room can actually create.
+- Fixed in: 153d5e6: the splitter is told max_pieces = min(max_children, what the room can create: piecesRoom), held for its session (offerPieces) and released at admission, so a division within the bound it was told is always created.
+
+### R4-splitter/code-2: Clef's split review adds questions the owner never described: a scope question for each piece, and exercises/implementable/internal 'doubt' questions for each validation (internal chosen by a runtime file-type heuristic)
+- extra, `src/model.js:168`
+- Owner (2026-10-16 05:12): the model should be closer to here's the original model here's the pieces is this valid? (without going too small) <----this is the critical part for clef that will require tuning; also 2026-10-15 20:28: "why is clef doubting requirements for the code"
+- Required: The split review asks only what the owner described: given the original assignment and the pieces, is this a valid division, and are the pieces not too small. Drop the per-piece scope questions, the per-validation exercises/implementable/internal questions, the internalCandidate heuristic and the doubt marks in holds. Stop calling the review when there are no pieces.
+- Fixed in: 153d5e6: reviewLevel asks only split_valid and split_size, and only when the level is divided; the scope, exercises, implementable and internal questions, internalCandidate, VALIDATION_DOUBT_BAR and the doubt marks are gone.
+
+### R4-splitter/record-3: split_attempts keeps only the last 24 records, so the pre-grade and the attempt count can drop off and Clef grades again or retries more than twice
+- extra, `src/index.js:1499`
+- Owner (2026-10-16 05:13): there should also be a catch for "way out of bounds" e.g. pre-grading e.g. grade once -> clef rates "this doesn't need to be split" with a very high certainty, that doesn't need more model turns; also 2026-10-16 05:12: 'literally every manager tries to split, model can retry twice with different split parameter'
+- Required: Keep every split attempt of the row's task, so Clef pre-grades a manager once and each division gets exactly the two retries the owner set, with no runtime window deciding either.
+- Fixed in: 153d5e6: recordAttempt keeps every split attempt (no slice(-24)).
+
+### R4-worker/chrono-1: Worker's ask tool still says an ask 'asked and answered before, is answered at once', the removed answer-is-final rule
+- unfixed, `src/prompts.js:109`
+- Owner (2026-10-16 20:08): in general though - the runtime shouldn't be enforcing any sort of process or doing any of the agents work for them. like the runtime should only be exposing functions that make other agents visible or show what the workers can do. That's it.
+- Required: Rewrite the ask description to say what the function does now: the ask is sent as made, and only something available by name is answered at once. Drop the 'asked and answered before' clause.
+- Fixed in: 1c65a31: the ask function says each ask is sent as made and its answer arrives next turn; the asked-and-answered-before clause is gone.
+
+### R4-worker/code-1: The join silently drops the builder's own glue file when a delivered or existing file later takes its path
+- extra, `src/index.js:3772`
+- Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
+- Required: Remove the runtime's path collision rule. The builder's file stays in its world, and the overlap is left to the builder and the compiler, rather than the runtime silently deciding which of an agent's files exist.
+- Fixed in: b7b08a2: the join keeps the builder's own files: a delivered file at one of its paths stands in its writer's folder; the builder's world always holds what it wrote; read_file shows both where they share a path.
+
+### R4-compiler/chrono-1: Call checks work only for JavaScript and Python: a function in any other language gets a false 'defines no X a call reaches' complaint
+- drift, `src/checks.js:38`
+- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
+- Required: A function contract the box accepts in any language can be called by a check: the box runs the call in that language. The compiler does not report a defined function as missing because the runtime lacks an adapter for it.
+- Fixed in: 6514de0: a call check runs in any language with a call adapter (callRowOf): TypeScript through call.mjs, and new Ruby (call.rb) and PHP (call.php) adapters; a call into a language with no adapter is infrastructure ("not run: the box has no call adapter"), never a worker complaint.
+
+### R4-compiler/chrono-3: Invented box time caps (200 s per verification, 20 s per check, 5 s per step) turn the box's clock into complaints against workers
+- extra, `container/build-runner.mjs:423`
+- Owner (2026-10-17 00:25): it wasn't the question. I don't understand the need
+- Required: Drop the invented time caps, so a check is bounded only by what the owner sets. A check that times out on the runtime's own clock is not sent to a worker as their failure.
+- Fixed in: 6514de0, aa69380: CHECK_LIMITS is the verification total only; READY_MS, the 60 s syntax cap and the per-step and per-check times are gone; what the verification's end stops is infrastructure. The exec's 240 s timeout and the box's 6-minute lifetime remain (owner question).
+
+### R4-compiler/chrono-4: The box's syntax stage word-matches file names in compiler output to decide whom to blame, and blames the first file when the output names none
+- extra, `container/build-runner.mjs:782`
+- Owner (2026-10-16 05:39): text heuristics - I don't understand what this is for. Like architecturally, this is protecting from someting that shouldn't happen.
+- Required: Report the syntax step's output as the compiler observed it, and leave who must fix it to routing (the managers' functions). The runtime does not guess the site by matching names in the output.
+- Fixed in: 6514de0: one syntax run per toolchain row, its whole output as {files, toolchain, stage, detail}; the name-matching blame loop is gone; such an issue is routed through the managers' functions.
+
+### R4-compiler/code-1: When Clef gives no answer on whether a piece can run a check, the runtime decides for it and rolls the check up for good (after an invented retry-once schedule)
+- extra, `src/index.js:4020`
+- Owner (2026-10-15 22:22): I want each manager, to hand to a builder to put all the interfaces together (as it is today) but as an additional step I would like clef to evalulate if the code is compilable as a piece. If so, test and compile that piece so that compilation can start earlier within its own testing box. || 2026-10-16 20:08: in general though - the runtime shouldn't be enforcing any sort of process or doing any o …
+- Required: Whether a piece can run a check is Clef's call. When Clef gives no answer, ask it again within the owner's budget, as is done for document judging. Don't treat a missing answer as a NO, and don't move the check up because of one.
+- Fixed in: 4aba24a: a check Clef gave no answer on stays at its piece and is asked again on a turn of the budget (pieceScope unjudged → not run → the could-not-run path); pieceReach's ask-once-more retry is gone.
+
+### R4-compiler/record-2: Call adapters and the HTTP client clip the observation the worker reads (stack 4000 chars, load error 2000, 12 names, 2 MB body)
+- unfixed, `container/adapters/call.mjs:56`
+- Owner (2026-10-16 19:41): how is this possible - this is the place where i WANT worker context?
+- Required: Pass the stack, error and response through whole, so the worker's complaint is what the check observed with no runtime excerpting.
+- Fixed in: 6d8bfdc: call.mjs, call.py and http-check.mjs pass the observation whole (no stack, error, name-list or body clip); stripAdapterFrames is gone.
+
+### R4-compiler/record-3: Browser checks still loosen what the splitter wrote: fuzzy text in expect_count and a rewritten input selector
+- unfixed, `container/adapters/browser-check.mjs:209`
+- Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
+- Required: Run every browser step exactly as written (exact text, the selector as given). Whether a validation is sound is Clef's call at the split review.
+- Fixed in: aa69380: browser checks run selectors and texts as written: no ATTRIBUTE_DEFAULTS, no whitespace folding, expect_count case-sensitive.
+
+### R4-compiler/record-4: A worker's package ask is still only grantable in npm/pip/gem languages and only for names a regex accepts; otherwise it ends in archive
+- unfixed, `src/index.js:8715`
+- Owner (2026-10-15 22:12 / 22:11): why are packages not allowed now? || packages should be listed in the durable object upon creation, same way as interfaces. That way it can have the same hierarchy as interfaces
+- Required: Grant any package a worker asks for down its line, whatever language it is in, and have the compiler's box install it. A worker is never archived for asking for a package, and no name filter decides what is a package.
+- Fixed in: 2d60e05: managerOptions and routeAsk comments match: any manager grants new.
+
+### R4-compiler/record-5: Packages install only for JavaScript, Python and Ruby; other languages' packages reach the box and are not installed
+- unfixed, `src/toolchains.js:162`
+- Owner (2026-10-15 22:12): why are packages not allowed now?
+- Required: The compiler's box installs the packages the code needs in whatever language the code is written.
+- Fixed in: 6514de0: packages install for TypeScript, Go, Rust, Java and PHP as well (install rows in toolchains.js; Dockerfile.box gains maven, composer, unzip; the image is not rebuilt yet).
+
+### R4-compiler/record-8: judgeRuns comment still says a Clef error holds the room until Continue
+- record, `src/index.js:9112`
+- Owner (2026-10-15 23:16): no? there should be no stopgaps? ever?
+- Required: Say what the code does: a judgement Clef could not give is run again by the compiler, a turn of the owner's budget each time.
+- Fixed in: 4aba24a: judgeRuns' comment says a judgement Clef could not give runs again on a turn of the budget.
+
+### R4-edges/chrono-1: Dataset fetch retries a rows page on an invented schedule (500 ms, 1500 ms), picks what to retry by a regex over error text, then silently runs a partial benchmark
+- extra, `src/bench.js:249`
+- Owner (2026-10-15 23:16): no? there should be no stopgaps? ever?
+- Required: Drop the runtime's retry schedule, the error-text regex and the silent partial dataset. The benchmark is loaded as it is, or the run says plainly that it could not be read.
+- Fixed in: 05511d1: src/bench.js fetchDataset reads each rows page once; a failing page fails the dataset with the offset named. PAGE_RETRY_MS, the sleep parameter, the error-text regex and the partial dataset are gone (bench.js, bench-run.js, public/app.js).
+
+### R4-edges/chrono-2: Benchmark size is capped by invented limits: at most 500 tasks, a 16 MB fetched dataset, a 4 MB pasted one
+- extra, `src/bench.js:25`
+- Owner (2026-10-15 05:16): 2. I want to be able to point this thing at links and benchmarks, like AI benchmarks
+- Required: Remove the runtime's task-count and dataset-size ceilings, so a benchmark the person points at is loaded whole. It is bounded only by the limit and budget the person sets.
+- Fixed in: 05511d1: BENCH_LIMITS loses maxTasks, defaultLimit, datasetBytes and inlineBytes; every row loads unless the person gives a limit; bodies are read whole; the Tasks field has no max or default ("all").
+
+### R4-edges/chrono-3: Bench marks a task 'error' after an invented 5 failed polls of its room (MAX_POLL_ERRORS)
+- extra, `src/bench-run.js:47`
+- Owner (2026-10-15 23:16): no? there should be no stopgaps? ever?
+- Required: Remove the strike count. A room that cannot be read this tick is read again on the next, and the task's outcome is what the room and the grader observe.
+- Fixed in: 05511d1: MAX_POLL_ERRORS and the poll_errors column are gone; a room that cannot be read is read again on the next tick.
+
+### R4-edges/code-4: Base repo loader decides by path-name and extension lists which files exist for the agents (vendored dirs, binary extensions, case twins)
+- extra, `src/base.js:24`
+- Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
+- Required: Keep the repo's files as they are in the agents' world, with no runtime list of directory names, extensions or case rules deciding which files are the project's. Binary content (detected as such) is the only thing that cannot be text.
+- Fixed in: 0271633: src/base.js fetchGithubRepo reads every regular file (VENDORED and BINARY_EXT are gone); only content that is not text is carried as bytes; keepBaseFiles has no letter-case rule.
+
 ### R4-records/chrono-1: how-it-works says the v8 splitters run on the worker model
 - record, `docs/how-it-works.md:510`
 - Owner (2026-10-14 20:56; 2026-10-16 05:16): can I also change the worker models? manager models one model, clef is one model, workers could be another model. || (05:16) managers are clef models (for routing purposes) workers are a different model.
 - Required: Say that in a v8 room the splitters run on the manager model and only the workers run on the worker model, matching the owner's split of manager and worker models.
-- Status: to be fixed (round 4 fixer)
+- Fixed in: 19e41a2: how-it-works says the splitters and builders run on the manager model, the workers on the worker model, the link reader on the compiler model.
 
 ### R4-records/chrono-3: INSTALL doc still describes checks_blocked: a self-retry on 30 s / 2 min / 10 min, then a wait for Continue
 - record, `INSTALL-CLOUDFLARE.md:324`
 - Owner (2026-10-15 23:16; 2026-10-17 00:25): no? there should be no stopgaps? ever? || it wasn't the question. I don't understand the need
 - Required: Remove the checks_blocked retry-schedule text. Say that a check that could not run is run again until the compiler can observe it, within the room's turn budget, with no hold for the person.
-- Status: to be fixed (round 4 fixer)
+- Fixed in: 19e41a2: INSTALL loses the checks_blocked retry schedule and the checks_untested hold text.
 
 ### R4-records/chrono-4: INSTALL doc pins invented limits: an 8-4000 character goal, 400-file/2 MB and 200-file/4 MB base caps, a 30-minute bench task timeout
 - record, `INSTALL-CLOUDFLARE.md:265`
 - Owner (2026-10-14 20:50; 2026-10-17 00:25): I put this goal in - getting an error about character limit: || it wasn't the question. I don't understand the need
 - Required: Describe the limits v8 actually has: no goal-length limit for a v8 goal, no file-count or byte caps on a base beyond Cloudflare's row size, and no bench task timeout. Each run is bounded only by the budgets the owner sets.
-- Status: to be fixed (round 4 fixer)
+- Fixed in: 19e41a2: INSTALL: no v8 goal upper limit, no base caps, no bench task timeout; the settings table matches the dashboard.
 
 ### R4-records/chrono-6: rulings.md puts altered words inside quotation marks as the owner's
 - record, `docs/owner/rulings.md:142`
 - Owner (2026-10-16 20:43; 2026-10-16 05:30; 2026-10-16 05:44; 2026-10-16 05:49): i mean, think about it. worker asks it manager (clef) where does it this go, clef walks up the tree to find it, which is a function
 - Required: Quote the owner's words exactly as prompts.md has them, typos included, or paraphrase without quotation marks.
-- Status: to be fixed (round 4 fixer)
+- Fixed in: 19e41a2: every owner quote in rulings.md is verbatim from prompts.md; stale claims corrected.
 
 ### R4-records/code-1: INSTALL-CLOUDFLARE.md still documents the checks_untested hold that Continue accepts
 - unfixed, `INSTALL-CLOUDFLARE.md:324`
 - Owner (2026-10-16 05:30): the room should be able to tell when its done by observing the final compiler. That's it
 - Required: Remove checks_untested from INSTALL-CLOUDFLARE.md:324. The room is done only when its final compiler observes every validation passing.
-- Status: to be fixed (round 4 fixer)
+- Fixed in: 19e41a2: INSTALL troubleshooting describes a check that could not run as run again on a turn of the budget, no hold.
 
 ### R4-records/code-3: INSTALL-CLOUDFLARE.md documents the bench feedback 'once' mode in which nothing goes back to the room
 - record, `INSTALL-CLOUDFLARE.md:281`
 - Owner (2026-10-16 05:54): why does it not go back? it should go back until done, just like anything else?
 - Required: Remove `feedback`/`once` (and the stale task timeout) from the API docs. A failed grading always goes back to the room as a complaint until done.
-- Status: to be fixed (round 4 fixer)
+- Fixed in: 19e41a2: INSTALL bench API loses feedback/once/until_done and task_timeout_minutes; pass@1 text matches roomOutcome and aggregate.
 
 ### R4-records/code-4: INSTALL-CLOUDFLARE.md says v8 workers write files in Node or Python
 - record, `INSTALL-CLOUDFLARE.md:191`
 - Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
 - Required: Drop 'in Node or Python'. Say the box runs whatever code type the work is written in, as README.md:96 now does.
-- Status: to be fixed (round 4 fixer)
+- Fixed in: 19e41a2: "in Node or Python" is now "whatever code type the work is written in".
 
 ### R4-records/record-4: Docs say the base repo's files 'exist whole' in the splitter's world, quoted as data; the splitter gets only each file's path and byte count
 - record, `docs/how-it-works.md:427`
 - Owner (2026-10-16 05:39): They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
 - Required: Make the record say what the code does: the splitter sees a listing of path and size, not the files' text. Alternatively, give the agents a way to see the base files in their world, as the owner described, so the doc's statement becomes true.
-- Status: to be fixed (round 4 fixer)
-
-## Fixed, awaiting recheck
-
-(none)
+- Fixed in: 19e41a2 + 116bbe8: how-it-works describes the base listing and read_file for the splitter and the worker, which now exists.
 
 ## Disputed
 
