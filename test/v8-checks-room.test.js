@@ -407,11 +407,11 @@ test('fileResult: markup in a markup file matches whatever the whitespace betwee
 });
 
 
-test('judgeRequirement: Clef yes/no on the file, the bar at 0.6, the whole document in parts of 6,000 up to 4, and an error is not a failure',async()=>{
+test('judgeRequirement: Clef yes/no on the file, the bar at 0.6, the whole document in parts of 6,000, every part, and an error is not a failure',async()=>{
   const asked=[];
   const env=p=>({AI:{run:async(_m,input)=>{asked.push(input);return {answers:{judge:{noul:typeof p==='function'?p(input):p}}};}}});
   assert.equal(JUDGE_BAR,0.6);
-  assert.deepEqual(await judgeRequirement(env(0.6),{says:'s',question:'Is it clear?',path:'A.md',content:'# A\n'}),{passed:true,p:0.6,parts:1,over_cap:false,detail:''});
+  assert.deepEqual(await judgeRequirement(env(0.6),{says:'s',question:'Is it clear?',path:'A.md',content:'# A\n'}),{passed:true,p:0.6,parts:1,detail:''});
   assert.equal(asked[0].questions.judge.type,'noul');
   assert.equal(asked[0].questions.judge.instructions,`${CLEF.judge} Specifically: Is it clear?`);
   assert.deepEqual(asked[0].state,{requirement:'s',file:{path:'A.md',text:'# A\n'}});
@@ -424,14 +424,20 @@ test('judgeRequirement: Clef yes/no on the file, the bar at 0.6, the whole docum
   asked.length=0;
   const r=await judgeRequirement(env(input=>input.state.file.text.startsWith('## Two')?0.8:0.2),{says:'s',question:'q',path:'L.md',content:long});
   assert.equal(r.passed,true);assert.equal(asked.length,2);
-  // The whole document up to 4 parts; past them, the detail says so.
+  // The whole document, every part of it, however long: nothing is left unread.
   const huge='# A\n'+'x'.repeat(30000);
-  assert.deepEqual(judgeParts(huge).map(x=>x.length),[6000,6000,6000,6000]);
-  assert.equal(judgeParts(huge).left,6004);
+  assert.deepEqual(judgeParts(huge).map(x=>x.length),[6000,6000,6000,6000,6000,4]);
   asked.length=0;
   const h=await judgeRequirement(env(0.1),{says:'s',question:'q',path:'H.md',content:huge});
-  assert.equal(asked.length,4);assert.equal(h.over_cap,true);
-  assert.match(h.detail,/only its first 24000 characters \(4 parts\) were read, 6004 more were not$/);
+  assert.equal(asked.length,6);
+  assert.equal(asked.map(a=>a.state.file.text).join(''),huge);
+  assert.equal(h.detail,'Clef judged p=0.10: q');
+  // The requirement and the question go to Clef as written.
+  const question='Does it explain '+'every step '.repeat(60)+'?';
+  asked.length=0;
+  await judgeRequirement(env(0.9),{says:'s'.repeat(500),question,path:'A.md',content:'# A\n'});
+  assert.equal(asked[0].questions.judge.instructions,`${CLEF.judge} Specifically: ${question}`);
+  assert.equal(asked[0].state.requirement,'s'.repeat(500));
   await assert.rejects(judgeRequirement({AI:{run:async()=>({answers:{}})}},{says:'s',question:'q',path:'A.md',content:'x'}),/no valid probability/);
 });
 

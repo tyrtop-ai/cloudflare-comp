@@ -74,6 +74,29 @@ test('readCheck takes a check only as written: other kind words, field aliases, 
   assert.equal(readCheck({kind: 'browser', serve: 'index.html', steps: [{expect_element: 'li.item'}]}, ctx()).error, 'step 1 of the browser check: expect_element is an object with selector and, optionally, text');
 });
 
+test('readCheck has no size caps: steps, texts, input files, a command line, stdin, values, a question and a selector are taken as written, however many or long', () => {
+  const long = 'x'.repeat(5000), many = Array.from({length: 30}, (_, i) => `text ${i}`);
+  const call = readCheck({kind: 'call', steps: Array.from({length: 40}, (_, i) => ({call: 'to_f', args: [i, long], expect: {v: long}, expect_has: long, save: `step_${i}_of_a_long_scenario_with_a_long_name`}))}, ctx());
+  assert.equal(call.check.steps.length, 40);
+  assert.deepEqual(call.check.steps[39], {call: 'to_f', args: [39, long], expect: {v: long}, expect_has: long, save: 'step_39_of_a_long_scenario_with_a_long_name'});
+  const files = Object.fromEntries(Array.from({length: 12}, (_, i) => [`in/${i}.txt`, long]));
+  const run = `convert ${Array.from({length: 60}, (_, i) => `arg${i}`).join(' ')} ${'y'.repeat(400)}`;
+  const command = readCheck({kind: 'command', run, stdin: long, files, expect: {stdout: long, stdout_has: many, stderr_has: many}}, ctx());
+  assert.deepEqual([command.check.run, command.check.argv.length, command.check.stdin, Object.keys(command.check.files).length, command.check.expect.stdout_has], [run, 62, long, 12, many]);
+  assert.deepEqual(readCheck({kind: 'file', path: 'README.md', has: many}, ctx()).check.has, many);
+  const question = `Does it ${'explain every step and '.repeat(40)}say so?`;
+  assert.equal(readCheck({kind: 'judge', path: 'README.md', question}, ctx()).check.question, question);
+  const browser = readCheck({kind: 'browser', serve: 'index.html', steps: [...Array.from({length: 30}, () => ({fill: {label: long, text: long}})), {press: 'Shift+Control+Alt+Meta+ArrowDown+PageDown+Home'}, {expect_text: long}, {expect_element: {selector: `div#${'a'.repeat(300)}`, text: long}}]}, ctx());
+  assert.equal(browser.check.steps.length, 33);
+  const http = readCheck({kind: 'http', serve: 'api', steps: [{method: 'POST', path: '/items', body: {text: long}, expect: {body_has: many, json_has: {text: long}}}]}, ctx());
+  assert.deepEqual(http.check.steps[0].body, {text: long});
+  assert.deepEqual(runOf({run: `python3 server.py ${'--flag '.repeat(80).trim()}`}, {kind: 'route'}, {commands: new Set(), executables: new Set(['python3'])}).run.argv.length, 82);
+  // What a worker reads of it: every input file whole.
+  assert.ok(renderExample(command.check).includes(`in/11.txt holding ${JSON.stringify(long)}`));
+  assert.ok(checkSummary(command.check).endsWith(commandOutcomeText(command.check)));
+});
+const commandOutcomeText = c => renderExample(c).split(' → ').pop();
+
 test('runOf: only a page, a route or a command is started, by the run it states as given; a run on any other kind is refused; it listens on a port only when something serves it; runsOf lists what can be served', () => {
   const world = {commands: new Set(['serve']), executables: new Set(['python3'])};
   assert.deepEqual(runOf({static: true}, {name: 'index.html', kind: 'page'}, world), {run: {static: true}});

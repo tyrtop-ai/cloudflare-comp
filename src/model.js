@@ -127,7 +127,7 @@ export async function shouldSplit(env, task, mockContext, contracts = []) {
     : 'Can this requested CODE be written as TWO OR MORE smaller independently authored source-code modules or functions, whose code can be linked to implement the ENTIRE assigned code? Prefer yes if the code can be divided further, even into very small functions. Answer no only if the code itself is an indivisible implementation unit. Do not split into research, design discussions, decisions, documentation, or plans.';
   const answer=await clefRun(env,'shouldSplit',selector,{
     model:clef,
-    state:pipelineV8(env)?{assignment:String(task).slice(0,2600),contracts:(Array.isArray(contracts)?contracts:[]).map(String).filter(Boolean)}:
+    state:pipelineV8(env)?{assignment:String(task),contracts:(Array.isArray(contracts)?contracts:[]).map(String).filter(Boolean)}:
       feedback ? {assigned_behavior:String(task).slice(0,2600),previous_split_rejection:feedback} :
       {assigned_behavior:String(task).slice(0,2600)},
     questions:{should_split:{type:'noul',instructions:question}}
@@ -159,10 +159,10 @@ export const REVIEW_QUESTIONS = 96;
 // The division's facts, as Clef's state holds them: only those there are.
 const divisionFacts = d => {
   const out = {};
-  if (d.undelivered?.length) out.delivered_by_no_piece = d.undelivered.slice(0, 24);
-  if (d.delivered_by_several?.length) out.delivered_by_several_pieces = d.delivered_by_several.slice(0, 24);
-  if (d.placed_by_several?.length) out.files_placed_by_several_pieces = d.placed_by_several.slice(0, 24);
-  if (d.placed_already?.length) out.files_the_level_already_has = d.placed_already.slice(0, 24);
+  if (d.undelivered?.length) out.delivered_by_no_piece = d.undelivered;
+  if (d.delivered_by_several?.length) out.delivered_by_several_pieces = d.delivered_by_several;
+  if (d.placed_by_several?.length) out.files_placed_by_several_pieces = d.placed_by_several;
+  if (d.placed_already?.length) out.files_the_level_already_has = d.placed_already;
   return Object.keys(out).length ? {division: out} : {};
 };
 export async function reviewLevel(env, {assignment, contracts = [], pieces = [], validations = [], division = null, attempt = 1, retry = ''}) {
@@ -172,10 +172,10 @@ export async function reviewLevel(env, {assignment, contracts = [], pieces = [],
   const clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('Unsupported Clef split review model');
   const lines=new Map(contracts.map(c=>[c.name,contractLine(c)]));
-  const state={assignment:String(assignment||'').slice(0,2600),contracts:contracts.map(c=>lines.get(c.name)).filter(Boolean).slice(0,24),
-    ...(split?{pieces:pieces.map((c,i)=>({slot:i,label:String(c.label).slice(0,70),task:String(c.task).slice(0,900),contracts:c.contracts||[],...(division?.places?.[i]?{places:division.places[i]}:{})}))}:{}),
+  const state={assignment:String(assignment||''),contracts:contracts.map(c=>lines.get(c.name)).filter(Boolean),
+    ...(split?{pieces:pieces.map((c,i)=>({slot:i,label:String(c.label),task:String(c.task),contracts:c.contracts||[],...(division?.places?.[i]?{places:division.places[i]}:{})}))}:{}),
     ...(split&&division?divisionFacts(division):{}),
-    validations:validations.map((v,j)=>({slot:j,serves:(v.serves||[]).map(n=>lines.get(n)||n),check:checkSummary(v.check),...(v.says?{says:String(v.says).slice(0,200)}:{})}))};
+    validations:validations.map((v,j)=>({slot:j,serves:(v.serves||[]).map(n=>lines.get(n)||n),check:checkSummary(v.check),...(v.says?{says:String(v.says)}:{})}))};
   const keys=[...(split?[['split_valid',CLEF.split_valid],['split_size',CLEF.split_size],...pieces.map((_,i)=>[`within_${i}`,clefText('scope',{i})])]:[]),
     ...validations.flatMap((v,j)=>[[`exercises_${j}`,clefText('exercises',{i:j})],[`implementable_${j}`,clefText('implementable',{i:j})],...(internalCandidate(v.check)?[[`internal_${j}`,clefText('internal',{i:j})]]:[])])];
   const p=(o,k)=>{const v=o?.answers?.[k]?.noul;return typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=1?v:null;};
@@ -764,14 +764,18 @@ export async function vetBaseChanges(env, {assignment='', paths=[]}) {
   if (env.MOCK_AI === 'true') return paths.map(path=>({path,p:1}));
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash',clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('unsupported Clef decision model');
-  const list=paths.slice(0,24);
-  const output=await clefRun(env,'vetBaseChanges',selector,{model:clef,state:{assignment:String(assignment).slice(0,8000),files:list.map((path,i)=>({slot:i,path}))},
-    questions:Object.fromEntries(list.map((_,i)=>[`base_change_${i}`,{type:'noul',instructions:clefText('base_change',{i})}]))});
-  return list.map((path,i)=>{
-    const p=output?.answers?.[`base_change_${i}`]?.noul;
-    if(typeof p!=='number'||!Number.isFinite(p)||p<0||p>1)throw new Error(`Clef returned no valid probability for ${path}`);
-    return {path,p};
-  });
+  const out=[];
+  for(let start=0;start<paths.length;start+=CHOICE_QUESTIONS) {
+    const list=paths.slice(start,start+CHOICE_QUESTIONS);
+    const output=await clefRun(env,'vetBaseChanges',selector,{model:clef,state:{assignment:String(assignment),files:list.map((path,i)=>({slot:i,path}))},
+      questions:Object.fromEntries(list.map((_,i)=>[`base_change_${i}`,{type:'noul',instructions:clefText('base_change',{i})}]))});
+    out.push(...list.map((path,i)=>{
+      const p=output?.answers?.[`base_change_${i}`]?.noul;
+      if(typeof p!=='number'||!Number.isFinite(p)||p<0||p>1)throw new Error(`Clef returned no valid probability for ${path}`);
+      return {path,p};
+    }));
+  }
+  return out;
 }
 // v8 M3: Clef judges, per check held at a piece, whether what the check
 // reaches comes from the piece's files, the installed packages or the
@@ -792,9 +796,9 @@ export async function pieceReach(env, {name='', contracts=[], files=[], installe
   // still invalid (or a call that fails twice) is that check's error
   // ({id, error}), never its batch's.
   const ask=async group=>{
-    const output=await clefRun(env,'pieceReach',selector,{model:clef,state:{piece:{name:String(name).slice(0,200),contracts:contracts.slice(0,24).map(c=>String(c).slice(0,300)),files:files.slice(0,80)},
-      installed:installed.slice(0,64),checks:group.map((r,i)=>({slot:i,says:String(r.says||'').slice(0,200),check:shapeOf(r.check)}))},
-      questions:Object.fromEntries(group.map((_,i)=>[`piece_reach_${i}`,{type:'noul',instructions:clefText('piece_reach',{name:String(name).slice(0,120),i})}]))});
+    const output=await clefRun(env,'pieceReach',selector,{model:clef,state:{piece:{name:String(name),contracts:contracts.map(String),files},
+      installed,checks:group.map((r,i)=>({slot:i,says:String(r.says||''),check:shapeOf(r.check)}))},
+      questions:Object.fromEntries(group.map((_,i)=>[`piece_reach_${i}`,{type:'noul',instructions:clefText('piece_reach',{name:String(name),i})}]))});
     return group.map((r,i)=>{const p=output?.answers?.[`piece_reach_${i}`]?.noul;return typeof p==='number'&&Number.isFinite(p)&&p>=0&&p<=1?{id:r.id,p}:{id:r.id,error:`Clef returned no valid probability for ${r.id}`};});
   };
   const once=async group=>{try{return await ask(group);}catch(e){return group.map(r=>({id:r.id,error:String(e?.message||e)}));}};
@@ -815,44 +819,42 @@ export const sourceModel = env => async ({role:part, system, user}) =>
 // v8 §4.3 (S4b): Clef judges a document requirement, yes or no, from the
 // file alone: state {requirement, file:{path, text}}, the question CLEF.judge
 // with the check's own question appended. The whole document is read, in
-// parts of at most JUDGE_CHARS cut at a heading (judgeParts), up to
-// JUDGE_PARTS calls; the requirement passes if any part does (p >=
-// JUDGE_BAR, decision U11), and the reading stops at the first that does.
-// A document longer than the parts hold says so in the result (over_cap).
-// Returns {passed, p, detail, parts, over_cap}; a Clef that gives no
-// probability throws (the room retries it, then reads it as
-// infrastructure, never as the document's failure). MOCK passes.
-export const JUDGE_BAR = 0.6, JUDGE_CHARS = 6000, JUDGE_PARTS = 4;
+// parts of at most JUDGE_CHARS cut at a heading (judgeParts), every part;
+// the requirement passes if any part does (p >= JUDGE_BAR, decision U11),
+// and the reading stops at the first that does. Returns {passed, p, detail,
+// parts}; a Clef that gives no probability throws (the room retries it,
+// then reads it as infrastructure, never as the document's failure). MOCK
+// passes.
+export const JUDGE_BAR = 0.6, JUDGE_CHARS = 6000;
 const HEADING=/\n(?=#{1,6}\s|\S[^\n]*\n[=-]{3,}\s*\n)/g;
-export function judgeParts(text, {size=JUDGE_CHARS, cap=JUDGE_PARTS}={}) {
+export function judgeParts(text, {size=JUDGE_CHARS}={}) {
   let rest=String(text??'');
   const parts=[];
-  while(rest.length&&parts.length<cap) {
+  while(rest.length) {
     if(rest.length<=size){parts.push(rest);rest='';break;}
     const head=rest.slice(0,size),cut=[...head.matchAll(HEADING)].map(m=>m.index).filter(i=>i>0).at(-1)||size;
     parts.push(rest.slice(0,cut));
     rest=rest.slice(cut).replace(/^\n/,'');
   }
   if(!parts.length)parts.push('');
-  return Object.assign(parts,{left:rest.length});
+  return parts;
 }
 export async function judgeRequirement(env, {says='', question='', path='', content=''}) {
-  if (env.MOCK_AI === 'true') return {passed:true,p:1,detail:'',parts:1,over_cap:false};
+  if (env.MOCK_AI === 'true') return {passed:true,p:1,detail:'',parts:1};
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
   const clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('unsupported Clef decision model');
-  const instructions=`${CLEF.judge}${question?` Specifically: ${String(question).slice(0,300)}`:''}`;
-  const parts=judgeParts(content),over_cap=parts.left>0;
+  const instructions=`${CLEF.judge}${question?` Specifically: ${question}`:''}`;
+  const parts=judgeParts(content);
   let best=-1,read=0;
   for (const text of parts) {
-    const output=await clefRun(env,'judgeRequirement',selector,{model:clef,state:{requirement:String(says).slice(0,200),file:{path:String(path),text}},questions:{judge:{type:'noul',instructions}}});
+    const output=await clefRun(env,'judgeRequirement',selector,{model:clef,state:{requirement:String(says),file:{path:String(path),text}},questions:{judge:{type:'noul',instructions}}});
     const p=output?.answers?.judge?.noul;
     if(typeof p!=='number'||!Number.isFinite(p)||p<0||p>1)throw new Error(`Clef returned no valid probability judging ${path}`);
     best=Math.max(best,p);read++;
     if(best>=JUDGE_BAR)break;
   }
-  const cap=over_cap?`; only its first ${JUDGE_PARTS*JUDGE_CHARS} characters (${JUDGE_PARTS} parts) were read, ${parts.left} more were not`:'';
-  return {passed:best>=JUDGE_BAR,p:best,parts:read,over_cap,detail:best>=JUDGE_BAR?'':`Clef judged p=${best.toFixed(2)}: ${String(question||says).slice(0,200)}${cap}`};
+  return {passed:best>=JUDGE_BAR,p:best,parts:read,detail:best>=JUDGE_BAR?'':`Clef judged p=${best.toFixed(2)}: ${question||says}`};
 }
 // v7.15.6 (run13): no triage. A failed run with no frame in a component is
 // a requirement the manager routes by the plan (readRequirement in

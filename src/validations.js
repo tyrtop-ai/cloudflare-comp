@@ -439,9 +439,9 @@ export function divisionOf(contracts, pieces, have = []) {
 export const internalCandidate = check => check?.kind === 'file' && Array.isArray(check.has) && check.has.length > 0 && !!toolchainOf(String(check.path || '')) && toolchainOf(String(check.path)).id !== 'text';
 
 // ------------------------------------------------------------ words
-// A check in a few words, for Clef and the event log: its kind and target.
+// A check in words, for Clef and the event log: its kind and the whole check.
 export function checkSummary(check) {
   if (!check) return '';
-  if (check.kind === 'file' || check.kind === 'judge') return `${check.kind} ${check.path}${check.question ? `: ${check.question}` : check.has ? ` contains ${check.has.map(x => JSON.stringify(x)).join(', ')}` : ''}`.slice(0, 300);
-  return `${check.kind}: ${renderExample(check)}`.slice(0, 300);
+  if (check.kind === 'file' || check.kind === 'judge') return `${check.kind} ${check.path}${check.question ? `: ${check.question}` : check.has ? ` contains ${check.has.map(x => JSON.stringify(x)).join(', ')}` : ''}`;
+  return `${check.kind}: ${renderExample(check)}`;
 }

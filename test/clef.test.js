@@ -169,6 +169,41 @@ test('v8: Clef reviews a splitter\'s attempt in one batched call: split_valid, s
   await assert.rejects(reviewLevel({PIPELINE: 'v8', AI: {run: async () => ({answers: {split_valid: {noul: 0.5}}})}}, {pieces, validations}), /no valid review/);
 });
 
+test('v8: Clef grades the original as written: the pre-grade, the review, the base-change and the reach questions carry the assignment, every piece\'s label and task, every contract and every validation, unclipped', async () => {
+  const {reviewLevel, vetBaseChanges, pieceReach} = await import('../src/model.js');
+  const asked = [], env = {PIPELINE: 'v8', AI: {run: async (_name, input) => { asked.push(input); return {answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: 0.8}]))}; }}};
+  const assignment = 'Build the whole tracker: '.repeat(400).trim();
+  const contracts = Array.from({length: 30}, (_, i) => ({name: `f${i}`, kind: 'function', path: `f${i}.py`, does: `does step ${i} ${'in full detail '.repeat(20).trim()}`}));
+  const lines = ['x'.repeat(3000), ...contracts.map(c => `function ${c.name}: ${c.does}`)];
+  await shouldSplit(env, assignment, null, lines);
+  assert.deepEqual(asked[0].state, {assignment, contracts: lines});
+  const pieces = [{label: 'The first piece, named in more than seventy characters for this test', task: 'Write it. '.repeat(300).trim(), contracts: contracts.slice(0, 15).map(c => c.name)},
+    {label: 'The second piece, named in more than seventy characters for this test too', task: 'Write that. '.repeat(300).trim(), contracts: contracts.slice(15).map(c => c.name)}];
+  const validations = contracts.map((c, i) => ({id: `v${i}`, serves: [c.name], says: 'what it says '.repeat(40).trim(), check: {kind: 'call', steps: [{call: c.name, args: ['a'.repeat(400)], expect: 'b'.repeat(400)}]}}));
+  await reviewLevel(env, {assignment, contracts, pieces, validations, division: {places: [], undelivered: contracts.map(c => c.name), delivered_by_several: contracts.map(c => ({contract: c.name, pieces: ['a', 'b']}))}});
+  const st = asked[1].state;
+  assert.equal(st.assignment, assignment);
+  assert.equal(st.contracts.length, 30);
+  assert.deepEqual(st.pieces.map(p => [p.label, p.task]), pieces.map(p => [p.label, p.task]));
+  assert.equal(st.validations.length, 30);
+  assert.equal(st.validations[29].says, validations[29].says);
+  assert.ok(st.validations[29].check.includes('b'.repeat(400)), 'the whole check, in words');
+  assert.equal(st.division.delivered_by_no_piece.length, 30);
+  assert.equal(st.division.delivered_by_several_pieces.length, 30);
+  // Every existing file a contract names is asked about, with the whole assignment.
+  asked.length = 0;
+  const paths = Array.from({length: 130}, (_, i) => `src/file${i}.py`);
+  assert.equal((await vetBaseChanges(env, {assignment, paths})).length, 130);
+  assert.deepEqual(asked.flatMap(a => a.state.files.map(f => f.path)), paths);
+  assert.ok(asked.every(a => a.state.assignment === assignment));
+  // The reach question: the piece's name, every contract and file, every installed package and each check's own words.
+  asked.length = 0;
+  const name = 'A piece named at length '.repeat(10).trim();
+  await pieceReach(env, {name, contracts: lines, files: paths, installed: paths.map(p => p.replace(/\W/g, '_')), checks: validations.slice(0, 3).map(v => ({id: v.id, says: v.says, check: v.check}))});
+  assert.deepEqual([asked[0].state.piece.name, asked[0].state.piece.contracts, asked[0].state.piece.files, asked[0].state.installed.length], [name, lines, paths, 130]);
+  assert.equal(asked[0].state.checks[0].says, validations[0].says);
+});
+
 test('v8: a manager\'s choice is one Clef request: one noul question per function call it may make, keyed by the option, its state the manager\'s files and the item; a missing or invalid probability is an error, never a NO', async () => {
   const {CLEF, clefText} = await import('../src/prompts.js');
   const {chooseCall} = await import('../src/model.js');
