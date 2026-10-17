@@ -119,6 +119,30 @@ test('syntax: one process per row; a file that does not compile is an issue nami
   assert.equal(byId(report).R1.passed,true,'no early stop');
 });
 
+// Owner 2026-10-15 05:16 ("Any code type"): the other languages' compile rows, each its tool's syntax-only reading.
+{
+  const {COMPILE_ROWS}=await import('../src/toolchains.js');
+  // The tool, as a check's environment runs it (rustup's rustfmt needs a default toolchain under the box's HOME).
+  const has=tool=>spawnSync('sh',['-c',`command -v ${tool} >/dev/null && { [ ${tool} != rustfmt ] || rustfmt --version; }`],{env:{PATH:process.env.PATH,HOME:'/home/builder'}}).status===0;
+  const SAMPLES={go:['ok.go','package main\nfunc main() {}\n','bad.go','package main\nfunc main() { x := }\n'],
+    rust:['ok.rs','fn main() {}\n','bad.rs','fn main() { let x = ; }\n'],
+    c:['ok.c','int main(void) { return 0; }\n','bad.c','int main(void) { return }\n'],
+    cpp:['ok.cpp','int main() { return 0; }\n','bad.cpp','int main() { return }\n'],
+    java:['Ok.java','class Ok { }\n','Bad.java','class Bad { void f( }\n'],
+    ruby:['ok.rb','puts 1\n','bad.rb','def f(\n'],
+    php:['ok.php','<?php echo 1;\n','bad.php','<?php echo ;\n']};
+  for(const [id,[good,goodText,bad,badText]] of Object.entries(SAMPLES)) {
+    const row=COMPILE_ROWS.find(r=>r.id===id),tool=Object.keys(row.requires)[0];
+    test(`syntax: the ${row.name} row compiles each file and names the one that does not compile`,{skip:!has(tool)&&`${tool} is not installed`},async()=>{
+      const report=await run({[good]:goodText,[bad]:badText},{syntax:[{toolchain:id,files:[good,bad]}],checks:[]},{toolchains:[row],isolation:[]});
+      assert.equal(report.stages.find(x=>x.name===`syntax:${id}`)?.passed,false,JSON.stringify(report.stages));
+      assert.deepEqual(report.issues.map(i=>i.path),[bad],JSON.stringify(report.issues));
+      const clean=await run({[good]:goodText},{syntax:[{toolchain:id,files:[good]}],checks:[]},{toolchains:[row],isolation:[]});
+      assert.equal(clean.stages.find(x=>x.name===`syntax:${id}`)?.passed,true,JSON.stringify(clean.stages));
+    });
+  }
+}
+
 const TODOS_MJS=`let next = 1;
 const items = new Map();
 export function add(title) {

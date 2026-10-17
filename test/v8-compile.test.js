@@ -156,12 +156,17 @@ test('L1 (norow): the rows as data: a compile row is installed only as the inven
   assert.deepEqual(rows({node: '22.17.0', sh: '/usr/bin/sh', bash: '5.2.21'}), ['shell']);
   assert.deepEqual(rows({node: '24.1.0', sh: '/usr/bin/sh', bash: null}), ['typescript']);
   assert.deepEqual(rows(['node', 'sh', 'bash']), ['shell'], 'a list of names reports no version');
+  // Any code type: the other languages' rows are installed as the box's PATH holds their tools.
+  assert.deepEqual(rows({node: '22.22.0', sh: '/usr/bin/sh', bash: '5.2.21', executables: ['gofmt', 'go', 'rustfmt', 'gcc', 'g++', 'javac', 'java', 'ruby', 'php']}), ['typescript', 'shell', 'go', 'rust', 'c', 'cpp', 'java', 'ruby', 'php']);
+  assert.deepEqual(rows({node: '22.22.0', executables: ['ruby']}), ['typescript', 'ruby']);
   assert.deepEqual(installed({node: '22.22.0', python: '3.11.2'}).map(r => r.id), ['javascript', 'python', 'text']);
   assert.deepEqual(['#!/usr/bin/env python3.11\n', '#!/usr/bin/env -S node --no-warnings\n', '#!/bin/sh -e\n', 'print(1)\n'].map(shebangOf), ['python', 'node', 'sh', '']);
   const all = [...TOOLCHAINS, ...COMPILE_ROWS], row = (p, t = '') => { const c = codeRowOf(p, t, all); return c && (c.row?.id || `none: ${c.why}`); };
   assert.equal(row('bin/tool', '#!/usr/bin/env node\nconsole.log(1)\n'), 'javascript');
   assert.equal(row('run.sh', '#!/bin/zsh\necho 1\n'), 'none: its #! line names zsh, which no toolchain row compiles');
-  assert.equal(row('main.go'), 'none: no toolchain row compiles .go files');
+  assert.deepEqual(['main.go', 'lib.rs', 'a.c', 'a.h', 'a.cpp', 'App.java', 'x.rb', 'x.php'].map(p => row(p)), ['go', 'rust', 'c', 'c', 'cpp', 'java', 'ruby', 'php']);
+  assert.equal(row('bin/tool', '#!/usr/bin/env ruby\nputs 1\n'), 'ruby');
+  assert.equal(row('Main.hs'), 'none: no toolchain row compiles .hs files');
   assert.equal(row('notes/README'), null);
   assert.equal(row('README.md', '# x\n'), null);
 });

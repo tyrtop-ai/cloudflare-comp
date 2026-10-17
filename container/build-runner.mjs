@@ -500,6 +500,12 @@ export async function hostnameInventory({prefix=[],cwd=tmpdir(),env=checkEnviron
     :{ok:false,error:r.timedOut?`no answer within ${seconds(r.ms)}`:clip(lastLines(r.stderr)||`exit ${r.code}`,240),ms:r.ms};
   return out;
 }
+// The names of the executables in a PATH's folders, sorted, each once.
+export function pathExecutables(PATH) {
+  const names=new Set();
+  for(const dir of String(PATH||'').split(':').filter(Boolean)){try{for(const e of readdirSync(dir,{withFileTypes:true}))if(e.isFile()||e.isSymbolicLink())names.add(e.name);}catch{}}
+  return [...names].sort();
+}
 export function checkEnvironment(extra={}) {
   const env={...stageEnvironment(),PYTHONDONTWRITEBYTECODE:'1',PYTHONUNBUFFERED:'1',PYTHONIOENCODING:'utf-8',...extra};
   for(const k of Object.keys(env))if(env[k]===undefined)delete env[k];
@@ -734,7 +740,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
   const scratch=await realpath(await mkdtemp(path.join(base,'checks-')));
   const stages=[],checks=[],issues=[],runs=new Map(),installed=[];
   let infrastructure_issue='',ns=null;
-  const inventory={node:process.versions.node,python:null,sh:null,bash:null,chromium:null,playwright:null,network:'on',runs_network:'on',limits:null,hostname:null,hostname_ok:null,hostname_longest_label:null,hostname_status:null,getfqdn:null};
+  const inventory={node:process.versions.node,python:null,sh:null,bash:null,chromium:null,playwright:null,network:'on',runs_network:'on',limits:null,hostname:null,hostname_ok:null,hostname_longest_label:null,hostname_status:null,getfqdn:null,executables:null};
   const env=checkEnvironment();
   const redact=(text,...dirs)=>stripAdapterFrames(redactPaths(text,[...dirs,scratch],base));
   const stage=async(name,fn)=>{const t=Date.now();const out=(await fn())||{};stages.push({name,passed:out.passed!==false,ms:Date.now()-t,...(out.detail?{detail:clip(redact(out.detail),600)}:{})});};
@@ -763,6 +769,8 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
     inventory.sh=sh.code===0?sh.stdout.trim()||'sh':null;
     inventory.bash=bash.code===0?(/version\s+(\d+(?:\.\d+)*)/.exec(bash.stdout)?.[1]||'bash'):null;
     try{inventory.playwright=createRequire(path.join(ADAPTER_DIR,'browser-check.mjs'))('playwright/package.json').version;}catch{}
+    // What the box has: every executable on its PATH, by name (the compile rows a box installs are read from it).
+    inventory.executables=pathExecutables(env.PATH);
     // v8 live 5: the host name, as a check sees it (with the checks' wrappers).
     Object.assign(inventory,await hostnameInventory({prefix:checkPrefix,cwd:scratch,env,python:!!inventory.python}));
 

@@ -301,6 +301,19 @@ test('a worker\'s copy of a path another piece\'s contract places stays in its o
 });
 
 // ------------------------------------------------------------ the pure helpers
+// Owner 2026-10-15 05:16: "Any code type". A command contract in another language runs by its row's run_file.
+test('checkPlan: a command contract in Go or Ruby runs by its row\'s run_file, and the plan carries that row; the box runs it',async()=>{
+  const spec={contracts:[{name:'serve',kind:'command',path:'main.go'},{name:'greet',kind:'command',path:'greet.rb'}],
+    validations:[{id:'V1',check:{kind:'command',run:'greet Ann',expect:{stdout:'hello Ann'}}},{id:'V2',check:{kind:'command',run:'serve',expect:{exit:0}}}]};
+  const files=new Map([['main.go','package main\nfunc main() {}\n'],['greet.rb','puts "hello #{ARGV[0]}"\n']]);
+  const {plan,toolchains}=checkPlan(spec,files,{rows:TOOLCHAINS});
+  assert.deepEqual(plan.commands,{serve:['go','run','main.go'],greet:['ruby','greet.rb']});
+  assert.deepEqual(toolchains.map(r=>r.id).sort(),['go','ruby']);
+  if(spawnSync('sh',['-c','command -v ruby']).status!==0)return;
+  const report=await verifyChecks({mode:'checks',fingerprint:'f',snapshot_hash:await snapshotHash(files),files:Object.fromEntries(files),toolchains,plan:{...plan,checks:plan.checks.filter(c=>c.id==='V1')}},{isolation:[]});
+  assert.equal(report.checks.find(c=>c.id==='V1').passed,true,JSON.stringify(report.checks));
+});
+
 test('checkPlan: command contracts run by their own path, call checks load the file that defines the function, file and judge checks stay in the Worker',()=>{
   const spec={contracts:[{name:'temp',kind:'command',path:'temp.py'},{name:'to_f',kind:'function',path:'conv.py'},{name:'GUIDE.md',kind:'doc',path:'GUIDE.md'},{name:'gone',kind:'command',path:'gone.py'},
     {name:'index.html',kind:'page',path:'index.html',run:{static:true}}],

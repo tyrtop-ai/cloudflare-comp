@@ -4,7 +4,7 @@
 // (fileResult), has Clef judge the documents, and turns every failed
 // validation into an item (checkProblems) whose detail is what the compiler
 // observed, as it observed it: the complaint a worker reads.
-import { TOOLCHAINS, toolchainOf, extractSurface } from './toolchains.js';
+import { TOOLCHAINS, toolchainOf, runRowOf, extractSurface } from './toolchains.js';
 import { kindOf } from './contracts.js';
 import { failureHead } from './problems.js';
 import { clip } from './protocol.js';
@@ -86,8 +86,10 @@ export function checkPlan(spec, files, {rows = TOOLCHAINS, placed = new Set(), c
   // A command contract runs by its own path, through its row's run_file (never a PATH lookup).
   const commands = {};
   for (const [name, d] of commandsOf) {
-    const row = toolchainOf(d.path);
-    if (files.has(d.path) && row?.run_file) commands[name] = row.run_file.map(x => x === '{path}' ? d.path : x);
+    const row = runRowOf(d.path);
+    if (!files.has(d.path) || !row) continue;
+    commands[name] = row.run_file.map(x => x === '{path}' ? d.path : x);
+    if (!toolchains.some(r => r.id === row.id)) toolchains.push(row);
   }
   const local = new Map(), checks = [];
   const missingCommand = c => { const d = commandsOf.get(firstWord(c)); return d && !files.has(d.path) ? `${d.path}, the file of the command ${d.name}, is missing` : ''; };
@@ -157,7 +159,7 @@ export function runNotes(app, spec, status = {}) {
   const run = [], contracts = spec?.contracts || [];
   for (const r of runsOf(contracts)) run.push(r.static ? `- \`${r.id}\`: serve this folder with any static file server and open \`/\` in a browser.` : `- \`${r.id}\`: \`${r.run}\` (it reads the port from \`PORT\`; ready at \`${r.ready || '/'}\`).`);
   for (const d of contracts.filter(d => kindOf(d) === 'command' && d.path)) {
-    const row = toolchainOf(d.path);
+    const row = runRowOf(d.path);
     if (row?.run_file) run.push(`- \`${d.name}\`: \`${row.run_file.map(x => x === '{path}' ? d.path : x).join(' ')}\`${d.does ? `: ${d.does}` : ''}`);
   }
   for (const d of contracts.filter(d => ['doc', 'page', 'file', 'data'].includes(kindOf(d)) && d.path)) run.push(`- \`${d.path}\` (${kindOf(d)})${d.does ? `: ${d.does}` : ''}`);

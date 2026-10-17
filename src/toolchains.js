@@ -167,12 +167,29 @@ export const COMPILE_ROWS = Object.freeze([
     parse_mode:{by_extension:{'.mts':'module','.cts':'script'}, scope:{manifest:'package.json', field:'type', values:{module:'module', commonjs:'script'}}, otherwise:'either'},
     syntax:['node','--experimental-vm-modules','--no-warnings','-e',TS_SYNTAX,'{files}'] }),
   Object.freeze({ id:'shell', name:'shell', extensions:['.sh','.bash'], shebang:['sh','dash','bash'], requires:{sh:'',bash:''},
-    syntax:['sh','-c',SH_SYNTAX,'sh','{files}'] })
+    syntax:['sh','-c',SH_SYNTAX,'sh','{files}'] }),
+  // Owner 2026-10-15 05:16 ("Any code type"): the other languages the box
+  // image installs (container/Dockerfile.box), each compiled by its own
+  // tool's syntax-only reading, and run_file, how a file of it runs when it
+  // has one; a row is installed when the box's inventory lists its tool
+  // (requires, read from the executables on the box's PATH).
+  Object.freeze({ id:'go', name:'Go', extensions:['.go'], requires:{gofmt:''}, run_file:['go','run','{path}'],
+    syntax:['sh','-c','gofmt -e "$@" >/dev/null','sh','{files}'] }),
+  Object.freeze({ id:'rust', name:'Rust', extensions:['.rs'], requires:{rustfmt:''},
+    syntax:['sh','-c','for f do rustfmt --edition 2021 --emit stdout "./$f" >/dev/null || s=1; done; exit ${s:-0}','sh','{files}'] }),
+  Object.freeze({ id:'c', name:'C', extensions:['.c','.h'], requires:{gcc:''}, syntax:['gcc','-fsyntax-only','{files}'] }),
+  Object.freeze({ id:'cpp', name:'C++', extensions:['.cc','.cpp','.cxx','.hpp','.hh'], requires:{'g++':''}, syntax:['g++','-fsyntax-only','{files}'] }),
+  Object.freeze({ id:'java', name:'Java', extensions:['.java'], requires:{javac:''}, run_file:['java','{path}'],
+    syntax:['sh','-c','d=$(mktemp -d) && javac -d "$d" "$@"; s=$?; rm -rf "$d"; exit $s','sh','{files}'] }),
+  Object.freeze({ id:'ruby', name:'Ruby', extensions:['.rb'], shebang:['ruby'], requires:{ruby:''}, run_file:['ruby','{path}'],
+    syntax:['sh','-c','for f do ruby -c "./$f" >/dev/null || s=1; done; exit ${s:-0}','sh','{files}'] }),
+  Object.freeze({ id:'php', name:'PHP', extensions:['.php'], shebang:['php'], requires:{php:''}, run_file:['php','{path}'],
+    syntax:['sh','-c','for f do php -l "./$f" >/dev/null || s=1; done; exit ${s:-0}','sh','{files}'] })
 ]);
 // v8 ship-verified (L1): the extensions of code in a language no row
 // compiles: a shipped file with one of them, or with a #! line no row's
 // shebang names, is code nothing compiled.
-export const OTHER_CODE = Object.freeze(['.tsx','.jsx','.vue','.svelte','.coffee','.go','.rs','.rb','.java','.kt','.kts','.scala','.groovy','.clj','.php','.c','.h','.cc','.cpp','.cxx','.hpp','.hh','.cs','.fs','.vb','.swift','.m','.mm',
+export const OTHER_CODE = Object.freeze(['.tsx','.jsx','.vue','.svelte','.coffee','.kt','.kts','.scala','.groovy','.clj','.cs','.fs','.vb','.swift','.m','.mm',
   '.zsh','.ksh','.fish','.ps1','.bat','.cmd','.pl','.pm','.lua','.r','.dart','.ex','.exs','.erl','.hs','.ml','.jl','.nim','.zig']);
 // Stack-frame readers by a row's stack field (named groups path, line and
 // fn) and the frame reader: shared with the Container (container/stack-frames.mjs).
@@ -182,6 +199,11 @@ const extensionOf = path => {
   const base = String(path || '').split('/').pop(), dot = base.lastIndexOf('.');
   return dot > 0 ? base.slice(dot).toLowerCase() : '';
 };
+// The row that runs a file by its run_file: a code row's, else a compile row's.
+export function runRowOf(path) {
+  const ext = extensionOf(path);
+  return ext && [...TOOLCHAINS, ...COMPILE_ROWS].find(t => t.run_file && (t.extensions || []).includes(ext)) || null;
+}
 // The row whose extensions cover the file, or null (a language no row knows).
 export function toolchainOf(path) {
   const ext = extensionOf(path);
@@ -221,7 +243,11 @@ export function installed(inventory, rows = TOOLCHAINS) {
   const names = new Set(), versions = new Map();
   const add = n => { const s = String(n); names.add(s); names.add(s.replace(/\d+$/, '')); };
   if (Array.isArray(inventory) || inventory instanceof Set) for (const n of inventory) add(n);
-  else if (inventory && typeof inventory === 'object') for (const [k, v] of Object.entries(inventory)) if (v) { add(k); versions.set(k, v); }
+  else if (inventory && typeof inventory === 'object') {
+    for (const [k, v] of Object.entries(inventory)) if (v && k !== 'executables') { add(k); versions.set(k, v); }
+    // The executables on the box's PATH, by name (container/build-runner.mjs).
+    for (const n of Array.isArray(inventory.executables) ? inventory.executables : []) add(n);
+  }
   const has = exe => names.has(exe) || names.has(exe.replace(/\d+$/, ''));
   const atLeast = (v, min) => { if (!min) return true; if (typeof v !== 'string') return false; const a = v.split('.').map(Number), b = min.split('.').map(Number); for (let i = 0; i < b.length; i++) if ((a[i] || 0) !== b[i]) return (a[i] || 0) > b[i]; return true; };
   return rows.filter(t => t.requires ? Object.entries(t.requires).every(([n, min]) => has(n) && atLeast(versions.get(n), min)) : !t.executables.length || has(t.executables[0]));
