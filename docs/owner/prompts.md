@@ -2237,3 +2237,23 @@ i need more context for all of those
 ````text
 what is my architecutre?
 ````
+
+## 2026-10-17 20:34 (sent while Claude was working)
+
+````text
+why does the runtime need to know how what language the agents are speaking
+````
+
+## 2026-10-17 20:39 (sent while Claude was working)
+
+````text
+i'll make it more black and white. 
+
+The runtime should be language adrogenous. It's just moving data around. 
+
+"how is the compiler agent going to figure out how to compile its files?" it can install shit. It's smart enough to do that
+
+the manager routes ideas
+
+the workers work on their own little box, so they work on the architecture that was handed to them.
+````
