@@ -693,7 +693,7 @@ test('S8b review M5: files the room does not build are carried untouched (bytes,
   const app = await room.appFiles();
   assert.equal(app.passed, true);
   assert.deepEqual(app.unchecked, ['logo.png']);
-  assert.match(app.note, /; 1 of them no syntax step compiled or no box held: logo\.png\.$/);
+  assert.match(app.note, /; 1 of them no box held: logo\.png\.$/);
   const at = p => app.files.find(f => f.path === p);
   assert.deepEqual(app.files.filter(f => !f.runtime).map(f => f.path).sort(), ['.github/workflows/ci.yml', 'README.md', 'bin/widget.js', 'dist/bundle.js', 'docs/my notes.md', 'glue/loader.js', 'logo.png', 'package.json', 'src/shout.js']);
   // The project's own glue/ is its file like any other; the runtime's notes are marked as the runtime's.
