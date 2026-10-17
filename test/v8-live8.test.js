@@ -42,7 +42,8 @@ test('a route\'s path is a pattern for its examples: requests to /tickets/1, /2 
   const route = {name: 'PUT /tickets/:id', kind: 'route', path: 'src/server.js'};
   assert.equal(exercises({kind: 'http', serve: 'server', steps: [{method: 'PUT', path: '/tickets/2', expect: {status: 200}}]}, route), true);
   const put = (i, serves) => ['http_check', {serves, serve: 'PUT /tickets/:id', steps: [{method: 'PUT', path: `/tickets/${i}`, body: {status: 'closed'}, expect: {status: 200}}]}];
-  const {s, results} = calls([['contract', {...route, does: 'closes a ticket', run: {run: 'node src/server.js'}}], put(1, ['PUT /tickets/1']), put(1, [route.name]), put(2, [route.name]), put(3, [route.name]), ['done', {}]]);
+  // A level that may not divide: done asks for no division.
+  const {s, results} = calls([['contract', {...route, does: 'closes a ticket', run: {run: 'node src/server.js'}}], put(1, ['PUT /tickets/1']), put(1, [route.name]), put(2, [route.name]), put(3, [route.name]), ['done', {}]], {divide: false});
   assert.deepEqual(results[1], {error: 'serves names "PUT /tickets/1", which is not declared. Declared: PUT /tickets/:id'});
   assert.deepEqual(results.slice(2, 5).map(r => r.examples_so_far), [{[route.name]: 1}, {[route.name]: 2}, {[route.name]: 3}]);
   assert.deepEqual(results[5], {complete: true});

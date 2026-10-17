@@ -43,7 +43,9 @@ const LEVEL = {contracts: [TEMP, USAGE],
   pieces: [{label: 'Converter', task: 'Write temp.py, the converter command', contracts: ['temp']}, {label: 'Usage guide', task: 'Write USAGE.md, how to run the converter', contracts: ['USAGE.md']}]};
 const README_CHANGE = 'add a README explaining how to run it';
 const KELVIN_CHANGE = 'also support kelvin';
-const README_LEVEL = {contracts: [README], validations: [judge('r1', 'README.md', 'Does it say how to run the converter?'), judge('r2', 'README.md', 'Does it give an example?'), judge('r3', 'README.md', 'Does it name the converter?')], pieces: []};
+// The room's manager divides, so its extension's splitter proposes a division too: here two pieces of the README, which Clef's review finds too small.
+const README_LEVEL = {contracts: [README], validations: [judge('r1', 'README.md', 'Does it say how to run the converter?'), judge('r2', 'README.md', 'Does it give an example?'), judge('r3', 'README.md', 'Does it name the converter?')],
+  pieces: [{label: 'Readme', task: 'Write README.md: how to run the converter', contracts: ['README.md']}, {label: 'Readme example', task: 'Write the example run in README.md', contracts: ['README.md']}]};
 const F_TEMP = 'import sys\nc = float(sys.argv[1])\nprint(f"{c * 9 / 5 + 32:g}")\n';
 const K_TEMP = 'import sys\nc = float(sys.argv[1])\nif len(sys.argv) > 2 and sys.argv[2].upper() == "K":\n    print(f"{c + 273.15:g}")\nelse:\n    print(f"{c * 9 / 5 + 32:g}")\n';
 const USAGE_MD = '# Usage\n\nRun `python3 temp.py 100`.\n';
@@ -56,8 +58,9 @@ const tempLeaf = user => {
   if (names.includes('README.md')) return deliver({'README.md': README_MD});
   return deliver({'USAGE.md': USAGE_MD});
 };
-// Clef: a change concerns the child whose contracts name temp when it is about kelvin, and nobody when it is about a README.
-const tempClef = usualClef({'^route_to_\\d+$': (k, state) => state.item?.kind !== 'change' ? choiceP(k, state) : /kelvin/.test(state.item.text) && (state.children?.[Number(k.split('_').pop())]?.contracts || []).some(l => /^command temp\b/.test(l)) ? 0.9 : 0.1});
+// Clef: a change concerns the child whose contracts name temp when it is about kelvin, and nobody when it is about a README; the README's pieces are too small.
+const tempClef = usualClef({'^route_to_\\d+$': (k, state) => state.item?.kind !== 'change' ? choiceP(k, state) : /kelvin/.test(state.item.text) && (state.children?.[Number(k.split('_').pop())]?.contracts || []).some(l => /^command temp\b/.test(l)) ? 0.9 : 0.1,
+  '^split_size$': (_k, state) => state.assignment === README_CHANGE ? 0.2 : 0.9});
 
 test('queue: prompts queued while the first run goes wait for it; then the alarm applies each: a README no child covers is the room\'s manager\'s splitter\'s extension, a new piece with its own validations; kelvin reaches the converter\'s worker only, verbatim', {skip: !hasPython && 'python3 is not installed'}, async () => {
   const {room, calls, drain, alarms, fire} = queueRoom({split: tempSplit, leaf: tempLeaf, clef: tempClef});
@@ -78,8 +81,10 @@ test('queue: prompts queued while the first run goes wait for it; then the alarm
   assert.equal(room.goalRev(), 2);
   assert.equal(room.userGoal(), effectiveGoal(GOAL, [README_CHANGE]));
   assert.match(events(room, 'change_routed').at(-1).body, /concerns no child's contracts; its splitter extends the level/);
-  // The extension: a splitter step of its own, which states README.md and its validations; a new child delivers it.
+  // The extension: a splitter step of its own, which states README.md and its validations and proposes a division; Clef's review
+  // finds its two pieces too small, so a new child, one worker, delivers it.
   assert.deepEqual(room.splitterRows().map(r => r.kind), ['split', 'extend']);
+  assert.deepEqual(room.splitAttempts(m).filter(a => String(a.job || '').startsWith('extend:')).map(a => [a.pieces, a.outcome]), [[2, 'handed down']]);
   assert.equal(calls.split.at(-1).assignment, README_CHANGE);
   assert.deepEqual(calls.split.at(-1).contracts_you_have.map(c => c.name), ['temp', 'USAGE.md'], 'the splitter reads what its level has');
   const grown = kids(room, m).find(c => room.promisedOf(c.id).some(f => f.name === 'README.md'));

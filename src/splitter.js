@@ -2,8 +2,9 @@
 // (src/session.js) offers contract, validation, piece (when the level may
 // divide), level and done; each call stores what it was given, exactly, or
 // says exactly why it cannot, and nothing else reads what the model writes.
-// done ends the session once the level lacks nothing (missingOf), and the
-// level it returns is what the session declared: {contracts, validations,
+// done ends the session once the level lacks nothing (missingOf): with
+// piece offered, that includes a division of two or more pieces. The level
+// it returns is what the session declared: {contracts, validations,
 // pieces, division}. Whether the division is sound (what each piece
 // delivers, whether pieces are too small) is Clef's review alone
 // (src/model.js reviewLevel), which reads the division's facts (divisionOf).
@@ -136,12 +137,17 @@ export function levelView(s) {
 }
 // What the level still lacks: [] when nothing. Every contract that is
 // called or run (function, command, route) has three different examples.
+// When piece is offered (the level may divide), the level is a division:
+// every manager tries to split and Clef's review judges the division, so a
+// session with fewer than two pieces hears that its division is not there yet.
 export function missingOf(s) {
   const out = [];
   for (const c of levelContracts(s).filter(c => EXAMPLE_KINDS.has(kindOf(c)))) {
     const n = examplesOf(s, c).length;
     if (n < EXAMPLES_PER_CONTRACT) out.push(`${c.name} has ${n} different example${n === 1 ? '' : 's'} of ${EXAMPLES_PER_CONTRACT}: ${exerciseWords(c)}.`);
   }
+  const n = s.pieces.length;
+  if (s.divide && n < 2) out.push(`the division has ${n} piece${n === 1 ? '' : 's'} of at least 2, each declared with piece.`);
   return out;
 }
 // The level the session declared, as the room admits it: each run a check

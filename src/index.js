@@ -8685,10 +8685,14 @@ export class ControlRoom extends DurableObject {
   // once; a pre-grade at or below split_floor (the runtime's catch), or no
   // room for pieces, hands a level whose contracts were given to one worker
   // with no splitter call, and asks the splitter of a level with none only
-  // for the level's contracts and validations. A pending job (level_job:<id>:
+  // for the level's contracts and validations. Otherwise piece is offered,
+  // the splitter proposes a division (its done completes two or more
+  // pieces), and Clef's review alone decides whether that division is
+  // valid, up to SPLIT_ATTEMPTS attempts. A pending job (level_job:<id>:
   // a rebuild of what an archived child delivered, or an extension for a
   // change or an ask none of its children covers) is an attempt of the same
-  // kind on a level that has its design.
+  // kind on a level that has its design, under the same pre-grade: Clef
+  // grades a manager once, and a caught manager's jobs are not divided either.
   async splitStep(id, job=null) {
     const n=this.node(id),given=this.designOf(id),own=job?job.own||[]:given.contracts,cfg=this.splitConfig(),started=Date.now(),r3=x=>Math.round(x*1000)/1000;
     this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
@@ -8697,7 +8701,7 @@ export class ControlRoom extends DurableObject {
       this.recordAttempt(id,{attempt:0,p:r3(pre.probability),floor:cfg.floor,caught,ms:Date.now()-started});
       this.event(id,'split_gate',caught?`Clef's pre-grade p=${pre.probability.toFixed(3)} is at or below the floor ${cfg.floor}: no division is tried (${Date.now()-started} ms).`:`Clef's pre-grade p=${pre.probability.toFixed(3)} is above the floor ${cfg.floor}: the splitter proposes and Clef reviews (${Date.now()-started} ms).`);
     }
-    const caught=!job&&this.splitAttempts(id).find(a=>a.attempt===0)?.caught,room=this.canSplitPieces(id,2);
+    const caught=this.splitAttempts(id).find(a=>a.attempt===0)?.caught,room=this.canSplitPieces(id,2);
     const kind=job?.kind||'split',key=`${kind}:${job?.key||''}`;
     if(!job&&(caught||!room)&&own.length)
       return this.admitLevel(id,{contracts:own,validations:[],pieces:[]},{why:caught?`Clef's pre-grade is at or below the floor ${cfg.floor}, so it hands its whole assignment down to one worker.`:'There is no room for pieces that each hand down to a worker (the room\'s agent or depth limit), so it hands its whole assignment down to one worker.'});
@@ -8709,14 +8713,15 @@ export class ControlRoom extends DurableObject {
       this.save(`split_feedback:${id}`,null);
       return void this.escalate(id,'split_failed',clip(`"${n.label}" could not state its level: its splitter's session ended without done (${out.reason==='context'?`its context window was full after ${out.rounds} rounds`:out.reason}).`,1100));
     }
-    const pieces=divide?level.pieces:[],split=pieces.length>=2,retry=feedback?.retry||'';
-    const review=await reviewLevel(this.inferenceEnv(),{assignment:clipEnds(job?.text||given.prompt,2600),contracts:level.contracts,pieces:split?pieces:[],validations:level.validations,division:split?level.division:null,attempt,retry});
+    // With piece offered, done completes only a division (two or more pieces), and Clef's review alone admits it, retries it or hands the level down.
+    const pieces=level.pieces,retry=feedback?.retry||'';
+    const review=await reviewLevel(this.inferenceEnv(),{assignment:clipEnds(job?.text||given.prompt,2600),contracts:level.contracts,pieces,validations:level.validations,division:level.division,attempt,retry});
     level.validations=level.validations.map((v,j)=>({...v,notes:review.notes[j]||{}}));
     const doubted=level.validations.filter(v=>Object.values(v.notes).some(p=>typeof p==='number'&&p<VALIDATION_DOUBT_BAR));
     if(doubted.length)this.event(id,'validations_doubtful',clip(`Clef doubts ${doubted.map(v=>`${v.id} (${Object.entries(v.notes).filter(([,p])=>p<VALIDATION_DOUBT_BAR).map(([k,p])=>`${k} p=${p.toFixed(3)}`).join(', ')})`).join('; ')}; each is kept, marked.`,900));
-    if(!split) {
-      this.recordAttempt(id,{attempt,job:key,splitter:out.sid,pieces:pieces.length,outcome:'admitted',ms:Date.now()-started});
-      return this.admitLevel(id,{...level,pieces:[]},{job,why:divide?`Its splitter proposed ${pieces.length?'one piece':'no pieces'}, so the level goes to one worker.`:'The level goes to one worker.'});
+    if(!divide) {
+      this.recordAttempt(id,{attempt,job:key,splitter:out.sid,pieces:0,outcome:'admitted',ms:Date.now()-started});
+      return this.admitLevel(id,{...level,pieces:[]},{job,why:'The level goes to one worker.'});
     }
     const validBar=this.splitBar(id,cfg.valid_bar),sizeBar=cfg.size_bar,ok=review.valid>=validBar&&review.size>=sizeBar,next=ok?'':review.size<sizeBar?'fewer':'different',bound=pieces.length-1;
     const stop=ok?'':attempt>=SPLIT_ATTEMPTS?`on attempt ${attempt} of ${SPLIT_ATTEMPTS}`:next==='fewer'&&bound<2?`with pieces too small at ${pieces.length}, and fewer than two is no division`:'';

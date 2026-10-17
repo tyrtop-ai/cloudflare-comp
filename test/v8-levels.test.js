@@ -190,6 +190,7 @@ test('an ask in scope nowhere up to the room: the asker is archived with its fil
   assert.ok(events(room, 'archived').length === 1);
   // The rebuilt level keeps the validations it had, and its splitter is shown them.
   assert.equal(calls.split[1].validations_you_have.length, 3);
+  assert.equal(calls.split[1].max_pieces, 0, 'its manager\'s pre-grade caught it, so the rebuild is offered no piece either');
   assert.deepEqual(calls.split[1].contracts_you_deliver.map(c => c.name), ['convert']);
   assert.equal(room.validationRows().length, 3);
 });

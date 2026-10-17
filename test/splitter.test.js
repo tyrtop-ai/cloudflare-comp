@@ -139,10 +139,11 @@ test('level shows everything declared so far; done reports what the level still 
   assert.deepEqual(view.validations, [{id: 'v1', serves: ['convert'], check: {kind: 'command', run: 'convert 100 C', argv: ['convert', '100', 'C'], expect: {stdout_has: ['212']}}},
     {id: 'v2', serves: ['convert'], check: {kind: 'command', run: 'convert 0 C', argv: ['convert', '0', 'C'], expect: {stdout_has: ['32']}}}]);
   assert.deepEqual(view.pieces, []);
-  // A held validation counts for the given contract; a doc owes none.
+  // A held validation counts for the given contract; a doc owes none. Piece is offered here, and no piece is declared yet.
   assert.deepEqual(splitterCall(s, 'done', {}), {result: {complete: false, missing: [
     'to_f has 1 different example of 3: calls of to_f, each call one example.',
-    'convert has 2 different examples of 3: command checks that run convert or convert.py, each one example.']}});
+    'convert has 2 different examples of 3: command checks that run convert or convert.py, each one example.',
+    'the division has 0 pieces of at least 2, each declared with piece.']}});
   calls(s, [run('-40 C', '-40'), callOf(0, 32), callOf(100, 212),
     ['piece', {label: 'A', task: 'Write to_f.', contracts: ['to_f', 'convert']}], ['piece', {label: 'B', task: 'Write convert.', contracts: ['convert', 'NOTES.md']}]]);
   // A contract two pieces deliver is no miss of done: it is a fact of the division, which Clef's review reads.
@@ -150,13 +151,28 @@ test('level shows everything declared so far; done reports what the level still 
   assert.deepEqual(levelOf(s).division.delivered_by_several, [{contract: 'convert', pieces: ['A', 'B']}]);
   assert.equal(s.done, false);
   assert.deepEqual(splitterCall(s, 'done', {}).result, {complete: true});
-  const t = splitterState({own: [own], held});
+  // A level that may not divide (piece is not offered) completes with no pieces.
+  const t = splitterState({own: [own], held, divide: false});
   calls(t, [['contract', CONVERT], ...['100 C', '0 C', '-40 C'].map(c => run(c, 'x')), callOf(0, 32), callOf(100, 212)]);
   const done = splitterCall(t, 'done', {});
   assert.deepEqual(done.result, {complete: true});
   assert.deepEqual(done.end.contracts.map(c => c.name), ['to_f', 'convert']);
   assert.equal(done.end.validations.length, 5);
   assert.deepEqual(done.end.division, {places: []});
+});
+
+test('when piece is offered, the level is a division: done lists it as missing until two pieces are declared, and the session goes on; how large or sound the pieces are is not done\'s to say', () => {
+  const s = splitterState({});
+  calls(s, [['contract', CONVERT], ['contract', TO_F], run('100 C', '212'), run('0 C', '32'), run('-40 C', '-40'), callOf(0, 32), callOf(100, 212), callOf(-40, -40)]);
+  assert.deepEqual(splitterCall(s, 'done', {}), {result: {complete: false, missing: ['the division has 0 pieces of at least 2, each declared with piece.']}});
+  calls(s, [['piece', {label: 'Everything', task: 'Write the converter and its command.', contracts: ['to_f', 'convert']}]]);
+  assert.deepEqual(splitterCall(s, 'done', {}), {result: {complete: false, missing: ['the division has 1 piece of at least 2, each declared with piece.']}});
+  assert.equal(s.done, false);
+  calls(s, [['piece', {label: 'Also everything', task: 'Write the converter and its command.', contracts: ['to_f', 'convert']}]]);
+  const done = splitterCall(s, 'done', {});
+  assert.deepEqual(done.result, {complete: true}, 'two pieces that repeat each other are Clef\'s to judge');
+  assert.deepEqual(done.end.pieces.map(p => p.label), ['Everything', 'Also everything']);
+  assert.deepEqual(done.end.division.delivered_by_several, [{contract: 'convert', pieces: ['Everything', 'Also everything']}, {contract: 'to_f', pieces: ['Everything', 'Also everything']}]);
 });
 
 // ------------------------------------------------------------ the session
