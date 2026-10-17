@@ -21,8 +21,8 @@ const CHECKS = ['file_check', 'judge_check', 'command_check', 'call_check', 'htt
 // Calls in order; the results.
 const calls = (s, list) => list.map(([fn, args = {}]) => splitterCall(s, fn, args).result);
 
-test('the splitter\'s functions are contract, the six check functions, piece, level, read_file and done, each with an object schema; piece is offered only when the level may divide, read_file only when it holds the files the work starts from', () => {
-  assert.deepEqual(TOOLS.splitter.map(t => t.name), ['contract', ...CHECKS, 'piece', 'level', 'read_file', 'done']);
+test('the splitter\'s functions are contract, the six check functions, piece, drop_piece, level, read_file and done, each with an object schema; piece and drop_piece are offered only when the level may divide, read_file only when it holds the files the work starts from', () => {
+  assert.deepEqual(TOOLS.splitter.map(t => t.name), ['contract', ...CHECKS, 'piece', 'drop_piece', 'level', 'read_file', 'done']);
   for (const t of TOOLS.splitter) {
     assert.equal(t.parameters.type, 'object', t.name);
     assert.ok(typeof t.description === 'string' && t.description.length > 20, t.name);
@@ -30,9 +30,9 @@ test('the splitter\'s functions are contract, the six check functions, piece, le
   }
   assert.deepEqual(TOOLS.splitter[0].parameters.required, ['name', 'kind', 'does']);
   assert.deepEqual(TOOLS.splitter[0].parameters.properties.kind.enum, ['function', 'file', 'page', 'route', 'command', 'doc', 'data']);
-  assert.deepEqual(splitterTools(true).map(t => t.name), ['contract', ...CHECKS, 'piece', 'level', 'done']);
+  assert.deepEqual(splitterTools(true).map(t => t.name), ['contract', ...CHECKS, 'piece', 'drop_piece', 'level', 'done']);
   assert.deepEqual(splitterTools(false).map(t => t.name), ['contract', ...CHECKS, 'level', 'done']);
-  assert.deepEqual(splitterTools(true, true).map(t => t.name), ['contract', ...CHECKS, 'piece', 'level', 'read_file', 'done'], 'read_file only for a level that holds the files the work starts from');
+  assert.deepEqual(splitterTools(true, true).map(t => t.name), ['contract', ...CHECKS, 'piece', 'drop_piece', 'level', 'read_file', 'done'], 'read_file only for a level that holds the files the work starts from');
   assert.deepEqual(splitterCall(splitterState({divide: false}), 'piece', {label: 'A', task: 'x', contracts: []}).result, {error: 'There is no function "piece".'});
   // read_file shows a file the work starts from as the room serves it (its readBaseFile), or why not.
   const reads = splitterState({readBase: p => p === 'src/a.js' ? {path: p, label: 'base', content: 'a\n'} : {error: `no ${p}`}});
@@ -63,7 +63,13 @@ test('contract: stored exactly as given, or refused with exactly why: a kind out
   assert.equal(why({name: 'add', kind: 'function', does: 'x', params: ['a']}), 'contract has no field "params"; its fields are name, kind, path, does, inputs, outputs, effects, run');
   assert.equal(why({name: 'add', kind: 'function', does: 'x', run: {static: true}}), 'a function contract is not started, so it states no run');
   assert.equal(why({name: 'GET /items', kind: 'route', does: 'x', run: {run: 'serve-items'}}), 'its run starts "serve-items", which is neither a command contract declared so far nor a program the box has (node, npm, npx, python3, pytest)');
-  assert.equal(why({name: 'add one', kind: 'function', does: 'x'}), '"add one" is not a valid python function name');
+  // A function's name is judged by its own language alone, with no length bound and no list of built-in names; a language with no name rule, or no path, stores it as written.
+  assert.equal(why({name: 'add one', kind: 'function', path: 'calc.py', does: 'x'}), '"add one" is not a valid python function name');
+  assert.equal(why({name: 'lambda', kind: 'function', path: 'calc.py', does: 'x'}), '"lambda" is not a valid python function name (a reserved word)');
+  assert.equal(why({name: 'class', kind: 'function', path: 'src/k.js', does: 'x'}), '"class" is not a valid javascript function name (a reserved word)');
+  for (const [name, path] of [['from', 'src/a.ts'], ['delete', 'src/a.go'], ['valid?', 'lib/a.rb'], ['from_js', 'src/from.js'], ['fetch', 'src/afetch.js'], ['process', 'src/proc.js'], ['f'.repeat(70), 'src/long.js'], ['g'.repeat(70), 'long.py'], ['add one', undefined]])
+    assert.equal(splitterCall(s, 'contract', {name, kind: 'function', ...(path ? {path} : {}), does: 'x'}).result.stored, name, `${name.slice(0, 20)} at ${path}`);
+  assert.equal(splitterCall(s, 'contract', {name: 'c'.repeat(70), kind: 'command', path: 'bin/c', does: 'x'}).result.stored, 'c'.repeat(70), 'a command word of any length');
   const js = splitterState({rows: TOOLCHAINS.filter(r => r.id === 'javascript')});
   assert.equal(splitterCall(js, 'contract', {name: 'app.py', kind: 'file', path: 'app.py', does: 'x'}).result.error, 'app.py is written in python, which the box does not run (it runs javascript)');
   // A route states its run as given; with none it is stored without one.
@@ -90,6 +96,13 @@ test('a check function: serves names declared contracts exactly (the error lists
   assert.deepEqual(splitterCall(s, 'call_check', {serves: ['had'], steps: [{call: 'had', args: [1], expect: 1}]}).result.examples_so_far, {had: 1});
   assert.deepEqual(splitterCall(s, 'call_check', {serves: ['to_f'], steps: [{call: 'to_f', args: [0], expect: 32}, {call: 'to_f', args: [100], expect: 212}]}).result,
     {id: 'v4', examples: ['to_f(0) → 32', 'to_f(0) → 32; to_f(100) → 212'], examples_so_far: {to_f: 2}});
+  // An example is what it is: the same call written three times, or written again after other steps, is one example.
+  const add = splitterState({});
+  calls(add, [['contract', {name: 'add', kind: 'function', path: 'add.js', does: 'adds'}], ['contract', {name: 'reset', kind: 'function', path: 'add.js', does: 'resets'}]]);
+  const same = {call: 'add', args: [1, 1], expect: 2};
+  assert.deepEqual(splitterCall(add, 'call_check', {serves: ['add'], steps: [same, same, same]}).result, {id: 'v1', examples: ['add(1, 1) → 2'], examples_so_far: {add: 1}});
+  assert.deepEqual(splitterCall(add, 'call_check', {serves: ['add'], steps: [{call: 'reset'}, same]}).result.examples_so_far, {add: 2}, 'reset() is new; add(1, 1) → 2 after it is not');
+  assert.ok(missingOf({...add, divide: false}).includes('add has 2 different examples of 3 from the validations that serve it.'));
 });
 
 test('each check function stores a validation of its own kind from its fields at the top level; a field it does not take (a kind, a check wrapper) is refused with its own fields, and there is no validation function', () => {
@@ -136,7 +149,7 @@ test('piece: delivers declared contracts of this level and uses what is declared
   assert.equal(why({label: 'CLI', task: 'x', contracts: []}), 'contracts names nothing the piece delivers');
   assert.equal(why({label: 'CLI', task: 'x', contracts: ['convert'], files: []}), 'piece has no field "files"; its fields are label, task, contracts, uses, packages, refs');
   assert.deepEqual(splitterCall(s, 'piece', {label: 'CLI', task: 'Write the command.', contracts: ['convert'], packages: ['click']}).result, {stored: 'CLI', pieces: 2});
-  assert.equal(why({label: 'Third', task: 'x', contracts: ['convert']}), 'this level holds at most 2 pieces');
+  assert.equal(why({label: 'Third', task: 'x', contracts: ['convert']}), 'this level can hold at most 2 pieces now, and the division has 2');
   assert.deepEqual(levelView(s).pieces, [{label: 'Converter', task: 'Write the converter.', contracts: ['to_f'], uses: ['log_line', 'had']}, {label: 'CLI', task: 'Write the command.', contracts: ['convert'], uses: [], packages: ['click']}]);
 });
 
@@ -157,7 +170,7 @@ test('a level has no size caps but the room\'s bound on pieces: its contracts, v
   assert.deepEqual([level.pieces[0].label, level.pieces[0].task], [label, task]);
   // The one bound is the owner's: the room's bound on pieces.
   assert.deepEqual(splitterCall(s, 'piece', {label: 'Two', task: 'x', contracts: ['to_f']}).result, {stored: 'Two', pieces: 2});
-  assert.equal(splitterCall(s, 'piece', {label: 'Three', task: 'x', contracts: ['to_f']}).result.error, 'this level holds at most 2 pieces');
+  assert.equal(splitterCall(s, 'piece', {label: 'Three', task: 'x', contracts: ['to_f']}).result.error, 'this level can hold at most 2 pieces now, and the division has 2');
 });
 
 test('level shows everything declared so far; done reports what the level still lacks (three different examples per contract that is called or run) and keeps the session open, or completes it with the level', () => {
@@ -205,6 +218,31 @@ test('when piece is offered, the level is a division: done lists it as missing u
   assert.deepEqual(done.result, {complete: true}, 'two pieces that repeat each other are Clef\'s to judge');
   assert.deepEqual(done.end.pieces.map(p => p.label), ['Everything', 'Also everything']);
   assert.equal(done.end.division, undefined, 'the runtime works out nothing about the division');
+});
+
+test('the room\'s bound is read as it stands when piece and done are called, and done takes the division it completes; drop_piece takes a piece out; with room for fewer than two pieces the level is not divided', () => {
+  let room = 3; const took = [];
+  const s = splitterState({room: () => room, take: n => { took.push(n); return n <= room; }});
+  calls(s, [['contract', CONVERT], ['contract', TO_F], run('100 C', '212'), run('0 C', '32'), run('-40 C', '-40'), callOf(0, 32), callOf(100, 212), callOf(-40, -40),
+    ['piece', {label: 'A', task: 'Write to_f.', contracts: ['to_f']}], ['piece', {label: 'B', task: 'Write convert.', contracts: ['convert']}], ['piece', {label: 'C', task: 'Write both.', contracts: ['to_f', 'convert']}]]);
+  room = 2;
+  assert.equal(splitterCall(s, 'piece', {label: 'D', task: 'x', contracts: ['to_f']}).result.error, 'this level can hold at most 2 pieces now, and the division has 3');
+  assert.deepEqual(splitterCall(s, 'done', {}).result, {complete: false, missing: ['this level can hold at most 2 pieces now, and the division has 3: drop_piece takes a piece out.']});
+  assert.deepEqual(took, [], 'nothing is taken while the division does not fit');
+  assert.equal(splitterCall(s, 'drop_piece', {label: 'Z'}).result.error, 'no piece is labelled "Z". Declared: A, B, C');
+  assert.deepEqual(splitterCall(s, 'drop_piece', {label: 'C'}).result, {dropped: 'C', pieces: 2});
+  assert.deepEqual(splitterCall(s, 'done', {}).result, {complete: true});
+  assert.deepEqual(took, [2], 'done takes the division it completes');
+  // Room for fewer than two: no division; declared pieces are reported until dropped, and the level completes with none.
+  const t = splitterState({room: () => room});
+  calls(t, [['contract', CONVERT], run('100 C', '212'), run('0 C', '32'), run('-40 C', '-40'), ['piece', {label: 'A', task: 'Write it.', contracts: ['convert']}]]);
+  room = 1;
+  assert.deepEqual(splitterCall(t, 'done', {}).result, {complete: false, missing: ['this level can hold at most 1 piece now, and the division has 1; with fewer than 2 the level is not divided and goes to one worker: drop_piece takes a piece out.']});
+  splitterCall(t, 'drop_piece', {label: 'A'});
+  const done = splitterCall(t, 'done', {});
+  assert.deepEqual([done.result, done.end.pieces], [{complete: true}, []]);
+  assert.equal(splitterCall(t, 'piece', {label: 'B', task: 'x', contracts: ['convert']}).result.error, 'this level can hold at most 1 piece now, and the division has 0; with fewer than 2 the level is not divided and goes to one worker');
+  assert.deepEqual(splitterTools(false).filter(f => ['piece', 'drop_piece'].includes(f.name)), [], 'neither is offered when the level may not divide');
 });
 
 // ------------------------------------------------------------ the session

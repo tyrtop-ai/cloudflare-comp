@@ -229,15 +229,38 @@ test('live 5: max_pieces is what the room\'s agent limit can create, each piece 
   assert.equal(wider.calls.split[0].max_pieces, 4);
   assert.deepEqual(kids(wider.room).map(c => c.label), ['Guide', 'Questions', 'Tips']);
   assert.equal(wider.room.get('status'), 'complete', tail(wider.room));
-  // Each admission releases what its session was offered; an offer held by another manager's session is room no one else is told of.
-  const {room} = wider, top = room.roomManager(), other = kids(room)[0].id;
-  assert.equal(room.offeredSlots(), 0);
-  const before = room.piecesRoom(other);
-  room.offerPieces(top, 1);
-  assert.equal(room.piecesRoom(other), Math.max(0, before - 1));
-  assert.equal(room.piecesRoom(top), before, 'its own offer is its own');
-  room.offerPieces(top, 0);
-  assert.equal(room.offeredSlots(), 0);
+  // Nothing is held while a splitter session runs. What a live manager is owed (the worker of one with no level yet, or the division its done took, until its level is admitted) is room no one else is told of; an archived manager is owed nothing.
+  const {room} = wider, [a, b] = kids(room).map(c => c.id);
+  assert.equal(room.owedSlots(), 0, 'every manager here has its level');
+  const before = room.piecesRoom(a);
+  assert.equal(room.takePieces(b, before + 1), false, 'done takes only a division that fits');
+  assert.equal(room.takePieces(b, before), true);
+  assert.equal(room.piecesRoom(a), 0);
+  assert.equal(room.piecesRoom(b), before, 'its own division is its own');
+  room.db().exec("UPDATE agents SET status='archived' WHERE id=?", b);
+  assert.equal(room.piecesRoom(a), before, 'an archived manager is owed nothing');
+  room.releasePieces(b);
+  assert.deepEqual(room.read('split_taken', {}), {});
+});
+
+test('live 5: every manager below the room\'s manager may divide again; with the agent limit tight, no hand-down or division within the bound each splitter is told ever holds the room', async () => {
+  // Four contracts: the room's manager divides them in two; each piece divides its two again when the bound it is told allows two pieces.
+  const NOTES_V = [has('n1', 'NOTES.md', 'lid'), has('n2', 'NOTES.md', 'timer'), has('n3', 'NOTES.md', '# Notes')];
+  const split = user => {
+    if (!user.contracts_you_deliver) return {contracts: [GUIDE, FAQ, TIPS, NOTES], validations: [...VALIDATIONS, ...NOTES_V], pieces: [piece('Read', [GUIDE, FAQ]), piece('Keep', [TIPS, NOTES])]};
+    const mine = user.contracts_you_deliver;
+    return {contracts: mine, validations: [], pieces: user.max_pieces >= 2 && mine.length >= 2 ? mine.map(c => piece(c.path, [c])) : []};
+  };
+  const clef = clefFor({pre: state => state.assignment === GOAL4 || state.contracts.length >= 2 ? 0.6 : 0.05}).answer;
+  for (const max_agents of [5, 7, 9, 11]) {
+    const r = await levelRoom({prompt: GOAL4, split, leaf: leafWith(), budget: 80, clef, settings: {max_agents}});
+    assert.equal(r.room.get('status'), 'complete', `max_agents ${max_agents}\n${tail(r.room)}`);
+    assert.deepEqual(r.room.roomHolds(), [], `max_agents ${max_agents}`);
+    assert.equal(events(r.room, 'split_capacity').length, 0, `max_agents ${max_agents}`);
+    assert.ok(r.room.productionNodeCount() <= max_agents, `max_agents ${max_agents}`);
+    assert.equal(passed(r.room), 12, `max_agents ${max_agents}`);
+    assert.deepEqual(r.room.read('split_taken', {}), {}, 'each division done took is released at its admission');
+  }
 });
 
 // ------------------------------------------------------------ every split attempt is kept
