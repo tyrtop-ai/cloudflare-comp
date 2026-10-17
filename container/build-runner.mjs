@@ -420,7 +420,26 @@ export const CHECK_LIMITS=Object.freeze({total_ms:200_000,check_ms:20_000,step_m
 // Per check process: RLIMIT_NPROC counts every thread of the user (a Node
 // process alone has about 11), RLIMIT_DATA bounds the heap and private
 // mappings (RLIMIT_AS would break WebAssembly's large reservations).
+// nproc is the threads a check may add to what its user already runs: the
+// limit is set at each spawn to the user's threads then plus nproc, so a
+// check has the same room in the box (the runner alone) as under a test run
+// whose user holds hundreds of threads (CI), where a flat 64 stops every fork.
 export const CHECK_RLIMITS=Object.freeze({nproc:64,fsize:64*1024*1024,data:1024*1024*1024});
+const NPROC_ARG='--nproc=+allowance';
+export function userThreads(uid=process.getuid?.()) {
+  let n=0;
+  try {
+    for(const pid of readdirSync('/proc')) {
+      if(!/^\d+$/.test(pid))continue;
+      try {
+        const status=readFileSync(`/proc/${pid}/status`,'utf8'),u=/^Uid:\s+(\d+)/m.exec(status);
+        if(u&&Number(u[1])===uid)n+=Number(/^Threads:\s+(\d+)/m.exec(status)?.[1]||1);
+      } catch {}
+    }
+  } catch {}
+  return n;
+}
+const withThreadLimit=argv=>argv.includes(NPROC_ARG)?argv.map(a=>a===NPROC_ARG?`--nproc=${userThreads()+CHECK_RLIMITS.nproc}`:a):argv;
 const CHECK_KINDS=new Set(['file','command','call','http','browser']);
 const MAX_CHECKS=64,MAX_CALL_STEPS=20,READY_MS=10_000,DETAIL_CHARS=300;
 const ADAPTER_DIR=fileURLToPath(new URL('./adapters/',import.meta.url));
@@ -513,7 +532,7 @@ function killAllTagged(){for(const t of liveTags)killTagged(t);}
 // killed by its tag and the pipes destroyed.
 export function execCheck(argv,{cwd,env=checkEnvironment(),ms=20_000,stdin='',prefix=[],tag=newTag()}={}) {
   return new Promise(resolve=>{
-    const began=Date.now(),full=[...prefix,...argv];
+    const began=Date.now(),full=withThreadLimit([...prefix,...argv]);
     liveTags.add(tag);
     let child;
     try {child=spawn(full[0],full.slice(1),{cwd,env:{...env,CHECK_TAG:tag},stdio:['pipe','pipe','pipe'],detached:true});}
@@ -539,6 +558,7 @@ export function execCheck(argv,{cwd,env=checkEnvironment(),ms=20_000,stdin='',pr
 }
 // A long-lived process (a run): stop() kills its tree by tag.
 function startProcess(argv,{cwd,env}) {
+  argv=withThreadLimit(argv);
   const tag=newTag();liveTags.add(tag);
   const child=spawn(argv[0],argv.slice(1),{cwd,env:{...env,CHECK_TAG:tag},stdio:['ignore','pipe','pipe'],detached:true});
   if(child.pid)activeProcessGroups.add(child.pid);
@@ -573,7 +593,7 @@ export function networkIsolation({probe=execCheck}={}) {
 }
 export function resourceLimits({probe=execCheck}={}) {
   limitsProbe??=(async()=>{
-    const prefix=['prlimit',`--nproc=${CHECK_RLIMITS.nproc}`,`--fsize=${CHECK_RLIMITS.fsize}`,`--data=${CHECK_RLIMITS.data}`,'--'];
+    const prefix=['prlimit',NPROC_ARG,`--fsize=${CHECK_RLIMITS.fsize}`,`--data=${CHECK_RLIMITS.data}`,'--'];
     const r=await probe(['true'],{cwd:tmpdir(),ms:3000,prefix});
     return r.code===0&&!r.timedOut?prefix:[];
   })();
