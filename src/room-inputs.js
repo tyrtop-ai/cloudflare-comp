@@ -149,6 +149,11 @@ export async function loadBase(base, {fetch, readApp, limits = {}} = {}) {
 
 // --- sources ----------------------------------------------------------------
 
+// Every host this deployment answers on, from SELF_HOSTS (a comma list, e.g.
+// the custom domain beside the workers.dev host), each one as listed, so a
+// goal's link can never reach this deployment through another of its names.
+export const selfHostsOf = env => String(env?.SELF_HOSTS ?? '').split(/[,\s]+/).map(h => h.trim().replace(/^[a-z]+:\/\//i, '').replace(/[/?#].*$/, '')).filter(Boolean);
+
 // Fetch every URL of the goal and summarise it. A failure never throws: its
 // row carries the error. note and more: the room's reader and its budget
 // (sourceSummaries). allow: the owner's FETCH_ALLOW value;

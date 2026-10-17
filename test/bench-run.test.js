@@ -118,7 +118,8 @@ test('a run queues its tasks, starts at most `concurrency` rooms per tick, and k
   assert.equal(started.budget, 30);
   assert.deepEqual(started.settings, SETTINGS);
   assert.equal(started.roomId, taskRoom(ID, 0, 0));
-  assert.equal(started.args, 4);
+  assert.equal(started.args, 5);
+  assert.deepEqual(started.opts, {selfHosts: ['cp.test']}, 'the deployment\'s hosts, as /api/run gives them');
   assert.ok(!JSON.stringify(started).includes('assert f0'));
   assert.equal(JSON.parse(b.rows()[0].grader).check.files['bench_tests.txt'], 'assert f0(1) == 1\n');
   // Nothing ended: no new room.
@@ -313,6 +314,22 @@ test('/api/bench sits behind APP_TOKEN like every /api route', async () => {
   assert.equal(unset.status, 503);
 });
 
+test('/api/bench gives each task room the deployment\'s hosts (the request\'s and every SELF_HOSTS entry), as /api/run does, and refuses a dataset on any of them', async () => {
+  const {env, rooms} = benchEnv();
+  const many = Array.from({length: 20}, (_, i) => `h${i}.example.com`);
+  Object.assign(env, {APP_TOKEN, ASSETS: {fetch: () => new Response('asset')}, FETCH_ALLOW: 'example.com', SELF_HOSTS: many.join(', ')});
+  let res = await call(env, '/api/bench', {method: 'POST', body: {dataset: 'https://h19.example.com/data.jsonl'}});
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /deployment's own host/);
+  res = await call(env, '/api/bench', {method: 'POST', body: {dataset: DATA(1), concurrency: 1}});
+  assert.equal(res.status, 200);
+  const {id} = await res.json();
+  await env.BENCHES.getByName(`run-${id}`).alarm();
+  const started = [...rooms.rooms.values()].filter(r => r.started);
+  assert.equal(started.length, 1);
+  assert.deepEqual(started[0].started.opts, {selfHosts: ['cp.test', ...many]});
+});
+
 test('/api/bench: start (settings checked, pipeline v8 forced), status, list, compare, stop and resume', async () => {
   const {env, rooms} = benchEnv();
   Object.assign(env, {APP_TOKEN, ASSETS: {fetch: () => new Response('asset')}, FETCH_ALLOW: 'raw.githubusercontent.com,huggingface.co'});
@@ -414,7 +431,8 @@ test('at most BENCH_EXECUTORS rooms run at once, concurrency is clamped to it, a
   for (let i = 0; i < 6; i++) { for (const r of rooms.rooms.values()) if (r.state?.status === 'running') rooms.end(r.name, pass); await b.alarm(); assert.ok(rooms.live() <= 2); }
   assert.equal(b.status().status, 'done');
   assert.ok(rooms.peak() <= 2);
-  assert.ok([...rooms.rooms.values()].filter(r => r.started).every(r => r.started.opts === undefined), 'start() is called with no executor option');
+  assert.ok([...rooms.rooms.values()].filter(r => r.started).every(r => JSON.stringify(r.started.opts) === JSON.stringify({selfHosts: ['cp.test']})),
+    'start() is given the deployment\'s hosts, as /api/run gives them, and no executor option');
   assert.ok([...rooms.executors.values()].every(e => e === undefined));
 });
 

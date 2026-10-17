@@ -465,6 +465,19 @@ test('/api/run passes base and the request\'s host to the room', async () => {
   await worker.fetch(new Request('https://control.example-workers.net/api/run', {method: 'POST', headers: {authorization: 'Bearer fixture-token', 'content-type': 'application/json'},
     body: JSON.stringify({room: 'room-one-0001', goal: README_GOAL, settings: {pipeline: 'v8'}})}), {...env, SELF_HOSTS: 'ai.example.com, https://docs-host.example.com/'});
   assert.deepEqual(seen[1][4].selfHosts, ['control.example-workers.net', 'ai.example.com', 'docs-host.example.com']);
+  // R9-edges/record-2: every host listed, however many.
+  const many = Array.from({length: 20}, (_, i) => `h${i}.example.com`);
+  await worker.fetch(new Request('https://control.example.com/api/run', {method: 'POST', headers: {authorization: 'Bearer fixture-token', 'content-type': 'application/json'},
+    body: JSON.stringify({room: 'room-one-0001', goal: README_GOAL, settings: {pipeline: 'v8'}})}), {...env, SELF_HOSTS: many.join(',')});
+  assert.deepEqual(seen[2][4].selfHosts, ['control.example.com', ...many]);
+});
+
+// R9-edges/record-2: a room keeps every self host it is given at Start.
+test('start() keeps every self host it is given, however many', async () => {
+  const hosts = Array.from({length: 12}, (_, i) => `h${i}.example.com`);
+  const {room} = liveRoom({room_id: 'room-hosts-0001'});
+  await room.start(README_GOAL, 20, {pipeline: 'v8'}, 'room-hosts-0001', {selfHosts: hosts});
+  assert.deepEqual(room.read('fetch_self_hosts', []), hosts);
 });
 
 // R6-room/record-2: every path the person grants is kept, at Start and at Continue, however many.
