@@ -53,7 +53,7 @@
             <input id="max-depth" type="range" min="0" max="1000" step="1" value="0" data-min="1" data-max="1000" /></div>
           <div class="range-control"><label for="max-children">Pieces per split <input id="max-children-value" class="count" type="number" inputmode="numeric" min="2" max="64" step="1" value="7" aria-label="Pieces per split, exact value" /></label>
             <input id="max-children" type="range" min="0" max="1000" step="1" value="0" data-min="2" data-max="64" /></div>
-          <label for="model">Manager model (splits, decisions, linking)</label>
+          <label for="model" id="model-label">Manager model (splits, decisions, linking)</label>
           <select id="model">
             <option value="@cf/qwen/qwen3-30b-a3b-fp8">Qwen3 A3B · 3B active (default)</option>
             <option value="@cf/meta/llama-4-scout-17b-16e-instruct">Llama 4 Scout · 17B active, no reasoning</option>
@@ -73,7 +73,7 @@
             <option value="@cf/qwen/qwen3.8-27b">Qwen 3.8 · 27B (comparison)</option>
             <option value="@cf/meta/llama-3.2-1b-instruct">Llama 3.2 · 1B (experimental)</option>
           </select>
-          <label for="compiler-model">Compiler model (API coverage check, the runner's test)</label>
+          <label for="compiler-model" id="compiler-model-label">Compiler model (API coverage check, the runner's test)</label>
           <select id="compiler-model">
             <option value="@cf/qwen/qwen3-30b-a3b-fp8">Qwen3 A3B · 3B active (default)</option>
             <option value="@cf/meta/llama-4-scout-17b-16e-instruct">Llama 4 Scout · 17B active, no reasoning</option>
@@ -83,7 +83,7 @@
             <option value="@cf/qwen/qwen3.8-27b">Qwen 3.8 · 27B (comparison)</option>
             <option value="@cf/meta/llama-3.2-1b-instruct">Llama 3.2 · 1B (experimental)</option>
           </select>
-          <label for="split-model">Split decision model</label>
+          <label for="split-model" id="split-model-label">Split decision model</label>
           <select id="split-model">
             <option value="@cf/cloudflare/clef-flash">Clef-flash · fast 9B (default)</option>
             <option value="@cf/cloudflare/clef">Clef · 27B</option>
