@@ -2,11 +2,11 @@
 // (src/session.js) offers contract, validation, piece (when the level may
 // divide), level and done; each call stores what it was given, exactly, or
 // says exactly why it cannot, and nothing else reads what the model writes.
-// done ends the session once the owner's rules hold (three different
-// examples for every function, command and route contract; each contract
-// delivered by at most one piece), and the level it returns is what the
-// session declared: {contracts, validations, pieces, division}. Whether the
-// division is sound is Clef's review (src/model.js reviewLevel), as before.
+// done ends the session once the level lacks nothing (missingOf), and the
+// level it returns is what the session declared: {contracts, validations,
+// pieces, division}. Whether the division is sound (what each piece
+// delivers, whether pieces are too small) is Clef's review alone
+// (src/model.js reviewLevel), which reads the division's facts (divisionOf).
 import { TOOLCHAINS, toolchainOf } from './toolchains.js';
 import { normalizeContract, kindOf, nameError, PLACED_KINDS, CONTRACT_KINDS } from './contracts.js';
 import { readCheck, CHECK_FIELDS, runOf, servedRun, runsOf, bundlePath, contractExamples, checkExamples, exerciseWords, divisionOf, LEVEL_LIMITS, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
@@ -134,16 +134,13 @@ export function levelView(s) {
   return {contracts: levelContracts(s).map(({serves: _, ...c}) => c), ...(s.have.length ? {contracts_you_have: s.have.map(c => c.name)} : {}),
     validations: s.validations.map(v => ({id: v.id, serves: v.serves, check: v.check})), pieces: s.pieces};
 }
-// What the owner's rules still need: [] when none.
+// What the level still lacks: [] when nothing. Every contract that is
+// called or run (function, command, route) has three different examples.
 export function missingOf(s) {
   const out = [];
   for (const c of levelContracts(s).filter(c => EXAMPLE_KINDS.has(kindOf(c)))) {
     const n = examplesOf(s, c).length;
     if (n < EXAMPLES_PER_CONTRACT) out.push(`${c.name} has ${n} different example${n === 1 ? '' : 's'} of ${EXAMPLES_PER_CONTRACT}: ${exerciseWords(c)}.`);
-  }
-  for (const c of levelContracts(s)) {
-    const by = s.pieces.filter(p => p.contracts.includes(c.name)).map(p => `"${p.label}"`);
-    if (by.length > 1) out.push(`${c.name} is delivered by ${by.length} pieces (${by.join(', ')}); each contract is delivered by at most one.`);
   }
   return out;
 }

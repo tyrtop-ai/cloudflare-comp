@@ -95,7 +95,7 @@ export const TOOLS = Object.freeze({
         refs: names('Outline refs of the linked pages it must read.')
       }, required: ['label', 'task', 'contracts']}},
     {name: 'level', description: 'Shows everything declared so far: the contracts, the validations with their examples, and the pieces.', parameters: {type: 'object', properties: {}, required: []}},
-    {name: 'done', description: 'Completes the level. When something is still missing, the result lists it and the level stays open: three different examples for every function, command and route contract, and each contract delivered by at most one piece.', parameters: {type: 'object', properties: {}, required: []}}
+    {name: 'done', description: 'Completes the level. When something is still missing, the result lists it and the level stays open: three different examples for every function, command and route contract.', parameters: {type: 'object', properties: {}, required: []}}
   ]),
   // The worker's functions (src/worker.js): its own files, its examples run
   // on them, an ask by name, and the end of its turn.
