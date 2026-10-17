@@ -144,21 +144,17 @@ test('exportsame: the export is byte for byte the bundle of the room\'s manager\
   assert.equal(r.room.read(`verified:${m.Root}`, null).digest, app.digest);
 });
 
-test('the base\'s files the box cannot hold (a binary, one past the box\'s bytes) hold the room for the person; Continue accepts them, and the export names them; a hidden path is a file like any other, in every box', {skip}, async () => {
+test('the base\'s files the box cannot hold (a binary, one past the box\'s bytes) ship, with no hold, and the export names them; a hidden path is a file like any other, in every box', {skip}, async () => {
   const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00, 0x01]).toString('base64');
   const r = await toolkit({base: {'logo.bin': {base64: bytes, reason: 'binary'}, '.pytest.ini': '[pytest]\naddopts = -x\n', 'big.txt': 'x'.repeat(4_194_200) + '\n', 'README.md': '# Base\n'}, budget: 80});
   const m = at(r.room), bundle = await r.room.bundleFiles(m.Root);
   assert.deepEqual(bundle.unsent.map(u => u.path).sort(), ['big.txt', 'logo.bin']);
   assert.equal(bundle.files.get('.pytest.ini'), '[pytest]\naddopts = -x\n', 'a hidden path is the project\'s file, in its bundle');
-  const hold = r.room.read('paused_state', null);
-  assert.equal(hold?.kind, 'checks_untested', tail(r.room));
-  for (const p of ['big.txt', 'logo.bin']) assert.ok(hold.text.includes(p), p);
-  assert.ok(!hold.text.includes('.pytest.ini'));
-  assert.equal(r.room.runFinished(), false);
+  // The room completes on what its final compiler observed: no hold for the person.
+  assert.equal(r.room.read('paused_state', null), null, tail(r.room));
+  assert.equal(r.room.get('status'), 'complete', tail(r.room));
   assert.ok(!r.boxes.some(b => ['big.txt', 'logo.bin'].some(p => p in b.files)), 'never in a box');
   assert.ok(r.boxes.some(b => b.files['.pytest.ini'] === '[pytest]\naddopts = -x\n'), 'the box holds it');
-  await again(r, 30);
-  assert.equal(r.room.get('status'), 'complete', tail(r.room));
   const app = await r.room.appFiles();
   assert.equal(app.passed, true);
   assert.deepEqual([...app.unchecked].sort(), ['big.txt', 'logo.bin']);

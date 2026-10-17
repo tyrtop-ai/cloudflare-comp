@@ -1421,9 +1421,9 @@ export class ControlRoom extends DurableObject {
     const digest=await snapshotHash(files),spec=this.specOf(this.validationRows()),status=this.read('validation_status',{});
     // A pass is for the prompt as it stands: a change given since that has not passed is not in it.
     const last=this.read('compile_passed',null),hit=last?.digest===digest&&(last.goal_rev??1)===this.goalRev()?last:null;
-    // v8 ship-verified: the files the person accepted shipping unchecked are named beside the pass.
-    const owe=hit?this.uncheckedOf(bundle):null,unchecked=owe&&this.get('unchecked_accepted')===owe.key?owe.list.map(x=>x.path):[];
-    const note=hit?`Every validation passed on exactly these files (snapshot ${digest.slice(0,16)})${unchecked.length?`, but for ${unchecked.length} the person accepted shipping unchecked: ${clip(unchecked.join(', '),300)}`:''}.`:
+    // v8 ship-verified: the files that ship though no syntax step compiled them or no box held them, as the compiler observed, beside the pass.
+    const unchecked=hit?(this.uncheckedOf(bundle)?.list||[]).map(x=>x.path):[];
+    const note=hit?`Every validation passed on exactly these files (snapshot ${digest.slice(0,16)})${unchecked.length?`; ${unchecked.length} of them no syntax step compiled or no box held: ${unchecked.join(', ')}`:''}.`:
       last?.digest===digest?`These files passed every validation before the prompt's latest change (revision ${this.goalRev()}), which has not passed on them yet.`:
       last?.digest?`These files differ from the last run that passed every validation (snapshot ${last.digest.slice(0,16)}), so they have not passed as exported.`:
       'The validations have not all passed on these files yet.';
@@ -3667,7 +3667,7 @@ export class ControlRoom extends DurableObject {
   pieceBundle(top, files, origin, placed, by, glue, raw) {
     const bundle={files:new Map([...files].sort(([a],[b])=>a<b?-1:a>b?1:0)),origin,placed,by,glue,top,raw};
     if(this.holdsBase(top))this.addCarried(bundle);
-    // A file at a path outside the box's folder (the box's own safety, boxPathError) ships, never in the box: what the person accepts unchecked.
+    // A file at a path outside the box's folder (the box's own safety, boxPathError) ships, never in the box (uncheckedOf).
     const hidden=[...bundle.files.keys()].filter(p=>boxPathError(p));
     if(hidden.length)bundle.unsent=[...(bundle.unsent||[]),...hidden.map(p=>({path:p,why:'its path is outside the box\'s folder',sha256:textHash(String(bundle.files.get(p)??''))}))];
     return bundle;
@@ -4217,14 +4217,12 @@ export class ControlRoom extends DurableObject {
     for(const p of files.keys()){const s=this.syntaxOf(p,files);if(s&&!s.row)out.push({path:p,why:s.why,unconfirmed:s.unconfirmed});}
     return out;
   }
-  // v8 ship-verified (L1, M1): what of a bundle ships unchecked: code no
-  // installed row compiles (uncompilable) and the carried files its box does
-  // not hold (unsent). {list, key, text} (key: the list with each file's
-  // digest, which the person's acceptance names), or null when there is none.
+  // v8 ship-verified (L1, M1): what of a bundle ships with no syntax step
+  // over it: code no installed row compiles (uncompilable) and the carried
+  // files its box does not hold (unsent), as observed. {list} or null.
   uncheckedOf(bundle) {
-    const list=[...this.uncompilable(this.boxHeld(bundle.files)).map(x=>({path:x.path,why:x.why,sha:textHash(String(bundle.files.get(x.path)??''))})),...(bundle.unsent||[]).map(x=>({path:x.path,why:x.why,sha:x.sha256}))].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
-    if(!list.length)return null;
-    return {list,key:textHash(JSON.stringify(list.map(x=>[x.path,x.sha]))),text:clip(`${list.length} file(s) that ship were never compiled or never in the box the checks ran in: ${list.map(x=>`${x.path} (${x.why})`).join('; ')}.`,800)};
+    const list=[...this.uncompilable(this.boxHeld(bundle.files)).map(x=>({path:x.path,why:x.why})),...(bundle.unsent||[]).map(x=>({path:x.path,why:x.why}))].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
+    return list.length?{list}:null;
   }
   // The Worker's own parser over the files it has not compiled: {issues, clean: [keys]}.
   // v8 M3 review 2 (M2): in the modes its runtimes read each in; a file
@@ -8732,8 +8730,7 @@ export class ControlRoom extends DurableObject {
   // Continue at the room's holds: a pending grant (base_confirm) first,
   // which grants the files it lists (or those selected), and the other holds
   // wait for the next Continue; otherwise Continue answers every hold that
-  // reached the room: checks_untested accepts the files that ship unchecked,
-  // and each other hold (the validations, a split, an escalation, Clef) gives
+  // reached the room: each hold (the validations, a split, an escalation, Clef) gives
   // the row it names a fresh set of split attempts, and wakes it. The alarm's retry (autoResume) answers only the
   // checks_blocked holds.
   continueHold({grants=null}={}) {
@@ -8742,11 +8739,6 @@ export class ControlRoom extends DurableObject {
     const list=this.autoResume?all.filter(h=>h.kind==='checks_blocked'):all.filter(h=>h.kind!=='base_confirm');
     if(!list.length)return;
     this.saveHolds(all.filter(h=>!list.includes(h)&&h.kind!=='base_confirm'));
-    const accept=list.find(h=>h.kind==='checks_untested');
-    if(accept) {
-      const files=this.read('unchecked_pending','');
-      if(files){this.set('unchecked_accepted',files);this.save('unchecked_pending','');this.event('room','unchecked_accepted',clip(`The person accepted the project with the files that ship unchecked, as the hold listed them: ${accept.text||''}`,900));}
-    }
     const rows=[...new Set(list.map(h=>h.agent||this.roomManager()||'').filter(Boolean))];
     if(this.autoResume)for(const id of rows)this.db().exec("DELETE FROM meta WHERE key IN (?,?)",`compile_reported:${id}`,`escalated:${id}`);
     else {
@@ -9312,13 +9304,6 @@ export class ControlRoom extends DurableObject {
     const finish=async(extra={})=>{
       const again=moved(extra);
       if(again)return again;
-      // Every file that ships up was compiled and was in its box, or the person accepted those that were not.
-      const owe=this.uncheckedOf(bundle);
-      if(owe&&this.get('unchecked_accepted')!==owe.key) {
-        this.save('unchecked_pending',owe.key);
-        span('held',extra);
-        return this.holdChecks(id,'checks_untested',`Every validation passed on the files of "${this.node(id)?.label||id}", and ${owe.text}`,'Continue accepts them unchecked; a follow-up prompt can change the work instead.');
-      }
       this.save(`verified:${id}`,{digest,owned,input:joins,ts:Date.now()});
       this.releaseHolds(h=>h.kind.startsWith('checks_')&&(!h.agent||h.agent===id));
       await this.recordRunPassed();
