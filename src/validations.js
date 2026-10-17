@@ -17,11 +17,15 @@ import { kindOf } from './contracts.js';
 import { isPath } from './protocol.js';
 import { rootedPath } from '../container/build-path.mjs';
 import { MESSAGES } from './prompts.js';
+import { callRowOf, CALL_EXTENSIONS } from './toolchains.js';
 
 export const VALIDATION_KINDS = Object.freeze(['file', 'judge', 'command', 'call', 'http', 'browser']);
 export const EXAMPLES_PER_CONTRACT = 3;
 // The owner's rule: the three examples are owed by contracts that are called or run.
 export const EXAMPLE_KINDS = new Set(['function', 'command', 'route']);
+// Why no check can call a function of the file at path, or '': the box has
+// no call adapter for its language (CALL_EXTENSIONS lists the files it has one for).
+export const uncallable = path => !path || callRowOf(path) ? '' : `the box has no call adapter for ${path}'s language, so no check can call a function of it (it calls functions in files of ${CALL_EXTENSIONS.join(', ')})`;
 
 const plain = v => v && typeof v === 'object' && !Array.isArray(v);
 const json = v => { try { const s = JSON.stringify(v); return s !== undefined ? {ok: true, v: JSON.parse(s)} : {ok: false}; } catch { return {ok: false}; } };
@@ -161,6 +165,7 @@ export function readCheck(c, ctx) {
     // One call check runs in one process over the one file that defines its functions.
     const files = [...new Set(steps.map(st => ctx.functionPaths?.get(st.call)).filter(Boolean))];
     if (files.length > 1) return {error: `the call check calls functions of different files (${files.join(', ')}); one call check runs the functions of one file`};
+    if (uncallable(files[0])) return {error: `the call check calls ${steps[0].call}: ${uncallable(files[0])}`};
     return {check: {kind, steps}};
   }
   // http or browser

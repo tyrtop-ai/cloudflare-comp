@@ -73,7 +73,7 @@ const CHECK_TOOLS = [
 export const CHECK_TOOL_KINDS = Object.freeze(Object.fromEntries(CHECK_TOOLS.map(t => [t.name, t.name.replace(/_check$/, '')])));
 export const TOOLS = Object.freeze({
   splitter: Object.freeze([
-    {name: 'contract', description: 'Declares one contract of this level, stored exactly as given. The result says it is stored, or why it is not: a kind outside the seven, a language the box does not run, or a name already declared.',
+    {name: 'contract', description: 'Declares one contract of this level, stored exactly as given. The result says it is stored, or why it is not: a kind outside the seven, a language the box does not run, a function in a language the box has no call adapter for, or a name already declared.',
       parameters: {type: 'object', properties: {
         name: {type: 'string', description: 'A function by a name its language accepts; a command by the one word that runs it; a route as a request method in capitals, a space and a path; a file, page, doc or data contract by its path.'},
         kind: {type: 'string', enum: KIND_LIST, description: 'What the contract is.'},

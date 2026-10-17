@@ -240,6 +240,10 @@ export const COMPILE_ROWS = Object.freeze([
     install:{argv:['sh','-c','cd "$0" && composer require --no-interaction --no-progress --quiet "$@" && printf \'auto_prepend_file="%s"\\n\' "$0/vendor/autoload.php" > autoload.ini','{tree}','{packages}'], tree:'php-packages', env:{PHP_INI_SCAN_DIR:':{tree}'}},
     syntax:['sh','-c','for f do php -l "./$f" >/dev/null || s=1; done; exit ${s:-0}','sh','{files}'] })
 ]);
+// The extensions of the files whose functions a call check can call: each
+// row's that has a call adapter (the splitter's world shows them, and its
+// contract and call_check functions refuse a function in any other file).
+export const CALL_EXTENSIONS = Object.freeze([...TOOLCHAINS, ...COMPILE_ROWS].filter(t => t.call_adapter).flatMap(t => t.extensions || []));
 // Stack-frame readers by a row's stack field (named groups path, line and
 // fn) and the frame reader: shared with the Container (container/stack-frames.mjs).
 export {STACKS, stackFrames} from '../container/stack-frames.mjs';
