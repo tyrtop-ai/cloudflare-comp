@@ -416,9 +416,11 @@ export async function verifyBuild(request,{runStage=run}={}) {
 // Forgery. A call check's expectations never reach the process: the runner
 // compares. The adapter attaches a per-run nonce the module cannot read (see
 // adapters/call.py, call.mjs, call-native.mjs), and the end counts only when the adapter's
-// done line arrives AND its process exits 0 by itself. A module that knows
-// the expected values can still return them; that is why the room must
-// never show a requirement's check to the workers (S4b).
+// done line arrives AND its process exits 0 by itself. The worker sees each
+// validation rendered as its examples, with the calls, arguments and
+// expected values (src/validations.js), so a module can return those values
+// directly; the protocol does not prevent that, and its guard does not rest
+// on the check being hidden.
 // ---------------------------------------------------------------------------
 // Time. No check, step, request or run has a time of its own (owner,
 // 2026-10-17 00:25 and 2026-10-15 23:16: no caps the runtime picked): each

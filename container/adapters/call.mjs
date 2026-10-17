@@ -19,9 +19,13 @@
 // returns: a module that already knows a step's expected value can hard-code
 // it, and a deliberate attack (the inspector protocol reading this scope, or
 // patching what a step's value serialises through) can still forge a
-// record. No adapter can stop that; the defence is that a requirement's
-// check (its args, expected values and steps) is never shown to the agents
-// that write the code, only the contract's own examples (S4b).
+// record. No adapter can stop that. The worker that writes the code sees
+// each validation it is compiled against rendered as its examples, with the
+// calls, their arguments and their expected values (src/validations.js), so
+// code can return those values directly, and nothing here prevents it. What
+// the nonce and the exit rule do guard is narrower: module code cannot write
+// a record under this adapter's nonce by printing, and cannot claim the end
+// by exiting early.
 import {readFileSync, unlinkSync, writeSync} from 'node:fs';
 import {createRequire} from 'node:module';
 import path from 'node:path';
