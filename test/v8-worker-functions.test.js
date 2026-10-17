@@ -18,7 +18,7 @@ import {packagePath} from '../src/assembly.js';
 const trail = room => events(room).slice(-16).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 220)}`).join('\n');
 
 // ------------------------------------------------------------ each function's results
-test('the worker\'s functions: each stores exactly what it is given or says exactly why it cannot; a path names a place among its files, with no path rule; an identical write says so plainly; done and wait end the turn with the summary given', async () => {
+test('the worker\'s functions: each stores exactly what it is given or says exactly why it cannot; a path names a place among its files, and one a repository holds no file at (its records folder, a name too long) is refused with why; an identical write says so plainly; done and wait end the turn with the summary given', async () => {
   const stored = [], world = workerWorld({files: new Map([['convert.js', 'old\n']]), write: async (path, content) => { stored.push([path, content]); },
     runExamples: async () => ({examples: [{examples: ['convert 1 → 2'], observed: 'pass'}], passed: 1, of: 1}), ask: async a => ({sent: true, says: MESSAGES.ask_sent(), seen: a})});
   const call = async (name, args) => (await workerCall(world, name, args));
@@ -353,7 +353,25 @@ test('the join leaves no file out and chooses no file over another: two pieces w
   assert.equal(piece.files.has('index.html'), false, 'neither copy is chosen');
   assert.equal(piece.files.get('styles.css'), 'p {}\n');
   assert.deepEqual([piece.by.get(atA), piece.by.get(atB)], [a.id, b.id]);
-  assert.match(events(room, 'bundle_conflict')[0].body, /^Two pieces place a file at the same path, so each copy stands in its writer's own folder: index\.html/);
+  assert.match(events(room, 'bundle_conflict')[0].body, /^Two files are placed at the same path, so each delivered copy stands in its writer's own folder: index\.html/);
+});
+
+test('the join keeps the builder\'s own file: a delivered file placed later at its path stands in its writer\'s own folder, and the builder\'s file stays at its path, in the bundle and in its world', async () => {
+  const {room, top, a, wa} = await tree(recorded().clef);
+  const bid = 'builder-00000000000000aa';
+  room.save(`built:${bid}`, {renamed: {}, glue: {'index.html': '<p>glue</p>\n', 'wire.js': 'w\n'}});
+  await room.putFile(wa.id, 'index.html', '<p>A</p>\n');
+  const piece = await room.joinPiece(top.id, bid), atA = packagePath('Page', 'index.html', wa.id);
+  assert.equal(piece.files.get('index.html'), '<p>glue</p>\n', 'the builder\'s own file stands at its path');
+  assert.equal(piece.files.get(atA), '<p>A</p>\n', 'the delivered copy stands in its writer\'s own folder');
+  assert.equal(piece.by.get(atA), a.id);
+  assert.deepEqual([...piece.glue.keys()].sort(), ['index.html', 'wire.js'], 'no file of the builder\'s is left out');
+  // A delivered file with the same text is one file with it.
+  await room.putFile(wa.id, 'index.html', '<p>glue</p>\n');
+  const same = await room.joinPiece(top.id, bid);
+  assert.equal(same.files.get('index.html'), '<p>glue</p>\n');
+  assert.equal(same.files.has(atA), false);
+  assert.ok(same.glue.has('index.html'));
 });
 
 test('a manager reads its children and contracts from its level files only, never from the rows\' copies: a copy that says otherwise changes nothing it is shown or chooses', async () => {
