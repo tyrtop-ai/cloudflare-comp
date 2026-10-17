@@ -23,19 +23,13 @@
           <label for="goal">Problem statement</label>
           <textarea id="goal" rows="4">Build a small issue tracker that lets someone create, view, update, and delete tickets.</textarea>
           <div class="prompts-box" id="prompts-box">
-            <div class="control-heading">Prompts <span id="prompts-note">v8 · queued prompts apply in order, each once the room completes</span></div>
+            <div class="control-heading">Prompts <span id="prompts-note">v8 · queued prompts apply in order, each once the room's run ends</span></div>
             <label for="prompt-text">Follow-up prompt</label>
             <textarea id="prompt-text" rows="2" placeholder="e.g. add a README explaining how to run it"></textarea>
             <div class="prompt-actions">
               <button class="secondary" id="prompt-queue" title="Add this prompt to the end of the queue">Add to queue</button>
               <button class="secondary" id="prompt-now" title="Apply this prompt to the room now">Adjust now</button>
             </div>
-            <label for="queue-on-fail">When a prompt fails</label>
-            <select id="queue-on-fail">
-              <option value="stop">Stop the queue (default)</option>
-              <option value="continue">Go on with the next prompt</option>
-            </select>
-            <p class="hold-note queue-stopped" id="queue-stopped" hidden></p>
             <ol id="prompts" class="prompt-list" aria-label="Prompts"><li class="empty">No prompts yet. Start a v8 room, then queue follow-ups here.</li></ol>
           </div>
           <label for="start-from">Start from (v8 pipeline)</label>

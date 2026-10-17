@@ -665,7 +665,7 @@ test('v8 S9: the Prompts panel lists each prompt with its state; only queued one
   assert.ok(html.indexOf('id="goal"')<html.indexOf('id="prompts-box"')&&html.indexOf('id="prompts-box"')<html.indexOf('id="start-from"'),'beside the goal box');
   const prompts=[{id:'a',text:'add a <README>',status:'done',kind:'queued',goal_rev:2,outcome:{passed:true}},{id:'b',text:'also support kelvin',status:'running',kind:'adjust',goal_rev:3,outcome:{}},
     {id:'c',text:'queued one',status:'queued',kind:'queued',outcome:{}},{id:'d',text:'queued two',status:'queued',kind:'queued',outcome:{}},{id:'e',text:'skipped one',status:'skipped',kind:'queued',outcome:{}}];
-  const running=renderWithPage(true,{status:'running',settings:{pipeline:'v8'},agents:[{id:'root',label:'Root objective',status:'waiting',interfaces:[]}],prompts,queue_on_fail:'continue',queue_stopped:''});
+  const running=renderWithPage(true,{status:'running',settings:{pipeline:'v8'},agents:[{id:'root',label:'Root objective',status:'waiting',interfaces:[]}],prompts});
   const list=running.get('prompts').innerHTML;
   for(const st of ['done','running','queued','skipped'])assert.match(list,new RegExp(`<span class="req-chip ${st}">${st}</span>`));
   assert.match(list,/add a &lt;README&gt;/,'escaped');
@@ -677,11 +677,15 @@ test('v8 S9: the Prompts panel lists each prompt with its state; only queued one
   assert.match(list,/data-prompt-down="d" aria-label="Move down" disabled/);
   assert.equal(running.get('prompt-now').textContent,'Adjust now');
   assert.equal(running.get('prompt-now').disabled,false);
-  assert.equal(running.get('queue-on-fail').value,'continue');
-  assert.equal(running.get('queue-stopped').hidden,true);
-  const done=renderWithPage(true,{status:'complete',settings:{pipeline:'v8'},agents:[{id:'root',label:'Root objective',status:'done',interfaces:[]}],prompts,queue_stopped:'The last prompt failed; the queue waits.'});
+  // R3-room/chrono-1: the queue has no failure policy and no stop of its own.
+  assert.doesNotMatch(html,/queue-on-fail|queue-stopped/);
+  // R4-room/chrono-2: the edit box holds the queued prompt whole.
+  const long='make the guide longer '+'x'.repeat(3000);
+  const editing=renderWithPage(true,{status:'complete',settings:{pipeline:'v8'},agents:[{id:'root',label:'Root objective',status:'done',interfaces:[]}],prompts:[{id:'q',text:long,status:'queued',kind:'queued',outcome:{}}]});
+  assert.match(editing.get('prompts').innerHTML,new RegExp(long));
+  const done=renderWithPage(true,{status:'complete',settings:{pipeline:'v8'},agents:[{id:'root',label:'Root objective',status:'done',interfaces:[]}],prompts});
   assert.equal(done.get('prompt-now').textContent,'Apply now');
-  assert.equal(done.get('queue-stopped').hidden,false);
-  assert.match(done.get('queue-stopped').innerHTML,/The last prompt failed; the queue waits\. <button type="button" class="secondary" data-queue-resume="1">Go on<\/button>/);
+  // R4-room/code-3: no repair ceiling is shown.
+  assert.doesNotMatch(done.get('prompts-note')?.textContent||'',/repair rounds/);
   assert.equal(renderWithPage(true,{settings:{pipeline:'v7'},agents:[{id:'root',label:'Root',status:'done',interfaces:[]}]}).get('prompt-now').disabled,true,'a v7 room takes no change');
 });

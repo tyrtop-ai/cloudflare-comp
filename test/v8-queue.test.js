@@ -172,62 +172,31 @@ const failRun = async (room, id, seq) => {
   await room.promptsAfterRun();
 };
 
-test('queue on failure: a prompt whose run fails holds the queue under stop, and Go on applies the next; under continue the next applies at once', async () => {
-  for (const policy of ['stop', 'continue']) {
-    const {room, drain, fire} = docRoom();
-    assert.equal((await room.queuePolicy({queue_on_fail: policy})).queue_on_fail, policy);
-    await room.start(DOC_GOAL, 30, {pipeline: 'v8'});
-    await drain();
-    await room.addPrompt(CUPS);
-    room.db().exec("UPDATE prompts SET seq=5 WHERE status='queued'");
-    await failRun(room, 'p-running', 1);
-    const s = room.snapshot();
-    assert.equal(s.prompts[0].status, 'failed', tail(room));
-    if (policy === 'stop') {
-      assert.equal(s.prompts[1].status, 'queued');
-      assert.match(s.queue_stopped, /the queue waits/);
-      assert.equal(room.read('prompts_due', null), null);
-      // Going on is the person's: the queue resumes and the next prompt applies, to the failed room too.
-      await room.queuePolicy({resume: true});
-      await fire();
-    } else await fire();
-    assert.equal(room.get('status'), 'complete', tail(room));
-    assert.deepEqual(states(room).map(x => x[1]), ['failed', 'done'], tail(room));
-    assert.deepEqual(room.goalChanges(), [CUPS]);
-  }
+// R3-room/chrono-1, R3-room/record-2: the queue has no failure policy. A prompt whose run fails is
+// failed, and the queue's next prompt applies to the room as it stands, as a change applied now does.
+test('a prompt whose run fails is failed, and the queue applies its next prompt to the failed room', async () => {
+  const {room, drain, fire} = docRoom();
+  await room.start(DOC_GOAL, 30, {pipeline: 'v8'});
+  await drain();
+  await room.addPrompt(CUPS);
+  room.db().exec("UPDATE prompts SET seq=5 WHERE status='queued'");
+  await failRun(room, 'p-running', 1);
+  const s = room.snapshot();
+  assert.equal(s.prompts[0].status, 'failed', tail(room));
+  assert.equal(s.prompts[1].status, 'queued');
+  assert.equal(s.queue_on_fail, undefined);
+  assert.equal(s.queue_stopped, undefined);
+  assert.ok(room.read('prompts_due', null), 'the next prompt is due');
+  await fire();
+  assert.equal(room.get('status'), 'complete', tail(room));
+  assert.equal(events(room, 'revived').length, 1, 'the failed worker is revived by the change');
+  assert.deepEqual(states(room).map(x => x[1]), ['failed', 'done'], tail(room));
+  assert.deepEqual(room.goalChanges(), [CUPS]);
 });
 
-test('queue on failure: a run that ends failed fails its running prompt, and the policy decides', async () => {
-  for (const policy of ['stop', 'continue']) {
-    const {room, drain, fire} = docRoom();
-    await room.queuePolicy({queue_on_fail: policy});
-    await room.start(DOC_GOAL, 20, {pipeline: 'v8'});
-    await drain();
-    const id = 'p-running';
-    room.db().exec("INSERT INTO prompts(id,seq,text,status,kind,budget,goal_rev,outcome,created) VALUES (?,1,'make the guide longer','running','queued',NULL,2,'{}',1)", id);
-    await room.addPrompt(CUPS);
-    room.db().exec("UPDATE prompts SET seq=5 WHERE status='queued'");
-    const w = room.allNodes().find(n => n.role === 'worker');
-    room.failAgent(w.id, 'stuck'); room.set('status', 'failed');
-    await room.promptsAfterRun();
-    assert.equal(room.promptRows('id=?', id)[0].status, 'failed');
-    if (policy === 'stop') {
-      assert.match(room.get('queue_stopped'), /failed/);
-      assert.equal(room.read('prompts_due', null), null);
-      assert.deepEqual(states(room).map(x => x[1]), ['failed', 'queued']);
-    } else {
-      await fire();
-      assert.equal(room.get('status'), 'complete', tail(room));
-      assert.equal(events(room, 'revived').length, 1, 'the failed worker is revived by the change');
-      assert.deepEqual(states(room).map(x => x[1]), ['failed', 'done']);
-    }
-  }
-});
-
-// R3-room/chrono-1: no failure count stops a continue queue; after each failed prompt its next one is due.
-test('a continue queue goes on after every failed prompt: no count of failures stops it', async () => {
+// R3-room/chrono-1: no count of failures stops the queue; after each failed prompt its next one is due.
+test('the queue goes on after every failed prompt: no count of failures stops it', async () => {
   const {room, drain} = docRoom();
-  await room.queuePolicy({queue_on_fail: 'continue'});
   await room.start(DOC_GOAL, 30, {pipeline: 'v8'});
   await drain();
   await room.addPrompt(CUPS);
@@ -235,7 +204,6 @@ test('a continue queue goes on after every failed prompt: no count of failures s
   for (const [id, seq] of [['p-1', 1], ['p-2', 2], ['p-3', 3]]) {
     room.save('prompts_due', null);
     await failRun(room, id, seq);
-    assert.equal(room.get('queue_stopped') || '', '', `${id}: a continue queue goes on`);
     assert.ok(room.read('prompts_due', null), `${id}: the next prompt is due`);
   }
   assert.deepEqual(states(room).map(x => x[1]), ['failed', 'failed', 'failed', 'queued'], tail(room));
@@ -270,7 +238,10 @@ test('queue: add, edit, reorder and remove change only queued prompts; a stale r
   const delta = room.stateDelta({since: 0, agents_since: 0, files_since: 0, run: room.get('run_nonce')});
   assert.equal(delta.full, false);
   assert.deepEqual(delta.prompts.map(p => p.id), [d.id]);
-  assert.equal(delta.queue_on_fail, 'stop');
+  assert.equal(delta.queue_on_fail, undefined);
+  // R4-room/code-3: no room-wide repair ceiling is reported.
+  assert.equal(delta.room_repair_cap, undefined);
+  assert.equal(delta.room_repair_rounds, undefined);
   // Clear forgets everything.
   await room.clear();
   assert.equal(room.promptRows().length, 0);
@@ -302,26 +273,21 @@ test('queued prompts apply one after another, each run with the Start budget: no
   await drain();
   for (let i = 0; i < 6; i++) await fire();
   assert.deepEqual(states(room).map(x => x[1]), Array(6).fill('done'), tail(room));
-  assert.equal(room.get('queue_stopped') || '', '');
   assert.equal(events(room, 'resume').length, 6);
   assert.ok(events(room, 'resume').every(e => / up to 20 turns/.test(e.body)), 'each run has the Start budget');
   assert.equal(room.snapshot().queue_turns_left, undefined);
 });
 
-test('a prompt queued on a failed room says why it waits, and Go on applies it', async () => {
-  for (const policy of ['stop', 'continue']) {
-    const {room, drain, fire} = docRoom();
-    await room.queuePolicy({queue_on_fail: policy});
-    await room.start(DOC_GOAL, 20, {pipeline: 'v8'}); await drain();
-    const w = room.allNodes().find(n => n.role === 'worker');
-    room.failAgent(w.id, 'stuck'); room.set('status', 'failed');
-    await room.addPrompt(CUPS);
-    assert.match(room.snapshot().queue_stopped, /The room failed, so the queued prompts wait/);
-    await room.queuePolicy({resume: true});
-    await fire();
-    assert.equal(room.get('status'), 'complete', tail(room));
-    assert.deepEqual(states(room).map(x => x[1]), ['done']);
-  }
+test('a prompt queued on a failed room applies to it, as one queued on a complete room does', async () => {
+  const {room, drain, fire} = docRoom();
+  await room.start(DOC_GOAL, 20, {pipeline: 'v8'}); await drain();
+  const w = room.allNodes().find(n => n.role === 'worker');
+  room.failAgent(w.id, 'stuck'); room.set('status', 'failed');
+  await room.addPrompt(CUPS);
+  assert.ok(room.read('prompts_due', null), 'the prompt is due');
+  await fire();
+  assert.equal(room.get('status'), 'complete', tail(room));
+  assert.deepEqual(states(room).map(x => x[1]), ['done']);
 });
 
 test('v7 rooms are unchanged: no amendment and no queued prompt',async()=>{
@@ -333,7 +299,7 @@ test('v7 rooms are unchanged: no amendment and no queued prompt',async()=>{
   assert.equal(room.promptRows().length,0);
   // A run's end with no prompts touches nothing.
   await room.promptsAfterRun();
-  assert.equal(room.get('queue_stopped',''),'');
+  assert.equal(room.read('prompts_due',null),null);
 });
 
 
@@ -364,11 +330,11 @@ test('routes: /api/amend and /api/prompts reach the room with their bodies',asyn
   await call('/api/prompts/reorder',{order:['p2','p1']});
   await call('/api/prompts/remove',{id:'p1'});
   await call('/api/prompts/skip',{id:'p2'});
-  await call('/api/prompts/policy',{queue_on_fail:'continue'});
+  assert.equal((await call('/api/prompts/policy',{queue_on_fail:'continue'})).status,404);
   assert.equal((await call('/api/prompts',{},'GET')).status,200);
   assert.equal((await call('/api/prompts/nope',{})).status,404);
   assert.deepEqual(seen,[['amend','also support kelvin',{budget:null}],['addPrompt','add a section',30],['editPrompt','p1',{text:'edited text'}],['reorderPrompts',['p2','p1']],
-    ['removePrompt','p1'],['skipPrompt','p2'],['queuePolicy',{queue_on_fail:'continue',resume:false}],['promptsHead']]);
+    ['removePrompt','p1'],['skipPrompt','p2'],['promptsHead']]);
 });
 
 
@@ -396,11 +362,13 @@ test('review: a prompt queued before a v7 Start is skipped, saying why',async()=
 test('review: the queue takes every prompt as the person writes it (no count, prompt length or goal length refuses one); an edit carries its version; a budget that is no budget is a 400',async()=>{
   const {room,drain}=docRoom();
   await room.start(DOC_GOAL,20,{pipeline:'v8'});await drain();
-  room.set('queue_stopped','held for the test');
   const a=(await room.addPrompt('short follow-up number 0')).prompt;
   for(let i=0;i<24;i++)assert.ok((await room.addPrompt(`a long follow-up ${i} `+'y'.repeat(9000))).prompt,`prompt ${i}`);
   assert.equal(room.promptRows("status='queued'").length,25);
   assert.equal(room.editPrompt(a.id,{text:'x'.repeat(20000)}).prompt.text.length,20000);
+  // R4-room/chrono-2: the dashboard gets each prompt whole, so an edit from it saves the text as written.
+  assert.equal(room.promptsHead().prompts.find(p=>p.id===a.id).text.length,20000);
+  assert.equal(room.snapshot().prompts.find(p=>p.id===a.id).text.length,20000);
   assert.equal(room.promptRows('id=?',a.id)[0].version,1);
   const e0=room.editPrompt(a.id,{text:'edited back, here',version:1});
   assert.equal(e0.prompt.version,2);

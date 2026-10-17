@@ -212,8 +212,6 @@ input[type=range]:focus {box-shadow:none;}
 /* v8 S9: the Prompts panel (the queue). */
 .prompt-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
 .prompt-actions .secondary { margin-top:8px; }
-.queue-stopped { margin-top:10px; font-size:11px; }
-.queue-stopped[hidden] { display:none; }
 .prompt-list { list-style:none; margin:12px 0 0; padding:0; display:flex; flex-direction:column; gap:6px; font-size:12px; }
 .prompt-list .empty { color:var(--muted); font-size:11px; }
 .prompt-item { border:thin solid var(--code-bd); border-radius:4px; padding:6px 8px; background:var(--bg); }

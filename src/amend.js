@@ -4,7 +4,6 @@
 // a model.
 
 export const PROMPT_STATES = Object.freeze(['queued', 'running', 'done', 'failed', 'skipped']);
-export const QUEUE_ON_FAIL = Object.freeze(['stop', 'continue']);
 
 // The goal every reader sees after the changes: the user's goal, then each
 // applied change, numbered, in the order they were applied.
