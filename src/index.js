@@ -111,20 +111,7 @@ function ownerNote(label, piece, owner='', names=[], kept=false) {
   return {note:`${head}; ${how} instead of rebuilding it. Any part of "${piece}" that ${owner||'its owner'} does not provide is still written in this strand.`,
     short,outside:owner?ownerNote(label,piece,'',names,kept).short:short};
 }
-// v8 (S6 review): a worker's own files, sent whole while the total stays within
-// FILES_BUDGET characters; the next one that does not fit is sent clipped
-// (its start, marked clipped with its full length), and the rest by path
-// only, so no file is ever mistaken for whole.
-const FILES_BUDGET = 24000, SCOPE_GOAL = 1800;
-function sentFiles(files, {revision=false, budget=FILES_BUDGET}={}) {
-  let left=budget;
-  return files.map(f=>{
-    const text=String(f.content??''),head={path:f.path,...(revision&&f.revision!==undefined?{revision:f.revision}:{})};
-    if(text.length<=left){left-=text.length;return {...head,content:text};}
-    const part=Math.max(0,Math.min(3000,left));left-=part;
-    return {...head,content:text.slice(0,part),clipped:true,length:text.length};
-  });
-}
+const SCOPE_GOAL = 1800;
 // Builders and the compiler are runtime nodes: one builder per manager links
 // its direct children, one compiler under the top manager runs the bundle
 // (v7). A row's role says which (agents.role: 'builder', 'compiler', or ''
@@ -180,9 +167,11 @@ const PROBLEM_JSON = ['parties','facts','evidence','directive','flags','trail'];
 // rejected, not the infrastructure (an Artifacts commit, a network error).
 // v8 S1: missing_deliverable replaces missing_code (still read in rooms
 // stored before it); non_code_rejected is gone: any text file is a deliverable.
-const CODE_GATE = /^(?:missing_deliverable|missing_code|split_rejected|code_retry|ask_unheard)\b|Worker artifact rejected|Leaf cannot finish without|Bad (?:decomposition|action) response/;
+// A v8 worker's session that ended with neither done nor wait (its context
+// window was full) is session_unfinished.
+const CODE_GATE = /^(?:missing_deliverable|missing_code|split_rejected|code_retry|ask_unheard|session_unfinished)\b|Worker artifact rejected|Leaf cannot finish without|Bad (?:decomposition|action) response/;
 // The events a stuck worker's manager reads as its last failures.
-const FAILURE_EVENTS = ['error','missing_deliverable','missing_code','split_rejected','code_retry','ask_unheard'];
+const FAILURE_EVENTS = ['error','missing_deliverable','missing_code','split_rejected','code_retry','ask_unheard','session_unfinished'];
 const surfacesOf = files => new Map([...files].filter(([p])=>LINKABLE.test(p)).map(([p,c])=>[p,exportSurface(p,c)]));
 // v7.15.13 (run20): the parameters of a function a module exports, from its
 // surface (a named export, a default function, a default object's member, a
@@ -7940,6 +7929,8 @@ export class ControlRoom extends DurableObject {
       // Builder and compiler turns are driven by their manager's schedule, a
       // problem or Continue, never the generic idle nudge.
       if(isRuntimeNode(n) && this.env.MOCK_AI!=='true')continue;
+      // v8: a row whose escalation is outstanding waits for Continue, as a manager does.
+      if(this.v8()&&this.escalatedRow(n.id))continue;
       if(query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? LIMIT 1',n.id).length)continue;
       const parent = this.node(n.parent);
       if (parent?.status !== 'waiting') continue;

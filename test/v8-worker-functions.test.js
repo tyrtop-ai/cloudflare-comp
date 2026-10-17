@@ -1,0 +1,301 @@
+// v8: every model works through functions. A worker's turn is one session
+// of read_file, write_file, run_examples, ask, done and wait (src/worker.js);
+// each result is all the feedback there is, and nothing reads its prose. A
+// manager's turn on an ask, a complaint or a change is Clef scoring each
+// function call it may make (answer, route_to, extend, ask_parent) as one
+// typed option over its own files, and the runtime calling the highest; a
+// walk up the tree is a chain of ask_parent calls, and at the room an ask
+// nobody holds archives the asker, whose manager's splitter rebuilds it.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {levelRoom, usualClef, deliver, writeCalls, events, rowId} from './helpers/levels.js';
+import {liveRoom} from './helpers/room.js';
+import {workerWorld, workerCall} from '../src/worker.js';
+import {MESSAGES, TOOLS, CLEF, clefText} from '../src/prompts.js';
+
+const trail = room => events(room).slice(-16).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 220)}`).join('\n');
+
+// ------------------------------------------------------------ each function's results
+test('the worker\'s functions: each stores exactly what it is given or says exactly why it cannot; an identical write says so plainly; done and wait end the turn with the summary given', async () => {
+  const stored = [], world = workerWorld({files: new Map([['convert.js', 'old\n']]), write: async (path, content) => { stored.push([path, content]); },
+    runExamples: async () => ({examples: [{examples: ['convert 1 → 2'], observed: 'pass'}], passed: 1, of: 1}), ask: async a => ({sent: true, says: MESSAGES.ask_sent(), seen: a})});
+  const call = async (name, args) => (await workerCall(world, name, args));
+  // read_file: the file's text, or that there is no such file and which there are.
+  assert.deepEqual((await call('read_file', {path: 'convert.js'})).result, {path: 'convert.js', content: 'old\n'});
+  assert.deepEqual((await call('read_file', {path: 'other.js'})).result, {error: 'You have no file other.js. Your files: convert.js.'});
+  assert.deepEqual((await call('read_file', {})).result, {error: 'path is the text of a relative path'});
+  assert.deepEqual((await call('read_file', {path: 'convert.js', lines: 3})).result, {error: 'read_file has no field "lines"; its fields are path'});
+  // write_file: written; the same bytes again: unchanged, said plainly and nothing stored; a path outside its files: why.
+  assert.deepEqual((await call('write_file', {path: 'convert.js', content: 'new\n'})).result, {written: 'convert.js', characters: 4});
+  assert.deepEqual((await call('read_file', {path: 'convert.js'})).result, {path: 'convert.js', content: 'new\n'}, 'a write is read back in the same session');
+  assert.deepEqual((await call('write_file', {path: 'convert.js', content: 'new\n'})).result, {unchanged: 'convert.js', says: 'unchanged: convert.js is already exactly this text.'});
+  for (const [path, why] of [['../up.js', 'not a plain relative path (empty, \'.\' or \'..\' segment)'], ['/abs.js', 'not a relative project path'], ['a b.js', 'use only letters, digits, \'_\', \'-\' and \'.\' in file and directory names (no spaces or other characters); rename the file']])
+    assert.deepEqual((await call('write_file', {path, content: 'x'})).result, {error: `${path} is not a relative path inside your files: ${why}.`}, path);
+  assert.deepEqual((await call('write_file', {path: 'a.js'})).result, {error: 'content is the complete text of the file'});
+  assert.deepEqual(stored, [['convert.js', 'new\n']], 'only the one write that changed something was stored');
+  assert.deepEqual([world.written, world.unchanged], [['convert.js'], ['convert.js']]);
+  // run_examples and ask: what the room answers, as it answers it.
+  assert.deepEqual((await call('run_examples', {})).result, {examples: [{examples: ['convert 1 → 2'], observed: 'pass'}], passed: 1, of: 1});
+  assert.deepEqual((await call('ask', {need: 'a table of factors', name: 'factors'})).result, {sent: true, says: MESSAGES.ask_sent(), seen: {need: 'a table of factors', name: 'factors'}});
+  assert.deepEqual((await call('ask', {name: 'factors'})).result, {error: 'need says what you need, in one line'});
+  // done and wait: the turn's end, as the function says it.
+  assert.deepEqual(await call('done', {}), {result: {error: 'summary says what you did, in one line'}});
+  assert.deepEqual(await call('done', {summary: 'wrote it'}), {result: {ended: 'done'}, end: {done: true, wait: false, summary: 'wrote it'}});
+  assert.deepEqual(await call('wait', {summary: 'waiting for factors'}), {result: {ended: 'wait'}, end: {done: false, wait: true, summary: 'waiting for factors'}});
+  assert.deepEqual((await call('spawn', {})).result, {error: 'There is no function "spawn".'});
+  assert.deepEqual(TOOLS.worker.map(t => t.name), ['read_file', 'write_file', 'run_examples', 'ask', 'done', 'wait']);
+});
+
+// ------------------------------------------------------------ run_examples in a room
+const CLI = 'Write a command-line temperature converter: `convert 100 C` prints the Fahrenheit value.';
+const convertCheck = (id, args, out) => ({id, serves: ['convert'], check: {kind: 'command', run: `convert ${args}`, expect: {exit: 0, stdout_has: [out]}}});
+const CONVERT = {name: 'convert', kind: 'command', does: 'converts a Celsius temperature to Fahrenheit', path: 'convert.js', outputs: 'the Fahrenheit value'};
+const CLI_LEVEL = {contracts: [CONVERT], validations: [convertCheck('a', '100 C', '212'), convertCheck('b', '0 C', '32'), convertCheck('c', '-40 C', '-40')], pieces: []};
+const CONVERT_JS = "const c = Number(process.argv[2]);\nconsole.log(String(c * 9 / 5 + 32));\n";
+const WRONG = "const c = Number(process.argv[2]);\nconsole.log(String(c * 2));\n";
+const caught = (more = {}) => usualClef({'^should_split$': 0.02, ...more});
+
+test('run_examples runs the worker\'s examples on its own files as they stand, in a fresh box as the compiler would, and says what each observed; it reads no validation, and changes no validation\'s status', async () => {
+  const leaf = (_u, _n, _s, {round}) => round === 1 ? [{name: 'write_file', arguments: {path: 'convert.js', content: WRONG}}, {name: 'run_examples', arguments: {}}]
+    : round === 2 ? [{name: 'write_file', arguments: {path: 'convert.js', content: CONVERT_JS}}, {name: 'run_examples', arguments: {}}]
+    : [{name: 'done', arguments: {summary: 'the converter'}}];
+  const {room, calls, builds} = await levelRoom({prompt: CLI, split: () => CLI_LEVEL, leaf, clef: caught()});
+  assert.equal(room.get('status'), 'complete', trail(room));
+  assert.equal(calls.leaf.length, 1, 'one turn: the worker saw its own examples fail and fixed them in the same session');
+  const runs = calls.leafRounds.filter(r => r.round > 1).map(r => r.results.find(x => x.name === 'run_examples')?.result).filter(Boolean);
+  assert.equal(runs.length, 2);
+  // The first run, on its staged write: each example with the compiler's own observation, verbatim.
+  assert.deepEqual(runs[0].examples.map(e => e.examples), [['convert 100 C → it exits 0 and its output contains "212"'], ['convert 0 C → it exits 0 and its output contains "32"'], ['convert -40 C → it exits 0 and its output contains "-40"']]);
+  assert.deepEqual([runs[0].passed, runs[0].of], [0, 3]);
+  assert.ok(runs[0].examples.every(e => e.observed !== 'pass' && /200|0|-80/.test(e.observed)), JSON.stringify(runs[0]));
+  assert.match(runs[0].examples[0].observed, /212/);
+  // The second run, after the fix: every example passes.
+  assert.deepEqual(runs[1].examples.map(e => e.observed), ['pass', 'pass', 'pass']);
+  assert.deepEqual([runs[1].passed, runs[1].of], [3, 3]);
+  // The worker reads examples and observations only: no validation id, kind, check or steps as data.
+  for (const r of runs) assert.doesNotMatch(JSON.stringify(r), /"(?:id|kind|check|steps|serves|expect)"|\bV\d+\b/);
+  // Its box held its own files only, and nothing it observed is a validation's status.
+  const w = room.allNodes().find(n => n.role === 'worker');
+  assert.deepEqual(Object.keys(builds[0]), ['convert.js']);
+  assert.equal(builds[0]['convert.js'], WRONG);
+  assert.equal(events(room, 'examples_run').length, 2);
+  assert.ok(events(room, 'examples_run').every(e => e.actor === w.id));
+  assert.match(events(room, 'examples_run')[0].body, /^Ran its examples on its 1 file\(s\): 0 of 3 pass\.$/);
+  assert.ok(Object.values(room.read('validation_status', {})).every(s => s.passed === true), 'the compiler\'s runs alone set the status');
+});
+
+// The tracker: two pieces, each handed down to one worker; the report piece calls the store's createTicket.
+const TRACKER = 'Build a small issue tracker: a library to create tickets and read one back by its id, and a `report` command that files a ticket and prints it as one line.';
+const STORE = "const tickets = new Map();\nlet next = 1;\nfunction createTicket(title) { const t = {id: next++, title, status: 'open'}; tickets.set(t.id, t); return {...t}; }\nfunction getTicket(id) { const t = tickets.get(id); return t ? {...t} : null; }\nmodule.exports = {createTicket, getTicket};\n";
+const report = reference => `${reference}\nconst t = createTicket(process.argv.slice(2).join(' '));\nconsole.log('#' + t.id + ' ' + t.title + ' [' + t.status + ']');\n`;
+const callCheck = (id, serves, steps) => ({id, serves, check: {kind: 'call', steps: steps.map(([call, args, expect]) => ({call, args, ...(expect === undefined ? {} : {expect})}))}});
+const command = (id, serves, args, line) => ({id, serves, check: {kind: 'command', run: `report ${args}`, expect: {exit: 0, stdout_has: [line]}}});
+const T_CONTRACTS = [
+  {name: 'createTicket', kind: 'function', does: 'creates an open ticket with a title', inputs: [{name: 'title', is: 'text'}], outputs: 'the ticket {id, title, status}', path: 'store.js'},
+  {name: 'getTicket', kind: 'function', does: 'reads one ticket by its id', inputs: [{name: 'id', is: 'a number'}], outputs: 'the ticket, or null', path: 'store.js'},
+  {name: 'report', kind: 'command', does: 'files a ticket with the title given and prints it as one line', outputs: 'the line #<id> <title> [<status>]', path: 'report.js'}];
+const T_VALIDATIONS = [
+  callCheck('v1', ['createTicket'], [['createTicket', ['Printer jam'], {id: 1, title: 'Printer jam', status: 'open'}]]),
+  callCheck('v2', ['createTicket'], [['createTicket', ['A']], ['createTicket', ['B'], {id: 2, title: 'B', status: 'open'}]]),
+  callCheck('v3', ['createTicket'], [['createTicket', ['Coffee'], {id: 1, title: 'Coffee', status: 'open'}]]),
+  callCheck('v4', ['getTicket'], [['createTicket', ['Printer jam']], ['getTicket', [1], {id: 1, title: 'Printer jam', status: 'open'}]]),
+  callCheck('v5', ['getTicket'], [['getTicket', [7], null]]),
+  callCheck('v6', ['getTicket'], [['createTicket', ['A']], ['createTicket', ['B']], ['getTicket', [2], {id: 2, title: 'B', status: 'open'}]]),
+  command('v7', ['report'], '"Printer jam"', '#1 Printer jam [open]'), command('v8', ['report'], 'Login', '#1 Login [open]'), command('v9', ['report'], 'Coffee machine', '#1 Coffee machine [open]')];
+const T_PIECES = [
+  {label: 'Ticket store', task: 'Keep tickets in memory: create them and read them back by id.', contracts: ['createTicket', 'getTicket']},
+  {label: 'Ticket report', task: 'The report command: file a ticket with the title given and print it as one line.', contracts: ['report'], uses: ['createTicket']}];
+const trackerSplit = user => user.contracts_you_deliver ? {contracts: user.contracts_you_deliver, validations: [], pieces: []} : {contracts: T_CONTRACTS, validations: T_VALIDATIONS, pieces: T_PIECES};
+const isReport = user => user.prompt.deliver.some(c => c.name === 'report');
+const reportFile = user => report(user.prompt.call.find(c => c.name === 'createTicket').reference);
+
+test('run_examples on a piece that calls another\'s function runs on the worker\'s own files only: the call it makes is observed as missing there, as its own box shows it', async () => {
+  const leaf = (user, _n, _s, {round}) => !isReport(user) ? deliver({'store.js': STORE})
+    : round === 1 ? [{name: 'write_file', arguments: {path: 'report.js', content: reportFile(user)}}, {name: 'run_examples', arguments: {}}] : [{name: 'done', arguments: {summary: 'the report command'}}];
+  const {room, calls, builds} = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf});
+  assert.equal(room.get('status'), 'complete', trail(room));
+  const run = calls.leafRounds.find(r => r.round === 2 && isReport(calls.leaf[r.session - 1])).results.find(x => x.name === 'run_examples').result;
+  assert.equal(run.of, 3);
+  assert.ok(run.examples.every(e => e.observed !== 'pass'), 'store.js is not among its files');
+  const own = builds.find(b => 'report.js' in b && Object.keys(b).length === 1);
+  assert.ok(own, 'a box held the report worker\'s file alone');
+});
+
+// ------------------------------------------------------------ asks: answer, ask_parent, archive
+// A Clef that records every choice it is asked: the keys, the state, and the probabilities it gave.
+const recorded = (over = {}) => {
+  const asked = [], clef = usualClef(over);
+  return {asked, clef: (input, n) => { const out = clef(input, n); if (input.state?.options) asked.push({state: input.state, questions: input.questions, ps: Object.fromEntries(Object.entries(out.answers).map(([k, v]) => [k, v.noul]))}); return out; }};
+};
+
+test('an ask goes to the asker\'s manager as one choice among its functions; with no child to answer it, ask_parent hands it up, and the manager above answers it with its children\'s contract, by Clef\'s highest p', async () => {
+  let asked = false;
+  const ask = {name: 'ask', arguments: {need: 'read one ticket back by its id', name: 'getTicket'}};
+  const leaf = (user, _n, _s, {round, results}) => {
+    if (!isReport(user)) return deliver({'store.js': STORE});
+    if (!asked) {
+      if (round === 1) return [ask];
+      if (round === 2) { assert.deepEqual(results[0].result, {sent: true, says: MESSAGES.ask_sent()}); return [ask]; }
+      // Asking again for what is sent and not answered yet says so.
+      assert.deepEqual(results[0].result, {sent: true, says: MESSAGES.ask_pending()});
+      asked = true;
+      return [{name: 'wait', arguments: {summary: 'waiting for getTicket'}}];
+    }
+    return deliver({'report.js': reportFile(user)});
+  };
+  // The report piece's manager has no child to answer it: Clef finds producing it outside the piece's assignment.
+  const {asked: choices, clef} = recorded({'^ask_parent$': (_k, state) => state.assignment === TRACKER ? 0.1 : 0.95});
+  const {room, calls} = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf, clef});
+  assert.equal(room.get('status'), 'complete', trail(room));
+  const m = room.roomManager(), rp = room.children(m).find(c => c.label === 'Ticket report'), w = room.liveChildren(rp.id)[0];
+  assert.ok(asked && calls.leafRounds.some(r => r.round === 3));
+  // Two choices: the piece's manager, then the room's manager.
+  const asks = choices.filter(c => c.state.item.kind === 'ask');
+  assert.equal(asks.length, 2);
+  assert.deepEqual(Object.keys(asks[0].questions), ['extend', 'ask_parent'], 'the piece\'s only child is the asker\'s own line: nothing to answer with');
+  assert.equal(asks[0].questions.ask_parent.instructions, CLEF.ask_parent);
+  assert.equal(asks[0].questions.extend.instructions, CLEF.extend_ask);
+  assert.deepEqual(asks[0].state.item, {kind: 'ask', need: 'read one ticket back by its id', expected_name: 'getTicket'});
+  assert.deepEqual(Object.keys(asks[1].questions), ['answer_0', 'answer_1', 'extend', 'ask_parent'], 'the store\'s contracts, none of the asker\'s line');
+  assert.equal(asks[1].questions.answer_1.instructions, clefText('answer', {j: 1}));
+  assert.deepEqual(asks[1].state.contracts_offered.map(c => c.contract.split(':')[0]), ['function createTicket(title) in store.js', 'function getTicket(id) in store.js']);
+  assert.deepEqual(asks[1].state.children.map(c => c.label), ['Ticket store', 'Ticket report']);
+  // Each choice is an event with Clef's p for the chosen call and the others'.
+  const said = events(room, 'manager_choice').filter(e => /^On the ask/.test(e.body)).map(e => [e.actor, e.body]);
+  assert.deepEqual(said.map(([a]) => a), [rp.id, m]);
+  assert.equal(said[0][1], 'On the ask for getTicket: ask_parent(need) p=0.950; the others: extend(need) p=0.850.');
+  assert.equal(said[1][1], 'On the ask for getTicket: answer(getTicket) p=0.950; the others: answer(createTicket) p=0.900, extend(need) p=0.850, ask_parent(need) p=0.100.');
+  assert.equal(events(room, 'ask_parent').length, 1);
+  // The answer reached the asker: the contract, how to refer to it, and its entry calls it.
+  const answers = room.read(`fn_answers:${w.id}`, []);
+  assert.deepEqual(answers.map(a => [a.key, a.kind]), [['fn getTicket', 'provided']]);
+  assert.match(answers[0].text, /^function getTicket\(id\) in store\.js: .*Refer to it exactly as: .+, and use it rather than writing your own\.$/);
+  assert.deepEqual(room.levelDesign(rp.id).children.find(c => c.id === w.id).calls, ['createTicket', 'getTicket']);
+  assert.ok(calls.leaf.filter(isReport).at(-1).world.answers.includes(answers[0].text), 'its next turn starts with the answer');
+});
+
+test('an ask no manager up to the room holds: each manager chooses ask_parent, and at the room the asker is archived with its subtree; its manager\'s splitter rebuilds what it delivered', async () => {
+  let asked = false;
+  const leaf = user => {
+    if (!isReport(user)) return deliver({'store.js': STORE});
+    if (!asked) { asked = true; return [{name: 'ask', arguments: {need: 'a database server to keep the tickets', name: 'ticketDatabase'}}, {name: 'wait', arguments: {summary: 'needs a database'}}]; }
+    return deliver({'report.js': reportFile(user)});
+  };
+  const {room} = await levelRoom({prompt: TRACKER, split: user => user.validations_you_have ? {contracts: user.contracts_you_deliver, validations: [], pieces: []} : trackerSplit(user), leaf, clef: usualClef({'^ask_parent$': 0.95})});
+  assert.equal(room.get('status'), 'complete', trail(room));
+  const m = room.roomManager(), rp = room.children(m).find(c => c.label === 'Ticket report');
+  const [gone, rebuilt] = room.children(rp.id).filter(c => c.role === 'worker');
+  assert.deepEqual(events(room, 'manager_choice').filter(e => /ticketDatabase/.test(e.body)).map(e => [e.actor, /: ask_parent\(need\) p=0\.950;/.test(e.body)]), [[rp.id, true], [m, true]], 'a chain of ask_parent calls');
+  assert.equal(gone.status, 'archived');
+  assert.match(events(room, 'archived')[0].body, /ticketDatabase \(a database server to keep the tickets\) is held by no manager up to the room/);
+  assert.equal(rebuilt.status, 'done');
+  assert.deepEqual(room.designOf(rebuilt.id).contracts.map(c => c.name), ['report']);
+  assert.deepEqual(room.levelDesign(rp.id).archived.map(c => c.id), [gone.id]);
+  assert.ok(events(room, 'level_rebuild').some(e => e.actor === rp.id));
+});
+
+test('an ask the worker\'s world answers by name is answered in the function\'s result; asking again for what was answered returns that answer, final', async () => {
+  const leaf = (user, _n, _s, {round, results}) => {
+    if (!isReport(user)) return deliver({'store.js': STORE});
+    if (round === 1) return [{name: 'ask', arguments: {need: 'the report command', name: 'report'}}];
+    if (round === 2) { assert.deepEqual(results[0].result, {answered: MESSAGES.own_contract({contract: 'command report in report.js: files a ticket with the title given and prints it as one line; prints the line #<id> <title> [<status>]'})}); return [{name: 'ask', arguments: {need: 'the report command', name: 'report'}}]; }
+    assert.deepEqual(results[0].result, {answered: MESSAGES.own_contract({contract: 'command report in report.js: files a ticket with the title given and prints it as one line; prints the line #<id> <title> [<status>]'}), says: MESSAGES.answered_before()});
+    return writeCalls({'report.js': reportFile(user)});
+  };
+  const {room, calls} = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf});
+  assert.equal(room.get('status'), 'complete', trail(room));
+  assert.ok(calls.leafRounds.some(r => r.round === 3));
+  assert.equal(events(room, 'manager_choice').filter(e => /^On the ask/.test(e.body)).length, 0, 'no manager was asked');
+});
+
+// ------------------------------------------------------------ complaints, and what a manager reads
+// A small tree with level files: Top divides into A and B; A hands down to worker WA, B to worker WB.
+async function tree(clef) {
+  const r = liveRoom({room_id: 'choice-room-0001', clef}), room = r.room;
+  room.configure({pipeline: 'v8'});
+  room.set('run_nonce', 'run-1');
+  const top = await room.provision(await rowId('choice-room-0001', 1, 'manager'), null, 'Top', 'a page and its styles', [], [], [], 'manager', {seq: 1});
+  const [a, b] = await room.spawn(top.id, [{label: 'Page', task: 'the page', role: 'manager'}, {label: 'Styles', task: 'the styles', role: 'manager'}], 'k0');
+  const [wa] = await room.spawn(a.id, [{label: 'Page', task: 'write the page', role: 'worker'}], 'k1');
+  const [wb] = await room.spawn(b.id, [{label: 'Styles', task: 'write the styles', role: 'worker'}], 'k2');
+  for (const x of [top, a, b]) room.db().exec("UPDATE agents SET phase='manager' WHERE id=?", x.id);
+  for (const x of [wa, wb]) room.db().exec("UPDATE agents SET phase='implement' WHERE id=?", x.id);
+  const PAGE = {name: 'index.html', kind: 'page', path: 'index.html', does: 'the page'}, CSS = {name: 'styles.css', kind: 'file', path: 'styles.css', does: 'the page styles'};
+  const level = (m, kids, contracts) => room.updateLevel(m.id, () => ({format: 'level/1', manager: m.id, contracts, validations: [], archived: [],
+    children: kids.map(([k, delivers]) => ({id: k.id, role: k.role, label: k.label, prompt: k.task, delivers, calls: []}))}));
+  await level(top, [[a, ['index.html']], [b, ['styles.css']]], [PAGE, CSS]);
+  await level(a, [[wa, ['index.html']]], [PAGE]);
+  await level(b, [[wb, ['styles.css']]], [CSS]);
+  return {room, top, a, b, wa, wb, PAGE, CSS};
+}
+
+test('a complaint is routed by the manager\'s choice: Clef scores route_to for each child over its files (its children\'s contracts and the files each wrote), and the highest is called, down to the worker', async () => {
+  const {asked, clef} = recorded({'^route_to_\\d+$': (k, state) => state.children[Number(k.split('_').pop())].label === 'Styles' ? 0.8 : 0.4});
+  const {room, top, a, b, wa, wb} = await tree(clef);
+  const item = {kind: 'run', parties: [{path: 'index.html', owner: wa.id, owner_path: 'index.html'}], detail: 'the list is unstyled', facts: {validation: {serves: ['index.html', 'styles.css']}}};
+  await room.routeComplaint(top.id, item);
+  // Clef chose Styles though the Page wrote the file it names: the choice is Clef's, the file a fact in its state.
+  assert.equal(room.problems("holder=? AND status!='closed'", b.id).length, 1);
+  assert.equal(room.problems("holder=? AND status!='closed'", a.id).length, 0);
+  assert.deepEqual(Object.keys(asked[0].questions), ['route_to_0', 'route_to_1'], 'every contract it names is delivered: there is nothing to rebuild, so no extend');
+  assert.equal(asked[0].questions.route_to_1.instructions, clefText('route_complaint', {i: 1}));
+  assert.deepEqual(asked[0].state.item, {kind: 'complaint', text: 'the list is unstyled', concerns: {contracts: ['page index.html: the page', 'file styles.css: the page styles'], files: ['index.html']}});
+  assert.deepEqual(asked[0].state.children.map(c => [c.label, c.contracts, c.wrote]), [['Page', ['page index.html: the page'], ['index.html']], ['Styles', ['file styles.css: the page styles'], []]]);
+  assert.equal(events(room, 'manager_choice')[0].body, 'On the complaint: route_to("Styles") p=0.800; the others: route_to("Page") p=0.400.');
+  // B has one child: route_to is the only call, made without a question, and the complaint reaches its worker verbatim.
+  await room.routeHeld(b.id);
+  assert.equal(asked.length, 1);
+  assert.deepEqual(room.receive(wb.id).map(x => x.body), ['[complaint] the list is unstyled']);
+  assert.match(events(room, 'manager_choice').at(-1).body, /^On the complaint: route_to\("Styles"\) \(the only function it may call\)\.$/);
+});
+
+test('a manager reads its children and contracts from its level files only, never from the rows\' copies: a copy that says otherwise changes nothing it is shown or chooses', async () => {
+  const {asked, clef} = recorded();
+  const {room, top, a, b, wa, PAGE} = await tree(clef);
+  // The rows' copies say something else entirely.
+  for (const x of [a, b, wa]) room.db().exec('UPDATE agents SET interfaces=?,task=? WHERE id=?', JSON.stringify([{name: 'decoy', kind: 'function', does: 'a decoy'}]), 'a decoy assignment', x.id);
+  const view = room.managerView(top.id);
+  assert.deepEqual(view.children.map(c => [c.label, c.task, c.contracts.map(x => x.name)]), [['Page', 'the page', ['index.html']], ['Styles', 'the styles', ['styles.css']]]);
+  assert.deepEqual(room.levelContracts(top.id).map(c => c.name), ['index.html', 'styles.css']);
+  // An ask from the page's worker at Top: the answers offered are the level file's contracts of the other child.
+  room.db().exec('INSERT INTO route_workers(worker,topic,request_id) VALUES (?,?,?)', wa.id, 'fn styles.css', 'r1');
+  await room.routeAsk(top.id, {worker: wa.id, key: 'fn styles.css', need: 'the page styles', name: 'styles.css', request_id: 'r1'});
+  assert.deepEqual(asked[0].state.contracts_offered, [{slot: 0, contract: 'file styles.css: the page styles'}]);
+  assert.ok(!JSON.stringify(asked[0].state).includes('decoy'), 'nothing from the rows\' copies');
+  assert.deepEqual(room.read(`fn_answers:${wa.id}`, []).map(x => x.key), ['fn styles.css']);
+  assert.match(room.read(`fn_answers:${wa.id}`, [])[0].text, /^file styles\.css: the page styles\. Refer to it exactly as: /);
+  assert.deepEqual(room.levelDesign(a.id).children[0].calls, ['styles.css'], 'its entry in its manager\'s level file calls it');
+  assert.ok(PAGE);
+});
+
+test('a change is one manager choice too: route_to the child it concerns, or extend; Clef failing holds it at the manager, nothing decided', async () => {
+  let bad = true;
+  const {asked, clef} = recorded({'^route_to_\\d+$': (k, state) => bad ? 7 : state.children[Number(k.split('_').pop())].label === 'Page' ? 0.9 : 0.2, '^extend$': 0.3});
+  const {room, top, a} = await tree(clef);
+  await room.routeChange(top.id, 'Make the page dark', {});
+  assert.deepEqual(room.roomHolds().map(h => h.kind), ['clef_blocked']);
+  assert.equal(room.problems("holder=? AND kind='change' AND status='open'", top.id).length, 1, 'the change waits at the manager');
+  assert.equal(events(room, 'manager_choice').length, 0);
+  bad = false;
+  room.saveHolds([]);
+  room.set(`escalated:${top.id}`, '');
+  await room.routeHeld(top.id);
+  assert.deepEqual(Object.keys(asked.at(-1).questions), ['route_to_0', 'route_to_1', 'extend']);
+  assert.equal(asked.at(-1).questions.extend.instructions, CLEF.extend_change);
+  assert.equal(room.problems("holder=? AND kind='change' AND status='open'", a.id).length, 1);
+  assert.match(events(room, 'change_routed').at(-1).body, /^The change concerns "Page": Make the page dark$/);
+});
+
+test('a worker\'s session that ends with neither done nor wait (its context window full) is a failed turn; three in a row are its stuck hold, which names it', async () => {
+  // A model that never ends its turn: it reads its file again and again until the window is full.
+  const leaf = (_u, _n, _s, {round}) => round === 1 ? [{name: 'write_file', arguments: {path: 'convert.js', content: CONVERT_JS + '// ' + 'x'.repeat(9000) + '\n'}}] : [{name: 'read_file', arguments: {path: 'convert.js'}}];
+  const {room, calls} = await levelRoom({prompt: CLI, split: () => CLI_LEVEL, leaf, clef: caught(), budget: 20});
+  const w = room.allNodes().find(n => n.role === 'worker');
+  assert.equal(calls.leaf.length, 3, 'three sessions, each to the end of its window; then it waits for Continue');
+  assert.equal(events(room, 'session_unfinished').length, 3);
+  assert.match(events(room, 'session').at(-1).body, /ended without done or wait \(its context window was full\)\.$/);
+  assert.deepEqual(room.roomHolds().map(h => [h.kind, h.agent]), [['agent_stuck', w.id]]);
+  assert.equal(room.node(w.id).status, 'waiting');
+  // Its writes were committed all the same: its files are what it wrote.
+  assert.ok(room.files(w.id).some(f => f.path === 'convert.js'));
+});
