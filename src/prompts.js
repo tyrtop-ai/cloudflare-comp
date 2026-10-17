@@ -85,7 +85,7 @@ export const TOOLS = Object.freeze({
         run: {type: 'object', properties: {static: {type: 'boolean'}, run: {type: 'string'}, ready: {type: 'string'}}, description: 'Only for a page, route or command: how it is started. static true serves its files as they are. run is a command line that starts with a command contract or a program the box has, and ready a path that answers once it is up; it serves on the port its environment gives. A contract that states no run is not started.'}
       }, required: ['name', 'kind', 'does']}},
     ...CHECK_TOOLS,
-    {name: 'piece', description: 'Declares one piece of the division: a task that can be made from its own words alone, and the declared contracts it delivers.',
+    {name: 'piece', description: 'Declares one piece of the division: a task that can be made from its own words alone, and the declared contracts it delivers. The result says it is stored, or why it is not, such as how many pieces the level can hold now.',
       parameters: {type: 'object', properties: {
         label: {type: 'string', description: 'A few words naming what it produces.'},
         task: {type: 'string', description: 'What it must produce, in full sentences.'},
@@ -94,10 +94,12 @@ export const TOOLS = Object.freeze({
         packages: names('Names from your_packages it needs.'),
         refs: names('Outline refs of the linked pages it must read.')
       }, required: ['label', 'task', 'contracts']}},
+    {name: 'drop_piece', description: 'Takes one declared piece out of the division, by its label. The result says it is taken out, with the count of pieces left, or that no piece has that label.',
+      parameters: {type: 'object', properties: {label: {type: 'string', description: 'The label of a declared piece, exactly as declared.'}}, required: ['label']}},
     {name: 'level', description: 'Shows everything declared so far: the contracts, the validations with their examples, and the pieces.', parameters: {type: 'object', properties: {}, required: []}},
     {name: 'read_file', description: 'Shows one of the files the work starts from, whole: any path existing_files lists. The result is its text, or that there is no such file at that path.',
       parameters: {type: 'object', properties: {path: {type: 'string', description: 'The relative path of the file, exactly as existing_files lists it.'}}, required: ['path']}},
-    {name: 'done', description: 'Completes the level. When something is still missing, the result lists it and the level stays open: three different examples for every function, command and route contract, and, when piece is offered, a division of at least two pieces.', parameters: {type: 'object', properties: {}, required: []}}
+    {name: 'done', description: 'Completes the level. When something is still missing, the result lists it and the level stays open: three different examples for every function, command and route contract, and, when piece is offered, a division of at least two pieces and no more than the level can hold now.', parameters: {type: 'object', properties: {}, required: []}}
   ]),
   // The worker's functions (src/worker.js): its own files, its examples run
   // on them, an ask by name, and the end of its turn.

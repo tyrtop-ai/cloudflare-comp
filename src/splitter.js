@@ -24,20 +24,26 @@ const nameList = (v, what) => Array.isArray(v) && v.every(x => typeof x === 'str
 // held: {id, serves, check}). have: the contracts the level already has (a
 // job adds to it). calls: the contracts it may call. rows: the installed
 // toolchain rows. base: the existing files' paths. maxPieces: the room's
-// bound on pieces; divide: whether piece is offered at all.
+// bound on pieces when the session starts; room(): that bound as it stands
+// now (the room's agent and depth limits, read when piece and done are
+// called); take(count): the room takes a division of count pieces for this
+// level, true when it fits; divide: whether piece is offered at all.
 // carry: what an earlier session of the same level declared before its
 // context window filled ({contracts, validations, pieces}); this one goes on from it.
 // programs: every executable the box has (its inventory), beyond the rows'.
 // readBase(path), given to a level that holds the project the work starts
 // from: one file of it, whole (the room's readBaseFile), as read_file shows it.
-export function splitterState({own = [], held = [], have = [], calls = [], rows = TOOLCHAINS, base = [], maxPieces = 7, divide = true, carry = null, programs = [], readBase = null} = {}) {
+export function splitterState({own = [], held = [], have = [], calls = [], rows = TOOLCHAINS, base = [], maxPieces = 7, room = null, take = null, divide = true, carry = null, programs = [], readBase = null} = {}) {
   const installed = (Array.isArray(rows) ? rows : TOOLCHAINS).filter(r => r && typeof r.id === 'string');
   return {own, held, have: have.filter(c => c?.name && !own.some(o => o.name === c.name)), calls, rows: installed, ids: new Set(installed.map(r => r.id)),
     executables: new Set([...installed.flatMap(r => r.executables || []), ...programs]), base: new Set(base instanceof Set ? [...base] : Array.isArray(base) ? base : []),
-    maxPieces, divide, readBase: typeof readBase === 'function' ? readBase : null, contracts: [...(carry?.contracts || [])], validations: [...(carry?.validations || [])], pieces: [...(carry?.pieces || [])], done: false};
+    room: typeof room === 'function' ? room : () => maxPieces, take: typeof take === 'function' ? take : () => true, divide, readBase: typeof readBase === 'function' ? readBase : null, contracts: [...(carry?.contracts || [])], validations: [...(carry?.validations || [])], pieces: [...(carry?.pieces || [])], done: false};
 }
-// The functions offered: piece only when the level may divide, read_file only when it holds the project the work starts from.
-export const splitterTools = (divide, reads = false) => TOOLS.splitter.filter(t => (divide || t.name !== 'piece') && (reads || t.name !== 'read_file'));
+// The functions offered: piece and drop_piece only when the level may divide, read_file only when it holds the project the work starts from.
+export const splitterTools = (divide, reads = false) => TOOLS.splitter.filter(t => (divide || !PIECE_TOOLS.has(t.name)) && (reads || t.name !== 'read_file'));
+const PIECE_TOOLS = new Set(['piece', 'drop_piece']);
+// What the room can create now (room()), as piece and done say it.
+const roomNow = n => `this level can hold at most ${n} piece${n === 1 ? '' : 's'} now`;
 
 // This level's contracts (given, then declared), and every contract present (with those it has).
 const levelContracts = s => [...s.own, ...s.contracts];
@@ -117,7 +123,8 @@ const PIECE_FIELDS = ['label', 'task', 'contracts', 'uses', 'packages', 'refs'];
 function piece(s, a) {
   const unknown = Object.keys(a).filter(k => !PIECE_FIELDS.includes(k));
   if (unknown.length) return {error: `piece has no field ${unknown.map(k => `"${k.slice(0, 40)}"`).join(', ')}; its fields are ${PIECE_FIELDS.join(', ')}`};
-  if (s.pieces.length >= s.maxPieces) return {error: `this level holds at most ${s.maxPieces} pieces`};
+  const room = s.room();
+  if (s.pieces.length >= (room >= 2 ? room : 0)) return {error: `${roomNow(room)}, and the division has ${s.pieces.length}${room < 2 ? '; with fewer than 2 the level is not divided and goes to one worker' : ''}`};
   if (typeof a.label !== 'string' || !a.label.trim()) return {error: 'label is a text'};
   if (s.pieces.some(p => p.label === a.label)) return {error: `a piece labelled "${a.label}" is already declared`};
   if (typeof a.task !== 'string' || !a.task.trim()) return {error: 'task is a text'};
@@ -138,6 +145,14 @@ function piece(s, a) {
   s.pieces.push(out);
   return {stored: out.label, pieces: s.pieces.length};
 }
+function dropPiece(s, a) {
+  const unknown = Object.keys(a || {}).filter(k => k !== 'label');
+  if (unknown.length) return {error: `drop_piece has no field ${unknown.map(k => `"${k.slice(0, 40)}"`).join(', ')}; its fields are label`};
+  const i = s.pieces.findIndex(p => p.label === a.label);
+  if (i < 0) return {error: `no piece is labelled ${JSON.stringify(String(a.label ?? '')).slice(0, 80)}. Declared: ${listed(s.pieces.map(p => p.label))}`};
+  s.pieces.splice(i, 1);
+  return {dropped: a.label, pieces: s.pieces.length};
+}
 // Everything declared so far.
 export function levelView(s) {
   return {contracts: levelContracts(s).map(({serves: _, ...c}) => c), ...(s.have.length ? {contracts_you_have: s.have.map(c => c.name)} : {}),
@@ -145,17 +160,21 @@ export function levelView(s) {
 }
 // What the level still lacks: [] when nothing. Every contract that is
 // called or run (function, command, route) has three different examples.
-// When piece is offered (the level may divide), the level is a division:
-// every manager tries to split and Clef's review judges the division, so a
-// session with fewer than two pieces hears that its division is not there yet.
+// When piece is offered (the level may divide), the level is a division the
+// room can create now: every manager tries to split and Clef's review judges
+// the division, so a session with fewer than two pieces hears that its
+// division is not there yet, and one with more than the room can create now
+// hears what it can (with room for fewer than two, no division: the level
+// goes to one worker once its pieces are dropped).
 export function missingOf(s) {
   const out = [];
   for (const c of levelContracts(s).filter(c => EXAMPLE_KINDS.has(kindOf(c)))) {
     const n = examplesOf(s, c).length;
     if (n < EXAMPLES_PER_CONTRACT) out.push(`${c.name} has ${n} different example${n === 1 ? '' : 's'} of ${EXAMPLES_PER_CONTRACT} from the validations that serve it.`);
   }
-  const n = s.pieces.length;
-  if (s.divide && n < 2) out.push(`the division has ${n} piece${n === 1 ? '' : 's'} of at least 2, each declared with piece.`);
+  const n = s.pieces.length, room = s.divide ? s.room() : 0;
+  if (s.divide && room >= 2 && n < 2) out.push(`the division has ${n} piece${n === 1 ? '' : 's'} of at least 2, each declared with piece.`);
+  if (s.divide && n && n > (room >= 2 ? room : 0)) out.push(`${roomNow(room)}, and the division has ${n}${room < 2 ? '; with fewer than 2 the level is not divided and goes to one worker' : ''}: drop_piece takes a piece out.`);
   return out;
 }
 // The level the session declared, as the room admits it: each run a check
@@ -178,11 +197,14 @@ export function splitterCall(s, name, args) {
   if (name === 'contract') return {result: contract(s, args)};
   if (CHECK_TOOL_KINDS[name]) return {result: checkCall(s, CHECK_TOOL_KINDS[name], args)};
   if (name === 'piece' && s.divide) return {result: piece(s, args)};
+  if (name === 'drop_piece' && s.divide) return {result: dropPiece(s, args)};
   if (name === 'level') return {result: levelView(s)};
   if (name === 'read_file' && s.readBase) return {result: readBase(s, args)};
   if (name === 'done') {
     const missing = missingOf(s);
     if (missing.length) return {result: {complete: false, missing}};
+    // A division the room can create is taken for this level here, in the same step, so the room creates it once Clef's review admits it.
+    if (s.divide && s.pieces.length >= 2 && !s.take(s.pieces.length)) return {result: {complete: false, missing: [`${roomNow(s.room())}, and the division has ${s.pieces.length}: drop_piece takes a piece out.`]}};
     s.done = true;
     return {result: {complete: true}, end: levelOf(s)};
   }
