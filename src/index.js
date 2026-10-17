@@ -41,7 +41,7 @@ import { placeChecks, checkUses, textHash } from './piece.js';
 import { zipFiles } from './zip.js';
 import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, namedIn, existingFiles, baseFileRead } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
-import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer } from './broker.js';
+import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, nextHeld, viewAnswer } from './broker.js';
 import { normalizePackages, installedPackages, stdlibRow, piecePackages, packageLine } from './packages.js';
 import { boxPathError } from '../container/build-path.mjs';
 import { contractExamples, checkSummary, checkExamples } from './validations.js';
@@ -6265,17 +6265,12 @@ export class ControlRoom extends DurableObject {
     const cat=this.catalogue(id),labelled=answered.some(a=>a&&typeof a==='object');
     return {...(cat.length?{available:shownCatalogue(cat),available_note:MESSAGES.available_note()}:{}),...(labelled?{answers_note:MESSAGES.answers_note()}:{})};
   }
-  // The names and paths of every contract in the tree.
-  contractNames() {
-    const items=this.allNodes().flatMap(n=>parse(n.interfaces,[]));
-    return new Set(items.flatMap(c=>[c?.name,c?.path]).filter(x=>typeof x==='string'&&x));
-  }
   // What one ask is (broker.js classify): a chunk or an existing file its
-  // world holds, or a name outside its catalogue, is answered here; anything
-  // else (a contract, a package, a need with no name) goes to its manager.
+  // world holds is answered here; anything else (a contract, a package, a
+  // part or a file it does not hold, a need with no name) goes to its manager.
   askKind(id, name) {
     if(!this.v8())return {kind:'contract',name:name||''};
-    return classifyAsk(name||'',{catalogue:this.catalogue(id),base:this.basePaths(),contracts:this.contractNames()});
+    return classifyAsk(name||'',{catalogue:this.catalogue(id)});
   }
   // Answers one ask that its own world answers, with no manager hop (§5.3):
   // the answer is the ask function's result, and is recorded among its
@@ -6293,9 +6288,10 @@ export class ControlRoom extends DurableObject {
       const row=query(this.db(),'SELECT path,content FROM base_files WHERE path=?',c.name)[0];
       if(row)answer=baseAnswer({id:req.id,path:row.path,content:row.content,own:this.designOf(id).contracts.some(x=>x?.path===row.path)});
     }
-    answer||=noneAnswer({id:req.id,name:ask.name||c.name,catalogue:cat});
+    // What its world lists and the room no longer holds goes to its manager like any other ask.
+    if(!answer)return false;
     this.recordAnswer(id,{key:ask.key,kind:'broker',text:viewAnswer(answer)});
-    this.event(id,'broker_answer',clip(answer.status==='answered'?`${answer.name}: ${answer.kind}, ${answer.value.length} characters, labelled "${answer.label}".`:`${answer.name}: no catalogue entry; answered with the names available.`,400));
+    this.event(id,'broker_answer',clip(`${answer.name}: ${answer.kind}, ${answer.value.length} characters, labelled "${answer.label}".`,400));
     return true;
   }
   // The answers a worker got to its asks, one per topic: a v8 worker's view
