@@ -8709,7 +8709,15 @@ export class ControlRoom extends DurableObject {
       return this.admitLevel(id,{contracts:own,validations:[],pieces:[]},{why:caught?`Clef's pre-grade is at or below the floor ${cfg.floor}, so it hands its whole assignment down to one worker.`:'There is no room for pieces that each hand down to a worker (the room\'s agent or depth limit), so it hands its whole assignment down to one worker.'});
     const divide=room&&!caught,tried=this.splitAttempts(id).filter(a=>a.attempt>0&&a.job===key),attempt=tried.length+1,feedback=this.read(`split_feedback:${id}`,null);
     const out=await this.runSplitter(id,{kind,assignment:job?.text||given.prompt,own,divide,attempt,feedback}),level=out.level;
-    // A session that ended without done (its context or its rounds ran out) states no level: the row's parent hears it, verbatim.
+    // A session its context window ended goes on in a new session next turn, from what it declared, as a worker's does; the room's turn budget bounds it.
+    if(!level&&out.reason==='context') {
+      this.save(`split_carry:${id}`,{key,attempt,...out.carry});
+      this.event(id,'splitter',`${out.sid}'s context window was full after ${out.rounds} rounds; a new session goes on next turn from what it declared.`);
+      this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
+      return void this.save('queue',addLast(this.read('queue',[]),id));
+    }
+    this.save(`split_carry:${id}`,null);
+    // A session that ended without done for another reason states no level: the row's parent hears it, verbatim.
     if(!level) {
       this.recordAttempt(id,{attempt,job:key,splitter:out.sid,outcome:`ended: ${out.reason}`,ms:Date.now()-started});
       this.save(`split_feedback:${id}`,null);
@@ -8762,11 +8770,13 @@ export class ControlRoom extends DurableObject {
       ...this.sourceInputs(id,'summaries'),
       max_pieces:max,
       ...(feedback?.reason?{previous_answer_problems:[feedback.reason],...(feedback.rejected?.length?{rejected:feedback.rejected}:{})}:{})};
-    const out=await splitLevel(this.inferenceEnv('worker'),request,{own,held,have,calls,rows,base:[...this.basePaths()],maxPieces:max,divide});
+    const carried=this.read(`split_carry:${id}`,null),carry=carried&&carried.key===`${kind}:${job?.key||''}`&&carried.attempt===attempt?carried:null;
+    if(carry)request.declared_so_far={contracts:carry.contracts.map(({serves:_,...c})=>c),validations:carry.validations.map(v=>({id:v.id,serves:v.serves,check:v.check})),pieces:carry.pieces};
+    const out=await splitLevel(this.inferenceEnv('worker'),request,{own,held,have,calls,rows,base:[...this.basePaths()],maxPieces:max,divide,carry});
     this.db().exec('UPDATE splitters SET ended_at=?,outcome=?,output=? WHERE id=?',Date.now(),out.level?'done':out.reason,splitterRecord(out),sid);
     const l=out.level;
     this.event(id,'splitter',clip(l?`${sid} declared ${l.contracts.length} contract(s), ${l.validations.length} validation(s), ${l.pieces.length} piece(s) in ${out.rounds} round(s) and ${out.transcript.length} call(s).`:`${sid}'s session ended without done (${out.reason}) after ${out.rounds} round(s) and ${out.transcript.length} call(s).`,600));
-    return {sid,level:l,reason:out.reason,rounds:out.rounds};
+    return {sid,level:l,reason:out.reason,rounds:out.rounds,carry:{contracts:out.state.contracts,validations:out.state.validations,pieces:out.state.pieces}};
   }
   splitterRows() { return query(this.db(),'SELECT id,manager,kind,attempt,spawned_at,ended_at,outcome FROM splitters ORDER BY spawned_at,id'); }
   // The manager admits a level: its validations (each a row, V<n>, held where

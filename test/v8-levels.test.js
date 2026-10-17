@@ -147,16 +147,21 @@ test('a contract with fewer than three distinct examples: done says what is miss
   assert.equal(room.validationRows().length, 4, 'every validation the session stored is a row');
 });
 
-test('a splitter session that ends without done (here: its model never calls done, and its context window fills) states no level: its manager escalates split_failed, a hold for the person, and no worker is made', async () => {
-  const {room, calls} = await levelRoom({prompt: CLI, split: () => [{name: 'level', arguments: {note: 'x'.repeat(8000)}}], leaf: () => deliver({'convert.js': CONVERT_JS}), clef: caught()});
-  assert.equal(room.get('status'), 'paused', trail(room));
-  assert.equal(calls.split.length, 1, 'one session');
-  const rounds = calls.splitRounds.length;
-  assert.ok(rounds > 5, `${rounds} rounds, until its context window was full`);
-  assert.deepEqual(room.roomHolds().map(h => h.kind), ['split_failed']);
-  assert.match(room.roomHolds()[0].text, new RegExp(`its splitter's session ended without done \\(its context window was full after ${rounds} rounds\\)`));
-  assert.deepEqual(room.splitterRows().map(r => r.outcome), ['context']);
-  assert.equal(room.allNodes().filter(n => n.role === 'worker').length, 0);
+test('a splitter session its context window ends goes on next turn in a new session, from what it declared; nothing is held and the room completes', async () => {
+  // Session 1 declares the contract, then fills its context window without done; session 2 is handed what it declared and adds the rest.
+  const split = (user, n, system, {round, tools}) => {
+    const all = levelCalls(CLI_LEVEL, {user, tools});
+    if (n === 1) return round === 1 ? all.filter(c => c.name === 'contract') : [{name: 'level', arguments: {note: 'x'.repeat(8000)}}];
+    return round === 1 ? all.filter(c => c.name !== 'contract' && c.name !== 'done') : [{name: 'done', arguments: {}}];
+  };
+  const {room, calls} = await levelRoom({prompt: CLI, split, leaf: () => deliver({'convert.js': CONVERT_JS}), clef: caught()});
+  assert.equal(room.get('status'), 'complete', trail(room));
+  assert.equal(calls.split.length, 2, 'two sessions');
+  assert.ok(calls.splitRounds.filter(r => r.session === 1).length > 5, 'the first ran until its context window was full');
+  assert.deepEqual(calls.split[1].declared_so_far.contracts.map(c => c.name), ['convert'], 'the second is handed what the first declared');
+  assert.deepEqual(room.roomHolds(), []);
+  assert.deepEqual(room.splitterRows().map(r => r.outcome), ['context', 'done']);
+  assert.equal(room.allNodes().filter(n => n.role === 'worker').length, 1);
 });
 
 test('a complaint reaches the worker responsible exactly as the compiler observed it, and its fix completes the room', async () => {
