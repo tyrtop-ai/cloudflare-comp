@@ -77,11 +77,16 @@ test('contract: stored exactly as given, or refused with exactly why: a kind out
     assert.equal(splitterCall(s, 'contract', {name, kind: 'command', path: `bin/c${i}.py`, does: 'x'}).result.stored, name, name);
   const js = splitterState({rows: TOOLCHAINS.filter(r => r.id === 'javascript')});
   assert.equal(splitterCall(js, 'contract', {name: 'app.py', kind: 'file', path: 'app.py', does: 'x'}).result.error, 'app.py is written in python, which the box does not run (it runs javascript)');
-  // Owner 2026-10-15 05:16 ("Any code type"): a function contract is called by call checks, so its file is one the box has a call adapter for; the refusal names those it calls functions in.
+  // Owner 2026-10-17 ("It needs the ability to create C#"): C# is a language the image lacks and the box installs, with a call adapter, so a C# function contract is stored.
+  assert.deepEqual(splitterCall(s, 'contract', {name: 'Add', kind: 'function', path: 'src/Calc.cs', does: 'adds two numbers'}).result, {stored: 'Add', kind: 'function', examples_needed: 3});
+  assert.deepEqual(splitterCall(s, 'contract', {name: 'Calc.Mul', kind: 'function', path: 'src/Calc.cs', does: 'multiplies'}).result.stored, 'Calc.Mul');
+  // Owner 2026-10-15 05:16 ("Any code type"): a function contract is called by call checks; in a file the box has no call adapter for, it is refused because no check can call it (a capability the box lacks), and the refusal names the files it calls functions in.
   const calls_in = CALL_EXTENSIONS.join(', ');
-  for (const path of ['ui/App.jsx', 'ui/App.tsx', 'src/Main.kt', 'Prog.cs', 'app.swift'])
+  for (const path of ['ui/App.jsx', 'ui/App.tsx', 'src/Main.kt', 'app.swift'])
     assert.equal(why({name: 'render', kind: 'function', path, does: 'x'}), `render cannot be a function contract at ${path}: the box has no call adapter for ${path}'s language, so no check can call a function of it (it calls functions in files of ${calls_in})`);
-  for (const ext of ['.go', '.rs', '.c', '.cpp', '.java', '.sh', '.rb', '.php', '.ts']) assert.ok(CALL_EXTENSIONS.includes(ext), ext);
+  for (const ext of ['.go', '.rs', '.c', '.cpp', '.java', '.sh', '.rb', '.php', '.ts', '.cs']) assert.ok(CALL_EXTENSIONS.includes(ext), ext);
+  // A command in a language with no call adapter (JSX, which the box installs) is checked by command checks: stored.
+  assert.equal(splitterCall(s, 'contract', {name: 'render-page', kind: 'command', path: 'ui/App.jsx', does: 'prints the page'}).result.stored, 'render-page');
   // A file of such a language is still any other contract's file.
   assert.equal(splitterCall(s, 'contract', {name: 'ui/App.tsx', kind: 'file', path: 'ui/App.tsx', does: 'x'}).result.stored, 'ui/App.tsx');
   // A route states its run as given; with none it is stored without one.

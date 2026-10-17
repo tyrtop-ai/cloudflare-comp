@@ -1,4 +1,4 @@
-// Call adapter for Go, Rust, C, C++, Java and shell (v8 §4.6; owner
+// Call adapter for Go, Rust, C, C++, Java, C# and shell (v8 §4.6; owner
 // 2026-10-15 05:16, "Any code type"), as call.py is Python's: calls named
 // functions of one bundle file in ONE worker process, step after step,
 // keeping saved results, and reports each step as a JSON line. The runner
@@ -27,7 +27,7 @@
 // declares that implements it; Rust and C/C++: the compiler's type
 // inference and template deduction over the function, the file's own
 // structs, enums and classes by their fields and constructors as the
-// compiler and its debug information give them; Java: reflection; a shell
+// compiler and its debug information give them; Java and C#: reflection; a shell
 // function: its arguments as words, its stdout as its value and a non-zero
 // status as its failure). A saved result passed whole ("$name")
 // is the worker's own value when the parameter takes its type, else its
@@ -44,6 +44,7 @@ import {randomBytes} from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {csharpBuild, csharpCompiler, csharpDriver, csharpSources} from './call-csharp.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const language = process.argv[2];
@@ -417,6 +418,19 @@ const LANGUAGES = {
       const roots = [];
       for (let d = path.dirname(abs); ; d = path.dirname(d)) { roots.push(d); if (d === process.cwd() || d === path.dirname(d)) break; }
       return {missing: new Map(), unsupported: new Map(), argv: ['java', path.join(HERE, 'CallWorker.java'), abs, path.join(tmp, 'classes'), roots.join(path.delimiter)]};
+    }
+  },
+  csharp: {
+    // The worker is the bundle's C# files and the driver, one program built
+    // by mcs (call-csharp.mjs); it calls methods by reflection, as Java's.
+    build({abs, tmp}) {
+      const plan = csharpBuild({abs, sources: csharpSources(abs), tmp, mcs: csharpCompiler(process.env)});
+      writeFileSync(plan.driver, csharpDriver(HERE));
+      const program = run(plan.program, {cwd: path.dirname(abs)});
+      if (program.code !== 0) return {load: `mcs: ${program.out}`};
+      const own = run(plan.own, {cwd: path.dirname(abs)});
+      if (own.code !== 0) return {load: `mcs: ${own.out}`};
+      return {missing: new Map(), unsupported: new Map(), argv: plan.argv};
     }
   },
   shell: {

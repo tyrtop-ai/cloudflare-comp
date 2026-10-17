@@ -156,7 +156,10 @@ test('syntax: one process per row; what the compiler printed is the issue, whole
     cpp:['ok.cpp','int main() { return 0; }\n','bad.cpp','int main() { return }\n'],
     java:['Ok.java','class Ok { }\n','Bad.java','class Bad { void f( }\n'],
     ruby:['ok.rb','puts 1\n','bad.rb','def f(\n'],
-    php:['ok.php','<?php echo 1;\n','bad.php','<?php echo ;\n']};
+    php:['ok.php','<?php echo 1;\n','bad.php','<?php echo ;\n'],
+    // Owner 2026-10-17: the languages the box installs (their toolchain installed here by hand, or skipped).
+    csharp:['Ok.cs','class Ok { }\n','Bad.cs','class Bad { void F() { int x = ; } }\n'],
+    jsx:['ok.jsx','export const A = () => <b />;\n','bad.jsx','const x = <div>;\n']};
   for(const [id,[good,goodText,bad,badText]] of Object.entries(SAMPLES)) {
     const row=COMPILE_ROWS.find(r=>r.id===id),tool=Object.keys(row.requires)[0];
     test(`syntax: the ${row.name} row compiles its files; what it printed of the one that does not compile is the issue`,{skip:!has(tool)&&`${tool} is not installed`},async()=>{
@@ -356,6 +359,12 @@ const NATIVE={
     ok:[{call:'fib',args:[10],expect:55},{call:'total',args:[[1,2,3]],expect:6},{call:'mk',args:[3,4],save:'p',expect:{x:3,y:4}},{call:'norm',args:['$p'],expect:25},{call:'norm',args:[{x:1,y:2}],expect:5},
       {call:'measure',args:[{side:3}],expect:9},{call:'measure',args:[[4]],expect:16}],
     raises:{call:'div',args:[1,0]},frame:{path:'src/com/acme/Calc.java',line:12,fn:'com.acme.Calc.div'},unsupported:{call:'apply',args:[{}]}},
+  // Owner 2026-10-17 ("It needs the ability to create C#"): the box installs C# (Mono) when a level uses it; here, where mono is on the PATH.
+  csharp:{skip:!has('mono'),module:'src/Calc/Calc.cs',
+    source:'using System;\nusing System.Collections.Generic;\nusing System.Linq;\n\nnamespace Acme {\n    public class Point { public int X; public int Y; }\n    public interface IShape { int Area(); }\n    public class Sq : IShape { public int Side { get; set; } public int Area() { return Side * Side; } }\n    public enum Op { Neg, Twice }\n    public static class Calc {\n        public static int Fib(int n) { return n < 2 ? n : Fib(n - 1) + Fib(n - 2); }\n        public static long Total(List<long> xs) { return xs.Sum(); }\n        public static Point Mk(int x, int y) { return new Point { X = x, Y = y }; }\n        public static int Norm(Point p) { return p.X * p.X + p.Y * p.Y; }\n        public static int Div(int a, int b) {\n            return a / b;\n        }\n        public static int Measure(IShape s) { return s.Area(); }\n        public static int Apply(Func<int, int> f) { return f(1); }\n        public static int Run(Op o, int n) { return o == Op.Neg ? -n : 2 * n; }\n        public static Dictionary<string, int> Count(string[] ws) { var d = new Dictionary<string, int>(); foreach (var w in ws) d[w] = d.ContainsKey(w) ? d[w] + 1 : 1; return d; }\n        public static string Greet(string who = "world") { Console.WriteLine("noise"); return "hello " + who; }\n        static void Main() {}\n    }\n}\n',
+    ok:[{call:'Fib',args:[10],expect:55},{call:'Total',args:[[1,2,3]],expect:6},{call:'Mk',args:[3,4],save:'p',expect:{X:3,Y:4}},{call:'Norm',args:['$p'],expect:25},{call:'Norm',args:[{X:1,Y:2}],expect:5},
+      {call:'Measure',args:[{Side:3}],expect:9},{call:'Run',args:['Twice',4],expect:8},{call:'Count',args:[['a','b','a']],expect:{a:2,b:1}},{call:'Greet',args:[],expect:'hello world'},{call:'Calc.Greet',args:['bob'],expect:'hello bob'}],
+    raises:{call:'Div',args:[1,0]},frame:{path:'src/Calc/Calc.cs',line:16,fn:'Acme.Calc.Div'},unsupported:{call:'Apply',args:[1]}},
   shell:{skip:!has('bash'),module:'bin/lib.sh',
     source:'#!/bin/sh\ncount=0\ngreet() { echo "hello $1"; }\nbump() { count=$((count + 1)); echo "$count"; }\nfail() { echo "bad thing" >&2; return 3; }\n',
     ok:[{call:'greet',args:['bob'],save:'g',expect:'hello bob'},{call:'greet',args:['$g'],expect:'hello hello bob'},{call:'bump',args:[],expect:'1'},{call:'bump',args:[],expect:'2'},{call:'fail',args:[],throws:true}],
@@ -385,6 +394,32 @@ for(const [id,x] of Object.entries(NATIVE))test(`call checks: a ${id} function i
     assert.match(u.detail,/the call adapter cannot/);
   }
   for(const y of report.checks.filter(y=>!y.passed))short(y);
+});
+
+// The C# call adapter's driver (container/adapters/call-csharp.mjs): one program of the bundle's C# files in the file's
+// folder and those under it with the driver as its entry point, and the file compiled alone against it (the classes it
+// declares, by the compiler), which the driver lets read the program's internals.
+test('call checks: the C# driver: its program, its own compile and its worker, as call-native.mjs builds them',async()=>{
+  const {csharpBuild,csharpDriver,csharpSources,csharpCompiler,OWN_ASSEMBLY}=await import('../container/adapters/call-csharp.mjs');
+  const {mkdtempSync,mkdirSync,writeFileSync}=await import('node:fs');
+  const dir=mkdtempSync(path.join(tmpdir(),'cs-'));
+  for(const f of ['app/Calc.cs','app/Models/Point.cs','app/notes.txt','other/Main.cs']){mkdirSync(path.dirname(path.join(dir,f)),{recursive:true});writeFileSync(path.join(dir,f),'');}
+  const abs=path.join(dir,'app/Calc.cs'),tmp=path.join(dir,'tmp');
+  assert.deepEqual(csharpSources(abs),[path.join(dir,'app/Calc.cs'),path.join(dir,'app/Models/Point.cs')],'its folder and those under it, .cs files only');
+  assert.equal(csharpCompiler({}),'/usr/lib/mono/4.5/mcs.exe');
+  assert.equal(csharpCompiler({CSHARP_MCS:'/t/usr/lib/mono/4.5/mcs.exe'}),'/t/usr/lib/mono/4.5/mcs.exe','the toolchain install names it');
+  const b=csharpBuild({abs,sources:csharpSources(abs),tmp,mcs:'/m/mcs.exe'});
+  assert.equal(b.driver,path.join(tmp,'CallWorker.cs'));
+  assert.deepEqual(b.program.slice(0,2),['mono','/m/mcs.exe']);
+  assert.ok(b.program.includes('-main:__CallCheck.Worker')&&b.program.includes('-target:exe')&&b.program.includes(`-out:${path.join(tmp,'worker.exe')}`),b.program.join(' '));
+  assert.deepEqual(b.program.slice(-3),[path.join(dir,'app/Calc.cs'),path.join(dir,'app/Models/Point.cs'),b.driver]);
+  assert.deepEqual(b.own.slice(-3),[`-r:${path.join(tmp,'worker.exe')}`,`-out:${path.join(tmp,OWN_ASSEMBLY+'.dll')}`,abs],'the file alone, against the program');
+  assert.deepEqual(b.argv,['mono','--debug',path.join(tmp,'worker.exe'),abs,path.join(tmp,'own.dll')]);
+  const driver=csharpDriver(path.join(path.dirname(fileURLToPath(import.meta.url)),'../container/adapters'));
+  assert.ok(driver.includes('[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("own")]'),'the file\'s own compile reads the program\'s internals');
+  assert.ok(!driver.includes('__CALL_OWN__'));
+  assert.match(driver,/namespace __CallCheck \{\s+public static class Worker \{/);
+  rmSync(dir,{recursive:true,force:true});
 });
 
 test('nonce: a module that exits early, prints its own result lines, or exits in a step never passes',{skip:!hasPython&&'python3 is not installed'},async()=>{
@@ -781,6 +816,15 @@ test('any code type: a compiled language\'s file runs by its row\'s run_file, bu
   const {COMPILE_ROWS}=await import('../src/toolchains.js');
   const files={'hello.c':'#include <stdio.h>\nint main(int argc, char **argv) { printf("hello %s\\n", argc > 1 ? argv[1] : "nobody"); return 0; }\n'};
   const c=byId(await run(files,{checks:[{id:'R1',kind:'command',run:'hello.c box',expect:{stdout:'hello box\n'}}]},{toolchains:[...ROWS,...JSON.parse(JSON.stringify(COMPILE_ROWS))],isolation:[]}));
+  assert.equal(c.R1.passed,true,c.R1.detail);
+});
+
+// Owner 2026-10-17: a C# file runs as a program of the C# files in its folder and those under it (another folder's Main is not in it).
+test('any code type: a C# file runs by its row\'s run_file, with the C# files of its folder',{skip:spawnSync('mono',['--version']).status!==0&&'mono is not installed'},async()=>{
+  const {COMPILE_ROWS}=await import('../src/toolchains.js');
+  const files={'cli/Hello.cs':'using System;\nclass Hello { static int Main(string[] a) { Console.WriteLine(Greeting.Of(a.Length > 0 ? a[0] : "nobody")); return 0; } }\n',
+    'cli/lib/Greeting.cs':'static class Greeting { public static string Of(string who) { return "hello " + who; } }\n','other/Main.cs':'class Other { static void Main() {} }\n'};
+  const c=byId(await run(files,{checks:[{id:'R1',kind:'command',run:'cli/Hello.cs box',expect:{stdout:'hello box\n'}}]},{toolchains:[...ROWS,...JSON.parse(JSON.stringify(COMPILE_ROWS))],isolation:[]}));
   assert.equal(c.R1.passed,true,c.R1.detail);
 });
 

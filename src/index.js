@@ -9146,7 +9146,7 @@ export class ControlRoom extends DurableObject {
     const digest=await snapshotHash(files),started=Date.now(),fresh=this.uncompiled(files),parsed=this.localSyntax(files,fresh);
     const compile=new Map([...fresh].map(p=>[p,this.syntaxOf(p,files)?.row]).filter(([,row])=>row));
     const spec={contracts,validations:runs};
-    const {plan,toolchains,local,container}=checkPlan(spec,files,{rows:this.installedToolchains(),placed:new Set(contracts.map(c=>c.path).filter(Boolean)),compile,install:this.packageInstalls(id)});
+    const {plan,toolchains,local,container}=checkPlan(spec,files,{rows:this.installedToolchains(),placed:new Set(contracts.map(c=>c.path).filter(Boolean)),compile,install:this.packageInstalls(id),box:this.read('toolchain_inventory',null)});
     const results=new Map(local);
     for(const v of runs)if(v.check?.kind==='file')results.set(v.id,{passed:false,...fileResult(v.check,files)});
     const [judged,run]=await Promise.all([this.judgeRuns(id,runs,files,contracts),container?this.runChecks(id,`examples:${id}:${digest}`,files,plan,toolchains):null]);
@@ -9247,7 +9247,7 @@ export class ControlRoom extends DurableObject {
     // The Worker's own parser for a row that has one (native), the box's syntax step for the others: each only over the files it has not compiled.
     const parsed=this.localSyntax(box,fresh);
     const compile=new Map([...fresh].map(p=>[p,this.syntaxOf(p,files)?.row]).filter(([,row])=>row));
-    const {plan,toolchains,local,container}=checkPlan(spec,box,{rows:this.installedToolchains(),placed,compile,inventory:asks,install:this.packageInstalls(id)});
+    const {plan,toolchains,local,container}=checkPlan(spec,box,{rows:this.installedToolchains(),placed,compile,inventory:asks,install:this.packageInstalls(id),box:this.read('toolchain_inventory',null)});
     const results=new Map(local);
     for(const v of runs)if(v.check?.kind==='file')results.set(v.id,{id:v.id,kind:'file',frames:[],...fileResult(v.check,files)});
     // Clef judges each document, in parallel with the box.

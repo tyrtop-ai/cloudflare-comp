@@ -9,7 +9,8 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {liveRoom} from './helpers/room.js';
 import {sourceParseError} from '../src/linker.js';
-import {TOOLCHAINS, COMPILE_ROWS, installed, codeRowOf, shebangOf, pageScripts, parseModeOf} from '../src/toolchains.js';
+import {TOOLCHAINS, COMPILE_ROWS, installed, toolchainsToInstall, codeRowOf, shebangOf, pageScripts, parseModeOf} from '../src/toolchains.js';
+import {checkPlan} from '../src/checks.js';
 
 
 test('L4: the dashboard tells a builder by its role: a v8 "Builder" is its manager\'s builder, a part a split named "Builder" is a worker', async () => {
@@ -98,8 +99,10 @@ test('M2 (pagescript): the modes are the pages\' data: a file loaded both ways p
 });
 
 
-test('L1 (norow): the rows as data: a compile row is installed only as the inventory reports its tools and versions; a #! line names a file\'s row', () => {
-  const rows = inv => installed(inv, COMPILE_ROWS).map(r => r.id);
+test('L1 (norow): the rows as data: a compile row of the image is installed only as the inventory reports its tools and versions, a row the box installs always is; a #! line names a file\'s row', () => {
+  // The image's rows; a row with a toolchain install (C#, JSX) is installed whatever the inventory says (the next test).
+  const rows = inv => installed(inv, COMPILE_ROWS).filter(r => !r.toolchain).map(r => r.id);
+  assert.deepEqual(installed({}, COMPILE_ROWS).filter(r => r.toolchain).map(r => r.id), ['csharp', 'jsx']);
   assert.deepEqual(rows({node: '22.22.0', sh: '/usr/bin/sh', bash: '5.2.21'}), ['typescript', 'shell']);
   assert.deepEqual(rows({node: '22.17.0', sh: '/usr/bin/sh', bash: '5.2.21'}), ['shell']);
   assert.deepEqual(rows({node: '24.1.0', sh: '/usr/bin/sh', bash: null}), ['typescript']);
@@ -116,10 +119,42 @@ test('L1 (norow): the rows as data: a compile row is installed only as the inven
   assert.equal(row('bin/tool', '#!/usr/bin/env perl\nprint 1;\n'), null);
   assert.deepEqual(['main.go', 'lib.rs', 'a.c', 'a.h', 'a.cpp', 'App.java', 'x.rb', 'x.php'].map(p => row(p)), ['go', 'rust', 'c', 'c', 'cpp', 'java', 'ruby', 'php']);
   assert.equal(row('bin/tool', '#!/usr/bin/env ruby\nputs 1\n'), 'ruby');
-  for (const p of ['Main.hs', 'App.kt', 'Program.cs', 'main.swift', 'App.tsx', 'App.jsx']) assert.equal(row(p), null, p);
+  for (const p of ['Main.hs', 'App.kt', 'main.swift']) assert.equal(row(p), null, p);
+  assert.deepEqual(['Program.cs', 'App.tsx', 'App.jsx'].map(p => row(p)), ['csharp', 'jsx', 'jsx']);
   // Each compiled language runs a file of it (run_file).
-  for (const id of ['go', 'rust', 'c', 'cpp', 'java', 'ruby', 'php']) assert.ok(COMPILE_ROWS.find(r => r.id === id).run_file, id);
+  for (const id of ['go', 'rust', 'c', 'cpp', 'java', 'ruby', 'php', 'csharp', 'jsx']) assert.ok(COMPILE_ROWS.find(r => r.id === id).run_file, id);
   assert.equal(row('notes/README'), null);
   assert.equal(row('README.md', '# x\n'), null);
+});
+
+// Owner 2026-10-17 ("It needs the ability to create C#. OR at least have the splitter install the ability for C#"): a language
+// the image lacks has a row with a toolchain install; the box installs it, by the row's own install, before the checks.
+test('a language the box installs: the C# row\'s toolchain goes first in its install when the box\'s inventory lacks it, its call checks go to the C# adapter, and a box that has it installs nothing', async () => {
+  const {compileBoxSpec} = await import('../src/box.js');
+  const csharp = COMPILE_ROWS.find(r => r.id === 'csharp');
+  assert.deepEqual(csharp.toolchain.packages, ['mono-mcs', 'mono-runtime'], 'Debian\'s Mono, no version named');
+  assert.deepEqual(csharp.call_adapter, ['node', '/opt/adapters/call-native.mjs', 'csharp']);
+  assert.deepEqual(toolchainsToInstall({node: '22.22.0', executables: ['node', 'gcc']}).map(r => r.id), ['csharp', 'jsx']);
+  assert.deepEqual(toolchainsToInstall(null).map(r => r.id), ['csharp', 'jsx'], 'before the first inventory: every one');
+  assert.deepEqual(toolchainsToInstall({executables: ['mono', 'esbuild']}).map(r => r.id), []);
+  const files = new Map([['src/Calc.cs', 'public static class Calc { public static int Add(int a, int b) { return a + b; } }\n'], ['cli/Hello.cs', 'class Hello { static void Main() {} }\n']]);
+  const spec = {contracts: [{name: 'Add', kind: 'function', path: 'src/Calc.cs'}, {name: 'hello', kind: 'command', path: 'cli/Hello.cs'}],
+    validations: [{id: 'V1', check: {kind: 'call', steps: [{call: 'Add', args: [1, 2], expect: 3}]}}, {id: 'V2', check: {kind: 'command', run: 'hello', expect: {exit: 0}}}]};
+  const compile = new Map([...files.keys()].map(p => [p, csharp]));
+  const lacking = checkPlan(spec, files, {rows: TOOLCHAINS, compile, install: [{toolchain: 'csharp', packages: ['libfoo-cil']}], box: {node: '22.22.0', executables: ['node']}});
+  assert.deepEqual(lacking.plan.install, [{toolchain: 'csharp', packages: ['mono-mcs', 'mono-runtime', 'libfoo-cil']}], 'the toolchain first, then the agents\' packages');
+  assert.deepEqual(lacking.plan.syntax, [{toolchain: 'csharp', files: ['src/Calc.cs', 'cli/Hello.cs']}]);
+  assert.deepEqual(lacking.plan.checks[0], {id: 'V1', kind: 'call', module: 'src/Calc.cs', adapter: 'csharp', steps: [{call: 'Add', args: [1, 2], expect: 3}]});
+  assert.deepEqual(lacking.plan.commands.hello, csharp.run_file.map(x => x === '{path}' ? 'cli/Hello.cs' : x));
+  assert.deepEqual(lacking.toolchains.map(r => r.id), ['csharp']);
+  // The box's internet is on for the install stage, as for any package.
+  assert.equal(compileBoxSpec(lacking.plan).internet, true);
+  const only = checkPlan(spec, files, {rows: TOOLCHAINS, compile, box: null});
+  assert.deepEqual(only.plan.install, [{toolchain: 'csharp', packages: ['mono-mcs', 'mono-runtime']}]);
+  const has = checkPlan(spec, files, {rows: TOOLCHAINS, compile, box: {executables: ['mono']}});
+  assert.deepEqual(has.plan.install, [], 'a box whose image has the toolchain installs nothing for it');
+  assert.equal(compileBoxSpec(has.plan).internet, false);
+  // A level with no C# file installs no C#.
+  assert.deepEqual(checkPlan({contracts: [], validations: []}, new Map([['a.py', 'x = 1\n']]), {rows: TOOLCHAINS, box: null}).plan.install, []);
 });
 
