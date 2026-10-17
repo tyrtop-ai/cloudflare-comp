@@ -102,7 +102,7 @@ export async function runOn(room, list, bundle) {
 // The export as a Map of text files (the runtime's notes aside; carried bytes decoded).
 export async function exported(room) {
   const app = await room.appFiles();
-  return {app, files: new Map((app.files || []).filter(f => !f.path.startsWith('.recursive/')).map(f => [f.path, typeof f.content === 'string' ? f.content : Buffer.from(f.content_base64, 'base64').toString('utf8')]))};
+  return {app, files: new Map((app.files || []).filter(f => !f.runtime).map(f => [f.path, typeof f.content === 'string' ? f.content : Buffer.from(f.content_base64, 'base64').toString('utf8')]))};
 }
 // Each manager's compiler runs (checks_started), by label.
 export const runsBy = room => { const m = at(room); return Object.fromEntries(Object.entries(m).map(([k, id]) => [k, events(room, 'checks_started').filter(e => e.actor === id).length])); };

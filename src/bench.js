@@ -22,10 +22,10 @@ import { fetchPolicy, guardedFetch, plainBody, readCapped, allowedType, redactTe
 import { TOOLCHAINS, COMPILE_ROWS } from './toolchains.js';
 import { pythonHarness as pyHarness, javascriptHarness as jsHarness, testsAfterHarness } from './bench-harness.js';
 
-// No count or size is set on a benchmark: its tasks are every row the
-// dataset holds, or the first `limit` the person names.
+// No count, size or deadline is set on a benchmark: its tasks are every row
+// the dataset holds, or the first `limit` the person names, read for as long
+// as reading them takes.
 export const BENCH_LIMITS = Object.freeze({
-  timeoutMs: 30_000,          // one dataset fetch, every page together
   pageRows: 100,              // the datasets-server rows API's page size
   concurrency: [1, 16], budget: [1, 100000]
 });
@@ -231,8 +231,7 @@ export const tasksDigest = tasks => sha256(JSON.stringify(tasks.map(t => [t.id, 
 // fetcher's default) narrowed to BENCH_HOSTS, the deployment's own hosts
 // refused, archives (a .jsonl.gz served as octet-stream) allowed.
 export function benchPolicy({allow, selfHosts = [], ...limits} = {}) {
-  return fetchPolicy({allow, room: [...BENCH_HOSTS], selfHosts, requireSelfHosts: true, archive: true,
-    timeoutMs: BENCH_LIMITS.timeoutMs, ...limits});
+  return fetchPolicy({allow, room: [...BENCH_HOSTS], selfHosts, requireSelfHosts: true, archive: true, ...limits});
 }
 // A datasets-server rows URL: its pages are fetched up to `want` rows, or all of them.
 const rowsApi = u => u.hostname === 'datasets-server.huggingface.co' && u.pathname === '/rows';
@@ -245,23 +244,16 @@ const rowsApi = u => u.hostname === 'datasets-server.huggingface.co' && u.pathna
 export async function fetchDataset(url, {fetch, policy, want = null, redact = t => t} = {}) {
   let u;
   try { u = new URL(String(url)); } catch { return {text: '', error: 'source_refused: not a URL'}; }
-  const deadline = Date.now() + policy.timeoutMs;
-  const controller = new AbortController();
-  let fail;
-  const expired = new Promise((_, rej) => { fail = rej; });
-  expired.catch(() => {});
-  const timer = setTimeout(() => { controller.abort(); fail(new FetchRefused('timeout')); }, Math.max(1, deadline - Date.now()));
-  const race = p => Promise.race([p, expired]);
   let bytes = 0, final_url = null;
   const getText = async target => {
-    const {response, final_url: f} = await guardedFetch(target, {fetch, policy, race, signal: controller.signal,
+    const {response, final_url: f} = await guardedFetch(target, {fetch, policy,
       accept: 'application/json, application/x-ndjson, application/jsonl, text/plain;q=0.9, application/gzip;q=0.8, */*;q=0.1'});
     final_url = f;
     const type = String(response.headers?.get?.('content-type') || '').split(';')[0].trim().toLowerCase();
     if (response.status < 200 || response.status > 299) { try { response.body?.cancel?.().catch?.(() => {}); } catch {} throw new FetchRefused(`http ${response.status}`); }
     if (!allowedType(type, policy)) { try { response.body?.cancel?.().catch?.(() => {}); } catch {} throw new FetchRefused(`content type ${type || '(none)'} is not read`); }
-    const body = await plainBody(response.body, {race, encoding: response.headers?.get?.('content-encoding') || ''});
-    const read = await readCapped(body, Infinity, race);
+    const body = await plainBody(response.body, {encoding: response.headers?.get?.('content-encoding') || ''});
+    const read = await readCapped(body, Infinity);
     if (read.bytes.subarray(0, 8192).includes(0)) throw new FetchRefused('binary content (a parquet or archive file is not read; use a JSON lines URL)');
     bytes += read.bytes.length;
     return new TextDecoder('utf-8').decode(read.bytes);
@@ -286,7 +278,7 @@ export async function fetchDataset(url, {fetch, policy, want = null, redact = t 
   } catch (e) {
     const message = e instanceof FetchRefused ? `source_refused: ${e.message}` : `fetch failed: ${e?.message || e}`;
     return {text: '', final_url, bytes, error: clip(redact(redactText(message)))};
-  } finally { clearTimeout(timer); }
+  }
 }
 
 // A dataset from {url} or {text} (pasted or uploaded): tasks, skipped rows,
@@ -331,7 +323,8 @@ export function roomOutcome(s) {
   return out('fail', s.pause?.text || 'the turn budget ended before the task was solved');
 }
 // The grader's result as an outcome: pass, fail (what it observed, whole:
-// the complaint the run sends the room), or error when it could not run.
+// the complaint the run sends the room), or error when it could not run:
+// it observed nothing, so the run grades the room again (BenchRun.graded).
 export function gradeOutcome(g) {
   if (!g || g.infrastructure) return {outcome: 'error', detail: clip(`the grader could not run: ${g?.infrastructure || 'no answer'}`)};
   return g.passed ? {outcome: 'pass', detail: ''} : {outcome: 'fail', detail: g.detail || 'the benchmark\'s tests failed'};

@@ -39,7 +39,7 @@ import { inheritServes, otherName, kindOf as contractKind, contractLine, gateLin
 import { branchDirectory, packageDirectory, packagePath, partsRoot, PARTS_ROOT } from './assembly.js';
 import { placeChecks, checkUses, textHash } from './piece.js';
 import { zipFiles } from './zip.js';
-import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, namedIn, existingFiles, baseFileRead } from './room-inputs.js';
+import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, namedIn, existingFiles, baseFileRead } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
 import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer } from './broker.js';
 import { normalizePackages, installedPackages, stdlibRow, piecePackages, packageLine } from './packages.js';
@@ -651,8 +651,8 @@ export class ControlRoom extends DurableObject {
   sourceRows() { return query(this.db(),'SELECT id,url,final_url,title,sha256,bytes,truncated,error,status,content_type,summary,fetched_at FROM sources ORDER BY CAST(SUBSTR(id,2) AS INTEGER)').map(r=>({...r,truncated:!!r.truncated,summary:parse(r.summary,null)})); }
   // The chunk refs a row holds (polyglot-bench §2a.4): the room's manager
   // every chunk of every source; a piece those its
-  // parent's split cited for it, never more than its parent holds
-  // (assignRefs), as with contracts. A row given none holds none.
+  // parent's splitter gave it, as it declared them (its piece function takes
+  // only refs its level holds), as with contracts. A row given none holds none.
   sourceRefs(id) { return this.node(id)?this.read(`source_refs:${id}`,null)||[]:[]; }
   // Whether a row holds the existing project (the room gives the manager it
   // creates the base and its digest, base_digest), and the digest it reads.
@@ -666,11 +666,10 @@ export class ControlRoom extends DurableObject {
   }
   heldDigest(id) { return this.holdsBase(id)?this.read(`base_digest:${id}`,null)??this.read('base',null)?.digest??null:null; }
   allRefs() { return query(this.db(),'SELECT ref FROM source_chunks ORDER BY CAST(SUBSTR(source,2) AS INTEGER),n').map(r=>r.ref); }
-  assignRefs(child, parent, raw) {
-    if(raw==null||!this.v8())return;
-    const {kept,dropped}=narrowRefs(raw,new Set(this.sourceRefs(parent)));
-    this.save(`source_refs:${child}`,kept);
-    if(kept.length||dropped.length)this.event(parent,'refs_assigned',clip(`"${this.node(child)?.label||child}" reads ${kept.length?kept.join(', '):'no source'}${dropped.length?`; not held here, so not given: ${dropped.join(', ')}`:''}.`,600),child);
+  assignRefs(child, parent, refs) {
+    if(!Array.isArray(refs)||!this.v8())return;
+    this.save(`source_refs:${child}`,refs);
+    if(refs.length)this.event(parent,'refs_assigned',clip(`"${this.node(child)?.label||child}" reads ${refs.join(', ')}.`,600),child);
   }
   // What a model reads of the sources, quoted beside SOURCE_CLAUSE: a
   // splitter the summaries of the refs it holds (and their outlines), a
@@ -1240,7 +1239,7 @@ export class ControlRoom extends DurableObject {
     return {
       sources: sources.map(({summary,fetched_at:_,...r})=>({...r,summary:summary?.summary?clip(summary.summary,400):'',parts:summary?.outline?.length||0})),
       base: base?{kind:base.kind,source:base.source,ref:base.ref,resolved_sha:base.resolved_sha,room:base.room||null,files:base.files,bytes:base.bytes,skipped_count:base.skipped_count,truncated:!!base.truncated,
-        passthrough:base.passthrough||0,not_carried:(base.not_carried||[]).length,...(base.kind==='room'?{passed:!!base.passed,unverified:!!base.unverified}:{})}:null
+        passthrough:base.passthrough||0,...(base.kind==='room'?{passed:!!base.passed,unverified:!!base.unverified}:{})}:null
     };
   }
   // Export manifests contain only aliases, never hidden child routing IDs.
@@ -1471,9 +1470,11 @@ export class ControlRoom extends DurableObject {
     const levels=[];
     for(const f of this.levelFiles())levels.push({...f,content:await this.indexedContent(f.manager,LEVEL_FILE)});
     app.levels=levels.map(({content:_,...f})=>f);
-    // The runtime's notes go where the project holds no file: a file the agents placed there is the one that ships.
+    // The runtime's notes are marked as its own (runtime: true), so a reader of the export (a later room's base,
+    // an export onto the base, the bench's grading) tells them from the project's files by the mark, never by a
+    // path. They go where the project holds no file: a project file at one of their paths is the one that ships.
     const notes=[{path:'.recursive/RUN.md',content:runNotes(app,spec,status)+baseNotes(meta,pass)},{path:'.recursive/validations.json',content:JSON.stringify({contracts:spec.contracts,validations:spec.validations},null,2)+'\n'},
-      ...levels.map(f=>({path:f.export_path,content:f.content}))].filter(f=>!files.has(f.path));
+      ...levels.map(f=>({path:f.export_path,content:f.content}))].filter(f=>!files.has(f.path)).map(f=>({...f,runtime:true}));
     const carried=pass.map(r=>({path:r.path,content_base64:toBase64(new Uint8Array(r.bytes)),mode:gitMode(r.mode),passthrough:true,reason:r.reason}));
     return {...app,files:[...notes,...own,...carried]};
   }
@@ -7854,7 +7855,7 @@ export class ControlRoom extends DurableObject {
     this.set('status','running'); this.set('step','0'); this.save('queue',[]); this.save('failures',{});
     this.busy=true;
     this.event('system','start',clip(goal,1300));
-    if(loaded)this.event('system','base_loaded',clip(`Starts from ${loaded.meta.source}${loaded.meta.ref?` at ${loaded.meta.ref}`:''}${loaded.meta.resolved_sha?` (${loaded.meta.resolved_sha.slice(0,12)})`:''}: ${loaded.meta.files} file(s), ${loaded.meta.bytes} bytes${loaded.meta.skipped_count?`; ${loaded.meta.skipped_count} skipped`:''}${loaded.meta.fetch_skipped_count?`; ${loaded.meta.fetch_skipped_count} not read from the repo`:''}${loaded.meta.passthrough?`; ${loaded.meta.passthrough} carried untouched (not built)`:''}${loaded.meta.not_carried?.length?`; ${loaded.meta.not_carried.length} not carried (the runtime's own paths)`:''}.${loaded.meta.kind==='room'?(loaded.meta.unverified?' base_unverified: that result had not passed its checks.':' That result passed its checks.'):''}${this.partsRoot()!==PARTS_ROOT?` The pieces' own files go under ${this.partsRoot()}/, since the project has a components/ of its own.`:''} A worker changes an existing file its contracts place once the person grants it.`,900));
+    if(loaded)this.event('system','base_loaded',clip(`Starts from ${loaded.meta.source}${loaded.meta.ref?` at ${loaded.meta.ref}`:''}${loaded.meta.resolved_sha?` (${loaded.meta.resolved_sha.slice(0,12)})`:''}: ${loaded.meta.files} file(s), ${loaded.meta.bytes} bytes${loaded.meta.skipped_count?`; ${loaded.meta.skipped_count} skipped`:''}${loaded.meta.fetch_skipped_count?`; ${loaded.meta.fetch_skipped_count} not read from the repo`:''}${loaded.meta.passthrough?`; ${loaded.meta.passthrough} carried untouched (not built)`:''}.${loaded.meta.kind==='room'?(loaded.meta.unverified?' base_unverified: that result had not passed its checks.':' That result passed its checks.'):''}${this.partsRoot()!==PARTS_ROOT?` The pieces' own files go under ${this.partsRoot()}/, since the project has a components/ of its own.`:''} A worker changes an existing file its contracts place once the person grants it.`,900));
     this.ctx.waitUntil((async()=>{
       // v7.15: Root promises start, the only runtime-written promise (live rooms).
       // v8: the room creates the manager the prompt goes to.
@@ -8460,7 +8461,7 @@ export class ControlRoom extends DurableObject {
       ...(feedback?.reason?{previous_answer_problems:[feedback.reason],...(feedback.rejected?.length?{rejected:feedback.rejected}:{})}:{})};
     const carried=this.read(`split_carry:${id}`,null),carry=carried&&carried.key===`${kind}:${job?.key||''}`&&carried.attempt===attempt?carried:null;
     if(carry)request.declared_so_far={contracts:carry.contracts.map(({serves:_,...c})=>c),validations:carry.validations.map(v=>({id:v.id,serves:v.serves,check:v.check})),pieces:carry.pieces};
-    const out=await splitLevel(this.inferenceEnv('splitter'),request,{own,held,have,calls,rows,base:[...this.basePaths()],maxPieces:max,divide,carry,programs:this.boxPrograms(),...(typeof digest==='string'&&digest?{readBase:p=>this.readBaseFile(p)}:{})},{spend:()=>this.spendCall?this.spendCall():true});
+    const out=await splitLevel(this.inferenceEnv('splitter'),request,{own,held,have,calls,rows,base:[...this.basePaths()],maxPieces:max,divide,carry,programs:this.boxPrograms(),refs:this.sourceRefs(id),...(typeof digest==='string'&&digest?{readBase:p=>this.readBaseFile(p)}:{})},{spend:()=>this.spendCall?this.spendCall():true});
     this.db().exec('UPDATE splitters SET ended_at=?,outcome=?,output=? WHERE id=?',Date.now(),out.level?'done':out.reason,splitterRecord(out),sid);
     const l=out.level;
     this.event(id,'splitter',clip(l?`${sid} declared ${l.contracts.length} contract(s), ${l.validations.length} validation(s), ${l.pieces.length} piece(s) in ${out.rounds} round(s) and ${out.transcript.length} call(s).`:`${sid}'s session ended without done (${out.reason}) after ${out.rounds} round(s) and ${out.transcript.length} call(s).`,600));
@@ -8601,10 +8602,11 @@ export class ControlRoom extends DurableObject {
       this.event('system','prompt_resumed',clip(`Continue goes on with: ${p.text}`,600));
     }
   }
-  // Bench (feedback 'until_done'): what the grader observed on the bundle the
-  // room shipped is a complaint at the room's manager, verbatim, and the room
-  // goes on for it with the turns its budget has left (budget_left, what its
-  // last run left): the room's own budget bounds every round together.
+  // Bench: a failed grading of the bundle the room shipped always comes back
+  // here, until a grading passes: what the grader observed is a complaint at
+  // the room's manager, verbatim, and the room goes on for it with the turns
+  // its budget has left (budget_left, what its last run left): the room's
+  // own budget bounds every round together.
   graderComplaint(text) {
     const m=this.roomManager();
     if(!m||!this.node(m))return {error:'Start a run first.'};

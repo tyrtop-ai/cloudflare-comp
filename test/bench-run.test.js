@@ -52,7 +52,10 @@ function fakeRooms() {
         },
         stop: async () => { r.stopped++; log.push(['stop', name]); if (r.state?.status === 'running') { r.state = {...r.state, status: 'paused', busy: false}; live--; } return {status: 'stopping'}; },
         benchSummary: async () => { if (r.broken) throw new Error('room unreachable'); return r.state; },
-        appFiles: async () => r.solution === null ? {status: 409, error: 'No application yet'} : {kind: 'levels', files: [{path: 'solution.py', content: r.solution}, {path: '.recursive/RUN.md', content: 'notes'}]},
+        appFiles: async () => {
+          if (r.filesBroken) throw new Error('files unreachable');
+          return r.solution === null ? {status: 409, error: 'No application yet'} : {kind: 'levels', files: [{path: 'solution.py', content: r.solution}, {path: '.recursive/RUN.md', content: 'notes', runtime: true}]};
+        },
         graderComplaint: async (...args) => {
           if (r.left === 0) return {error: 'The room\'s turn budget is spent.'};
           r.complaints.push(args); log.push(['complaint', name]); r.state = {...r.state, status: 'running', busy: true}; live++; return {status: 'running'};
@@ -216,18 +219,56 @@ test('no wall clock ends a task: a room running for hours goes on; a room that c
   assert.equal(s.aggregate.error, 1);
 });
 
-test('a room still running from before is retried in a fresh room on the next tick', async () => {
+// Owner 2026-10-16 05:39 "text heuristics - I don't understand what this is for": no error text decides a task's outcome.
+test('a refused start is the task\'s error whatever its text says: no message is matched to retry it', async () => {
   const {rooms, run} = benchEnv(), b = run();
   await begin(b, {concurrency: 1});
   rooms.ns.getByName(taskRoom(ID, 0, 0));
   rooms.rooms.get(taskRoom(ID, 0, 0)).refuse = 'Experiment already running';
   await b.alarm();
-  assert.equal(b.status().tasks[0].status, 'queued');
+  const t = b.status().tasks[0];
+  assert.deepEqual([t.status, t.outcome, t.attempt], ['done', 'error', 0]);
+  assert.match(t.detail, /did not start: Experiment already running/);
   assert.equal(b.status().tasks[1].status, 'running', 'the next task takes the free slot');
-  rooms.end(taskRoom(ID, 1, 0), pass);
+});
+
+// Owner 2026-10-16 05:54 "it should go back until done": a grading that could not run observed nothing, so it settles nothing.
+test('a grading that could not run is no round: the completed room is graded again on later ticks until a grading observes it, and after a Stop on resume', async () => {
+  const {rooms, run} = benchEnv(), b = run();
+  await begin(b, {concurrency: 1, limit: 1, dataset: {text: DATA(1)}});
   await b.alarm();
-  assert.equal(b.status().tasks[0].room, taskRoom(ID, 0, 1));
-  assert.equal(b.status().tasks[0].status, 'running');
+  rooms.end(taskRoom(ID, 0, 0), pass);
+  rooms.rooms.get(taskRoom(ID, 0, 0)).filesBroken = true;
+  for (let i = 0; i < 12; i++) await b.alarm();
+  let t = b.status().tasks[0];
+  assert.deepEqual([t.status, t.outcome, t.once, t.rounds], ['running', null, null, 0]);
+  assert.equal(b.status().status, 'running');
+  // A Stop grades it too; one that could not run leaves it for the resumed run.
+  await b.stop();
+  t = b.status().tasks[0];
+  assert.deepEqual([t.status, t.room, t.outcome], ['running', taskRoom(ID, 0, 0), null]);
+  rooms.rooms.get(taskRoom(ID, 0, 0)).filesBroken = false;
+  await b.resume(); await b.alarm();
+  t = b.status().tasks[0];
+  assert.deepEqual([t.status, t.outcome, t.once, t.rounds], ['done', 'pass', 'pass', 1]);
+  assert.equal(b.status().aggregate.error, 0);
+});
+
+// Owner 2026-10-15 23:16 "no stopgaps? ever?": no count of failed deletes leaves a room behind.
+test('a room marked for deletion is tried again on every later tick until its delete goes through, with no count of tries', async () => {
+  const {rooms, run} = benchEnv(), b = run();
+  await b.begin({id: ID, dataset: {text: DATA(1)}, settings: SETTINGS, concurrency: 1, selfHosts: ['cp.test'], keep_rooms: 'none'});
+  await b.alarm();
+  rooms.end(taskRoom(ID, 0, 0), pass);
+  rooms.rooms.get(taskRoom(ID, 0, 0)).purgeBusy = true;
+  for (let i = 0; i < 15; i++) await b.alarm();
+  assert.equal(b.status().status, 'done');
+  assert.ok(b.ctx.storage.alarm !== null, 'the room still to delete keeps the alarm');
+  rooms.rooms.get(taskRoom(ID, 0, 0)).purgeBusy = false;
+  await b.alarm();
+  assert.equal(rooms.rooms.get(taskRoom(ID, 0, 0)).purged, 1);
+  assert.equal(b.status().tasks[0].room_deleted, true);
+  assert.equal(b.ctx.storage.alarm, null);
 });
 
 test('the index lists runs newest first with their aggregates; a run cannot begin twice; bad datasets are refused before anything is queued', async () => {
@@ -424,7 +465,7 @@ test('DELETE /api/bench/<id> stops the running rooms, deletes every room of the 
   assert.equal((await call(env, '/api/bench/not-an-id', {method: 'DELETE'})).status, 400);
   const res = await call(env, `/api/bench/${ID}`, {method: 'DELETE'});
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), {status: 'deleted', rooms_not_deleted: 0});
+  assert.deepEqual(await res.json(), {status: 'deleted'});
   assert.deepEqual(rooms.log.filter(l => l[0] === 'stop').map(l => l[1]).sort(), [taskRoom(ID, 1, 0), taskRoom(ID, 2, 0)]);
   assert.deepEqual(rooms.log.filter(l => l[0] === 'purge').map(l => l[1]).sort(), [taskRoom(ID, 0, 0), taskRoom(ID, 1, 0), taskRoom(ID, 2, 0)]);
   assert.equal(index().list().runs.length, 0);

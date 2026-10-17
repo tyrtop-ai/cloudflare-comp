@@ -189,7 +189,7 @@ test('the panel names the Container slots it is capped at, keeps the label off h
   const p = page(async (url, init) => {
     requests.push({url: String(url), method: init?.method || 'GET'});
     if (String(url).startsWith('/api/bench?')) return new Response(JSON.stringify({runs: [RUN], executors: 4}));
-    return new Response(JSON.stringify({status: 'deleted', rooms_not_deleted: 0}));
+    return new Response(JSON.stringify({status: 'deleted'}));
   });
   p.elements.get('token').value = 'app-token';
   p.context.confirm = () => true;

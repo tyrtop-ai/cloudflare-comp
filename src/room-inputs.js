@@ -10,7 +10,6 @@
 // credential (src/fetcher.js, src/base.js).
 import {fetchGoalSources, fetchPolicy, chunkText, quoteSource, sanitizeText, sourceSummaries, goalUrls, SOURCE_CLAUSE} from './fetcher.js';
 import {fetchGithubRepo, parseRepoUrl, REPO_LIMITS, byteLength} from './base.js';
-import {runtimeOwned} from './code-work.js';
 import {boxPathError} from '../container/build-path.mjs';
 import {fromBase64} from './zip.js';
 
@@ -34,7 +33,6 @@ export const INPUT_SCHEMA = Object.freeze([
 export const CHUNK_CHARS = 6000;
 
 const clip = (v, n = 300) => String(v ?? '').slice(0, n);
-const REF = /^S([1-9]\d*)(?:#([1-9]\d*))?$/;
 const ROOM_ID = /^[a-zA-Z0-9-]{8,64}$/;
 const SHORT_REPO = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
 const utf8 = new TextEncoder();
@@ -68,25 +66,18 @@ export function normalizeBase(raw) {
   return {error: 'base must be {"repo": "owner/name", "ref": "…"} or {"room": "<room id>"}'};
 }
 
-// Why a path is never carried: the runtime's own paths of an earlier run's
-// export (.recursive/, glue/), which the runtime writes again for each run.
-// Any other path is the project's, memory/ and the like too.
-export function notCarried(path) {
-  return runtimeOwned(path) ? 'the runtime writes this path for each run' : null;
-}
-
 // Sort the base: entries [{path, text} | {path, bytes, reason}] with a mode
-// each. Kept as base files, every one, whole: text at a path inside the
-// box's folder. Carried untouched: what is bytes already, a path outside the
-// box's folder, a binary. Never carried, and listed: the runtime's paths,
-// and a file larger than one storage row holds (STORE_ROW_BYTES). Result: {files: Map(path →
-// text), modes: Map(path → mode), passthrough: [{path, bytes, mode,
-// reason}], not_carried: [{path, reason}], skipped, skipped_count, bytes}.
+// each. Every path is the project's, whatever its name: kept as base files,
+// every one, whole: text at a path inside the box's folder. Carried
+// untouched: what is bytes already, a path outside the box's folder, a
+// binary. Not carried, and listed: a file larger than one storage row holds
+// (STORE_ROW_BYTES). Result: {files: Map(path → text), modes: Map(path →
+// mode), passthrough: [{path, bytes, mode, reason}], skipped,
+// skipped_count, bytes}.
 export function keepBaseFiles(entries, limits = {}) {
-  const L = {...REPO_LIMITS, ...limits}, files = new Map(), modes = new Map(), passthrough = [], not_carried = [], skipped = [];
+  const L = {...REPO_LIMITS, ...limits}, files = new Map(), modes = new Map(), passthrough = [], skipped = [];
   let bytes = 0, passBytes = 0, skipped_count = 0;
   const skip = (path, reason) => { skipped_count++; if (skipped.length < L.maxSkipped) skipped.push({path: clip(path, 200), reason}); };
-  const drop = (path, reason) => { if (not_carried.length < L.maxSkipped) not_carried.push({path: clip(path, 200), reason}); };
   const tooLarge = `larger than one storage row holds (${L.maxFileBytes} bytes)`;
   const carry = (path, data, mode, reason) => {
     if (data.length > L.maxFileBytes) return skip(path, `${reason}; ${tooLarge}`);
@@ -96,8 +87,6 @@ export function keepBaseFiles(entries, limits = {}) {
   for (const e of entries) {
     const path = String(e?.path ?? '');
     if (!path) continue;
-    const never = notCarried(path);
-    if (never) { drop(path, never); continue; }
     if (e.bytes instanceof Uint8Array) { carry(path, e.bytes, e.mode, e.reason || 'carried untouched'); continue; }
     const text = String(e.text ?? '');
     if (boxPathError(path)) { carry(path, utf8.encode(text), e.mode, 'a path outside the box\'s folder'); continue; }
@@ -109,14 +98,16 @@ export function keepBaseFiles(entries, limits = {}) {
     bytes += size;
   }
   const order = ([a], [b]) => a < b ? -1 : a > b ? 1 : 0;
-  return {files: new Map([...files].sort(order)), modes, passthrough: passthrough.sort((a, b) => order([a.path], [b.path])), not_carried, skipped, skipped_count, bytes, pass_bytes: passBytes};
+  return {files: new Map([...files].sort(order)), modes, passthrough: passthrough.sort((a, b) => order([a.path], [b.path])), skipped, skipped_count, bytes, pass_bytes: passBytes};
 }
 
-// A room's result (appFiles) as base entries: its .recursive/ notes are the
-// runtime's (not carried), and a file it carried untouched comes as base64.
+// A room's result (appFiles) as base entries: the files of its project,
+// whatever their paths. The notes the runtime wrote beside them (runtime:
+// true) are that room's, not the project's; a file it carried untouched
+// comes as base64.
 export function baseFromApp(app) {
   const list = Array.isArray(app?.files) ? app.files : [];
-  const entries = list.filter(f => f && typeof f.path === 'string').map(f => typeof f.content_base64 === 'string'
+  const entries = list.filter(f => f && typeof f.path === 'string' && !f.runtime).map(f => typeof f.content_base64 === 'string'
     ? {path: f.path, bytes: fromBase64(f.content_base64), mode: f.mode, reason: f.reason || 'carried untouched'}
     : {path: f.path, text: f.content, mode: f.mode});
   return {entries};
@@ -125,7 +116,7 @@ export function baseFromApp(app) {
 // Load the base. fetch: injected (a repo is read with no token); readApp(id):
 // that room's appFiles(). Never throws: {error} says why there is no base.
 // Result: {meta: {kind, source, ref, resolved_sha, dir, room, passed,
-// unverified, digest, files, bytes, passthrough, pass_bytes, not_carried,
+// unverified, digest, files, bytes, passthrough, pass_bytes,
 // skipped, skipped_count, truncated}, files: Map, modes: Map, passthrough}.
 // meta.digest names this base (the digest of its paths and contents): the
 // agents read the files themselves (existingFiles).
@@ -152,7 +143,7 @@ export async function loadBase(base, {fetch, readApp, limits = {}} = {}) {
   const digest = await sha256Bytes(utf8.encode(JSON.stringify([[...kept.files], kept.passthrough.map(p => p.path)])));
   return {files: kept.files, modes: kept.modes, passthrough: kept.passthrough,
     meta: {...meta, digest, files: kept.files.size, bytes: kept.bytes,
-      passthrough: kept.passthrough.length, pass_bytes: kept.pass_bytes, not_carried: kept.not_carried.slice(0, 50),
+      passthrough: kept.passthrough.length, pass_bytes: kept.pass_bytes,
       skipped: kept.skipped.slice(0, 50), skipped_count: kept.skipped_count}};
 }
 
@@ -183,20 +174,6 @@ export async function loadSources(goal, {fetch, allow, selfHosts = [], note, mor
     sha256: s.sha256 ?? null, bytes: s.bytes || 0, truncated: !!s.truncated, error: s.error ? clip(s.error, 300) : (s.text ? null : 'no text'),
     status: s.status ?? null, content_type: s.content_type ?? null, summary: summaries.find(c => c.id === s.id) || null}));
   return {rows, chunks};
-}
-
-// Refs a split gives a piece, kept to what its parent holds (the promises'
-// rule: a child gets a subset of its parent's). "S2" cites every chunk of
-// S2 its parent holds. {kept, dropped} in the order given.
-export function narrowRefs(raw, held) {
-  const have = held instanceof Set ? held : new Set(held || []), kept = [], dropped = [];
-  for (const r of Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []) {
-    const ref = String(r ?? '').trim(), m = REF.exec(ref);
-    const hits = !m ? [] : m[2] ? (have.has(ref) ? [ref] : []) : [...have].filter(x => x.startsWith(`S${m[1]}#`));
-    if (!hits.length) { if (ref) dropped.push(clip(ref, 40)); continue; }
-    for (const h of hits) if (!kept.includes(h)) kept.push(h);
-  }
-  return {kept, dropped};
 }
 
 // The project a room starts from, as its agents see it: every file of it,
@@ -273,7 +250,7 @@ export function baseNotes(meta, passthrough = []) {
   if (!meta) return '';
   const lines = ['', '## The project this run started from', '', `${meta.source}${meta.ref ? ` at ${meta.ref}` : ''}${meta.resolved_sha ? ` (${meta.resolved_sha})` : ''}: ${meta.files} file(s) built and checked with the run's own.${meta.unverified ? ' That result had not passed its checks.' : ''}`];
   if (passthrough.length) lines.push('', `Carried untouched, never built, run or checked (${passthrough.length}):`, '', ...passthrough.slice(0, 200).map(p => `- \`${p.path}\` (${p.reason})`));
-  const gone = [...(meta.not_carried || []), ...(meta.skipped || []), ...(meta.fetch_skipped || [])];
+  const gone = [...(meta.skipped || []), ...(meta.fetch_skipped || [])];
   if (gone.length) lines.push('', `Not carried (${gone.length}${(meta.skipped_count || 0) + (meta.fetch_skipped_count || 0) > gone.length ? ' listed' : ''}):`, '', ...gone.slice(0, 100).map(p => `- \`${p.path}\` (${p.reason})`));
   return lines.join('\n') + '\n';
 }

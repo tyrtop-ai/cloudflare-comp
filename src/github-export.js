@@ -168,7 +168,7 @@ export async function exportToGitHub({ token, options, app, room }, deps = {}) {
     phase = 'write the files';
     for (const f of app.files) if (!isPath(options.dir + f.path)) throw new ExportError(400, `Unsafe file path ${clip(options.dir + f.path, 120)}`);
     // onto_base: only what the room changed or added; the runtime's notes and the files carried untouched stay out.
-    const files = options.onto ? app.files.filter(f => !f.passthrough && f.from_base !== 'unchanged' && !f.path.startsWith('.recursive/')) : app.files;
+    const files = options.onto ? app.files.filter(f => !f.passthrough && f.from_base !== 'unchanged' && !f.runtime) : app.files;
     if (options.onto && !files.length) throw new ExportError(409, `The room changed none of the files of ${repo}; there is nothing to push.`);
     const { tree, replaced, conflicts } = await exportTree({ git, fs, dir, cache, baseTree, at: options.dir, files, replace: options.onto });
     if (conflicts.length) throw new ExportError(409, `${base} of ${repo} already has ${clip(conflicts.slice(0, 6).join(', '), 300)}` +

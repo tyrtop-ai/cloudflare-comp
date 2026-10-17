@@ -15,9 +15,9 @@ import {liveRoom, events, fileBlocks, levelCalls} from './helpers/room.js';
 import {lintRequests, crashAt, reopen} from './helpers/levels.js';
 import {SOURCE_CLAUSE, SOURCE_LABEL, chunkText} from '../src/fetcher.js';
 import {BASE_LABEL, MESSAGES} from '../src/prompts.js';
-import {normalizeBase, narrowRefs, keepBaseFiles, summariesFor, chunksFor, baseFromApp, loadBase, baseFileRead} from '../src/room-inputs.js';
+import {normalizeBase, keepBaseFiles, summariesFor, chunksFor, baseFromApp, loadBase, baseFileRead} from '../src/room-inputs.js';
 import {STORE_ROW_BYTES} from '../src/base.js';
-import {splitterState, splitterCall} from '../src/splitter.js';
+import {splitterState, splitterCall, levelOf} from '../src/splitter.js';
 // After helpers/room.js has registered the cloudflare: loader.
 const {default: worker} = await import('../src/index.js');
 
@@ -115,35 +115,45 @@ test('base: owner/name or a github.com URL, or a room id; anything else is refus
     assert.ok(normalizeBase(bad).error, JSON.stringify(bad));
 });
 
-test('base files: every text file, whole, at any path inside the box\'s folder (no count or size of the runtime\'s); binaries are carried untouched; the runtime\'s paths are not carried; two paths apart from letter case are two files', () => {
+test('base files: every text file, whole, at any path inside the box\'s folder (no count or size of the runtime\'s); binaries are carried untouched; a project\'s own .recursive/ and glue/ are its files like any other; two paths apart from letter case are two files', () => {
   const t = (path, text, mode = 0o644) => ({path, text, mode});
   const kept = keepBaseFiles([t('README.md', '# x\n'), t('.recursive/RUN.md', 'notes'), t('glue/index.js', 'x'), t('memory/public.json', '{}'), t('a b.txt', 'x'),
     t('.github/workflows/ci.yml', 'on: push'), t('.gitignore', 'node_modules\n'), t('data.bin', 'a\u0000b'), t('big.txt', 'x'.repeat(300 * 1024)), t('bin/run.sh', 'echo hi\n', 0o755),
     t('readme.md', 'a twin\n'), {path: 'logo.png', bytes: new Uint8Array([1, 2, 3]), mode: 0o644, reason: 'binary'}]);
-  assert.deepEqual([...kept.files.keys()], ['.github/workflows/ci.yml', '.gitignore', 'README.md', 'a b.txt', 'big.txt', 'bin/run.sh', 'memory/public.json', 'readme.md']);
+  assert.deepEqual([...kept.files.keys()], ['.github/workflows/ci.yml', '.gitignore', '.recursive/RUN.md', 'README.md', 'a b.txt', 'big.txt', 'bin/run.sh', 'glue/index.js', 'memory/public.json', 'readme.md']);
   assert.equal(kept.modes.get('bin/run.sh'), 0o755);
   assert.deepEqual(kept.passthrough.map(p => [p.path, p.reason]), [['data.bin', 'binary'], ['logo.png', 'binary']]);
-  assert.deepEqual(kept.not_carried.map(s => [s.path, s.reason]), [['.recursive/RUN.md', 'the runtime writes this path for each run'], ['glue/index.js', 'the runtime writes this path for each run']]);
+  assert.equal('not_carried' in kept, false);
   const many = keepBaseFiles(Array.from({length: 410}, (_, i) => t(`f${String(i).padStart(3, '0')}.txt`, 'x\n')));
   assert.deepEqual([many.files.size, many.passthrough.length, many.skipped_count], [410, 0, 0]);
   // Only what one storage row cannot hold (Cloudflare's 2 MB) is left out, and listed.
   const huge = keepBaseFiles([t('huge.json', 'q'.repeat(STORE_ROW_BYTES + 1)), t('ok.txt', 'x')]);
   assert.deepEqual([[...huge.files.keys()], huge.skipped], [['ok.txt'], [{path: 'huge.json', reason: `larger than one storage row holds (${STORE_ROW_BYTES} bytes)`}]]);
-  // A room's result: its files as text, and the files it carried come back as bytes.
-  const app = baseFromApp({kind: 'levels', files: [{path: '.recursive/RUN.md', content: 'r'}, {path: 'a.txt', content: 'a'},
+  // A room's result: its project's files as text, whatever their paths, and the files it carried come back as bytes;
+  // the notes its runtime wrote (marked runtime) are that room's, not the project's.
+  const app = baseFromApp({kind: 'levels', files: [{path: '.recursive/RUN.md', content: 'r', runtime: true}, {path: '.recursive/mine.md', content: 'm'}, {path: 'a.txt', content: 'a'},
     {path: 'logo.png', content_base64: 'AQID', mode: '100644', passthrough: true, reason: 'binary'}]});
-  assert.deepEqual(app.entries.map(e => [e.path, e.bytes ? [...e.bytes] : e.text]), [['.recursive/RUN.md', 'r'], ['a.txt', 'a'], ['logo.png', [1, 2, 3]]]);
+  assert.deepEqual(app.entries.map(e => [e.path, e.bytes ? [...e.bytes] : e.text]), [['.recursive/mine.md', 'm'], ['a.txt', 'a'], ['logo.png', [1, 2, 3]]]);
 });
 
-test('refs: a child keeps only refs its parent holds; a bare source id cites every held chunk of it; a splitter reads summaries cut to its refs, a worker its chunks', () => {
-  const held = new Set(['S1#1', 'S1#2', 'S1#3', 'S3#1']);
-  assert.deepEqual(narrowRefs(['S1#2', 'S9#1', 'S2#1', 'nonsense', 'S1#2'], held), {kept: ['S1#2'], dropped: ['S9#1', 'S2#1', 'nonsense']});
-  assert.deepEqual(narrowRefs(['S1'], held), {kept: ['S1#1', 'S1#2', 'S1#3'], dropped: []});
-  assert.deepEqual(narrowRefs('S3#1', held), {kept: ['S3#1'], dropped: []});
-  assert.deepEqual(narrowRefs(null, held), {kept: [], dropped: []});
-  // No count of refs: a split may cite every chunk its parent holds.
-  const many = new Set(Array.from({length: 40}, (_, i) => `S1#${i + 1}`));
-  assert.equal(narrowRefs(['S1'], many).kept.length, 40);
+// Owner 2026-10-16 20:38: "The splitter should be given interfaces and then write via those interfaces", not the runtime fixing its answer by matching.
+test('refs: piece() takes only refs its level holds, as written, and says exactly why it cannot store one; a splitter reads summaries cut to its refs, a worker its chunks', () => {
+  const held = ['S1#1', 'S1#2', 'S1#3', 'S3#1'];
+  const s = splitterState({own: [{name: 'a'}, {name: 'b'}], refs: held});
+  const put = (label, refs) => splitterCall(s, 'piece', {label, task: 't', contracts: ['a'], refs}).result;
+  for (const bad of [['S1#2', 'S9#1'], ['S1'], ['nonsense']]) {
+    const r = put('x', bad);
+    assert.match(r.error, /^refs names .*which this level does not hold: .* You hold: S1#1, S1#2, S1#3, S3#1$/, JSON.stringify(bad));
+    assert.ok(!r.error.includes('"S1#2"'), 'only the refs it does not hold are named');
+  }
+  assert.equal(s.pieces.length, 0, 'nothing is stored from a call it refused');
+  assert.match(put('x', 'S1#1').error, /refs is a list of names/);
+  assert.deepEqual(put('p1', ['S1#2', 'S3#1']), {stored: 'p1', pieces: 1});
+  // No count of refs: a piece may be given every ref its level holds; what is stored is what was declared.
+  const many = Array.from({length: 40}, (_, i) => `S1#${i + 1}`), s2 = splitterState({own: [{name: 'a'}], refs: many});
+  assert.equal(splitterCall(s2, 'piece', {label: 'all', task: 't', contracts: ['a'], refs: many}).result.stored, 'all');
+  assert.deepEqual(s2.pieces[0].refs, many);
+  assert.deepEqual(levelOf(s).pieces[0].refs, ['S1#2', 'S3#1']);
   // A splitter reads the summaries cut to its refs (a part with no note is listed all the same); a worker every chunk it holds, whole.
   const rows = [{id: 'S1', url: 'https://docs.example.com/a', title: 'A', summary: {title: 'A', summary: 'sum', outline: [{ref: 'S1#1', gist: 'g1'}, {ref: 'S1#2', gist: 'g2'}, {ref: 'S1#3'}]}},
     {id: 'S2', url: 'https://docs.example.com/b', error: 'source_refused: http 404', summary: null}];
@@ -180,8 +190,8 @@ const GUIDE_MD = '# Guide\n\n## Layout\n\nOne record per line.\n', FAQ_MD = '# F
 const LINKS_LEVEL = {contracts: DOCS,
   validations: [has('g1', 'GUIDE.md', '## Layout'), has('g2', 'GUIDE.md', '# Guide'), has('g3', 'GUIDE.md', 'One record per line'),
     has('f1', 'FAQ.md', '## Questions'), has('f2', 'FAQ.md', '# FAQ'), has('f3', 'FAQ.md', 'What is a record')],
-  pieces: [{label: 'Guide writer', task: 'Write GUIDE.md, the guide to the format', contracts: ['GUIDE.md'], refs: ['S1']},
-    {label: 'Questions writer', task: 'Write FAQ.md, the questions about the format', contracts: ['FAQ.md'], refs: ['S1#2', 'S9#1', 'S2#1']}]};
+  pieces: [{label: 'Guide writer', task: 'Write GUIDE.md, the guide to the format', contracts: ['GUIDE.md'], refs: ['S1#1', 'S1#2', 'S1#3']},
+    {label: 'Questions writer', task: 'Write FAQ.md, the questions about the format', contracts: ['FAQ.md'], refs: ['S1#2']}]};
 
 test('links in the prompt: fetched once with the owner\'s allowlist, stored and summarised, cited by the split, and each worker reads only its chunks', async () => {
   const fetch = fakeFetch({'https://docs.example.com/widget-format': () => new Response(PAGE, {headers: {'content-type': 'text/markdown; charset=utf-8'}})});
@@ -222,7 +232,8 @@ test('links in the prompt: fetched once with the owner\'s allowlist, stored and 
   const [guide, faq] = kids(room, m);
   assert.deepEqual(room.sourceRefs(guide.id), ['S1#1', 'S1#2', 'S1#3']);
   assert.deepEqual(room.sourceRefs(faq.id), ['S1#2']);
-  assert.match(events(room, 'refs_assigned').map(e => e.body).join('\n'), /"Questions writer" reads S1#2; not held here, so not given: S9#1, S2#1/);
+  // Each piece holds the refs its splitter gave it, as declared (piece() refuses a ref the level does not hold).
+  assert.match(events(room, 'refs_assigned').map(e => e.body).join('\n'), /"Questions writer" reads S1#2\./);
   // A worker reads only the chunks it holds, each whole, in its world.
   const asked = name => calls.leaf.find(u => u.prompt.deliver.some(c => c.name === name));
   const g = asked('GUIDE.md').world, q = asked('FAQ.md').world;
@@ -612,7 +623,7 @@ test('S8b review M4: the room\'s manager holds every chunk, the splitter sees ev
 const BOM_SHOUT = '﻿function shout(s) { return String(s).toUpperCase() + "!"; }\nmodule.exports = {shout};\n';
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 1, 2, 3]);
 const FULL_REPO = {'package.json': BASE_FILES['package.json'], 'bin/widget.js': {data: BASE_FILES['bin/widget.js'], mode: 0o755}, 'src/shout.js': BOM_SHOUT,
-  '.github/workflows/ci.yml': 'on: push\n', 'docs/my notes.md': 'notes\n', 'logo.png': PNG, 'dist/bundle.js': 'bundled\n', 'glue/loader.js': 'the old loader\n'};
+  '.github/workflows/ci.yml': 'on: push\n', 'docs/my notes.md': 'notes\n', 'logo.png': PNG, 'dist/bundle.js': 'bundled\n', 'glue/loader.js': 'module.exports = {};\n'};
 // A commit of files ({path: text | {mode, text}}) in fs/dir, as a fake clone leaves it.
 const GIT_AUTHOR = {name: 'base', email: 'base@example.com', timestamp: 1700000000, timezoneOffset: 0};
 async function commitFiles(fs, dir, files, ref) {
@@ -631,7 +642,7 @@ async function treeOf(fs, dir, commit) {
   return out;
 }
 
-test('S8b review M5: files the room does not build are carried untouched (bytes, mode), BOMs and exec bits survive, RUN.md says what was carried and not, and onto_base commits only the changes on the base commit', async () => {
+test('S8b review M5: files the room does not build are carried untouched (bytes, mode), BOMs and exec bits survive, RUN.md says what was carried, and onto_base commits only the changes on the base commit', async () => {
   const tip = await commitFiles(new MemoryFS(), '/r', FULL_REPO, 'refs/heads/main');
   const fetch = fakeFetch(repoRoutes(FULL_REPO, tip));
   const {room, drain} = inputsRoom({level: README_LEVEL, judge: readmeJudge, fetch, answers: {'README.md': [wrote([['README.md', GOOD_README]])]}});
@@ -646,10 +657,13 @@ test('S8b review M5: files the room does not build are carried untouched (bytes,
   assert.deepEqual(app.unchecked, ['logo.png']);
   assert.match(app.note, /; 1 of them no syntax step compiled or no box held: logo\.png\.$/);
   const at = p => app.files.find(f => f.path === p);
-  assert.deepEqual(app.files.filter(f => !f.path.startsWith('.recursive/')).map(f => f.path).sort(), ['.github/workflows/ci.yml', 'README.md', 'bin/widget.js', 'dist/bundle.js', 'docs/my notes.md', 'logo.png', 'package.json', 'src/shout.js']);
+  assert.deepEqual(app.files.filter(f => !f.runtime).map(f => f.path).sort(), ['.github/workflows/ci.yml', 'README.md', 'bin/widget.js', 'dist/bundle.js', 'docs/my notes.md', 'glue/loader.js', 'logo.png', 'package.json', 'src/shout.js']);
+  // The project's own glue/ is its file like any other; the runtime's notes are marked as the runtime's.
+  assert.equal(at('glue/loader.js').from_base, 'unchanged');
+  assert.ok(app.files.filter(f => f.path.startsWith('.recursive/')).every(f => f.runtime === true));
   assert.equal(at('dist/bundle.js').from_base, 'unchanged');
   // The digest is the checked bundle's (the carried file it holds included); the files carried as bytes are appended after it.
-  assert.equal(app.digest, await snapshotHash(new Map(app.files.filter(f => !f.passthrough && !f.path.startsWith('.recursive/')).map(f => [f.path, f.content]))));
+  assert.equal(app.digest, await snapshotHash(new Map(app.files.filter(f => !f.passthrough && !f.runtime).map(f => [f.path, f.content]))));
   assert.equal(at('src/shout.js').content, BOM_SHOUT, 'the byte order mark survives');
   assert.deepEqual([at('bin/widget.js').mode, at('bin/widget.js').from_base, at('README.md').from_base], ['100755', 'unchanged', undefined]);
   assert.deepEqual([...fromBase64(at('logo.png').content_base64)], [...PNG]);
@@ -657,7 +671,7 @@ test('S8b review M5: files the room does not build are carried untouched (bytes,
   assert.deepEqual([at('.github/workflows/ci.yml').from_base, at('docs/my notes.md').from_base], ['unchanged', 'unchanged']);
   const notes = at('.recursive/RUN.md').content;
   assert.match(notes, /Carried untouched, never built, run or checked \(1\):[\s\S]*`logo\.png` \(binary\)/);
-  assert.match(notes, /Not carried[\s\S]*`glue\/loader\.js` \(the runtime writes this path for each run\)/);
+  assert.doesNotMatch(notes, /Not carried/);
   // Only the binary is carried as bytes: dist/bundle.js is text, so it is a base file like any other (no directory-name list).
   assert.equal(room.snapshot().base.passthrough, 1);
   // The ZIP holds the bytes and the exec bit.

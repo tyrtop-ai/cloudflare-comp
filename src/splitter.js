@@ -30,11 +30,13 @@ const nameList = (v, what) => Array.isArray(v) && v.every(x => typeof x === 'str
 // programs: every executable the box has (its inventory), beyond the rows'.
 // readBase(path), given to a level that holds the project the work starts
 // from: one file of it, whole (the room's readBaseFile), as read_file shows it.
-export function splitterState({own = [], held = [], have = [], calls = [], rows = TOOLCHAINS, base = [], maxPieces = 7, divide = true, carry = null, programs = [], readBase = null} = {}) {
+// refs: the outline refs of the linked pages this level holds, the only refs
+// a piece may be given.
+export function splitterState({own = [], held = [], have = [], calls = [], rows = TOOLCHAINS, base = [], maxPieces = 7, divide = true, carry = null, programs = [], readBase = null, refs = []} = {}) {
   const installed = (Array.isArray(rows) ? rows : TOOLCHAINS).filter(r => r && typeof r.id === 'string');
   return {own, held, have: have.filter(c => c?.name && !own.some(o => o.name === c.name)), calls, rows: installed, ids: new Set(installed.map(r => r.id)),
     executables: new Set([...installed.flatMap(r => r.executables || []), ...programs]), base: new Set(base instanceof Set ? [...base] : Array.isArray(base) ? base : []),
-    maxPieces, divide, readBase: typeof readBase === 'function' ? readBase : null, contracts: [...(carry?.contracts || [])], validations: [...(carry?.validations || [])], pieces: [...(carry?.pieces || [])], done: false};
+    maxPieces, divide, readBase: typeof readBase === 'function' ? readBase : null, refs: [...(refs || [])], contracts: [...(carry?.contracts || [])], validations: [...(carry?.validations || [])], pieces: [...(carry?.pieces || [])], done: false};
 }
 // The functions offered: piece only when the level may divide, read_file only when it holds the project the work starts from.
 export const splitterTools = (divide, reads = false) => TOOLS.splitter.filter(t => (divide || t.name !== 'piece') && (reads || t.name !== 'read_file'));
@@ -135,6 +137,9 @@ function piece(s, a) {
     out.uses = uses.list.filter(n => !out.contracts.includes(n));
   }
   for (const k of ['packages', 'refs']) if (a[k] !== undefined) { const l = nameList(a[k], k); if (l.error) return {error: l.error}; out[k] = l.list; }
+  // A piece reads only refs this level holds, each as it is written in the outline.
+  const unheld = (out.refs || []).filter(r => !s.refs.includes(r));
+  if (unheld.length) return {error: `refs names ${unheld.map(r => `"${r.slice(0, 80)}"`).join(', ')}, which this level does not hold: a piece reads only outline refs of the linked pages you hold, each written as the outline writes it. You hold: ${listed(s.refs)}`};
   s.pieces.push(out);
   return {stored: out.label, pieces: s.pieces.length};
 }
