@@ -8565,7 +8565,7 @@ export class ControlRoom extends DurableObject {
   // pieces), and Clef's review alone decides whether that division is
   // valid, up to SPLIT_ATTEMPTS attempts. A pending job (level_job:<id>:
   // a rebuild of what an archived child delivered, or an extension for a
-  // change or an ask none of its children covers) is an attempt of the same
+  // change none of its children covers) is an attempt of the same
   // kind on a level that has its design, under the same pre-grade: Clef
   // grades a manager once, and a caught manager's jobs are not divided either.
   async splitStep(id, job=null) {
@@ -8711,18 +8711,14 @@ export class ControlRoom extends DurableObject {
   }
   // What an admitted level still owes, each step safe to run again, so the
   // turn after a restart runs what is left: the person's confirmation for
-  // the existing files its contracts change, its children's rows, and the
-  // answer to the ask that started it (once: an asker that no longer waits
-  // for it is not answered again). Its job is cleared, and the manager
-  // waits, when all of it is done.
+  // the existing files its contracts change and its children's rows. Its
+  // job is cleared, and the manager waits, when all of it is done.
   async finishLevel(id) {
     const job=this.read(`level_job:${id}`,null);
     if(!job?.admitted)return;
     const {contracts}=job.admitted;
     await this.baseContracts(id,[{interfaces:contracts}]);
     await this.spawnLevel(id);
-    if(job.ask&&query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND topic=?',job.ask.worker,job.ask.key).length)
-      await this.answerAsk(job.ask,contracts.find(c=>c.name===job.ask.name)||contracts[0]);
     this.save(`level_job:${id}`,null);
     this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
   }
@@ -8885,7 +8881,7 @@ export class ControlRoom extends DurableObject {
   //   answer(contract) to an asker: a contract its children deliver (none of the asker's own line);
   //   route_to(child)  hands a complaint or a change to a child;
   //   ask_parent(need) the same ask one level up; at the room, the asker is archived;
-  //   extend(need)     hands the need to its splitter as a level job.
+  //   extend(...)      hands a change, or a complaint naming a contract no live child delivers, to its splitter as a level job.
   // A walk up the tree is a chain of ask_parent calls, each one manager's
   // choice. What the manager reads is its files only (levelDesign, designOf).
   managerView(m) {
@@ -8910,7 +8906,7 @@ export class ControlRoom extends DurableObject {
     if(item.kind==='ask') {
       const line=view.children.find(c=>this.within(item.worker,c.id)),seen=new Set();
       for(const c of view.children)if(c!==line)for(const k of c.contracts)if(!seen.has(k.name)){const j=seen.size;seen.add(k.name);out.push({fn:'answer',contract:k,key:`answer_${j}`,question:clefText('answer',{j}),call:`answer(${k.name})`});}
-      out.push({fn:'extend',key:'extend',question:CLEF.extend_ask,call:'extend(need)'},{fn:'ask_parent',key:'ask_parent',question:CLEF.ask_parent,call:'ask_parent(need)'});
+      out.push({fn:'ask_parent',key:'ask_parent',question:CLEF.ask_parent,call:'ask_parent(need)'});
       return out;
     }
     view.children.forEach((c,i)=>out.push({fn:'route_to',child:c,key:`route_to_${i}`,question:clefText(item.kind==='change'?'route_change':'route_complaint',{i}),call:`route_to("${c.label}")`}));
@@ -9021,9 +9017,8 @@ export class ControlRoom extends DurableObject {
   }
   // ---------- asks ----------
   // An ask a worker sent (workerAsk), held by manager m: m's choice answers
-  // it with a contract its children deliver, extends its level with what
-  // gives it (its splitter; finishLevel answers the asker), or asks its own
-  // parent the same. At the room (the parent of the manager it created), an
+  // it with a contract its children deliver (none of the asker's own line),
+  // or asks its own parent the same. At the room (the parent of the manager it created), an
   // ask no manager up to it holds archives the asker with its subtree, and
   // its manager's splitter rebuilds what it delivered (rebuildOrphans).
   async routeAsk(m, ask) {
@@ -9034,11 +9029,6 @@ export class ControlRoom extends DurableObject {
     const pick=await this.managerChoice(m,{kind:'ask',worker:ask.worker,need:ask.need,name:ask.name||''},held);
     if(!pick)return;
     if(pick.fn==='answer')return this.answerAsk(ask,pick.contract);
-    if(pick.fn==='extend') {
-      this.save(`level_job:${m}`,{kind:'extend',key:ask.key,text:ask.need,label:clip(ask.name||ask.need,60),own:[],ask});
-      this.event(m,'level_extend',clip(`"${this.node(m)?.label||m}" hands ${want} to its splitter, which extends the level.`,500),ask.worker);
-      return void this.wake(m);
-    }
     const up=this.agentAbove(m);
     if(up) {
       this.insertProblem({...held,holder:up});

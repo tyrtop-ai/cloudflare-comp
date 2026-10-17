@@ -219,7 +219,7 @@ test('v8: a manager\'s choice is one Clef request: one noul question per functio
   // The questions of the other functions are filled by key.
   assert.match(clefText('answer', {j: 2}), /^Does contract 2 give what the request needs/);
   assert.match(clefText('route_change', {i: 1}), /^Does this change concern what child 1 delivers/);
-  for (const k of ['extend_ask', 'extend_change', 'ask_parent']) assert.match(CLEF[k], /\?/);
+  for (const k of ['extend_change', 'extend_complaint', 'ask_parent']) assert.match(CLEF[k], /\?/);
   assert.deepEqual(await chooseCall(env, {state, options: []}), []);
   const bad = {AI: {run: async () => ({answers: {route_to_0: {noul: 0.5}, route_to_1: {noul: 7}}})}};
   await assert.rejects(chooseCall(bad, {state, options: options.slice(0, 2)}), /no valid probability for route_to_1/);

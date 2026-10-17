@@ -552,42 +552,39 @@ const FORMAT_LEVEL = {contracts: [FORMAT], pieces: [], validations: [
   callCheck('f3', ['formatTicket'], [['formatTicket', [{id: 2, title: 'Coffee', status: 'closed'}], '#2 Coffee [closed]']])]};
 for (const [where, method, when] of [
   ['after its level file is committed, before the base-file confirmation and its children\'s rows', 'baseContracts', function (id) { return this.read(`level_job:${id}`, null)?.kind === 'extend'; }],
-  ['after its children\'s rows, before the ask that started it is answered', 'answerAsk', () => true]
-]) test(`an extension for an ask, interrupted by a restart ${where}: the turn after the restart finishes what the admission owes; the asker is answered once, the level is not split again, and the room completes`, async () => {
-  let asked = false;
-  const leaf = user => {
-    if (user.prompt.deliver.some(c => c.name === 'formatTicket')) return deliver({'format.js': FORMAT_JS});
-    if (user.prompt.deliver.some(c => c.name === 'report') && !asked) { asked = true; return fileBlocks([], {summary: 'needs to print a ticket as one line', wait: true, ask: [{need: 'format a ticket as one line', name: 'formatTicket'}]}); }
-    return trackerLeaf(user);
-  };
-  const r = liveRoom({split: user => user.contracts_you_have ? FORMAT_LEVEL : trackerSplit(user), leaf, clef: usualClef(), room_id: 'levels-test'});
-  const gone = crashAt(r.room, method, when);
+  ['after its children\'s rows, before its job is cleared', 'save', function (key, value) { return value === null && /^level_job:/.test(key) && this.read(key, null)?.kind === 'extend'; }]
+]) test(`an extension for a change, interrupted by a restart ${where}: the turn after the restart finishes what the admission owes; the level is not split again, and the room completes`, async () => {
+  const leaf = user => user.prompt.deliver.some(c => c.name === 'formatTicket') ? deliver({'format.js': FORMAT_JS}) : trackerLeaf(user);
+  // The room's manager hands the change to the report piece, whose splitter extends its level (a level of one worker, so no division).
+  const top = state => state.assignment === TRACKER;
+  const clef = usualClef({'^route_to_\\d+$': (k, state) => top(state) && state.children[Number(k.split('_').pop())].label === 'Ticket report' ? 0.9 : 0.1, '^extend$': (_k, state) => top(state) ? 0.05 : 0.95});
+  const r = liveRoom({split: user => user.contracts_you_have ? FORMAT_LEVEL : trackerSplit(user), leaf, clef, room_id: 'levels-test'});
   await r.room.start(TRACKER, 80, {pipeline: 'v8', parallel: 1}, 'levels-test');
-  assert.equal(await Promise.race([r.drain().then(() => false), gone]), true, 'the restart came');
-  const s = reopen(r), room = s.room, m = room.roomManager();
-  const rp = room.children(m).find(c => c.label === 'Ticket report'), asker = room.children(rp.id).find(c => c.role === 'worker');
+  await r.drain();
+  assert.equal(r.room.get('status'), 'complete', trail(r.room));
+  const rp = r.room.children(r.room.roomManager()).find(c => c.label === 'Ticket report').id, before = r.room.liveChildren(rp).map(c => c.id);
+  const gone = crashAt(r.room, method, when);
+  await r.room.amend('Also add a function that formats a ticket as one line.');
+  assert.equal(await Promise.race([r.drain().then(() => false), gone]), true, `the restart came: ${trail(r.room)}`);
+  const s = reopen(r), room = s.room;
   assert.equal(room.get('status'), 'paused');
   assert.ok(events(room, 'recovered').length);
-  assert.ok(room.read(`level_job:${rp.id}`, null)?.admitted, 'what the admission owes is still on its job');
+  assert.ok(room.read(`level_job:${rp}`, null)?.admitted, 'what the admission owes is still on its job');
   await room.resume(80);
   await s.drain();
   assert.equal(room.get('status'), 'complete', trail(room));
   assert.equal(r.calls.split.filter(u => u.contracts_you_have).length, 1, 'the level was split once');
-  const provided = () => room.db().exec("SELECT COUNT(*) AS n FROM messages WHERE recipient=? AND body LIKE '[route:provided]%'", asker.id).toArray()[0].n;
-  assert.equal(provided(), 1, 'the asker is answered once');
-  assert.deepEqual(room.read(`fn_answers:${asker.id}`, []).map(a => a.kind), ['provided']);
-  assert.equal(room.read(`level_job:${rp.id}`, null), null);
-  const file = levelOf(room, rp.id), added = room.liveChildren(rp.id).find(c => c.id !== asker.id);
-  assert.deepEqual(file.children.map(c => [c.id, c.delivers]), [[asker.id, ['report']], [added.id, ['formatTicket']]]);
-  assert.deepEqual(file.children[0].calls, ['createTicket', 'formatTicket']);
-  rowsListed(room, rp.id);
-  // Its steps run again change nothing: no new row, no second answer.
+  assert.equal(room.read(`level_job:${rp}`, null), null);
+  const file = levelOf(room, rp), added = room.liveChildren(rp).filter(c => !before.includes(c.id));
+  assert.equal(added.length, 1);
+  assert.deepEqual(file.children.find(c => c.id === added[0].id).delivers, ['formatTicket']);
+  rowsListed(room, rp);
+  // Its steps run again change nothing: no new row.
   const rows = room.allNodes().length;
-  room.save(`level_job:${rp.id}`, {kind: 'extend', admitted: {contracts: file.contracts}, ask: {worker: asker.id, key: 'k', name: 'formatTicket'}});
-  await room.finishLevel(rp.id);
+  room.save(`level_job:${rp}`, {kind: 'extend', admitted: {contracts: file.contracts}});
+  await room.finishLevel(rp);
   assert.equal(room.allNodes().length, rows);
-  assert.equal(provided(), 1);
-  assert.equal(room.read(`level_job:${rp.id}`, null), null);
+  assert.equal(room.read(`level_job:${rp}`, null), null);
 });
 
 // ------------------------------------------------------------ rooms made before hex ids

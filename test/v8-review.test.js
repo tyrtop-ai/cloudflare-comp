@@ -200,16 +200,17 @@ test('F9: Clef failing on a manager\'s choice on an ask is asked again, then the
   const r = await toolkit({leaf, clef: clefFor(undefined, {'^ask_parent$': () => bad ? 7 : 0.95})});
   const m = at(r.room);
   assert.equal(r.room.get('status'), 'paused', tail(r.room));
-  assert.deepEqual(r.room.roomHolds().map(h => [h.kind, h.agent]), [['clef_blocked', m.Louder]]);
-  assert.match(r.room.roomHolds()[0].text, /Clef could not answer which function answers the ask for synonyms at "Louder": .*Nothing was decided on it; Continue asks again\./s);
+  // Louder's only child is the asker's line: ask_parent is the one function it may call, so Clef is first asked at Loud part.
+  assert.deepEqual(r.room.roomHolds().map(h => [h.kind, h.agent]), [['clef_blocked', m['Loud part']]]);
+  assert.match(r.room.roomHolds()[0].text, /Clef could not answer which function answers the ask for synonyms at "Loud part": .*Nothing was decided on it; Continue asks again\./s);
   assert.equal(events(r.room, 'clef_retry').length, 2, 'asked again twice first');
   assert.deepEqual(r.room.allNodes().filter(n => n.status === 'archived'), [], 'a failure is never read as out of scope');
-  assert.ok(!events(r.room, 'manager_choice').length);
+  assert.deepEqual(events(r.room, 'manager_choice').map(e => e.actor), [m.Louder]);
   bad = false;
   await again(r, 60);
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
-  assert.deepEqual(events(r.room, 'manager_choice').map(e => e.actor), [m.Louder, m['Loud part'], m.Root], 'the walk went on from Louder, where it stopped: a chain of ask_parent calls');
-  assert.ok(events(r.room, 'manager_choice').every(e => /: ask_parent\(need\) p=0\.950;/.test(e.body)));
+  assert.deepEqual(events(r.room, 'manager_choice').map(e => e.actor), [m.Louder, m['Loud part'], m.Root], 'the walk went on from Loud part, where it stopped: a chain of ask_parent calls');
+  assert.ok(events(r.room, 'manager_choice').every(e => /: ask_parent\(need\) (\(the only function it may call\)|p=0\.950;)/.test(e.body)));
   assert.equal(r.room.allNodes().filter(n => n.status === 'archived').length, 1, 'archived on answers below the bar at every level');
 });
 test('F9: Clef failing on a change\'s routing holds the room as infrastructure: no splitter extends the level; Continue routes it to the child it concerns, and the change lands', {skip}, async () => {

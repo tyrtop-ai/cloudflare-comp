@@ -191,7 +191,7 @@ test('an ask in scope nowhere up to the room: the asker is archived with its fil
   assert.deepEqual(room.promisedOf(ws[1].id).map(c => c.name), ['convert'], 'the rebuilt worker delivers what the archived one did');
   assert.ok(room.node(ws[0].id), 'nothing is deleted: the archived row stays');
   assert.deepEqual(room.splitterRows().map(r => r.kind), ['split', 'rebuild']);
-  assert.ok(events(room, 'manager_choice').some(e => /^On the ask for readingsDatabase: ask_parent\(need\) p=0\.950/.test(e.body)), 'the room\'s manager chose ask_parent, and its parent is the room');
+  assert.ok(events(room, 'manager_choice').some(e => /^On the ask for readingsDatabase: ask_parent\(need\) /.test(e.body)), 'the room\'s manager chose ask_parent, and its parent is the room');
   assert.ok(events(room, 'archived').length === 1);
   // The rebuilt level keeps the validations it had, and its splitter is shown them.
   assert.equal(calls.split[1].validations_you_have.length, 3);

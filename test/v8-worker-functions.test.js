@@ -3,6 +3,7 @@
 // each result is all the feedback there is, and nothing reads its prose. A
 // manager's turn on an ask, a complaint or a change is Clef scoring each
 // function call it may make (answer, route_to, extend, ask_parent) as one
+// (extend only on a complaint or a change: an ask is answered or asked up)
 // typed option over its own files, and the runtime calling the highest; a
 // walk up the tree is a chain of ask_parent calls, and at the room an ask
 // nobody holds archives the asker, whose manager's splitter rebuilds it.
@@ -180,28 +181,26 @@ test('an ask goes to the asker\'s manager as one choice among its functions; wit
     }
     return deliver({'report.js': reportFile(user)});
   };
-  // The report piece's manager has no child to answer it: Clef finds producing it outside the piece's assignment.
+  // The report piece's manager has no child to answer it: ask_parent is the one function it may call, and Clef is not asked.
   const {asked: choices, clef} = recorded({'^ask_parent$': (_k, state) => state.assignment === TRACKER ? 0.1 : 0.95});
   const {room, calls} = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf, clef});
   assert.equal(room.get('status'), 'complete', trail(room));
   const m = room.roomManager(), rp = room.children(m).find(c => c.label === 'Ticket report'), w = room.liveChildren(rp.id)[0];
   assert.ok(asked && calls.leafRounds.some(r => r.round === 3));
-  // Two choices: the piece's manager, then the room's manager.
+  // One choice Clef scores: the room's manager's (the piece's only child is the asker's own line, so it has nothing to answer with).
   const asks = choices.filter(c => c.state.item.kind === 'ask');
-  assert.equal(asks.length, 2);
-  assert.deepEqual(Object.keys(asks[0].questions), ['extend', 'ask_parent'], 'the piece\'s only child is the asker\'s own line: nothing to answer with');
+  assert.equal(asks.length, 1);
+  assert.deepEqual(Object.keys(asks[0].questions), ['answer_0', 'answer_1', 'ask_parent'], 'the store\'s contracts, none of the asker\'s line, and no extend');
   assert.equal(asks[0].questions.ask_parent.instructions, CLEF.ask_parent);
-  assert.equal(asks[0].questions.extend.instructions, CLEF.extend_ask);
+  assert.equal(asks[0].questions.answer_1.instructions, clefText('answer', {j: 1}));
   assert.deepEqual(asks[0].state.item, {kind: 'ask', need: 'read one ticket back by its id', expected_name: 'getTicket'});
-  assert.deepEqual(Object.keys(asks[1].questions), ['answer_0', 'answer_1', 'extend', 'ask_parent'], 'the store\'s contracts, none of the asker\'s line');
-  assert.equal(asks[1].questions.answer_1.instructions, clefText('answer', {j: 1}));
-  assert.deepEqual(asks[1].state.contracts_offered.map(c => c.contract.split(':')[0]), ['function createTicket(title) in store.js', 'function getTicket(id) in store.js']);
-  assert.deepEqual(asks[1].state.children.map(c => c.label), ['Ticket store', 'Ticket report']);
+  assert.deepEqual(asks[0].state.contracts_offered.map(c => c.contract.split(':')[0]), ['function createTicket(title) in store.js', 'function getTicket(id) in store.js']);
+  assert.deepEqual(asks[0].state.children.map(c => c.label), ['Ticket store', 'Ticket report']);
   // Each choice is an event with Clef's p for the chosen call and the others'.
   const said = events(room, 'manager_choice').filter(e => /^On the ask/.test(e.body)).map(e => [e.actor, e.body]);
   assert.deepEqual(said.map(([a]) => a), [rp.id, m]);
-  assert.equal(said[0][1], 'On the ask for getTicket: ask_parent(need) p=0.950; the others: extend(need) p=0.850.');
-  assert.equal(said[1][1], 'On the ask for getTicket: answer(getTicket) p=0.950; the others: answer(createTicket) p=0.900, extend(need) p=0.850, ask_parent(need) p=0.100.');
+  assert.equal(said[0][1], 'On the ask for getTicket: ask_parent(need) (the only function it may call).');
+  assert.equal(said[1][1], 'On the ask for getTicket: answer(getTicket) p=0.950; the others: answer(createTicket) p=0.900, ask_parent(need) p=0.100.');
   assert.equal(events(room, 'ask_parent').length, 1);
   // The answer reached the asker: the contract, how to refer to it, and its entry calls it.
   const answers = room.read(`fn_answers:${w.id}`, []);
@@ -222,7 +221,7 @@ test('an ask no manager up to the room holds: each manager chooses ask_parent, a
   assert.equal(room.get('status'), 'complete', trail(room));
   const m = room.roomManager(), rp = room.children(m).find(c => c.label === 'Ticket report');
   const [gone, rebuilt] = room.children(rp.id).filter(c => c.role === 'worker');
-  assert.deepEqual(events(room, 'manager_choice').filter(e => /ticketDatabase/.test(e.body)).map(e => [e.actor, /: ask_parent\(need\) p=0\.950;/.test(e.body)]), [[rp.id, true], [m, true]], 'a chain of ask_parent calls');
+  assert.deepEqual(events(room, 'manager_choice').filter(e => /ticketDatabase/.test(e.body)).map(e => [e.actor, /: ask_parent\(need\) (\(the only function it may call\)|p=0\.950;)/.test(e.body)]), [[rp.id, true], [m, true]], 'a chain of ask_parent calls');
   assert.equal(gone.status, 'archived');
   assert.match(events(room, 'archived')[0].body, /ticketDatabase \(a database server to keep the tickets\) is held by no manager up to the room/);
   assert.equal(rebuilt.status, 'done');

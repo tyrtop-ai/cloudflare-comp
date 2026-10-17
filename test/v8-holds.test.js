@@ -163,24 +163,22 @@ test('a change whose extension cannot be stated: its splitter goes on in a new s
   assert.equal(r.room.promptRows().at(-1).status, 'done', 'the change\'s prompt is this run\'s');
 });
 
-test('an ask in scope at a manager whose splitter cannot extend its level: its splitter goes on in a new session each turn until the room\'s budget ends, nothing is held, the asker waits with no answer, and the room never completes; Continue extends the level and answers the asker by name', {skip}, async () => {
-  let fail = true;
-  const base = splitFor();
-  const split = user => user.contracts_you_have ? (fail ? 'not json at all' : {contracts: [{...REVERSE}], validations: REVERSED, pieces: []}) : base(user);
-  const leaf = leafOf({answers: {reverse: REVERSE_PY, loud: user => (user.world.answers || []).length ? 'from shout import shout\nfrom reverse import reverse\n\n\ndef loud(s):\n    return shout(s) + shout(s)\n' : FILES.loud},
-    control: (user, n) => user.prompt.deliver.some(c => c.name === 'loud') && !(user.world.answers || []).length ? {summary: 'need reverse', wait: true, ask: [{need: 'reverses a word', name: 'reverse'}]} : null});
-  const r = await toolkit({split, leaf, clef: clefFor(undefined, {'^answer_': 0.1})});
-  const m = at(r.room), worker = r.room.children(m.Louder).find(c => c.role === 'worker');
-  assert.equal(r.room.get('status'), 'paused', tail(r.room));
-  assert.deepEqual(holds(r.room), [], 'nothing is held: the splitter goes on');
-  assert.ok(r.room.splitterRows().filter(x => x.outcome === 'context').length > 1, 'a new session each turn, from what it declared');
-  assert.equal(r.room.node(worker.id).status, 'waiting');
-  assert.deepEqual(r.room.read(`fn_answers:${worker.id}`, []), [], 'no answer reached the asker');
-  assert.equal(r.room.planned(), false, 'v7\'s request machinery is not a v8 room\'s');
-  fail = false;
-  await again(r, 40);
+test('an ask no child\'s contract gives is never met by growing a level: no splitter extends one, each manager up to the room calls ask_parent, the asker is archived, and its rebuild delivers what it did; the room completes', {skip}, async () => {
+  let asked = false;
+  const leaf = leafOf({control: user => {
+    if (!user.prompt.deliver.some(c => c.name === 'loud') || asked) return null;
+    asked = true;
+    return {summary: 'need reverse', wait: true, ask: [{need: 'reverses a word', name: 'reverse'}]};
+  }});
+  const r = await toolkit({leaf, clef: clefFor(undefined, {'^answer_': 0.1, '^ask_parent$': 0.95})});
+  const m = at(r.room);
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
-  const answers = r.room.read(`fn_answers:${worker.id}`, []);
-  assert.deepEqual(answers.map(a => a.kind), ['provided']);
-  assert.match(answers[0].text, /Refer to it exactly as: from reverse import reverse, and use it rather than writing your own\./);
+  assert.ok(!events(r.room, 'level_extend').length, 'no level grows for an ask');
+  assert.ok(!r.room.splitAttempts(m.Louder).some(a => String(a.job || '').startsWith('extend:')) && !r.room.splitAttempts(m.Root).some(a => String(a.job || '').startsWith('extend:')));
+  assert.deepEqual(events(r.room, 'manager_choice').map(e => e.actor), [m.Louder, m['Loud part'], m.Root]);
+  assert.ok(events(r.room, 'manager_choice').every(e => /: ask_parent\(need\)/.test(e.body)));
+  const workers = r.room.children(m.Louder).filter(c => c.role === 'worker');
+  assert.deepEqual(workers.map(c => c.status), ['archived', 'done']);
+  assert.deepEqual(r.room.read(`fn_answers:${workers[0].id}`, []), [], 'no answer reached the asker');
+  assert.deepEqual(r.room.designOf(workers[1].id).contracts.map(c => c.name), r.room.designOf(workers[0].id).contracts.map(c => c.name));
 });
