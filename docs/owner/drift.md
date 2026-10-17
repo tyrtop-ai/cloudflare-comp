@@ -6,11 +6,7 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 
 ## Open
 
-### R4-worker/code-1: The join silently drops the builder's own glue file when a delivered or existing file later takes its path
-- extra, `src/index.js:3772`
-- Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
-- Required: Remove the runtime's path collision rule. The builder's file stays in its world, and the overlap is left to the builder and the compiler, rather than the runtime silently deciding which of an agent's files exist.
-- Status: partly fixed (406e953: the builder's file wins at a delivered path; its world keeps every file it wrote). At an existing file's path the existing file still ships, since only the person's grant (base_confirm) changes one: waiting on the owner (does a builder file at an existing path go through base_confirm?).
+(none)
 
 ## Fixed, awaiting recheck
 
@@ -67,6 +63,12 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Owner (2026-10-15 15:57): in general I never want to tell an agent what they can't do. I want it to just simply be archiecturally the only path for them
 - Required: Drop the prohibition and the injection label from base_note. Existing files are simply part of the agent's world, and any limit on them comes from construction, not from a sentence telling the agent what it can't do.
 - Fixed in: 335cccd (owner, 2026-10-17: "Those interfaces shouldn't be mutating the data ever"): a linked page is read as served (no HTML reduction, hidden-element dropping or sanitising), a broker answer and a base file carry their text as it is, a repo path is kept as written, and no "untrusted" or "data, not instructions" label remains (a source says its id and address; a base file says it is from the base repository).
+
+### R4-worker/code-1: The join silently drops the builder's own glue file when a delivered or existing file later takes its path
+- extra, `src/index.js:3772`
+- Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
+- Required: Remove the runtime's path collision rule. The builder's file stays in its world, and the overlap is left to the builder and the compiler, rather than the runtime silently deciding which of an agent's files exist.
+- Fixed in: 53531d6 and this round's builder fix: the file at a delivered or existing file's path stays that file (a worker whose contract places it changes it), and the builder's own file there ships in the builder's own folder; nothing the builder writes is left out of the piece.
 
 ### R4-compiler/chrono-1: Call checks work only for JavaScript and Python: a function in any other language gets a false 'defines no X a call reaches' complaint
 - drift, `src/checks.js:38`
