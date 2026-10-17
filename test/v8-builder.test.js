@@ -52,20 +52,22 @@ test('the builder\'s functions: each does exactly what it is given or says exact
   assert.deepEqual(call('rename', {path: 'report.js', from: 'x', to: 'f(x)'}).result, {error: 'to is one name or reference path: letters, digits and _ $ . / @ : - only'});
   assert.deepEqual(call('rename', {path: 'report.js', from: 'x', to: 'x'}).result, {error: 'from and to are the same'});
   assert.deepEqual(call('rename', {path: 'nope.js', from: 'x', to: 'y'}).result, {error: MESSAGES.builder_no_file({path: 'nope.js', paths: 'report.js, store.js'})});
-  // write_file: a file of its own at a path no file holds; the same bytes again say so; a delivered or existing path, in any case, says why not.
+  // write_file: a file of its own at a path no file holds; the same bytes again say so; a delivered or existing path says why not.
   assert.deepEqual(call('write_file', {path: 'createTicket.js', content: "module.exports = require('./store.js');\n"}).result, {written: 'createTicket.js', characters: 40});
   assert.deepEqual(call('read_file', {path: 'createTicket.js'}).result, {path: 'createTicket.js', content: "module.exports = require('./store.js');\n"});
   assert.deepEqual(call('write_file', {path: 'createTicket.js', content: "module.exports = require('./store.js');\n"}).result, {unchanged: 'createTicket.js', says: MESSAGES.unchanged({path: 'createTicket.js'})});
-  assert.deepEqual(call('write_file', {path: 'Store.js', content: 'x'}).result, {error: MESSAGES.builder_delivered({path: 'store.js', piece: 'Ticket store'})});
-  assert.deepEqual(call('write_file', {path: 'readme.md', content: 'x'}).result, {error: MESSAGES.builder_held({path: 'README.md'})});
-  assert.deepEqual(call('write_file', {path: 'CreateTicket.js', content: 'x'}).result, {error: MESSAGES.builder_case({path: 'CreateTicket.js', twin: 'createTicket.js'})});
-  assert.deepEqual(call('write_file', {path: '../up.js', content: 'x'}).result, {error: MESSAGES.builder_not_inside({path: '../up.js', why: 'not a plain relative path (empty, \'.\' or \'..\' segment)'})});
+  assert.deepEqual(call('write_file', {path: 'store.js', content: 'x'}).result, {error: MESSAGES.builder_delivered({path: 'store.js', piece: 'Ticket store'})});
+  assert.deepEqual(call('write_file', {path: 'README.md', content: 'x'}).result, {error: MESSAGES.builder_held({path: 'README.md'})});
+  // No path rule: a path apart from another only in letter case is its own path, and a path reads as a rooted file system reads it.
+  assert.deepEqual(call('write_file', {path: 'Store.js', content: 'x'}).result, {written: 'Store.js', characters: 1});
+  assert.deepEqual(call('write_file', {path: '../.config/up file.js', content: 'x'}).result, {written: '.config/up file.js', characters: 1});
+  assert.deepEqual(call('read_file', {path: './.config//up file.js'}).result, {path: '.config/up file.js', content: 'x'});
   assert.deepEqual(call('write_file', {path: 'a.js'}).result, {error: 'content is the complete text of the file'});
   // A rename in a file of its own changes that file; its copies of the delivered files keep their renames apart.
   assert.equal(call('rename', {path: 'createTicket.js', from: './store.js', to: './store'}).result.renamed, 'createTicket.js');
   assert.equal(w.glue.get('createTicket.js'), "module.exports = require('./store');\n");
   assert.deepEqual([...w.renamed], [['report.js', [{from: './createTicket', to: './store.js'}, {from: 'createTicket', to: 'fileTicket'}]], ['store.js', [{from: 'title', to: '$title'}, {from: '$title', to: 'title'}]]]);
-  assert.deepEqual([w.written, w.unchanged], [['createTicket.js'], ['createTicket.js']]);
+  assert.deepEqual([w.written, w.unchanged], [['createTicket.js', 'Store.js', '.config/up file.js'], ['createTicket.js']]);
   assert.equal(w.files.get('store.js'), STORE, 'renamed there and back');
   // done ends the session with the summary given; anything else is no function.
   assert.deepEqual(call('done', {}), {result: {error: 'summary says what you did, in one line'}});

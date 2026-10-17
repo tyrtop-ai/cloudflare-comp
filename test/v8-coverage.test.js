@@ -8,6 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {toolkit, liveRoom, events, again, clefFor, splitFor, leafOf, at, tail, runOn, exported, call, CONTRACTS, VALIDATIONS, PARTS, FILES, GOAL, skip} from './helpers/toolkit.js';
 import {verifyChecks, snapshotHash, usualBuilder} from './helpers/room.js';
+import {MESSAGES} from '../src/prompts.js';
 
 // An executor whose boxes are logged with their start and end, and held at gate(box) before they run.
 const gated = (boxes, gate = async () => {}) => ({build: async req => {
@@ -170,13 +171,15 @@ test('packages across pieces: each piece holds its parent\'s packages of its lan
   const r = await toolkit({split, leaf, clef});
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
   const m = at(r.room), names = id => r.room.packagesOf(id).map(p => p.name), worker = label => r.room.children(m[label]).find(c => c.role === 'worker').id;
-  // Packages are allowed: a name a split gives that no row holds (numpy for Shouter) is granted from the top, listed on every row of the line.
+  // A name a split gives that no row holds (numpy for Shouter) is the piece's ask, sent to its manager as a worker's is: the runtime grants nothing of its own.
   assert.deepEqual(Object.fromEntries(['Root', 'Loud part', 'Quiet part', 'Shouter', 'Louder', 'Whisperer', 'Softener'].map(l => [l, names(m[l])])),
-    {Root: ['pytest', 'numpy'], 'Loud part': ['pytest', 'numpy'], 'Quiet part': ['pytest'], Shouter: ['pytest', 'numpy'], Louder: ['pytest'], Whisperer: ['pytest'], Softener: ['pytest']});
+    {Root: ['pytest'], 'Loud part': ['pytest'], 'Quiet part': ['pytest'], Shouter: ['pytest'], Louder: ['pytest'], Whisperer: ['pytest'], Softener: ['pytest']});
   assert.match(events(r.room, 'packages_planned').find(e => e.actor === m['Loud part']).body, /"Shouter" gets pytest and asks for numpy/);
-  assert.ok(events(r.room, 'package_answer').some(e => e.actor === m.Shouter && /^numpy: /.test(e.body)), 'the split\'s name no row holds is the piece\'s ask, answered');
+  assert.ok(events(r.room, 'ask_sent').some(e => e.actor === m.Shouter && e.body === `Asked for numpy (${MESSAGES.package_need({name: 'numpy'})}).`), 'the split\'s name no row holds is the piece\'s ask, sent to its manager');
+  assert.ok(r.room.problems("kind='ask'").some(p => p.holder === m['Loud part'] && p.facts.worker === m.Shouter && p.facts.name === 'numpy'));
+  assert.equal(events(r.room, 'package_answer').length, 0, 'no answer of the runtime\'s own');
   const louder = r.room.read(`fn_answers:${worker('Louder')}`, []);
-  assert.deepEqual(louder.map(a => [a.key, a.kind]), [['fn pytest', 'provided']]);
+  assert.deepEqual(louder.map(a => [a.key.replace(/ \([0-9a-f]{8}\)$/, ''), a.kind]), [['fn pytest', 'provided']]);
   assert.match(louder[0].text, /your packages hold pytest/i);
   // Notes writes text: its rows hold no package; its worker's ask for pytest goes to its manager, which hands it up, and the room's manager grants it.
   assert.deepEqual(names(worker('Notes')), ['pytest']);

@@ -42,8 +42,8 @@ import { placeChecks, checkEntries, installedModule, checkUses, importClosure, t
 import { zipFiles } from './zip.js';
 import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, namedIn } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
-import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer, packageAnswer } from './broker.js';
-import { normalizePackages, installedPackages, heldByName, packageLanguage, stdlibRow, piecePackages, packageLine } from './packages.js';
+import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer } from './broker.js';
+import { normalizePackages, installedPackages, heldByName, stdlibRow, piecePackages, packageLine } from './packages.js';
 import { caseTwin, boxPathError } from '../container/build-path.mjs';
 import { contractExamples, checkSummary, checkExamples } from './validations.js';
 import { splitLevel } from './splitter.js';
@@ -121,6 +121,8 @@ const roleOf = n => n?.role || (n?.label === V7_BUILDER_LABEL ? 'builder' : n?.l
 const RUNTIME_ROLES = new Set(['builder','compiler']);
 const isRuntimeNode = n => !!n && RUNTIME_ROLES.has(roleOf(n));
 // v8 live 5: a short key of a row's task, so a retask starts its split attempts afresh.
+// One route topic per ask: each ask a worker makes is its own, by what it asks and its request id.
+const askKey = (ask, request_id) => `${requestKey(ask)} (${request_id.slice(0, 8)})`;
 const taskKey = t => {let h=0;for(const c of String(t??''))h=(h*31+c.charCodeAt(0))|0;return (h>>>0).toString(36);};
 const isBuilderNode = n => roleOf(n) === 'builder';
 const isCompilerNode = n => roleOf(n) === 'compiler';
@@ -1676,8 +1678,8 @@ export class ControlRoom extends DurableObject {
       if(!child){for(const a of planned[i].answers||[])this.recordAnswer(id,a);child=await this.provision(id,parentId,planned[i].label,planned[i].task,planned[i].interfaces||[],planned[i].uses||[],planned[i].packages||[],role,{seq});this.assignRefs(id,parentId,planned[i].refs);
         // v8 live 5: the worker a manager hands its whole assignment to reads the existing project's digest its manager held.
         if(typeof planned[i].base_digest==='string')this.save(`base_digest:${id}`,planned[i].base_digest);
-        // v8 live 4: a package the split named that its parent's row does not list is the piece's ask, as a worker's would be.
-        for(const name of planned[i].package_asks||[])this.answerPackageAsk(id,{name,need:'',key:requestKey({name})});}
+        // v8 live 4: a package the split named that its parent's row does not list is the piece's ask, sent to its manager as a worker's is.
+        for(const name of planned[i].package_asks||[]){const request_id=crypto.randomUUID(),need=MESSAGES.package_need({name});this.sendAsk(id,{need,name,key:askKey({need,name},request_id),request_id});}}
       made.push(child);
     }
     return made;
@@ -3700,13 +3702,10 @@ export class ControlRoom extends DurableObject {
   // origin), so no builder's rename reaches it and a check's frame there is never
   // routed. v8 M2: in the bundle of the row that holds the base (the top's,
   // given by its handler).
-  addBase(top, files, origin, placed) {
+  addBase(top, files) {
     if(!this.holdsBase(top))return;
-    const base=query(this.db(),'SELECT path,content FROM base_files'),paths=new Set(base.map(r=>r.path)),twins=[];
-    // A piece's file whose path equals a base path apart from case (one file on a case-insensitive file system) is left out.
-    for(const at of [...files.keys()])if(!paths.has(at)&&caseTwin(at,paths)){twins.push(`${at} (beside ${caseTwin(at,paths)})`);files.delete(at);origin.delete(at);placed.delete(at);}
-    if(twins.length)this.noteOnce(top,'bundle_conflict',`Left out: a file whose path equals an existing file's apart from letter case: ${twins.join(', ')}.`);
-    for(const {path,content} of base)if(!files.has(path))files.set(path,content);
+    // Every piece file stays; a base file stands at each path no piece file holds.
+    for(const {path,content} of query(this.db(),'SELECT path,content FROM base_files'))if(!files.has(path))files.set(path,content);
   }
   // An event a bundle repeats each time it is joined, told once while it says the same.
   noteOnce(actor, kind, text) {
@@ -3772,11 +3771,11 @@ export class ControlRoom extends DurableObject {
     }
     const actor=bid||m;
     if(twice.length)this.noteOnce(actor,'bundle_conflict',`Two pieces place a file at the same path, so each copy stands in its writer's own folder: ${twice.join(', ')}.`);
-    this.addBase(m,files,origin,placed);
+    this.addBase(m,files);
     const raw=new Map(files),work=bid?this.builtWork(bid):null,glue=new Map(),left=[];
     for(const [p,r] of Object.entries(work?.renamed||{}))if(by.has(p)&&r?.base===textHash(files.get(p)))files.set(p,r.text);
     const taken=new Set([...files.keys(),...(this.holdsBase(m)?this.passthroughPaths():[])]);
-    for(const [p,t] of Object.entries(work?.glue||{})){if(caseTwin(p,taken)){left.push(p);continue;}files.set(p,t);glue.set(p,t);}
+    for(const [p,t] of Object.entries(work?.glue||{})){if(taken.has(p)){left.push(p);continue;}files.set(p,t);glue.set(p,t);}
     if(left.length)this.noteOnce(actor,'bundle_conflict',`Left out: a file the builder wrote at a path that now holds a delivered or existing file: ${left.join(', ')}.`);
     return this.pieceBundle(m,files,origin,placed,by,glue,raw);
   }
@@ -6339,66 +6338,6 @@ export class ControlRoom extends DurableObject {
     this.recordAnswer(id,{key:ask.key,kind:'broker',text:viewAnswer(answer)});
     this.event(id,'broker_answer',clip(answer.status==='answered'?`${answer.name}: ${answer.kind}, ${answer.value.length} characters, labelled "${answer.label}".`:`${answer.name}: no catalogue entry; answered with the names available.`,400));
     return true;
-  }
-  // v8 live 4 (review): a package ask by name, resolved against what
-  // exists, with no side effect (applied by packageAsk). The ask goes up the
-  // asker's line (its own row, its manager's, and up): the first row holding
-  // a package by that name answers, and a row above the asker grants it. A
-  // module of the language's standard library is named as part of it.
-  // Packages are allowed (owner, 2026-10-15 22:12): a third party's name no
-  // row holds is granted from the top of the line, listed on every row down
-  // to the asker as interfaces are (22:11), and the compiler's box installs
-  // it (packageInstalls). null: the name is no package's. Its callers are a split's package names
-  // (a worker's ask goes to its manager, whose grant gives a package). {how: 'yours'|'granted'|'language', at,
-  // line, hits, names, fresh}.
-  resolvePackage(id, {name=''}={}) {
-    const rows=this.installedToolchains(),line=[];
-    for(let x=this.node(id);x;x=x.parent?this.node(x.parent):null)line.push(x);
-    if(!line.length||!name)return null;
-    // The language the name is in: the rows', else the asker's own packages' or the levels' code languages, when one.
-    const own=[...new Set(this.packagesOf(id).map(p=>p.language).filter(Boolean))],code=contractLanguages(this.treeContracts());
-    const known=packageLanguage(name,rows),lang=known||(own.length===1?own[0]:code.length===1?code[0]:'');
-    for(let i=0;i<line.length;i++) {
-      const hits=heldByName(this.packagesOf(line[i].id).filter(p=>!lang||!p.language||p.language===lang),name,rows);
-      if(hits.length)return {how:i===0?'yours':'granted',at:i,line,hits,names:hits.map(p=>p.name)};
-    }
-    if(!known)return null;
-    if(stdlibRow(name,rows.filter(r=>r.id===lang)))return {how:'language',at:-1,line,hits:[],names:[name]};
-    return {how:'granted',at:line.length-1,line,hits:[{name,language:lang}],names:[name],fresh:true};
-  }
-  // A package ask resolved (resolvePackage) and applied: a grant is added to
-  // every row between the holder and the asker (and to the holder, for a
-  // name granted fresh from the top), so a piece's packages stay a part of
-  // its parent's; each hop logs package_relayed. The answer names what
-  // exists for it. Returns {how, text, names} or null.
-  packageAsk(id, {name=''}={}) {
-    const r=this.resolvePackage(id,{name});
-    if(!r)return null;
-    const {line,at,hits}=r,asker=line[0],many=r.names.length>1,names=hits.map(packageLine).join(', ');
-    for(let i=0;i+1<line.length&&(at<0||i<at);i++)this.event(line[i+1].id,'package_relayed',clip(`"${line[i].label}" asked for ${name}, beyond its own packages; asked "${line[i+1].label}".`,400),line[i].id);
-    if(r.how==='yours')return {how:'yours',names:r.names,text:MESSAGES.package_yours({names,many})};
-    if(r.how==='granted') {
-      for(let j=r.fresh?at:at-1;j>=0;j--) {
-        const own=normalizePackages(parse(this.node(line[j].id)?.packages,[])),add=hits.filter(p=>!own.some(q=>q.name===p.name));
-        if(add.length)this.db().exec('UPDATE agents SET packages=? WHERE id=?',JSON.stringify(normalizePackages([...own,...add])),line[j].id);
-      }
-      this.event(line[at].id,'package_granted',clip(`"${line[at].label}" granted ${r.names.join(', ')} to "${asker.label}" for ${name}.`,400),asker.id);
-      return {how:'granted',names:r.names,text:MESSAGES.package_granted({names,many})};
-    }
-    return {how:'language',names:r.names,text:MESSAGES.package_stdlib({name})};
-  }
-  // A package name a split gives that its parent's row does not list:
-  // answered like a broker answer, labelled, among the worker's answers,
-  // with a message that wakes it.
-  answerPackageAsk(id, {name='', need='', key='', wake=true}={}) {
-    const a=this.packageAsk(id,{name});
-    if(!a)return null;
-    const req=brokerRequest({from:id,kind:'package',name,need});
-    const answer=packageAnswer({id:req.id,name,text:a.text});
-    if(wake)this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:broker',id,'[route:broker] '+JSON.stringify({id:req.id,key:key||requestKey({need,name}),kind:'package',status:answer.status}));
-    this.recordAnswer(id,{key:key||requestKey({need,name}),kind:'broker',text:viewAnswer(answer)});
-    this.event(id,'package_answer',clip(`${answer.name}: ${a.how==='yours'?'in its own packages':a.how==='granted'?`granted ${a.names.join(', ')}`:'part of its language'}.`,400));
-    return a;
   }
   // The answers a worker got to its asks, one per topic: a v8 worker's view
   // carries every one, whole, as its answers; a v7 turn reads the newest 8
@@ -9154,15 +9093,11 @@ export class ControlRoom extends DurableObject {
     if(!['archived','retired'].includes(this.node(id)?.status)&&(unread.some(m=>!/^\[route:/.test(m.body))||unread.length&&!query(this.db(),'SELECT topic FROM route_workers WHERE worker=? LIMIT 1',id).length))this.wake(id);
   }
   // A worker's ask (its ask function), by what it needs and the name it
-  // expects: one asked and answered before is answered with that answer;
-  // one in flight says so; what its world holds by name (the broker), a
-  // name it delivers itself, or a package its own row holds, is answered at
-  // once; anything else goes to its manager, whose choice answers it later
-  // (the answer starts its next turn).
+  // expects, each one as it is made: what its world holds by name (the
+  // broker), a name it delivers itself, or a package its own row holds, is
+  // answered at once; anything else goes to its manager (sendAsk).
   async workerAsk(id, {need, name=''}) {
-    const key=requestKey({need,name}),answers=this.read(`fn_answers:${id}`,[]),known=answers.find(a=>a.key===key);
-    if(known)return {answered:known.text,says:MESSAGES.answered_before()};
-    if(query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND topic=?',id,key).length)return {sent:true,says:MESSAGES.ask_pending()};
+    const request_id=crypto.randomUUID(),key=askKey({need,name},request_id);
     const a={key,question:need,...(name?{name}:{})};
     if(this.brokerAnswer(id,a))return {answered:this.read(`fn_answers:${id}`,[]).find(x=>x.key===key)?.text??null};
     const own=name?this.designOf(id).contracts.find(f=>f.name===name):null;
@@ -9177,9 +9112,14 @@ export class ControlRoom extends DurableObject {
       this.recordAnswer(id,{key,kind:'provided',text});
       return {answered:text};
     }
-    const up=this.agentAbove(id),request_id=crypto.randomUUID(),want=name?`${name} (${clip(need,200)})`:`"${clip(need,200)}"`;
+    return this.sendAsk(id,{need,name,key,request_id});
+  }
+  // An ask sent to the asker's manager, whose choice answers it later (the
+  // answer starts the asker's next turn).
+  sendAsk(id, {need, name='', key, request_id}) {
+    const up=this.agentAbove(id),want=name?`${name} (${clip(need,200)})`:`"${clip(need,200)}"`;
     if(!up)return {error:'There is nowhere to send it.'};
-    this.db().exec('INSERT INTO route_workers(worker,topic,request_id) VALUES (?,?,?) ON CONFLICT(worker,topic) DO NOTHING',id,key,request_id);
+    this.db().exec('INSERT INTO route_workers(worker,topic,request_id) VALUES (?,?,?)',id,key,request_id);
     this.insertProblem({holder:up,kind:'ask',stage:'ask',source:id,input:request_id,parties:[],detail:clip(`${this.node(id)?.label||id} asks for ${want}.`,900),facts:{worker:id,key,need,name,request_id}});
     this.event(id,'ask_sent',clip(`Asked for ${want}.`,500),up);
     this.wake(up);

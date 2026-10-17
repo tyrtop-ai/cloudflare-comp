@@ -166,7 +166,7 @@ const recorded = (over = {}) => {
   return {asked, clef: (input, n) => { const out = clef(input, n); if (input.state?.options) asked.push({state: input.state, questions: input.questions, ps: Object.fromEntries(Object.entries(out.answers).map(([k, v]) => [k, v.noul]))}); return out; }};
 };
 
-test('an ask goes to the asker\'s manager as one choice among its functions; with no child to answer it, ask_parent hands it up, and the manager above answers it with its children\'s contract, by Clef\'s highest p', async () => {
+test('an ask goes to the asker\'s manager as one choice among its functions, each ask as it is made; with no child to answer it, ask_parent hands it up, and the manager above answers it with its children\'s contract, by Clef\'s highest p', async () => {
   let asked = false;
   const ask = {name: 'ask', arguments: {need: 'read one ticket back by its id', name: 'getTicket'}};
   const leaf = (user, _n, _s, {round, results}) => {
@@ -174,8 +174,8 @@ test('an ask goes to the asker\'s manager as one choice among its functions; wit
     if (!asked) {
       if (round === 1) return [ask];
       if (round === 2) { assert.deepEqual(results[0].result, {sent: true, says: MESSAGES.ask_sent()}); return [ask]; }
-      // Asking again for what is sent and not answered yet says so.
-      assert.deepEqual(results[0].result, {sent: true, says: MESSAGES.ask_pending()});
+      // Asking again sends the ask again, as made: the runtime merges no asks.
+      assert.deepEqual(results[0].result, {sent: true, says: MESSAGES.ask_sent()});
       asked = true;
       return [{name: 'wait', arguments: {summary: 'waiting for getTicket'}}];
     }
@@ -187,9 +187,9 @@ test('an ask goes to the asker\'s manager as one choice among its functions; wit
   assert.equal(room.get('status'), 'complete', trail(room));
   const m = room.roomManager(), rp = room.children(m).find(c => c.label === 'Ticket report'), w = room.liveChildren(rp.id)[0];
   assert.ok(asked && calls.leafRounds.some(r => r.round === 3));
-  // One choice Clef scores: the room's manager's (the piece's only child is the asker's own line, so it has nothing to answer with).
+  // One choice Clef scores per ask: the room's manager's (the piece's only child is the asker's own line, so it has nothing to answer with).
   const asks = choices.filter(c => c.state.item.kind === 'ask');
-  assert.equal(asks.length, 1);
+  assert.equal(asks.length, 2);
   assert.deepEqual(Object.keys(asks[0].questions), ['answer_0', 'answer_1', 'ask_parent'], 'the store\'s contracts, none of the asker\'s line, and no extend');
   assert.equal(asks[0].questions.ask_parent.instructions, CLEF.ask_parent);
   assert.equal(asks[0].questions.answer_1.instructions, clefText('answer', {j: 1}));
@@ -198,13 +198,14 @@ test('an ask goes to the asker\'s manager as one choice among its functions; wit
   assert.deepEqual(asks[0].state.children.map(c => c.label), ['Ticket store', 'Ticket report']);
   // Each choice is an event with Clef's p for the chosen call and the others'.
   const said = events(room, 'manager_choice').filter(e => /^On the ask/.test(e.body)).map(e => [e.actor, e.body]);
-  assert.deepEqual(said.map(([a]) => a), [rp.id, m]);
+  assert.deepEqual(said.map(([a]) => a), [rp.id, rp.id, m, m]);
   assert.equal(said[0][1], 'On the ask for getTicket: ask_parent(need) (the only function it may call).');
-  assert.equal(said[1][1], 'On the ask for getTicket: answer(getTicket) p=0.950; the others: answer(createTicket) p=0.900, ask_parent(need) p=0.100.');
-  assert.equal(events(room, 'ask_parent').length, 1);
+  assert.equal(said[2][1], 'On the ask for getTicket: answer(getTicket) p=0.950; the others: answer(createTicket) p=0.900, ask_parent(need) p=0.100.');
+  assert.equal(events(room, 'ask_parent').length, 2);
   // The answer reached the asker: the contract, how to refer to it, and its entry calls it.
   const answers = room.read(`fn_answers:${w.id}`, []);
-  assert.deepEqual(answers.map(a => [a.key, a.kind]), [['fn getTicket', 'provided']]);
+  assert.equal(answers.length, 2, 'each ask its own answer');
+  for (const a of answers) assert.ok(/^fn getTicket \([0-9a-f]{8}\)$/.test(a.key) && a.kind === 'provided', a.key);
   assert.match(answers[0].text, /^function getTicket\(id\) in store\.js: .*Refer to it exactly as: .+, and use it rather than writing your own\.$/);
   assert.deepEqual(room.levelDesign(rp.id).children.find(c => c.id === w.id).calls, ['createTicket', 'getTicket']);
   assert.ok(calls.leaf.filter(isReport).at(-1).world.answers.includes(answers[0].text), 'its next turn starts with the answer');
@@ -230,12 +231,12 @@ test('an ask no manager up to the room holds: each manager chooses ask_parent, a
   assert.ok(events(room, 'level_rebuild').some(e => e.actor === rp.id));
 });
 
-test('an ask the worker\'s world answers by name is answered in the function\'s result; asking again for what was answered returns that answer, final', async () => {
+test('an ask the worker\'s world answers by name is answered in the function\'s result; asking again is answered again, as asked', async () => {
   const leaf = (user, _n, _s, {round, results}) => {
     if (!isReport(user)) return deliver({'store.js': STORE});
     if (round === 1) return [{name: 'ask', arguments: {need: 'the report command', name: 'report'}}];
     if (round === 2) { assert.deepEqual(results[0].result, {answered: MESSAGES.own_contract({contract: 'command report in report.js: files a ticket with the title given and prints it as one line; prints the line #<id> <title> [<status>]'})}); return [{name: 'ask', arguments: {need: 'the report command', name: 'report'}}]; }
-    assert.deepEqual(results[0].result, {answered: MESSAGES.own_contract({contract: 'command report in report.js: files a ticket with the title given and prints it as one line; prints the line #<id> <title> [<status>]'}), says: MESSAGES.answered_before()});
+    assert.deepEqual(results[0].result, {answered: MESSAGES.own_contract({contract: 'command report in report.js: files a ticket with the title given and prints it as one line; prints the line #<id> <title> [<status>]'})});
     return writeCalls({'report.js': reportFile(user)});
   };
   const {room, calls} = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf});

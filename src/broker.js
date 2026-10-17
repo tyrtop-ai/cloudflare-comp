@@ -23,8 +23,9 @@ export const LIVE_KINDS = Object.freeze(['contract', 'source', 'base']);
 // A chunk of a linked page: S2#3, or S2 for the first chunk of S2 the agent holds.
 export const SOURCE_REF = /^S(\d+)(?:#(\d+))?$/;
 
-// A name an ask carries beside a contract name (src/protocol.js normalizeAsk
-// keeps it under v8): a chunk ref, or a project path with no whitespace.
+// A chunk ref, or a project path with no whitespace, as a name. Only
+// src/protocol.js normalizeAsk reads it, in a branch no v8 path reaches: a v8
+// worker's ask function takes its name as the worker gives it.
 export function askName(v) {
   const s = typeof v === 'string' ? v.trim() : '';
   if (!s || s.length > 200) return '';
@@ -110,12 +111,10 @@ export const baseAnswer = ({id, path, content, own = false}) =>
 // listing every catalogue name, those of the kind the name has first.
 export function noneText(name, cat = []) {
   const want = SOURCE_REF.test(String(name)) ? 'source' : 'base', rank = e => e.kind === want ? 0 : 1;
-  // v8 live 4: packages are named by a package ask's own answer, never here.
+  // v8 live 4: packages are named by the asker's manager, never here.
   const names = [...cat].filter(e => e.kind !== 'package').sort((a, b) => rank(a) - rank(b)).map(e => e.name);
   return MESSAGES.broker_none({name: String(name), names: names.join(', ')});
 }
-// v8 live 4: a package ask's answer (src/index.js packageAsk): what the asker's line holds for it.
-export const packageAnswer = ({id, name, text}) => shapeAnswer({id, name, kind: 'package', label: BROKER_LABEL.package, value: text});
 export const noneAnswer = ({id, name, catalogue: cat = []}) =>
   shapeAnswer({id, name, kind: 'none', status: 'none', label: BROKER_LABEL.none, value: noneText(name, cat)});
 // An answer as the worker's answers carry it: {name, label, value, next?, facts?}.

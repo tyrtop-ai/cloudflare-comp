@@ -96,10 +96,11 @@ export async function workerCall(w, name, args) {
 // The worker's session: request is the user JSON it reads (its prompt, its
 // files' paths, its complaints and its world). {end, world, ended, reason,
 // rounds, transcript}: end is {done, wait, summary} when done or wait ended
-// it, null when it ended otherwise (its context window full).
-export const WORKER_TOKENS = 6500;
+// it, null when it ended otherwise (its context window full). Each answer
+// may take what the model's context window leaves (maxTokens Infinity:
+// modelRequest's room), so a whole file fits in one write_file.
 export async function workerSession(env, request, world) {
-  const out = await session(env, {system: systemPrompt('worker'), user: JSON.stringify(request), tools: workerTools(), role: 'worker', call: 'workerTurn', maxTokens: WORKER_TOKENS,
+  const out = await session(env, {system: systemPrompt('worker'), user: JSON.stringify(request), tools: workerTools(), role: 'worker', call: 'workerTurn', maxTokens: Infinity,
     handle: (name, args) => workerCall(world, name, args)});
   return {end: out.ended ? out.end : null, world, ended: out.ended, reason: out.reason, rounds: out.rounds, transcript: out.transcript};
 }

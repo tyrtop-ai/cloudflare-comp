@@ -57,6 +57,11 @@ test('the output budget is clamped to fit the context window, never raised and n
   assert.deepEqual([tight.params.max_tokens,tight.tight],[6500,true],'left alone rather than a certain truncation');
   assert.equal(modelRequest(HYBRID,200,{promptChars:200000}).params.max_tokens,200);
   assert.equal(modelRequest('@cf/meta/llama-4-scout-17b-16e-instruct',8000,{promptChars:90000}).params.max_tokens,8000);
+  // A v8 session's budget (Infinity): all the context window leaves; a model the table does not know sends no budget, so the platform's own limit holds.
+  assert.equal(modelRequest(HYBRID,Infinity,{promptChars:20000}).params.max_tokens,32768-Math.ceil(20000/3.5)-64);
+  assert.equal(modelRequest('@cf/qwen/qwen3.8-27b',Infinity,{promptChars:20000}).params.max_completion_tokens,32768-Math.ceil(20000/3.5)-64);
+  assert.equal(modelRequest(HYBRID,Infinity,{promptChars:110000}).tight,true);
+  assert.ok(!('max_tokens' in modelRequest('@cf/unknown/model',Infinity).params));
   const spans=[];
   await run({MODEL_NAME:HYBRID,TRACE:r=>spans.push(r),AI:{run:async()=>({response:'ok'})}},'s','u'.repeat(110000),6500,{call:'decide',role:'worker'});
   assert.equal(spans[0].context_tight,true);assert.equal(spans[0].max_tokens,6500);

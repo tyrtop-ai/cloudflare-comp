@@ -9,7 +9,9 @@
 // calls. done ends the session with the summary given. The room keeps what
 // the session did (builderWork): each renamed file's text, for the exact text
 // it was made from, and the builder's own files, for every later join.
-import { pathError, caseTwin } from '../container/build-path.mjs';
+// A path names a place in its world, as a rooted file system reads it
+// (rootedPath): '..' from the top is the top, so no path reaches past it.
+import { rootedPath } from '../container/build-path.mjs';
 import { session } from './session.js';
 import { systemPrompt, TOOLS, MESSAGES } from './prompts.js';
 
@@ -37,48 +39,46 @@ export const builderTools = () => TOOLS.builder;
 // ------------------------------------------------------------ the functions
 const paths = w => [...w.files.keys(), ...w.glue.keys()].sort();
 const textOf = (w, p) => w.files.has(p) ? w.files.get(p) : w.glue.get(p);
+// The place a path names in its world: '' when it names none (the top itself).
+const placeOf = a => isText(a.path) ? rootedPath(a.path) : '';
 function readFile(w, a) {
   const bad = fieldsOf('read_file', a, ['path']);
   if (bad) return {error: bad};
-  if (!isText(a.path) || !a.path) return {error: 'path is the text of a relative path'};
-  if (!w.files.has(a.path) && !w.glue.has(a.path)) return {error: MESSAGES.builder_no_file({path: a.path, paths: paths(w).join(', ')})};
-  return {path: a.path, content: textOf(w, a.path)};
+  const path = placeOf(a);
+  if (!path) return {error: 'path is the text of a relative path'};
+  if (!w.files.has(path) && !w.glue.has(path)) return {error: MESSAGES.builder_no_file({path, paths: paths(w).join(', ')})};
+  return {path, content: textOf(w, path)};
 }
 function writeFile(w, a) {
   const bad = fieldsOf('write_file', a, ['path', 'content']);
   if (bad) return {error: bad};
-  if (!isText(a.path) || !a.path) return {error: 'path is the text of a relative path'};
+  const path = placeOf(a);
+  if (!path) return {error: 'path is the text of a relative path'};
   if (!isText(a.content)) return {error: 'content is the complete text of the file'};
-  const why = pathError(a.path, {own: true});
-  if (why) return {error: MESSAGES.builder_not_inside({path: a.path, why: why.replace(/^.*?: /, '')})};
-  // One path apart from letter case is one file on a case-insensitive file system.
-  const delivered = caseTwin(a.path, new Set(w.files.keys()));
-  if (delivered) return {error: MESSAGES.builder_delivered({path: delivered, piece: w.from.get(delivered) || ''})};
-  const held = caseTwin(a.path, w.held);
-  if (held) return {error: MESSAGES.builder_held({path: held})};
-  const twin = caseTwin(a.path, new Set([...w.glue.keys()].filter(p => p !== a.path)));
-  if (twin) return {error: MESSAGES.builder_case({path: a.path, twin})};
-  if (w.glue.get(a.path) === a.content) { w.unchanged.push(a.path); return {unchanged: a.path, says: MESSAGES.unchanged({path: a.path})}; }
-  w.glue.set(a.path, a.content);
-  if (!w.written.includes(a.path)) w.written.push(a.path);
-  return {written: a.path, characters: a.content.length};
+  if (w.files.has(path)) return {error: MESSAGES.builder_delivered({path, piece: w.from.get(path) || ''})};
+  if (w.held.has(path)) return {error: MESSAGES.builder_held({path})};
+  if (w.glue.get(path) === a.content) { w.unchanged.push(path); return {unchanged: path, says: MESSAGES.unchanged({path})}; }
+  w.glue.set(path, a.content);
+  if (!w.written.includes(path)) w.written.push(path);
+  return {written: path, characters: a.content.length};
 }
 function rename(w, a) {
   const bad = fieldsOf('rename', a, ['path', 'from', 'to']);
   if (bad) return {error: bad};
-  if (!isText(a.path) || !a.path) return {error: 'path is the text of a relative path'};
-  if (!w.files.has(a.path) && !w.glue.has(a.path)) return {error: MESSAGES.builder_no_file({path: a.path, paths: paths(w).join(', ')})};
+  const path = placeOf(a);
+  if (!path) return {error: 'path is the text of a relative path'};
+  if (!w.files.has(path) && !w.glue.has(path)) return {error: MESSAGES.builder_no_file({path, paths: paths(w).join(', ')})};
   for (const k of ['from', 'to']) if (!isText(a[k]) || !NAME.test(a[k])) return {error: `${k} is one name or reference path: letters, digits and _ $ . / @ : - only`};
   if (a.from === a.to) return {error: 'from and to are the same'};
-  const before = textOf(w, a.path), after = before.replace(wholeName(a.from), () => a.to);
-  if (after === before) return {error: MESSAGES.builder_no_name({name: a.from, path: a.path})};
+  const before = textOf(w, path), after = before.replace(wholeName(a.from), () => a.to);
+  if (after === before) return {error: MESSAGES.builder_no_name({name: a.from, path})};
   const was = before.split('\n'), now = after.split('\n'), lines = [];
   for (let i = 0; i < was.length; i++) if (was[i] !== now[i]) lines.push({line: i + 1, before: was[i], after: now[i]});
-  if (w.files.has(a.path)) {
-    w.files.set(a.path, after);
-    w.renamed.set(a.path, [...(w.renamed.get(a.path) || []), {from: a.from, to: a.to}]);
-  } else w.glue.set(a.path, after);
-  return {renamed: a.path, from: a.from, to: a.to, lines};
+  if (w.files.has(path)) {
+    w.files.set(path, after);
+    w.renamed.set(path, [...(w.renamed.get(path) || []), {from: a.from, to: a.to}]);
+  } else w.glue.set(path, after);
+  return {renamed: path, from: a.from, to: a.to, lines};
 }
 // One call: {result, end?}.
 export function builderCall(w, name, args) {
@@ -113,10 +113,10 @@ export function builderWork(w, kept = {}, base = () => '') {
 // The builder's session: request is the user JSON it reads (the design
 // artifact and its files' paths). {end, world, ended, reason, rounds,
 // transcript}: end is {done, summary} when done ended it, null when it ended
-// otherwise (its context window full).
-export const BUILDER_TOKENS = 4096;
+// otherwise (its context window full). Each answer may take what the
+// model's context window leaves (maxTokens Infinity: modelRequest's room).
 export async function builderSession(env, request, world) {
-  const out = await session(env, {system: systemPrompt('builder'), user: JSON.stringify(request), tools: builderTools(), role: 'builder', call: 'builderTurn', maxTokens: BUILDER_TOKENS,
+  const out = await session(env, {system: systemPrompt('builder'), user: JSON.stringify(request), tools: builderTools(), role: 'builder', call: 'builderTurn', maxTokens: Infinity,
     handle: (name, args) => builderCall(world, name, args)});
   return {end: out.ended ? out.end : null, world, ended: out.ended, reason: out.reason, rounds: out.rounds, transcript: out.transcript};
 }

@@ -27,7 +27,7 @@ const model = env => env.MODEL_NAME || '@cf/qwen/qwen3.8-27b';
 // (verified: true); every other model keeps the 0.2 all models had before,
 // so nothing changes for it until its card is checked (review M4). context:
 // the model's context window in tokens (the output budget is clamped to fit
-// it, never below CLAMP_FLOOR). source: where the sampling comes from.
+// it, never below CLAMP_FLOOR; a budget of Infinity is all it leaves). source: where the sampling comes from.
 // Clef (the yes/no gates) takes no sampling: its requests are unchanged.
 const PREVIOUS = Object.freeze({temperature:0.2});
 export const MODEL_SETTINGS = Object.freeze({
@@ -55,7 +55,9 @@ export function modelRequest(model, maxTokens, {noThink=false, promptChars=0}={}
   const sampling=m.sampling.think||m.sampling.no_think?(thinking?m.sampling.think:m.sampling.no_think):m.sampling;
   const room=m.context?m.context-Math.ceil(promptChars/3.5)-64:Infinity,tight=room<maxTokens&&room<CLAMP_FLOOR;
   const budget=room>=maxTokens||tight?maxTokens:room;
-  const tokens=m.reasoning==='effort'?{max_completion_tokens:budget,reasoning_effort:m.effort}:{max_tokens:budget};
+  // A budget of Infinity (a v8 session's: what the context window leaves) for a model whose window the table does not know sends none: the platform's own limit is the bound.
+  const cap=Number.isFinite(budget)?budget:undefined;
+  const tokens=m.reasoning==='effort'?{...(cap?{max_completion_tokens:cap}:{}),reasoning_effort:m.effort}:cap?{max_tokens:cap}:{};
   return {params:{...tokens,...sampling},suffix:m.reasoning==='soft_switch'&&noThink?m.suffix:'',thinking,tight};
 }
 

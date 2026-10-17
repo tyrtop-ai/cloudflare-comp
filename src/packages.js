@@ -63,20 +63,6 @@ export function inStdlib(name, row) {
 }
 // The row whose standard library holds a name, or null.
 export const stdlibRow = (name, rows = TOOLCHAINS) => rows.find(r => inStdlib(name, r)) || null;
-// Whether the rows know a name as a package (H2: an ask is a package's by its
-// name alone): a module of a standard library, one a row installs (packages
-// or site_modules), or a third party's name a row knows (stands_for,
-// third_party). The row's id, or ''.
-export function packageLanguage(name, rows = TOOLCHAINS) {
-  const n = String(name ?? '').trim(), low = n.toLowerCase();
-  if (!n || n.startsWith('.')) return '';
-  const top = low.split(/[./]/)[0];
-  const row = rows.find(r => (r.packages || []).some(p => bare(p.name, r) === bare(n, r)) || String(r.site_modules || '').split(/\s+/).includes(topOf(n, r)))
-    || rows.find(r => r.stands_for && (Object.hasOwn(r.stands_for, low) || Object.hasOwn(r.stands_for, top)))
-    || rows.find(r => (r.third_party || []).includes(low) || (r.third_party || []).includes(top)) || stdlibRow(n, rows);
-  return row?.id || '';
-}
-
 // ------------------------------------------------------------ holding a name
 // The packages a list holds by name: the name itself, the name with or
 // without its row's module_prefix, or the modules under a dotted parent

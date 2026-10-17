@@ -106,7 +106,7 @@ test('H2: the manager is the interface for what exists: a package its row holds 
   assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for pytest: grant\(pytest\) p=0\.950; the others: ask_parent\(need\) p=0\.600\.$/);
   assert.deepEqual(room.packagesOf(SERVER).map(p => p.name), ['pytest']);
   const granted = MESSAGES.package_granted({need: 'a test runner', names: 'pytest (tests)', many: false});
-  assert.deepEqual(room.read(`fn_answers:${SERVER}`, []).map(a => [a.key, a.kind, a.text]), [['fn pytest', 'provided', granted]]);
+  assert.deepEqual(room.read(`fn_answers:${SERVER}`, []).map(a => [a.key.replace(/ \([0-9a-f]{8}\)$/, ''), a.kind, a.text]), [['fn pytest', 'provided', granted]]);
   // requests is Root's alone: Backend has no grant for it and hands it up; Root grants it to every row between.
   await room.workerAsk(SERVER, {need: 'fetch a page over HTTP', name: 'httpx'});
   await room.routeHeld(BACKEND);
