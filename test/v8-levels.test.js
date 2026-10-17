@@ -224,12 +224,12 @@ test('an ask in scope nowhere up to the room: the asker is archived with its fil
   assert.equal(room.validationRows().length, 3);
 });
 
-test('a follow-up prompt is a change on the room\'s manager\'s row: Clef routes it down, verbatim, to the worker it concerns, and the room completes again', async () => {
+test('a follow-up prompt is a change on the room\'s manager\'s row: Clef routes it down to the worker it concerns, which takes it into its assignment (its prompt says it, verbatim, and no complaint does), and the room completes again', async () => {
   const CHANGE = 'The report command also prints the word filed on a second line.';
   const leaf = user => {
     if (!user.prompt.deliver.some(c => c.name === 'report')) return deliver({'store.js': STORE});
     const body = report(referTo(user.prompt.call.find(c => c.name === 'createTicket')));
-    return deliver({'report.js': user.complaints.includes(CHANGE) ? body + "console.log('filed');\n" : body});
+    return deliver({'report.js': user.prompt.task.includes(CHANGE) ? body + "console.log('filed');\n" : body});
   };
   // The change concerns the report piece, not the store.
   const clef = usualClef({'^route_to_\\d+$': (k, state) => /report/.test(JSON.stringify(state.children?.[Number(k.split('_').pop())]?.contracts || '')) ? 0.9 : 0.1});
@@ -242,7 +242,8 @@ test('a follow-up prompt is a change on the room\'s manager\'s row: Clef routes 
   assert.equal(r.room.get('status'), 'complete', trail(r.room));
   const after = r.calls.leaf.slice(before);
   assert.equal(after.length, 1, 'only the worker the change concerns runs');
-  assert.deepEqual(after[0].complaints, [CHANGE]);
+  assert.deepEqual(after[0].complaints, [], 'a change is no observation of its files');
+  assert.ok(after[0].prompt.task.endsWith(`\n\n${CHANGE}`), after[0].prompt.task);
   assert.equal(r.room.goalRev(), 2);
   assert.equal(r.room.promptRows()[0].status, 'done');
   assert.ok(events(r.room, 'change_routed').length >= 2, 'routed by the room\'s manager and by the piece\'s');

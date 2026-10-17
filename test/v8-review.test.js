@@ -227,7 +227,8 @@ test('F9: Clef failing on a change\'s routing is asked again at the next turn, w
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
   assert.match(events(r.room, 'change_routed').find(e => e.actor === m.Root).body, /^The change concerns "Loud part":/);
   const shouter = workerRequests(r.calls, 'shout').at(-1);
-  assert.deepEqual(shouter.complaints, ['Make shout keep the word as it is when it is already upper case.']);
+  assert.deepEqual(shouter.complaints, [], 'a change is no observation of its files');
+  assert.ok(shouter.prompt.task.endsWith('\n\nMake shout keep the word as it is when it is already upper case.'), 'its prompt says it');
   assert.equal((await r.room.appFiles()).passed, true);
   assert.equal(r.room.promptRows().at(-1).status, 'done');
 });
