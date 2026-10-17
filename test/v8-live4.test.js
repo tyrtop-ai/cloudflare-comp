@@ -65,16 +65,17 @@ test('1: the adapter in real Chromium: expect_element passes when the page has a
   const [ok, absent] = await runAdapter(html, [
     {id: 'ok', steps: [{goto: '/'}, {expect_element: {selector: 'input[type=text]'}}, {expect_element: {selector: 'button', text: 'Add'}}, {expect_element: {selector: 'ul#list'}}]},
     {id: 'absent', steps: [{goto: '/'}, {expect_no_element: {selector: 'li'}}]}]);
-  // What never comes is waited for until the verification's time runs out (infrastructure): each alone, with a short one.
+  // What never comes is waited for until the verification's time runs out, then the page fails the step (no
+  // infrastructure: the worker whose page it is gets the complaint, owner 2026-10-16 05:39): each alone, with a short one.
   const [[miss], [gone]] = await Promise.all([
     runAdapter(html, [{id: 'miss', steps: [{goto: '/'}, {expect_element: {selector: 'button', text: 'Remove'}}]}], 10_000),
     runAdapter(html, [{id: 'gone', steps: [{goto: '/'}, {expect_no_element: {selector: 'button', text: 'Add'}}]}], 10_000)]);
   assert.equal(ok.passed, true, JSON.stringify(ok));
-  assert.deepEqual([miss.passed, miss.miss, miss.infrastructure], [false, true, true]);
+  assert.deepEqual([miss.passed, miss.miss, miss.infrastructure], [false, true, undefined]);
   assert.deepEqual(miss.offers.elements, ['button "Add"']);
   assert.match(miss.detail, /^step 2 \(expect button with "Remove"\): the page had no button with the text "Remove"; elements of that kind found: button "Add"/);
   assert.equal(absent.passed, true);
-  assert.deepEqual([gone.passed, gone.infrastructure], [false, true]);
+  assert.deepEqual([gone.passed, gone.infrastructure], [false, undefined]);
   assert.match(gone.detail, /the page still had 1 button with the text "Add"/);
 });
 

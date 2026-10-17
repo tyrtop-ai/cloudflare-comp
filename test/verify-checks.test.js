@@ -14,14 +14,16 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {register} from 'node:module';
 // Owner 2026-10-17 00:25 and 2026-10-15 23:16: no check has a time of its
-// own. A check the verification's end stops reports the real time it ran,
-// as infrastructure (the runtime's clock, no worker's failure).
-const stopped=(c,prefix)=>{assert.equal(c.infrastructure,true,c.detail);assert.match(c.detail,new RegExp('^'+prefix.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+"still running when the verification's time ran out \\(after \\d+(?:\\.\\d+)? s\\)"));};
+// own; 2026-10-16 05:39: the manager hands the worker the complaint. A check
+// still running when the verification's time (the room's setting) runs out
+// is what the compiler observed of the deliverable: a failure, with the real
+// time it ran and what it printed, never infrastructure.
+const stopped=(c,prefix)=>{assert.notEqual(c.infrastructure,true,c.detail);assert.match(c.detail,new RegExp('^'+prefix.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+"still running when the verification's \\d+(?:\\.\\d+)? s ran out \\(after \\d+(?:\\.\\d+)? s\\)"));};
 process.env.BUILD_RUNNER_WORKDIR=tmpdir();
 register('./cloudflare-loader.mjs',import.meta.url);
 if(!process.env.PLAYWRIGHT_BROWSERS_PATH&&existsSync('/opt/pw-browsers'))process.env.PLAYWRIGHT_BROWSERS_PATH='/opt/pw-browsers';
 if(!process.env.NODE_PATH&&existsSync('/opt/node-tools/node_modules/playwright'))process.env.NODE_PATH='/opt/node-tools/node_modules';
-const {verifyChecks,verifyBuild,resolveCommand,splitWords,jsonHas,checkLimits,execCheck,networkIsolation}=await import('../container/build-runner.mjs');
+const {verifyChecks,verifyBuild,resolveCommand,splitWords,jsonHas,checkLimits,checkEnvironment,execCheck,networkIsolation}=await import('../container/build-runner.mjs');
 const {snapshotHash}=await import('../src/build-verification.js');
 const {TOOLCHAINS}=await import('../src/toolchains.js');
 const {BuildExecutor}=await import('../src/build-executor.js');
@@ -108,7 +110,7 @@ test('command checks: a Python CLI reads stdin, prints, exits; fixtures beside i
   assert.match(c.R5.detail,/^ratio\.py: exit 1, expected 0\n--- stderr\nTraceback \(most recent call last\):\n  File "ratio\.py", line 7, in <module>\n[\s\S]*  File "ratio\.py", line 5, in ratio\n[\s\S]*ZeroDivisionError: division by zero$/);
   assert.deepEqual(c.R5.frames,[{path:'ratio.py',line:5,fn:'ratio'},{path:'ratio.py',line:7,fn:'<module>'}],'the raising frame first');
   assert.match(c.R7.detail,/^no-such-tool-here --x: [\s\S]*(ENOENT|No such file)/,'what the box does not have, the run observes');
-  // A check that never ends runs until the verification's time runs out: infrastructure, with what it printed.
+  // A check that never ends runs until the verification's time runs out: a failure, with what it printed.
   const slow=byId(await run(files,{checks:[{id:'R8',kind:'command',run:'python3 -c "import time; print(1, flush=True); time.sleep(30)"',expect:{exit:0}}]},{limits:{total_ms:4000},isolation:[]}));
   stopped(slow.R8,'python3 -c "import time; print(1, flush=True); time.sleep(30)": ');
   assert.match(slow.R8.detail,/\n--- stdout\n1$/);
@@ -355,6 +357,22 @@ createServer((req, res) => {
 }).listen(Number(process.env.PORT), '127.0.0.1');
 `;
 
+// Owner 2026-10-16 05:39 (the worker gets the complaint) and 2026-10-17 00:25 (no caps the runtime picked):
+// a server that never answers its ready path, or never answers a step, within the room's time is what the
+// check observed of it: a failure with what it printed, never infrastructure.
+test('http checks: a server that never answers its ready path, or a request, within the verification\'s time fails as the deliverable\'s',async()=>{
+  const files={'mute.mjs':"console.log('starting');\nsetInterval(()=>{},1000);\n",
+    'hang.mjs':"import http from 'node:http';\nhttp.createServer((q,r)=>{if(q.url==='/health'){r.end('ok');}}).listen(Number(process.env.PORT),'127.0.0.1');\n"};
+  const [m,h]=await Promise.all([
+    run(files,{runs:[{id:'mute',run:'mute.mjs',port:true,ready:'/'}],checks:[{id:'M1',kind:'http',serve:'mute',steps:[{method:'GET',path:'/'}]}]},{limits:{total_ms:3000},isolation:[]}),
+    run(files,{runs:[{id:'hang',run:'hang.mjs',port:true,ready:'/health'}],checks:[{id:'H1',kind:'http',serve:'hang',steps:[{method:'GET',path:'/never',expect:{status:200}}]}]},{limits:{total_ms:3000},isolation:[]})]);
+  const c={...byId(m),...byId(h)};
+  assert.notEqual(c.M1.infrastructure,true,c.M1.detail);
+  assert.match(c.M1.detail,/^run mute: mute\.mjs had not answered GET \/ when the verification's 3 s ran out \(after [\d.]+ s\)\n--- output\nstarting/);
+  assert.notEqual(c.H1.infrastructure,true,c.H1.detail);
+  assert.match(c.H1.detail,/^step 1 GET \/never: no answer before the verification's time ran out/);
+});
+
 test('http checks: a Node server deliverable started with PORT, polled until ready, steps reading saved JSON',async()=>{
   const files={'server.mjs':SERVER_MJS,'broken-server.mjs':"import './nowhere.mjs';\n"};
   const report=await run(files,{
@@ -446,15 +464,15 @@ test('browser checks: a static todo page served from the bundle, driven by label
     {id:'R4',kind:'browser',serve:'web',steps:[{goto:'/oops.html'},{click:{role:'button',name:'Go'}},{expect_text:'done'}]},
     // expect_count's text as written, its case too: "buy milk" is not "Buy milk".
     {id:'R6',kind:'browser',serve:'web',steps:[{goto:'/'},{fill:{label:'New todo',text:'Buy milk'}},{press:'Enter'},{expect_count:{text:'buy milk',n:1}}]}])};
-  assert.deepEqual([c.R6.passed,c.R6.infrastructure],[false,true],c.R6.detail);
-  assert.match(c.R6.detail,/^step 4 \(expect 1 element with "buy milk"\): the verification's time ran out while the step waited \(the page had 0, expected 1\)/);
+  assert.deepEqual([c.R6.passed,c.R6.infrastructure],[false,undefined],c.R6.detail);
+  assert.match(c.R6.detail,/^step 4 \(expect 1 element with "buy milk"\): the page had 0, expected 1, when the verification's time ran out/);
   assert.equal(c.R1.passed,true,c.R1.detail);
   assert.equal(c.R2.passed,true,'a fresh context: R1\'s localStorage is gone');
-  // A text the page never shows: the step waits until the verification's time runs out, the runtime's clock (infrastructure),
-  // and the record is the whole observation: the page's text, every console error and blocked request (the static server is the runner's: no output of its own).
-  for(const id of ['R3','R4'])assert.equal(c[id].infrastructure,true,c[id].detail);
-  assert.match(c.R3.detail,/^step 2 \(expect_text "ready"\): the verification's time ran out while the step waited \(the page had not shown "ready"\); blocked non-served request https:\/\/cdn\.example\.com\/lib\.js\n--- page text\nLoading…\n--- console errors\n[\s\S]*blocked: https:\/\/cdn\.example\.com\/lib\.js$/);
-  assert.match(c.R4.detail,/^step 3 \(expect_text "done"\): the verification's time ran out while the step waited \(the page had not shown "done"\); page error: TypeError: Cannot read properties of null[^\n]*\n--- page text\nGo\n--- console errors\nTypeError: Cannot read properties of null/);
+  // A text the page never shows: the step waits until the verification's time runs out, and the page fails it (no infrastructure):
+  // the record is the whole observation: the page's text, every console error and blocked request (the static server is the runner's: no output of its own).
+  for(const id of ['R3','R4'])assert.deepEqual([c[id].passed,c[id].infrastructure],[false,undefined],c[id].detail);
+  assert.match(c.R3.detail,/^step 2 \(expect_text "ready"\): the page had not shown "ready", when the verification's time ran out; blocked non-served request https:\/\/cdn\.example\.com\/lib\.js\n--- page text\nLoading…\n--- console errors\n[\s\S]*blocked: https:\/\/cdn\.example\.com\/lib\.js$/);
+  assert.match(c.R4.detail,/^step 3 \(expect_text "done"\): the page had not shown "done", when the verification's time ran out; page error: TypeError: Cannot read properties of null[^\n]*\n--- page text\nGo\n--- console errors\nTypeError: Cannot read properties of null/);
   assert.deepEqual(c.R4.frames[0],{path:'oops.js',line:3,fn:'explode'});
   assert.match(c.R5.detail,/^step 1 \(goto "\/missing\.html"\): \/missing\.html answered HTTP 404\n--- page text\n/);
   assert.ok(report.inventory.chromium,'the Chromium version is recorded');
@@ -524,8 +542,8 @@ test('browser checks: each step runs exactly as written: a field by its exact la
     {id:'TEXT_NOT_BUTTON',kind:'browser',serve:'serve',steps:[{goto:'/nobutton.html'},{click:{role:'button',name:'Saved'}}]},
     {id:'T5',kind:'browser',serve:'serve',steps:[{goto:'/two.html'},{fill:{label:'Email',text:'a@b.example'}}]}])};
   for(const id of ['T1','T2','T3','BOTH','DELETE_ONE','NAME_EXACT'])assert.equal(c[id].passed,true,`${id}: ${c[id].detail}`);
-  // What the page never has, the step waits for until the verification's time runs out (infrastructure, the runtime's clock).
-  for(const id of ['NO_GOTO','LABEL_NOT_PLACEHOLDER','CASE','PART','PART_NAMES','ID_WORDS','ALIAS','TEXT_NOT_BUTTON','T5'])assert.deepEqual([c[id].passed,c[id].infrastructure],[false,true],`${id}: ${c[id].detail}`);
+  // What the page never has, the step waits for until the verification's time runs out; then the page fails it, a complaint for its worker.
+  for(const id of ['NO_GOTO','LABEL_NOT_PLACEHOLDER','CASE','PART','PART_NAMES','ID_WORDS','ALIAS','TEXT_NOT_BUTTON','T5'])assert.deepEqual([c[id].passed,c[id].infrastructure],[false,undefined],`${id}: ${c[id].detail}`);
   assert.match(c.NO_GOTO.detail,/^step 1 \(fill the element with placeholder "Add a new task" with "Sample task"\): the page had no element with placeholder "Add a new task"; fields found: none; buttons and links found: none/);
   // A miss names the target as written and what the page offers.
   assert.match(c.T5.detail,/^step 2 \(fill the element with label "Email" with "a@b\.example"\): the page had no element with label "Email"; fields found: label "Name" name "a", placeholder "Phone" name "b"; buttons and links found: "Send", "Help"\n/);
@@ -534,7 +552,7 @@ test('browser checks: each step runs exactly as written: a field by its exact la
   for(const x of report.checks.filter(x=>!x.passed))short(x);
 });
 
-test('browser checks: a WebSocket or fetch to a host that is not served never connects; a page that never yields runs until the verification\'s end, naming its step, as infrastructure',{skip:browserReady||false},async()=>{
+test('browser checks: a WebSocket or fetch to a host that is not served never connects; a page that never yields runs until the verification\'s end, and fails at its step',{skip:browserReady||false},async()=>{
   let upgrades=0,hits=0;
   const other=createHttpServer((q,r)=>{hits++;r.writeHead(200,{'access-control-allow-origin':'*'});r.end('FETCHED');});
   other.on('upgrade',(q,s)=>{upgrades++;s.destroy();});
@@ -550,9 +568,9 @@ test('browser checks: a WebSocket or fetch to a host that is not served never co
     const c={...byId(report),...await alone(files,[{id:'G1',kind:'browser',serve:'web',steps:[{goto:'/hang.html'},{expect_text:'never'}]}])};
     assert.equal(c.W1.passed,true,c.W1.detail);
     assert.deepEqual([upgrades,hits],[0,0],'nothing reached the host that is not served');
-    // A page that never loads: its goto lasts until the verification's time runs out, the runtime's clock.
-    assert.match(c.G1.detail,/^step 1 \(goto "\/hang\.html"\): /);
-    assert.equal(c.G1.infrastructure,true,c.G1.detail);
+    // A page that never loads: its goto lasts until the verification's time runs out, and the page fails it.
+    assert.match(c.G1.detail,/^step 1 \(goto "\/hang\.html"\): [\s\S]*, when the verification's time ran out/);
+    assert.notEqual(c.G1.infrastructure,true,c.G1.detail);
     assert.equal(c.G2.passed,true,c.G2.detail);
   } finally {other.close();}
 });
@@ -601,7 +619,7 @@ test('isolation: each check gets a fresh copy written from memory and its own TM
   assert.deepEqual(report.checks.map(c=>[c.id,c.passed,c.detail]),[['A',true,''],['B',true,'']]);
 });
 
-test('process trees: a setsid() daemon holding stdout neither stalls the check nor outlives it; a check the verification\'s end stops reports the real time, as infrastructure',{skip:!hasPython&&'python3 is not installed'},async()=>{
+test('process trees: a setsid() daemon holding stdout neither stalls the check nor outlives it; a check the verification\'s end stops fails with the real time',{skip:!hasPython&&'python3 is not installed'},async()=>{
   const pidFile=`${tmpdir()}/v8-s4a-daemon-${process.pid}.pid`;
   const files={'d.py':`import os, sys, time\nif os.fork() == 0:\n    os.setsid()\n    open(${JSON.stringify(pidFile)}, 'w').write(str(os.getpid()))\n    time.sleep(30)\n    os._exit(0)\ntime.sleep(0.2)\nprint('parent done')\n`,
     'slow.py':'import time\ntime.sleep(30)\n'};
@@ -659,10 +677,11 @@ test('project checks run first as commands that must exit 0; the time budget mar
   assert.equal(c.P1.passed,true);
   assert.equal(c.P2.detail,'python3 fail.py: exit 1, expected 0\n--- stdout\n1 failed, 2 passed');
   assert.equal(report.stages.find(s=>s.name==='project').passed,false);
+  // The first check still running at the end of the room's time is a failure; one the time was spent before observed nothing: not run.
   const late=await run({'a.py':'import time\ntime.sleep(5)\n'},{checks:[{id:'R1',kind:'command',run:'a.py'},{id:'R2',kind:'command',run:'a.py'}]},{limits:{total_ms:1000},isolation:[]});
-  assert.equal(byId(late).R1.infrastructure,true,byId(late).R1.detail);
-  assert.match(byId(late).R1.detail,/still running when the verification's time ran out|not run: the verification's 1 s budget was spent/);
-  assert.deepEqual([byId(late).R2.detail,byId(late).R2.infrastructure],['not run: the verification\'s 1 s budget was spent',true]);
+  assert.notEqual(byId(late).R1.infrastructure,true,byId(late).R1.detail);
+  assert.match(byId(late).R1.detail,/^a\.py: still running when the verification's 1 s ran out/);
+  assert.deepEqual([byId(late).R2.detail,byId(late).R2.infrastructure],['not run: the verification\'s 1 s were spent before it started',true]);
 });
 
 // Owner 2026-10-15 05:16 ("Any code type"), 22:12 ("why are packages not allowed now?").
@@ -734,8 +753,12 @@ test('helpers: words, commands from the rows, json_has, limits',()=>{
   assert.equal(jsonHas([{id:1,t:'x'},{id:2,t:'y'}],{t:'y'}),true);
   assert.equal(jsonHas({tags:['a','b','c']},{tags:['c','a']}),true);
   assert.equal(jsonHas({a:1},{a:'1'}),false);
-  // One time only: the verification's, inside the exec's (no check or step has one).
-  assert.deepEqual(checkLimits({total_ms:10_000_000,check_ms:'x',step_ms:5}),{total_ms:220_000});
+  // v8's checks carry no npm fetch times of the runtime's (v7's stage environment keeps its own).
+  assert.equal(checkEnvironment().npm_config_fetch_timeout,undefined);
+  assert.equal(checkEnvironment().npm_config_fetch_retries,undefined);
+  // One time only: the verification's, as the room sent it (its check_seconds setting): nothing clamps it, and none is picked when it is missing.
+  assert.deepEqual(checkLimits({total_ms:10_000_000,check_ms:'x',step_ms:5}),{total_ms:10_000_000});
+  for(const bad of [undefined,{},{total_ms:0},{total_ms:-5},{total_ms:'x'},{total_ms:null}])assert.throws(()=>checkLimits(bad),/limits\.total_ms/);
 });
 
 test('v7 is unchanged: a request without mode checks is the existing build, and a checks request is attested by its snapshot',async()=>{
