@@ -20,29 +20,16 @@
 //   ctx.container.snapshotContainer({name}) -> {id, size, name}
 //   ctx.container.destroy(), ctx.container.running
 import {DurableObject} from 'cloudflare:workers';
-import {waitForBuildOutput, buildRequestOptions, checksRequestFields} from './build-executor.js';
-import {snapshotHash, validateBoxFiles} from './build-verification.js';
+import {waitForBuildOutput} from './build-executor.js';
+import {boxPathError} from '../container/build-path.mjs';
+import {BoxError, boxTimes, BOX_WORK, BOX_ROOT, sessionBoxSpec} from './box-session.js';
+export {BoxError, boxTimes, BOX_WORK, BOX_ROOT, sessionBoxSpec};
 
 export const BOX_IMAGES = Object.freeze(['check', 'browser', 'fetch']);
 // `basic` is not accepted under the durable_object policy (scheduling-policy docs).
 export const BOX_INSTANCES = Object.freeze(['lite', 'standard-1', 'standard-2', 'standard-3', 'standard-4']);
 // The one environment a box's process gets: a fixed PATH, nothing else.
 export const BOX_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
-// A box's times, every one from the verification's time (total_ms: the
-// room's check_seconds setting, which the person sets beside the turn budget
-// and every compile sends; nothing here picks one):
-//   ready: how long the platform may take to make the box ready;
-//   exec:  the runner's one exec: the verification's time for its checks and
-//          as long again for the runner's own work around them (its adapters'
-//          last reports, stopping what runs, the report); past it the box failed;
-//   life:  the backstop alarm that destroys the box whatever happened to the
-//          caller, from its open (and again from its compile's start): its
-//          ready time and its exec.
-export function boxTimes(total_ms) {
-  const t = Number(total_ms);
-  if (total_ms === null || total_ms === '' || !Number.isFinite(t) || t <= 0) throw new BoxError('bad_request', "A box is given the verification's time (limits.total_ms).");
-  return {ready: t, exec: 2 * t, life: 3 * t};
-}
 // v8 live 2: a box that took longer than this to become ready waited for its
 // image to be pulled (the first use after a deploy took 9.7 to 14.7 s, a warm
 // one about 1.2 s); it is recorded cold.
@@ -51,22 +38,15 @@ export const BOX_COLD_MS = 5000;
 // WorkerEntrypoint that serves one fixed thing. Today only the S0 probe's
 // page and WebSocket echo (src/box-probe.js BoxProbePeer).
 export const BOX_PEERS = Object.freeze({probe: 'BoxProbePeer'});
-// The whole runner in one exec (Level A, §3.3): today's build-runner. The
-// exec's end is boxTimes' exec (Box.compile); the box is destroyed after it,
-// with everything the runner started.
-export const BOX_RUNNER = Object.freeze(['node', '/opt/build-runner.mjs']);
-// v8 live 5: the runner runs under the box's own host name. The platform
-// names a box's VM with a label over 63 characters, on which Python's
-// socket.getfqdn (http.server's bind) fails, so no stdlib server could start.
-// /opt/box/hostname.py (container/box) gives the runner and everything it
-// starts the name box-<16 hex> in a user namespace of its own, with an
-// /etc/hosts that resolves it; the runner's inventory reports what it got.
+// v8 live 5: the platform names a box's VM with a label over 63
+// characters, on which Python's socket.getfqdn (http.server's bind) fails.
+// /opt/box/hostname.py (container/box) runs a command under the name
+// box-<16 hex> in a user namespace of its own; the S0 probe reports whether it can.
 export const BOX_HOSTNAME = Object.freeze(['python3', '-I', '/opt/box/hostname.py']);
 export const BOX_NAME = /^box-[0-9a-f]{16}$/;
-export const boxBuildCommand = name => {
-  if (!BOX_NAME.test(String(name))) throw new BoxError('bad_name', 'A box is named box-<16 hex>.');
-  return Object.freeze([...BOX_HOSTNAME, name, '--', ...BOX_RUNNER]);
-};
+// Writes the files of a session into its folder: stdin is {files: {path:
+// text}, links: {path: target}}; each path is one the box holds (boxPathError).
+export const BOX_WRITER = Object.freeze(['node', '-e', `const fs=require('node:fs'),path=require('node:path');let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{const {files={},links={}}=JSON.parse(s);for(const [p,t] of Object.entries(files)){fs.mkdirSync(path.dirname(p),{recursive:true});fs.rmSync(p,{force:true,recursive:true});fs.writeFileSync(p,t);}for(const [p,t] of Object.entries(links)){fs.mkdirSync(path.dirname(p),{recursive:true});fs.rmSync(p,{force:true,recursive:true});fs.symlinkSync(t,p);}process.stdout.write(String(Object.keys(files).length+Object.keys(links).length));});`]);
 // A box's name, from its Durable Object id: box-<the first 16 hex of its
 // SHA-256>. The same id always gives the same name (a replay, the spans,
 // the inventory and the probe agree on it).
@@ -76,19 +56,8 @@ export async function boxName(id) {
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
   return 'box-' + [...digest.slice(0, 8)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
-// What one compile opens (S1): the check image, or the browser image when
-// the plan has browser checks; standard-1 as BuildExecutor; internet off,
-// unless the plan installs packages: then the box has the internet for its
-// install stage, and its checks run without it where the platform allows a
-// network namespace (container/build-runner.mjs).
-export const compileBoxSpec = plan => ({image: (plan?.checks || []).some(c => c?.kind === 'browser') ? 'browser' : 'check', instance: 'standard-1', internet: (plan?.install || []).some(x => x?.packages?.length)});
-
 const decode = bytes => new TextDecoder().decode(bytes || new Uint8Array());
 const clip = (v, n) => String(v ?? '').slice(0, n);
-
-export class BoxError extends Error {
-  constructor(code, message) { super(message); this.code = code; }
-}
 
 // A closed spec. internet must be exactly true to be on; anything else is off.
 export function boxSpec(raw = {}) {
@@ -168,9 +137,8 @@ export class Box extends DurableObject {
   // Start this box's VM once. Throws when the box was opened before, when its
   // Container already runs (not fresh), when the image is not deployed, or
   // when the platform refuses the options (enableInternet:false included).
-  // v8 live 5: a prewarmed box is opened by the room before its compile
-  // (open), and its compile then runs in it (compile); open's promise is
-  // kept so a compile that arrives while it starts waits for it.
+  // v8 live 5: a prewarmed box is opened by the room before the session that
+  // takes it (src/box-prewarm.js), which then runs its commands in it.
   // total_ms: the verification's time (boxTimes).
   open(raw, total_ms) {
     if (this.opening) return Promise.reject(new BoxError('used', 'A box is single-use: this one was opened before.'));
@@ -184,6 +152,7 @@ export class Box extends DurableObject {
     const options = boxStartOptions(spec, c.images);
     const began = Date.now(), name = await this.name();
     this.opened = {spec, began};
+    this.times = times;
     await this.ctx.storage.put('opened_at', began);
     if (typeof this.ctx.storage.setAlarm === 'function') await this.ctx.storage.setAlarm(began + times.life);
     for (const r of spec.intercept) {
@@ -204,33 +173,18 @@ export class Box extends DurableObject {
     await this.ctx.storage.put('opened', {spec, result: opened});
     return opened;
   }
-  // The box a compile runs in: this one, opened now, or opened before by a
-  // prewarm with exactly this spec and never compiled in. A box compiles once.
-  async compileBox(raw, total_ms) {
-    const spec = boxSpec(raw), times = boxTimes(total_ms);
-    if (this.compiling || await this.ctx.storage.get('compiled_at')) throw new BoxError('used', 'A box is single-use: it compiled once already.');
-    this.compiling = true;
-    await this.ctx.storage.put('compiled_at', Date.now());
-    if (!this.opening && !await this.ctx.storage.get('opened_at')) return {...await this.open(spec, total_ms), prewarmed: false};
-    let kept;
-    if (this.opening) { const result = await this.opening; kept = {spec: this.opened?.spec, result}; }
-    else kept = await this.ctx.storage.get('opened');
-    if (!kept?.result) throw new BoxError('closed', 'The prewarmed box is no longer open.');
-    // v8 live 8: its Container stopped before the compile took it (the
-    // platform stopped it while it waited, or its own alarm closed it); it never compiled.
-    if (this.closed || !this.container().running) return {gone: true};
-    if (JSON.stringify(boxSpec(kept.spec)) !== JSON.stringify(spec)) throw new BoxError('mismatch', 'A prewarmed box runs only the compile it was opened for (its image, instance and internet).');
-    this.opened ??= {spec, began: Date.now(), result: kept.result};
-    // Its backstop runs from the compile's start.
-    if (typeof this.ctx.storage.setAlarm === 'function') await this.ctx.storage.setAlarm(Date.now() + times.life);
-    return {...kept.result, prewarmed: true};
-  }
-  // One command; {code, stdout, stderr, ms, timed_out}. No shell, no env but PATH.
-  async run(argv, {stdin = '', ms = 30_000, user, max = 64_000} = {}) {
+  // Whether this box is open and its Container still runs (a prewarmed box
+  // the platform stopped while it waited, or its own alarm closed, is not).
+  alive() { return !!this.opened && !this.closed && !!this.ctx.container?.running; }
+  // One command; {code, stdout, stderr, ms, timed_out}. No shell, no env but
+  // PATH. cwd: the folder it starts in (env -C). Each command's start
+  // re-arms the backstop alarm (boxTimes' life).
+  async run(argv, {stdin = '', ms = 30_000, user, max = 64_000, cwd = ''} = {}) {
     if (!this.opened || this.closed) throw new BoxError('closed', 'The box is not open.');
     if (!Array.isArray(argv) || !argv.length || argv.some(a => typeof a !== 'string')) throw new BoxError('bad_argv', 'A box command is a non-empty array of strings.');
     const c = this.container(), began = Date.now();
-    const process = await c.exec(argv, boxExecOptions({stdin: true, user}));
+    if (this.times && typeof this.ctx.storage.setAlarm === 'function') await this.ctx.storage.setAlarm(began + this.times.life);
+    const process = await c.exec(cwd ? ['env', '-C', cwd, ...argv] : argv, boxExecOptions({stdin: true, user}));
     let timedOut = false;
     try {
       const out = await waitForBuildOutput(process, (async () => { await writeAll(process, stdin); return process.output(); })(), {timeoutMs: ms});
@@ -241,26 +195,14 @@ export class Box extends DurableObject {
       return {code: null, stdout: '', stderr: '', ms: Date.now() - began, timed_out: true};
     }
   }
-  // Level A (S1): open a box, run today's build runner on the request inside
-  // it, close it. The request has the shape BuildExecutor.build takes; its
-  // limits.total_ms, the verification's time, gives the box its times.
-  async compile(raw, {fingerprint, files, options, ...checks} = {}) {
-    try {
-      const total_ms = checks.limits?.total_ms, times = boxTimes(total_ms);
-      const opened = await this.compileBox(raw, total_ms);
-      if (opened.gone) return {prewarm_closed: true};
-      if (typeof fingerprint !== 'string' || fingerprint.length > 240) throw new BoxError('bad_request', 'Invalid build fingerprint');
-      const entries = validateBoxFiles(files);
-      const snapshot_hash = await snapshotHash(entries);
-      const input = JSON.stringify({fingerprint, snapshot_hash, files: Object.fromEntries(entries), options: buildRequestOptions(options), ...checksRequestFields(checks)});
-      const c = this.container(), began = Date.now();
-      const process = await c.exec([...boxBuildCommand(opened.name)], boxExecOptions({stdin: true}));
-      const output = await waitForBuildOutput(process, (async () => { await writeAll(process, input); return process.output(); })(), {timeoutMs: times.exec});
-      if (output.exitCode !== 0) throw new BoxError('exit', `The box's build runner exited ${output.exitCode}: ${clip(decode(output.stderr).slice(-800) || decode(output.stdout).slice(-800), 800)}`);
-      const result = JSON.parse(decode(output.stdout));
-      if (result.snapshot_hash !== snapshot_hash || result.fingerprint !== fingerprint) throw new BoxError('attestation', 'Box attestation mismatch');
-      return {...result, box: {...opened, exec_ms: Date.now() - began}};
-    } finally { await this.close(); }
+  // Writes files ({path: text}) and symbolic links ({path: target}) into the
+  // session's folder (BOX_WORK) as the box's root, each at its path: one the
+  // box holds, inside that folder (boxPathError). {written} or {error}.
+  async write(files = {}, links = {}) {
+    for (const p of [...Object.keys(files), ...Object.keys(links)]) { const bad = boxPathError(p); if (bad) throw new BoxError('bad_path', bad); }
+    const r = await this.run([...BOX_WRITER], {stdin: JSON.stringify({files, links}), ms: this.times?.run ?? 30_000, user: BOX_ROOT, cwd: BOX_WORK});
+    if (r.code !== 0) throw new BoxError('write', `The box did not take the files: ${r.timed_out ? 'it ran out of time' : clip(r.stderr || r.stdout, 800)}`);
+    return {written: Object.keys(files).length + Object.keys(links).length};
   }
   // S0 probe: snapshot this box's root filesystem.
   async snapshot(name = '') {

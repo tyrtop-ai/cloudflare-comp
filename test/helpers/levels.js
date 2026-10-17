@@ -1,7 +1,8 @@
 // v8 level rooms for the scripted end-to-end tests: a live room (the real
-// ControlRoom over node:sqlite, the real build runner behind fake boxes)
+// ControlRoom over node:sqlite, fake boxes that run commands for real)
 // whose models are scripted by role. The splitter answers levels, workers
-// answer file blocks, and Clef answers every question by its key (p(key,
+// answer file blocks, the usual compiler runs the validations in its box,
+// and Clef answers every question by its key (p(key,
 // state) → a probability), so a test states only what it decides.
 import {liveRoom, fileBlocks, blockCalls, writeCalls, events, rowId, LEVEL_FILE, LEVELS_DIR, ControlRoom} from './room.js';
 import {lintText, composedTexts} from './prompt-lint.js';
@@ -63,8 +64,8 @@ export const usualClef = (overrides = {}) => clefBy((key, state, input) => {
 });
 
 // A room started from the prompt on the v8 pipeline, run until it settles.
-export async function levelRoom({prompt, split, leaf, clef = usualClef(), build, file, budget = 80, settings = {}, room_id = 'levels-test', boxes, executor, store} = {}) {
-  const r = liveRoom({split, leaf, clef, build, file, boxes, executor, room_id, store});
+export async function levelRoom({prompt, split, leaf, clef = usualClef(), build, compile, file, budget = 80, settings = {}, room_id = 'levels-test', boxes, executor, store} = {}) {
+  const r = liveRoom({split, leaf, clef, build, compile, file, boxes, executor, room_id, store});
   const started = await r.room.start(prompt, budget, {pipeline: 'v8', ...settings}, room_id);
   if (started?.error) throw new Error(started.error);
   await r.drain();

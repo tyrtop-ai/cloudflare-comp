@@ -1,11 +1,12 @@
 // v8: a worker works through functions. One session (src/session.js) per
-// turn offers read_file, write_file, run_examples, ask and done, and wait
+// turn offers read_file, write_file, run, ask and done, and wait
 // while something it asked for is not answered yet; each
 // call does exactly what it is given, or says exactly why it cannot, and
 // nothing reads what the model writes besides its calls. The room gives the
 // world a session acts on (workerWorld): the worker's files as they stand
-// (its staged writes included), how a file is stored, how its examples run
-// and how an ask is sent. done and wait end the session with the summary
+// (its staged writes included), how a file is stored, its own box (run: one
+// command there, src/box-session.js; a box that holds its files as they
+// stand, with the internet on) and how an ask is sent. done and wait end the session with the summary
 // given; the room records the turn's end as the function said it.
 // A path names a place among the worker's own files, as a rooted file
 // system reads it (rootedPath): '..' from the top is the top, so no path
@@ -13,6 +14,7 @@
 import { rootedPath } from '../container/build-path.mjs';
 import { unheldPath } from './validations.js';
 import { session } from './session.js';
+import { runArgs } from './box-session.js';
 import { systemPrompt, TOOLS, MESSAGES } from './prompts.js';
 
 const plain = v => v && typeof v === 'object' && !Array.isArray(v);
@@ -24,13 +26,14 @@ const isText = v => typeof v === 'string';
 
 // The world one session acts on. files: Map path -> text (the worker's own
 // files, kept current as it writes). write(path, content): stores a whole
-// file. runExamples(): what its examples observed. ask({need, name}): the
+// file. box: its box (boxSession): run(argv, stdin) runs one command there,
+// write(path, content) puts a file it wrote there once it is open. ask({need, name}): the
 // result of sending an ask. readBase(path), given to a worker that holds the
 // project the work starts from: one file of it, whole (the room's
 // readBaseFile), which read_file shows where the worker has no file there.
 // outstanding(): whether something it asked for is not answered yet.
-export function workerWorld({files = new Map(), write, runExamples, ask, readBase, outstanding = () => false}) {
-  return {files: files instanceof Map ? files : new Map(files), write, runExamples, ask, readBase, outstanding, written: [], unchanged: [], asked: [], examples: 0};
+export function workerWorld({files = new Map(), write, box, ask, readBase, outstanding = () => false}) {
+  return {files: files instanceof Map ? files : new Map(files), write, box, ask, readBase, outstanding, written: [], unchanged: [], asked: [], runs: 0};
 }
 // The functions offered now (TOOLS.worker): wait only while something it
 // asked for is not answered yet, as that answer is what starts its next turn.
@@ -62,13 +65,14 @@ async function writeFile(w, a) {
   await w.write(path, a.content);
   w.files.set(path, a.content);
   if (!w.written.includes(path)) w.written.push(path);
-  return {written: path, characters: a.content.length};
+  const notInBox = w.box ? await w.box.write(path, a.content) : '';
+  return {written: path, characters: a.content.length, ...(notInBox ? {box: `not written in your box: ${notInBox}`} : {})};
 }
-async function runExamples(w, a) {
-  const bad = fieldsOf('run_examples', a, []);
-  if (bad) return {error: bad};
-  w.examples++;
-  return w.runExamples();
+async function run(w, a) {
+  const r = runArgs('run', a);
+  if (r.error) return {error: r.error};
+  w.runs++;
+  return w.box ? w.box.run(r.argv, r.stdin) : {error: 'You have no box.'};
 }
 async function ask(w, a) {
   const bad = fieldsOf('ask', a, ['need', 'name']);
@@ -90,7 +94,7 @@ export async function workerCall(w, name, args) {
   const a = plain(args) ? args : {};
   if (name === 'read_file') return {result: readFile(w, a)};
   if (name === 'write_file') return {result: await writeFile(w, a)};
-  if (name === 'run_examples') return {result: await runExamples(w, a)};
+  if (name === 'run') return {result: await run(w, a)};
   if (name === 'ask') return {result: await ask(w, a)};
   if (name === 'done' || name === 'wait') {
     const bad = ending(name, a);

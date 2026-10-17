@@ -5,26 +5,25 @@
 // cannot; nothing reads its prose, and the runtime writes no glue and
 // renames nothing on its behalf. Pure tests of the functions and of what the
 // room keeps of them, the tokens it reads code with,
-// and a bundle joined by the builder's files as the box runs it (no module
-// path, the real call adapter).
+// and a bundle joined by the builder's files as a box runs it (no module
+// path), its functions called as the usual compiler calls them.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, dirname} from 'node:path';
-import {fileURLToPath} from 'node:url';
 import {packageDirectory, packagePath, branchDirectory} from '../src/assembly.js';
 import {builderWorld, builderCall, builderWork, builderTools} from '../src/builder.js';
 import {textHash} from '../src/piece.js';
 import {textTokens} from '../src/linker.js';
 import {toolchainById, TOOLCHAINS, validIdentifier} from '../src/toolchains.js';
-import {checkPlan, runNotes} from '../src/checks.js';
+import {runNotes} from '../src/checks.js';
+import {checkOn} from './helpers/compiler.js';
 import {MESSAGES, TOOLS, ROLE, FORMAT} from '../src/prompts.js';
 
 const py = toolchainById('python');
 const hasPython = spawnSync('python3', ['--version']).status === 0;
-const CALL_PY = fileURLToPath(new URL('../container/adapters/call.py', import.meta.url));
 
 // ------------------------------------------------------------ each function's results
 const REPORT = "const { createTicket } = require('./createTicket');\nconst createTicketLater = 1;\nconsole.log(createTicket('x').id);\n";
@@ -166,22 +165,10 @@ function runBundle(files, argv, {input = ''} = {}) {
     for (const [p, t] of files) { mkdirSync(dirname(join(dir, p)), {recursive: true}); writeFileSync(join(dir, p), t); }
     const env = {...process.env, PYTHONDONTWRITEBYTECODE: '1'};
     delete env.PYTHONPATH;
-    const nonce = join(dir, '..', `nonce-${Date.now()}-${Math.random()}`);
-    writeFileSync(nonce, 'n0nce-s5');
-    const full = argv.map(a => a === '{nonce}' ? nonce : a === '{call}' ? CALL_PY : a);
-    const r = spawnSync(full[0], full.slice(1), {cwd: dir, env, encoding: 'utf8', input});
-    r.leaked = existsSync(join(dir, 'leak.txt'));
-    rmSync(nonce, {force: true});
-    return r;
+    return spawnSync(argv[0], argv.slice(1), {cwd: dir, env, encoding: 'utf8', input});
   } finally { rmSync(dir, {recursive: true, force: true}); }
 }
-const call = (files, module, steps) => {
-  const r = runBundle(files, ['python3', '-I', '-X', 'utf8', '{call}', '{nonce}'], {input: JSON.stringify({module, steps}) + '\n'});
-  r.records = r.stdout.split('\n').filter(Boolean).map(l => JSON.parse(l));
-  return r;
-};
-
-test('a bundle joined by the builder\'s own files and renames runs as a root script and through the call adapter, with no module path; the delivered files alone do not', {skip: !hasPython && 'python3 is not installed'}, () => {
+test('a bundle joined by the builder\'s own files and renames runs as a root script and its functions are called by their contract\'s file, with no module path; the delivered files alone do not', {skip: !hasPython && 'python3 is not installed'}, async () => {
   const files = joined();
   assert.equal(files.get('wordfreq.py'), SOURCES['wordfreq.py'], 'a worker\'s file ships as written');
   assert.equal(files.get(COUNTER), SOURCES[COUNTER].replace('from textutil import words', 'from .textutil import words'));
@@ -189,33 +176,16 @@ test('a bundle joined by the builder\'s own files and renames runs as a root scr
   assert.equal(run.stdout, 'the 3\nand 2\n', run.stderr);
   // The same delivered files with nothing the builder made fail as S4b found them: the runtime adds nothing.
   assert.match(runBundle(new Map([...Object.entries(SOURCES), ['s.txt', 'a\n']]), ['python3', 'wordfreq.py', 's.txt', '1']).stderr, /ModuleNotFoundError: No module named 'top_words'/);
-  // A component through the real call adapter (isolated, the root after the standard library).
-  const c = call(files, RANKER, [{call: 'top_words', args: ['b a b', 1]}]);
-  assert.deepEqual(c.records.map(x => x.ok ?? x.done), [true, true], c.stdout + c.stderr);
-  assert.deepEqual(c.records[0].value, [['b', 2]]);
+  // A component's function, called from the file its contract names.
+  const [c] = await checkOn(files, [{id: 'c', check: {kind: 'call', steps: [{call: 'top_words', args: ['b a b', 1], expect: [['b', 2]]}]}}], [{name: 'top_words', kind: 'function', path: RANKER}]);
+  assert.equal(c.passed, true, c.detail);
 });
 
-test('no bundle file stands in for a standard module in the call adapter: a root json.py, types.py or sitecustomize.py is never imported', {skip: !hasPython && 'python3 is not installed'}, () => {
-  const trap = "open('leak.txt', 'w').write('imported')\nraise SystemExit(3)\n";
-  const files = new Map([['json.py', trap], ['types.py', trap], ['enum.py', trap], ['sitecustomize.py', trap], [packagePath('X', 'm.py', 'root.1'), 'import json\n\n\ndef f(x):\n    return json.loads(x)\n'], ['__init__.py', '']]);
-  const c = call(files, packagePath('X', 'm.py', 'root.1'), [{call: 'f', args: ['[1, 2]']}]);
-  assert.deepEqual(c.records.map(x => x.ok ?? x.done), [true, true], c.stdout + c.stderr);
-  assert.deepEqual(c.records[0].value, [1, 2]);
-  assert.equal(c.leaked, false, 'no trap file ran');
-  assert.ok(c.records.every(x => x.nonce === 'n0nce-s5'));
-});
-
-// Owner 2026-10-16 20:38 ("The splitter should be given interfaces and then write via those interfaces"): the file is the one the function contract names, never one found by the name.
-test('checkPlan: a call loads the file its function contract names, never the builder\'s file at the root that also gives the name; no module path; RUN.md runs a command as its row runs a file', () => {
-  const files = joined();
+// RUN.md says how a command runs, as its row runs a file; the row holds no glue for the runtime to write.
+test('RUN.md runs a command as its row runs a file; the row holds no glue for the runtime to write', () => {
   const spec = {contracts: [{name: 'wordfreq', kind: 'command', path: 'wordfreq.py', does: 'prints the most frequent words'}, {name: 'count_words', kind: 'function', path: COUNTER}],
     validations: [{id: 'V1', serves: ['count_words'], check: {kind: 'call', steps: [{call: 'count_words', args: ['a a'], expect: {a: 2}}]}}]};
-  const {plan} = checkPlan(spec, files);
-  assert.equal(plan.paths, undefined);
-  assert.equal(plan.checks[0].module, COUNTER);
-  assert.ok(plan.syntax[0].files.includes('count_words.py'));
   assert.match(runNotes({goal: 'g'}, spec, {}), /- `wordfreq`: `python3 wordfreq\.py`: prints the most frequent words/);
   assert.doesNotMatch(runNotes({goal: 'g'}, spec, {}), /glue\//);
-  assert.equal(py.call_adapter.slice(0, 2).join(' '), 'python3 -I', 'the adapter\'s supervisor starts isolated');
   assert.equal(py.glue, undefined, 'the row holds no glue for the runtime to write');
 });

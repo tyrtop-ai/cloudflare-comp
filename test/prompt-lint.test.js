@@ -7,9 +7,9 @@ import assert from 'node:assert/strict';
 import { ROLE, FORMAT, CLEF, RETRY, MESSAGES, TOOLS, promptTexts, systemPrompt, clefText } from '../src/prompts.js';
 import { lintText, lintAll, words, sentences, negations, capsWords, STRUCTURE_WORDS } from './helpers/prompt-lint.js';
 
-const ROLES = ['splitter', 'worker', 'builder'];
+const ROLES = ['splitter', 'worker', 'builder', 'compiler'];
 // Per-role caps: words of each format, and of the whole system prompt.
-const FORMAT_WORDS = {splitter: 60, worker: 80, builder: 60};
+const FORMAT_WORDS = {splitter: 60, worker: 80, builder: 60, compiler: 60};
 const SYSTEM_WORDS = 640;
 
 test('every v8 prompt text passes the lint', () => {
@@ -22,7 +22,7 @@ test('every v8 prompt text passes the lint', () => {
   assert.deepEqual(lintAll(texts), []);
 });
 
-test('the generative roles are the splitter, the worker and the builder; each system prompt is its own job and its format', () => {
+test('the generative roles are the splitter, the worker, the builder and the compiler; each system prompt is its own job and its format', () => {
   assert.deepEqual(Object.keys(ROLE).sort(), [...ROLES].sort());
   assert.deepEqual(Object.keys(FORMAT).sort(), [...ROLES].sort());
   for (const role of ROLES) assert.equal(systemPrompt(role), `${ROLE[role]}\n\n${FORMAT[role]}`);
@@ -114,14 +114,14 @@ test('the splitter\'s functions are prompt texts too: each description and each 
 
 test('the worker\'s functions are prompt texts too: each description and each parameter\'s is linted, names no structure around it, and holds no filled-in value to copy; its format says to call them', () => {
   const texts = Object.entries(promptTexts()).filter(([k]) => k.startsWith('TOOLS.worker.'));
-  assert.deepEqual([...new Set(texts.map(([k]) => k.split('.')[2]))], ['read_file', 'write_file', 'run_examples', 'ask', 'done', 'wait']);
-  assert.deepEqual(TOOLS.worker.map(t => t.name), ['read_file', 'write_file', 'run_examples', 'ask', 'done', 'wait']);
+  assert.deepEqual([...new Set(texts.map(([k]) => k.split('.')[2]))], ['read_file', 'write_file', 'run', 'ask', 'done', 'wait']);
+  assert.deepEqual(TOOLS.worker.map(t => t.name), ['read_file', 'write_file', 'run', 'ask', 'done', 'wait']);
   for (const [name, text] of texts) {
     assert.deepEqual(lintText(name, text, {generative: true}), [], name);
     assert.doesNotMatch(text, /"\w+"\s*:\s*["\[{]/, `${name} holds a filled-in field`);
   }
   assert.ok(TOOLS.worker.every(t => t.parameters.type === 'object'));
-  assert.deepEqual(Object.fromEntries(TOOLS.worker.map(t => [t.name, t.parameters.required])), {read_file: ['path'], write_file: ['path', 'content'], run_examples: [], ask: ['need'], done: ['summary'], wait: ['summary']});
+  assert.deepEqual(Object.fromEntries(TOOLS.worker.map(t => [t.name, t.parameters.required])), {read_file: ['path'], write_file: ['path', 'content'], run: ['argv'], ask: ['need'], done: ['summary'], wait: ['summary']});
   assert.match(FORMAT.worker, /^Answer by calling your functions/);
   assert.doesNotMatch(FORMAT.worker, /=== FILE|=== CONTROL|json object|control block/i, 'no answer format to write');
   assert.doesNotMatch(ROLE.worker, /control block/);
@@ -140,6 +140,21 @@ test('the builder\'s functions are prompt texts too: each description and each p
   assert.match(FORMAT.builder, /^Answer by calling your functions/);
   assert.doesNotMatch(FORMAT.builder + ROLE.builder, /json|edits|issues|find|replace/i, 'no answer format to write');
   assert.ok(!('linker' in ROLE) && !('linker' in FORMAT) && !('json' in RETRY), 'no linker prompt and no answer to retry');
+});
+
+test('the compiler\'s functions are prompt texts too: each description and each parameter\'s is linted, names no structure around it, and holds no filled-in value to copy; its format says to call them', () => {
+  const texts = Object.entries(promptTexts()).filter(([k]) => k.startsWith('TOOLS.compiler.'));
+  assert.deepEqual([...new Set(texts.map(([k]) => k.split('.')[2]))], ['list_files', 'read_file', 'run', 'result', 'done']);
+  assert.deepEqual(TOOLS.compiler.map(t => t.name), ['list_files', 'read_file', 'run', 'result', 'done']);
+  for (const [name, text] of texts) {
+    assert.deepEqual(lintText(name, text, {generative: true}), [], name);
+    assert.doesNotMatch(text, /"\w+"\s*:\s*["\[{]/, `${name} holds a filled-in field`);
+  }
+  assert.ok(TOOLS.compiler.every(t => t.parameters.type === 'object'));
+  assert.deepEqual(Object.fromEntries(TOOLS.compiler.map(t => [t.name, t.parameters.required])), {list_files: [], read_file: ['path'], run: ['argv'], result: ['validation', 'passed', 'observed'], done: []});
+  assert.match(FORMAT.compiler, /^Answer by calling your functions/);
+  // The worker's and the compiler's run take the same argument list and input.
+  assert.deepEqual(TOOLS.compiler.find(t => t.name === 'run').parameters, TOOLS.worker.find(t => t.name === 'run').parameters);
 });
 
 test('Clef questions are filled by key, and run data never enters a system prompt', () => {

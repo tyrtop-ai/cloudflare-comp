@@ -14,21 +14,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {readCheck, contractExamples} from '../src/validations.js';
 import {splitterState, splitterCall, levelOf} from '../src/splitter.js';
-import {fileResult} from '../src/checks.js';
 import {checkCall} from './helpers/room.js';
 
 const FIXTURE = JSON.parse(fs.readFileSync(new URL('./fixtures/v8-live8-splitters.json', import.meta.url), 'utf8'));
 // Calls in order through one splitter's functions: their results, and the state.
 const calls = (list, world = {}) => { const s = splitterState(world); return {s, results: list.map(([fn, args]) => splitterCall(s, fn, args).result)}; };
-
-test('a file check runs as the splitter wrote it: "<form>" is not in a page that holds <form id="todo-form">, and the complaint is the observation alone', () => {
-  const page = '<!DOCTYPE html>\n<html>\n<body>\n  <form id="todo-form">\n    <input id="task">\n  </form>\n  <ul id="list"></ul>\n</body>\n</html>\n';
-  const r = fileResult({kind: 'file', path: 'index.html', has: ['<form>', '<ul>']}, new Map([['index.html', page]]));
-  assert.equal(r.passed, false);
-  assert.equal(r.detail, 'index.html does not contain "<form>"');
-  assert.equal(r.observed.near, undefined, 'the runtime adds no hint of its own');
-  assert.equal(fileResult({kind: 'file', path: 'index.html', has: ['<form id="todo-form">', '<ul']}, new Map([['index.html', page]])).passed, true);
-});
 
 test('requests to /tickets/1, /2 and /3 by validations serving PUT /tickets/:id are three examples of it; a validation that serves "PUT /tickets/1" is refused, since that is not a declared name', () => {
   const route = {name: 'PUT /tickets/:id', kind: 'route', path: 'src/server.js'};

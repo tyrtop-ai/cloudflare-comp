@@ -333,14 +333,6 @@ test('live 5: the floor and both bars come from the room\'s settings; every mana
   assert.equal(passed(deep.room), 12);
 });
 
-// ------------------------------------------------------------ a file check runs as written
-test('a file check runs as the splitter wrote it: its text across lines is not the text on one line', async () => {
-  const {fileResult} = await import('../src/checks.js');
-  const files = new Map([['styles.css', '#todo-list {\n  list-style: none;\n}\n']]);
-  assert.equal(fileResult({path: 'styles.css', has: ['#todo-list { list-style: none; }']}, files).passed, false);
-  assert.equal(fileResult({path: 'styles.css', has: ['#todo-list {\n  list-style: none;\n}']}, files).passed, true);
-});
-
 // ------------------------------------------------------------ a validation that keeps failing
 // Owner, 2026-10-17: a worker that answers a complaint with its files unchanged shows its problem statement was wrong or incomplete,
 // "problem statement failure, not worker or routing failure": the splitter that wrote it rebuilds it, reading the complaint.

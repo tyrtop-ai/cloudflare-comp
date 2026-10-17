@@ -49,7 +49,7 @@ export function catalogue({own = [], uses = [], packages = [], base = [], source
   };
   for (const c of own) if (!files.has(c?.name)) add(c?.name, 'contract', MESSAGES.available_own());
   for (const c of uses) add(c?.name, 'contract', MESSAGES.available_use());
-  for (const p of packages) add(p?.name, 'package', MESSAGES.available_package({provides: typeof p?.provides === 'string' ? p.provides : '', observed: typeof p?.not_installed === 'string' ? p.not_installed : ''}));
+  for (const p of packages) add(p?.name, 'package', MESSAGES.available_package({provides: typeof p?.provides === 'string' ? p.provides : ''}));
   for (const p of base) add(p, 'base', MESSAGES.available_base());
   for (const s of sources) {
     const m = SOURCE_REF.exec(String(s?.ref ?? ''));

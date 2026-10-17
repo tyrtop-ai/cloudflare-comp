@@ -7,8 +7,8 @@
 // does not hold goes to its manager as a contract ask does, whose choice
 // grants a package (one its row holds, or the name new, in a language: every
 // manager has the same functions, whatever its depth) or asks one level up
-// (packages are allowed, 22:12); the compiler's box installs what a row
-// lists. A package's name is whatever the agent gave: no list or name shape
+// (packages are allowed, 22:12); the agents install what a row lists in
+// their own boxes. A package's name is whatever the agent gave: no list or name shape
 // decides what is one. Pure: no room, no model.
 import {TOOLCHAINS, toolchainById} from './toolchains.js';
 
@@ -61,8 +61,7 @@ export function inStdlib(name, row) {
   if (String(row.stdlib_names || '').split(/\s+/).includes(topOf(n, row))) return true;
   return (row.stdlib_provides || []).some(p => bare(p.name, row) === bare(n, row) || bare(p.name, row).split(/[./]/)[0] === topOf(n, row) && !bare(n, row).includes('.'));
 }
-// The row whose standard library holds a name, or null (what the box need
-// not install for a row: packageInstalls).
+// The row whose standard library holds a name, or null.
 export const stdlibRow = (name, rows = TOOLCHAINS) => rows.find(r => inStdlib(name, r)) || null;
 // One package as an answer names it: "http.server (HTTP server)".
 export const packageLine = p => `${p.name}${p.provides ? ` (${p.provides})` : ''}`;

@@ -95,8 +95,9 @@ export function levelCalls(level,{user={},tools=['contract','piece','level','don
   out.push({name:'done',arguments:{}});
   return out;
 }
-// v8: a level's validations (mode 'checks') run in the real verifyChecks.
-export const {verifyChecks}=await import('../../container/build-runner.mjs');
+// v8: the scripted compiler agent (test/helpers/compiler.js), the room's usual one.
+const {usualCompiler,logged}=await import('./compiler.js');
+export {usualCompiler};
 // A live room with a scripted linker, runner and coverage check. Any other
 // model request fails the request (and so the turn, or, for a manager's
 // model, the decision: its defaults apply). build(user, n, system, {round,
@@ -112,8 +113,8 @@ export const {verifyChecks}=await import('../../container/build-runner.mjs');
 // fails open, as these rooms predate it (v7.13.3). raw holds every
 // request's system prompt and user text as sent: on the room's default
 // model the runner's and coverage's end with ' /no_think' (v7.13.4).
-export function liveRoom({link=()=>({edits:[],issues:[]}),build=null,runner=()=>runnerTest,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,source=null,executor,boxes,room_id='v714-test',store:given=null}={}) {
-  const calls={link:[],build:[],buildRounds:[],runner:[],leaf:[],leafRounds:[],coverage:[],file:[],manager:[],split:[],splitRounds:[],clef:[],source:[],raw:[]};
+export function liveRoom({link=()=>({edits:[],issues:[]}),build=null,compile=null,runner=()=>runnerTest,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,source=null,executor,boxes,room_id='v714-test',store:given=null}={}) {
+  const compileSessions=new WeakMap(),usual=logged([],{given:(files,links)=>{builds.push(files);builds.links.push(links);}}),calls={link:[],build:[],buildRounds:[],compile:[],compileRounds:[],runner:[],leaf:[],leafRounds:[],coverage:[],file:[],manager:[],split:[],splitRounds:[],clef:[],source:[],raw:[]};
   const AI={run:async(_model,input)=>{
     if(!input.messages) {
       if(!clef)throw new Error('unexpected Clef request');
@@ -188,6 +189,23 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),build=null,runner=()=>
       if(Array.isArray(a))return {tool_calls:a.map(c=>({name:c.name,arguments:c.arguments??{}}))};
       return send(a);
     }
+    // v8: the compiler works through functions (src/compiler.js). Its fake
+    // answers each round of its session with a list of calls [{name,
+    // arguments}]; with no fake it is the usual compiler (usualCompiler),
+    // which exercises each validation in its box. compile(user, n, system,
+    // {round, results, tools}): n counts sessions; results are the previous
+    // round's results (parsed).
+    if(v8role==='compiler'&&input.tools){
+      const round=messages.filter(m=>m.role==='assistant').length+1,last=messages.map(m=>m.role).lastIndexOf('assistant');
+      const results=round>1?messages.slice(last+1).filter(m=>m.role==='tool').map(m=>({name:m.name,result:JSON.parse(m.content)})):[],tools=input.tools.map(t=>t.name);
+      // Compiler sessions run at once at different levels: each is known by its system message, which its rounds share.
+      if(round===1){calls.compile.push(user);compileSessions.set(messages[0],calls.compile.length);}
+      const n=compileSessions.get(messages[0])??calls.compile.length;
+      calls.compileRounds.push({session:n,round,results});
+      const a=await (compile||usual)(user,n,system,{round,results,tools});
+      if(Array.isArray(a))return {tool_calls:a.map(c=>({name:c.name,arguments:c.arguments??{}}))};
+      return send(a);
+    }
     if(system.startsWith('You are a LINKER')){calls.link.push(user);return {response:JSON.stringify(link(user,calls.link.length))};}
     if(system.startsWith('You check an application\'s API')){calls.coverage.push(user);const a=coverage(user,calls.coverage.length);return {response:typeof a==='string'?a:JSON.stringify(a)};}
     if(system.startsWith('You are a MANAGER')) {
@@ -202,16 +220,15 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),build=null,runner=()=>
     if(system.startsWith('You are the RUNNER')){calls.runner.push(user);return {response:runner(user,calls.runner.length)};}
     throw new Error('unexpected model request: '+system.slice(0,80));
   }};
-  // builds.links: the symbolic links each box was given (path to target), beside its files.
+  // builds: the files each v7 build ran, and each v8 compiler's box was given
+  // with the usual compiler; builds.links: the symbolic links each such box was given (path to target).
   const builds=[];builds.links=[];
-  // v8: a level's validations (mode 'checks') run in the real verifyChecks,
-  // with the network kept (isolation []: the tests' sandbox may refuse namespaces).
-  const exec=executor||{build:async({fingerprint,files,options,mode,plan,toolchains,limits,links})=>{builds.push(files);builds.links.push(links||{});
-    return mode==='checks'?verifyChecks({mode,fingerprint,snapshot_hash:await snapshotHash(files),files,plan,toolchains,limits,...(links?{links}:{})},{isolation:[]}):verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files,options});}};
+  // v7: the build runs in the real build runner.
+  const exec=executor||{build:async({fingerprint,files,options})=>{builds.push(files);return verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files,options});}};
   const pending=[],store=given||new Store(),sql=new Sql(),ctx={storage:{sql},waitUntil:p=>pending.push(p)};
-  // Capability boxes S1: a v8 compile opens a fresh Box (the real class over
-  // a fake Container) whose runner request goes to the same executor.
-  const BOXES=boxes||fakeBoxes({run:req=>exec.build(req)});
+  // Capability boxes S1: a v8 session opens a fresh Box (the real class over
+  // a fake Container) whose commands run for real in a folder of its own.
+  const BOXES=boxes||fakeBoxes();
   const env={MOCK_AI:'false',TEST_ARTIFACT_STORE:store,AI,BUILD_EXECUTORS:{getByName:()=>exec},BOXES};
   const room=new ControlRoom(ctx,env);
   room.set('room_id',room_id);

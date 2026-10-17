@@ -1,13 +1,13 @@
 // The scripted toolkit tree on the levels API: the room's manager splits a
 // small Python toolkit into Loud part {Shouter, Louder}, Quiet part
 // {Whisperer, Softener} and Notes; each piece's manager hands its contract
-// to one worker. The splitter, the workers and Clef are scripted; the
-// validations run in the real build runner behind fake boxes (logged).
+// to one worker. The splitter, the workers, Clef and the compiler are
+// scripted; the usual compiler runs the validations in its box (logged).
 import {spawnSync} from 'node:child_process';
-import {liveRoom, events, snapshotHash, verifyChecks, fileBlocks} from './room.js';
+import {liveRoom, events, fileBlocks} from './room.js';
 import {levelRoom, clefBy, choiceP, deliver, again} from './levels.js';
-import {checkPlan, fileResult} from '../../src/checks.js';
-export {liveRoom, events, again, deliver, fileBlocks};
+import {logged, checkOn} from './compiler.js';
+export {liveRoom, events, again, deliver, fileBlocks, logged};
 
 export const hasPython = spawnSync('python3', ['--version']).status === 0;
 export const skip = !hasPython && 'python3 is not installed';
@@ -65,16 +65,11 @@ export const leafOf = ({answers = {}, extra = {}, control = null} = {}) => {
     return ctl ? fileBlocks(Object.entries(files).map(([path, content]) => ({path, content})), ctl) : deliver(files);
   };
 };
-// An executor that logs each box's validations, files and syntax step.
-export const logged = boxes => ({build: async req => {
-  boxes.push({ids: (req.plan?.checks || []).map(c => c.id), files: {...req.files}, syntax: (req.plan?.syntax || []).flatMap(s => s.files)});
-  return verifyChecks({...req, snapshot_hash: await snapshotHash(req.files)}, {isolation: []});
-}});
 // The toolkit room, started and run until it settles; base: {path: text | {base64, reason}} as a previous result it starts from.
 export async function toolkit({split = splitFor(), leaf = leafOf(), clef = clefFor(), build, budget = 120, prompt = GOAL, base = null, room_id = 'toolkit'} = {}) {
   const boxes = [];
-  if (!base) { const r = await levelRoom({prompt, split, leaf, clef, build, budget, executor: logged(boxes), room_id}); return {...r, boxes}; }
-  const r = liveRoom({split, leaf, clef, build, executor: logged(boxes), room_id});
+  if (!base) { const r = await levelRoom({prompt, split, leaf, clef, build, budget, compile: logged(boxes), room_id}); return {...r, boxes}; }
+  const r = liveRoom({split, leaf, clef, build, compile: logged(boxes), room_id});
   r.env.ROOMS = {getByName: () => ({appFiles: async () => ({kind: 'levels', passed: true, room_status: 'complete', files: Object.entries(base).map(([path, v]) => typeof v === 'string' ? {path, content: v} : {path, content_base64: v.base64, passthrough: true, reason: v.reason || 'carried'})})})};
   const s = await r.room.start(prompt, budget, {pipeline: 'v8'}, room_id, {base: {room: 'base-room-0001'}});
   if (s?.error) throw new Error(s.error);
@@ -85,20 +80,8 @@ export async function toolkit({split = splitFor(), leaf = leafOf(), clef = clefF
 export const at = room => Object.fromEntries(room.allNodes().filter(n => n.role === 'manager').map(n => [n.id === room.roomManager() ? 'Root' : n.label, n.id]));
 export const tail = (room, n = 30) => events(room).filter(e => !['dispatch', 'turn_start', 'turn_end', 'write', 'revision', 'spawn'].includes(e.kind)).slice(-n).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 240)}`).join('\n');
 export const statusOf = room => Object.fromEntries(Object.entries(room.read('validation_status', {})).map(([id, s]) => [id, s.passed]));
-// The validations, run directly on a bundle in the real build runner.
-export async function runOn(room, list, bundle) {
-  const files = bundle.files, ship = Object.fromEntries(files), out = [];
-  for (const v of list.filter(v => v.check.kind === 'file')) out.push({id: v.id, passed: !!fileResult(v.check, files).passed});
-  const box = list.filter(v => v.check.kind !== 'file' && v.check.kind !== 'judge');
-  if (!box.length) return out;
-  const {plan, toolchains, local} = checkPlan(room.specOf(box), files, {rows: room.installedToolchains(), placed: bundle.placed});
-  for (const [id, x] of local) out.push({id, passed: !!x.passed, detail: x.detail});
-  if (plan.checks.length) {
-    const rep = await verifyChecks({mode: 'checks', fingerprint: 'x', snapshot_hash: await snapshotHash(ship), files: ship, plan: {...plan, syntax: []}, toolchains, limits: {total_ms: 60000, check_ms: 20000, step_ms: 4000}}, {isolation: []});
-    for (const c of rep.checks) out.push({id: c.id, passed: !!c.passed, detail: c.detail});
-  }
-  return out;
-}
+// The validations, run directly on a bundle as the usual compiler runs them.
+export const runOn = (room, list, bundle) => checkOn(bundle.files, list, room.specOf(list).contracts);
 // The export as a Map of text files (the runtime's notes aside; carried bytes decoded).
 export async function exported(room) {
   const app = await room.appFiles();

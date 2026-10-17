@@ -14,14 +14,16 @@
 // §6.3: one paragraph per role, at most six sentences each.
 export const ROLE = Object.freeze({
   splitter: 'Your role: state what your assignment delivers and how each delivery is checked, and divide the assignment into pieces that can each be made at the same time from its own task alone. You receive your assignment, your contracts (none when you state them), what your level already has, your packages, and any existing files and linked pages, quoted as reference. Declare through your functions the contracts of this level, each of yours by its name and any that one piece delivers for another to use, then validations: runnable checks, each showing different inputs or steps and what follows. Every function, command and route contract needs three different examples, each a call, request or run of it, since a contract is known by its validations alone. When piece is offered, declare through it the pieces of your division, two or more; then call done.',
-  worker: 'Your role: write the files that deliver what your prompt asks. You receive your prompt (your task, what to deliver under which names and paths with examples of each, and the contracts you may call, each as declared), the paths of your files, complaints about them, answers to what you asked, and what is available to you by name. Deliver each item under exactly its name and at its path, so that each of its examples holds, since that is how your files are run. A contract you may call is delivered under its name at its path. A complaint says what was observed when your files ran: fix its cause in your files, and run your examples to see what they observe now. If you need something your prompt and what is available do not give, ask for it and meanwhile write the files independent of it.',
-  builder: 'Your role: join files that were written apart, so that every reference among them reaches what it names. You receive the design, which states each contract, the piece that delivers it and its path, and the paths of the files, each with the piece it came from. Where a reference names something by another name or path than where it is, rename that name or path in the file, or write a small file of your own that makes the reference resolve where the defining file sits. A rename changes names and reference paths only, and a file of your own connects what the files already define, since what each file delivers is its own. Call done once every reference among the files reaches what it names.'
+  worker: 'Your role: write the files that deliver what your prompt asks. You receive your prompt (your task, what to deliver under which names and paths with examples of each, and the contracts you may call, each as declared), the paths of your files, complaints about them, answers to what you asked, and what is available to you by name. Deliver each item under exactly its name and at its path, so that each of its examples holds, since that is how your files are run. A contract you may call is delivered under its name at its path. A complaint says what was observed when your files ran: fix its cause in your files, and try your examples in your box. If you need something your prompt and what is available do not give, ask for it and meanwhile write the files independent of it.',
+  builder: 'Your role: join files that were written apart, so that every reference among them reaches what it names. You receive the design, which states each contract, the piece that delivers it and its path, and the paths of the files, each with the piece it came from. Where a reference names something by another name or path than where it is, rename that name or path in the file, or write a small file of your own that makes the reference resolve where the defining file sits. A rename changes names and reference paths only, and a file of your own connects what the files already define, since what each file delivers is its own. Call done once every reference among the files reaches what it names.',
+  compiler: 'Your role: find out whether the files you are given meet each of your validations, by running them. You receive your validations, each with the contracts it serves and its check as written, those contracts as declared, and the paths of the files. Your box holds the files, and run executes one command in it with the internet on, so install whatever building and running them needs, the way you judge best. Exercise each validation as its check describes, and give your verdict on it with result, saying what you observed. A failed result is read to correct the files, so its observation states exactly what happened against what the check expects. Call done once every validation has a result.'
 });
 
 export const FORMAT = Object.freeze({
   splitter: 'Answer by calling your functions, one or several at a time. Each result says what was stored, or exactly why nothing was: a call that stored nothing can be made again as its result describes. Names match exactly as declared, and level shows everything declared so far.',
-  worker: 'Answer by calling your functions, one or several at a time. Each result says what was done, or exactly why nothing was. read_file shows a file of yours, write_file stores a whole file, and run_examples runs your examples on your files as they stand and says what each observed. Call done once your files deliver everything your prompt asks, or wait, there while something you asked for is not answered yet.',
-  builder: 'Answer by calling your functions, one or several at a time. Each result says what was done, or exactly why nothing was. read_file shows a file as it stands now, write_file stores a whole file of your own, delete_file removes one of yours, rename changes one name or reference path throughout one file, and done ends your turn.'
+  worker: 'Answer by calling your functions, one or several at a time. Each result says what was done, or exactly why nothing was. read_file shows a file of yours, write_file stores a whole file, and run executes one command in your own box, which holds your files as they stand, and shows what the process did. Call done once your files deliver everything your prompt asks, or wait, there while something you asked for is not answered yet.',
+  builder: 'Answer by calling your functions, one or several at a time. Each result says what was done, or exactly why nothing was. read_file shows a file as it stands now, write_file stores a whole file of your own, delete_file removes one of yours, rename changes one name or reference path throughout one file, and done ends your turn.',
+  compiler: 'Answer by calling your functions, one or several at a time. Each result says what was done, or exactly why nothing was. list_files and read_file show the files, run executes one command in your box and shows what the process did, result records your verdict on one validation, and done ends your turn.'
 });
 
 // The splitter's functions (Workers AI tools): what each does and takes, in
@@ -71,6 +73,8 @@ const CHECK_TOOLS = [
       expect_no_element: {type: 'object', properties: {selector: {type: 'string'}, text: {type: 'string'}}, required: ['selector'], description: 'An element that is not there.'}}}}}, required: ['serves', 'serve', 'steps']}}
 ];
 export const CHECK_TOOL_KINDS = Object.freeze(Object.fromEntries(CHECK_TOOLS.map(t => [t.name, t.name.replace(/_check$/, '')])));
+// A command in a box (the worker's and the compiler's run): its argument list and its input.
+const RUN_PARAMETERS = {type: 'object', properties: {argv: texts('The program, then each argument, each a text.'), stdin: text('Text given to the command as its input, if any.')}, required: ['argv']};
 export const TOOLS = Object.freeze({
   splitter: Object.freeze([
     {name: 'contract', description: 'Declares one contract of this level, stored exactly as given. The result says it is stored, or why it is not: a kind outside the seven, a missing path for a contract that lives in a file, or a name already declared.',
@@ -103,15 +107,15 @@ export const TOOLS = Object.freeze({
       parameters: {type: 'object', properties: {path: {type: 'string', description: 'The relative path of the file, exactly as existing_files lists it.'}}, required: ['path']}},
     {name: 'done', description: 'Completes the level. When something is still missing, the result lists it and the level stays open: three different examples for every function, command and route contract, each a call, request or run of that contract, and, when piece is offered, a division of at least two pieces and no more than the level can hold now.', parameters: {type: 'object', properties: {}, required: []}}
   ]),
-  // The worker's functions (src/worker.js): its own files, its examples run
-  // on them, an ask by name, and the end of its turn.
+  // The worker's functions (src/worker.js): its own files, commands in its
+  // own box, an ask by name, and the end of its turn.
   worker: Object.freeze([
     {name: 'read_file', description: 'Shows one of your files as it stands now, written this turn or before, or, where you have none at the path, a file existing_files lists. The result is its whole text, or that you have no file at that path, with the paths you have.',
       parameters: {type: 'object', properties: {path: text('The relative path of the file, exactly as your files list it.')}, required: ['path']}},
     {name: 'write_file', description: 'Stores a whole file at a path among your files: a new file, or the complete new text of one you have. The result says it is written, that the file already holds exactly this text, or why it is not written.',
       parameters: {type: 'object', properties: {path: text('The relative path of the file, inside your files.'), content: text('The complete text of the file.')}, required: ['path', 'content']}},
-    {name: 'run_examples', description: 'Runs the examples of what you deliver on your files as they stand now, in a fresh box with the internet off, the way they are run once you are done. The result gives each example with what was observed: pass, or what happened instead.',
-      parameters: {type: 'object', properties: {}, required: []}},
+    {name: 'run', description: 'Runs one command in your own box, in the folder that holds your files as they stand now, with the internet on: the program and each argument as given, with no shell unless the argument list names one. Use it to install what you need, and to build and try your files. What a command changes in the box stays for the next. The result is what the process did: its exit code, its output and error output as printed, and whether it ran out of time.',
+      parameters: RUN_PARAMETERS},
     {name: 'ask', description: 'Asks for something your prompt and what is available do not give. What you deliver, your packages, and the existing files and parts of linked pages given to you are answered at once, by name. Any other ask, a name you may call included, is sent as you make it, and the result says it is sent: its answer arrives at the start of your next turn.',
       parameters: {type: 'object', properties: {need: text('What you need, in one line.'), name: text('The name you expect it under, or the name of something available.')}, required: ['need']}},
     {name: 'done', description: 'Ends your turn with your files delivering everything your prompt asks.',
@@ -133,6 +137,19 @@ export const TOOLS = Object.freeze({
         name_characters: text('Every character besides letters and digits that the file\'s language allows inside a name, written together; empty for none.')}, required: ['path', 'from', 'to', 'name_characters']}},
     {name: 'done', description: 'Ends your turn with every reference among the files reaching what it names.',
       parameters: {type: 'object', properties: {summary: text('What you did, in one line.')}, required: ['summary']}}
+  ]),
+  // The compiler's functions (src/compiler.js): the files in its box,
+  // commands there, its verdict on each validation, and the end of its turn.
+  compiler: Object.freeze([
+    {name: 'list_files', description: 'Lists the paths of the files you were given, which your box holds.', parameters: {type: 'object', properties: {}, required: []}},
+    {name: 'read_file', description: 'Shows one of the files you were given, whole. The result is its text, or that there is no file at that path, with the paths there are.',
+      parameters: {type: 'object', properties: {path: text('The relative path of the file, exactly as the files list it.')}, required: ['path']}},
+    {name: 'run', description: 'Runs one command in your box, in the folder that holds the files, with the internet on: the program and each argument as given, with no shell unless the argument list names one. What a command changes in the box stays for the next. The result is what the process did: its exit code, its output and error output as printed, and whether it ran out of time.',
+      parameters: RUN_PARAMETERS},
+    {name: 'result', description: 'Records your verdict on one validation: whether the files meet it, with what you observed. A later result for the same validation replaces the earlier one.',
+      parameters: {type: 'object', properties: {validation: text('The id of the validation, exactly as listed.'), passed: {type: 'boolean', description: 'True when the files meet the validation as its check describes.'},
+        observed: text('What you observed when you exercised it; on a failure, exactly what happened against what the check expects.')}, required: ['validation', 'passed', 'observed']}},
+    {name: 'done', description: 'Ends your turn. A validation you gave no result for has none, and is not passed.', parameters: {type: 'object', properties: {}, required: []}}
   ])
 });
 // The texts of a role's functions, by name, for the lint.
@@ -155,7 +172,6 @@ export const CLEF = Object.freeze({
   extend_complaint: 'Is this complaint about a contract of the assigned work that no child delivers, as their contracts show?',
   extend_change: 'Does this change ask for something none of the children delivers, as their contracts show, that the assigned work must add?',
   ask_parent: 'Does none of the contracts or packages offered give what the request needs, so it is asked one level up? Answer NO if one of them gives it.',
-  judge: 'Does this file meet the requirement? Answer NO if the file is missing, meets only part of it, or contradicts it.',
   // Whether a validation held at a piece can run on the assembled piece alone: everything it reaches is the piece's, an installed package's or the language's.
   piece_reach: 'Piece {name} delivers the contracts listed and is made of the files listed. When check {i} exercises it as described, does everything it reaches come from these files, the installed packages or the language? Answer NO if it reaches what another piece provides, such as a route a page requests, a file read while it runs, or another piece\'s function.'
 });
@@ -184,8 +200,8 @@ export const MESSAGES = Object.freeze({
   // A place a repository holds no file at (src/validations.js unheldPath): its own records folder, or longer than it holds.
   records_folder: ({path}) => `${path} is in the folder a repository keeps for its own records, outside the files.`,
   too_long: ({path}) => `${path} is longer than a repository holds: a name of up to 255 characters, in a path of up to 512.`,
-  no_examples: () => 'Nothing you deliver has examples to run.',
   // ------------------------------------------------- what the builder's functions say
+  no_validation: ({id, ids}) => `There is no validation ${id}. Your validations: ${ids}.`,
   builder_no_file: ({path, paths}) => paths ? `There is no file ${path}. The files: ${paths}.` : `There is no file ${path}, and no files yet.`,
   builder_not_yours: ({path, paths}) => paths ? `You have no file at ${path}. Yours: ${paths}.` : `You have no file at ${path}, and none of your own yet.`,
   builder_beside: ({path, piece, at}) => `${path} is the file ${piece || 'a piece'} delivered, which stays the file there; yours is written at ${at}.`,
@@ -195,11 +211,10 @@ export const MESSAGES = Object.freeze({
   own_contract: ({contract}) => `${contract} is in your own prompt: write it in your files under exactly that name.`,
   // ------------------------------------------------------------ the broker
   available_note: () => 'available lists what you can ask for by name with ask: what you deliver, the names you may call, your installed packages, existing files open to you and parts of linked pages. Each answer is labelled with where it comes from.',
-  available_package: ({provides, observed}) => observed ? `a package the box did not install${provides ? `, for ${provides}` : ''}: ${observed}` : provides ? `an installed package for ${provides}` : 'an installed package',
+  available_package: ({provides}) => provides ? `an installed package for ${provides}` : 'an installed package',
   // What the box observed when it did not install a package (its words), for whoever holds it.
-  package_not_installed: ({names, observed}) => `The box did not install ${names}: ${observed}`,
   package_yours: ({names, many}) => `Your packages hold ${names}: use ${it(many)} as ${many ? 'they are' : 'it is'}.`,
-  package_granted: ({names, many}) => `${names} ${many ? 'are' : 'is'} now in your packages, and the box installs ${many ? 'them' : 'it'}: use ${it(many)}.`,
+  package_granted: ({names, many}) => `${names} ${many ? 'are' : 'is'} now in your packages: install and use ${it(many)} in your box.`,
   // What a piece's ask for a package its split named says (spawn): the name alone.
   package_need: ({name}) => `the package ${name}`,
   available_own: () => 'what you deliver',

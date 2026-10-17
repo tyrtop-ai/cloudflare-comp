@@ -44,7 +44,7 @@ const handedOnce = room => { const to = events(room, 'complaint_routed').filter(
 const rebuildsWith = (r, text) => r.calls.split.filter(u => u.complaints?.some(c => text.test(c.observed) && c.delivered_files === 'unchanged since it was observed'));
 
 test('selfwait: two branches whose workers answer their complaints with their files unchanged: each is archived and its level\'s splitter rebuilds its contract, reading the complaint; no worker is handed a complaint twice, the rebuilds go on until the room\'s budget ends, nothing holds, and Continue goes on', {skip}, async () => {
-  const r = await toolkit({leaf: leafOf({answers: BAD}), budget: 24});
+  const r = await toolkit({leaf: leafOf({answers: BAD}), budget: 50});
   const m = at(r.room);
   assertBudget(r.room, 'end');
   // The worker's write_file says the file already holds exactly that text; no level escalates for it.
@@ -71,7 +71,7 @@ const withX = split => user => { const a = split(user); return user.contracts_yo
 for (const [name, other] of [['crosswait: Clef gives the room\'s complaint to the other part', true], ['selfwait: Clef gives it to the part that writes shout', false]]) test(`${name}; the worker it reaches answers it with its files unchanged, so that worker is archived and its level's splitter rebuilds its contract, reading the complaint; no worker is handed it twice, until the budget ends; nothing holds, and Continue runs the room's validations again`, {skip}, async () => {
   const pick = (key, state) => { const kids = (state.children || []).map(c => c.label); const quiet = kids.findIndex(t => /Quiet/.test(t)), i = Number(key.split('_').pop()); return (i === quiet) === other ? 0.9 : 0.1; };
   const seen = [];
-  const r = await toolkit({split: withX(splitFor()), clef: clefFor(undefined, {'^route_to_\\d+$': (k, state) => { if (state.item?.kind === 'complaint' && state.children.length === 3) { seen.push(state); return pick(k, state); } return choiceP(k, state); }}), budget: 36});
+  const r = await toolkit({split: withX(splitFor()), clef: clefFor(undefined, {'^route_to_\\d+$': (k, state) => { if (state.item?.kind === 'complaint' && state.children.length === 3) { seen.push(state); return pick(k, state); } return choiceP(k, state); }}), budget: 70});
   const m = at(r.room), routed = events(r.room, 'complaint_routed').filter(e => e.actor === m.Root);
   assert.ok(routed.length > 0 && routed.every(e => e.recipient === (other ? m['Quiet part'] : m['Loud part'])), tail(r.room));
   // The routing reads no record of earlier answers: an unchanged answer is the statement's, not the routing's.
@@ -125,7 +125,7 @@ test('waitprobe2: the room\'s complaint goes to Notes, whose worker rewrites its
   let notes = 0;
   const split = user => { const a = splitFor()(user); return user.contracts_you_deliver ? a : {...a, validations: [...a.validations, ...XN]}; };
   const pick = (key, state) => { const i = Number(key.split('_').pop()); return (state.children?.[i]?.contracts || []).some(c => /NOTES/.test(c)) ? 0.9 : 0.1; };
-  const r = await toolkit({split, clef: clefFor(undefined, {'^route_to_\\d+$': (k, state) => state.children.length === 3 ? pick(k, state) : choiceP(k, state)}), leaf: leafOf({answers: {'NOTES.md': () => `# Notes\n\nCall shout to shout and whisper to whisper (${++notes}).\n`}}), budget: 46}); // 46: each splitter call after a session's first counts against the budget too
+  const r = await toolkit({split, clef: clefFor(undefined, {'^route_to_\\d+$': (k, state) => state.children.length === 3 ? pick(k, state) : choiceP(k, state)}), leaf: leafOf({answers: {'NOTES.md': () => `# Notes\n\nCall shout to shout and whisper to whisper (${++notes}).\n`}}), budget: 90}); // each splitter and compiler call after a session's first counts against the budget too
   assert.ok(notes > 7, `Notes was given the complaint round after round (${notes} writes), past the six rounds the room used to stop at`);
   assertBudget(r.room, 'end');
   const before = notes, runs = runsBy(r.room).Root;
@@ -138,7 +138,7 @@ test('waitprobe2: the room\'s complaint goes to Notes, whose worker rewrites its
 // ------------------------------------------------------------------ F3
 const asker = () => leafOf({control: user => user.prompt.deliver.some(c => c.name === 'loud') ? {summary: 'need a thesaurus', wait: true, ask: [{need: 'looks up synonyms of a word online', name: 'synonyms'}]} : null});
 test('a rebuild cycle (every rebuilt worker asks again for what no manager covers) has no rebuild cap: each asker is archived and rebuilt again until the room\'s budget ends, with nothing held; Continue goes on with more', {skip}, async () => {
-  const r = await toolkit({leaf: asker(), clef: clefFor(undefined, {'^ask_parent$': 0.95}), budget: 30});
+  const r = await toolkit({leaf: asker(), clef: clefFor(undefined, {'^ask_parent$': 0.95}), budget: 60});
   const archived = () => r.room.allNodes().filter(n => n.status === 'archived').length;
   assertBudget(r.room, 'end');
   assert.ok(archived() > 4, `the asker and each of its rebuilds, past the three rebuilds the room used to stop at: ${archived()}`);
@@ -147,8 +147,8 @@ test('a rebuild cycle (every rebuilt worker asks again for what no manager cover
   const m = at(r.room), prompts = new Set(r.room.children(m.Louder).filter(c => c.role === 'worker').map(c => r.room.designOf(c.id).prompt));
   assert.deepEqual([...prompts], ['Write loud, which uses shout']);
   const steps = Number(r.room.get('step')), count = events(r.room).length, before = archived();
-  assert.ok(steps <= 120, `bounded turns: ${steps}`);
-  assert.ok(count <= 1500, `bounded events: ${count}`);
+  assert.ok(steps <= 240, `bounded turns: ${steps}`);
+  assert.ok(count <= 3000, `bounded events: ${count}`);
   await again(r, 10);
   assertBudget(r.room, 'after Continue');
   assert.ok(archived() > before, 'Continue: the rebuilds go on');
@@ -156,7 +156,7 @@ test('a rebuild cycle (every rebuilt worker asks again for what no manager cover
 });
 
 test('a manager that queues itself again and again asking no model is never held for it: the room goes on past the bound it once had, and completes once it no longer loops', {skip}, async () => {
-  const r = liveRoom({split: splitFor(), leaf: leafOf(), clef: clefFor(), executor: logged([]), room_id: 'spin'});
+  const r = liveRoom({split: splitFor(), leaf: leafOf(), clef: clefFor(), compile: logged([]), room_id: 'spin'});
   const turn = r.room.levelManagerTurn.bind(r.room);
   // Past the old bound (40 turns and 8 per live row) for this room's rows.
   let spins = 0;

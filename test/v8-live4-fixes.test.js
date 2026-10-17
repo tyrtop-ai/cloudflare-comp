@@ -1,74 +1,18 @@
 // v8 live 4 review: the findings on element steps and packages, each
-// reproduced as the review's probe found it.
-//  M4  a selector runs as written (owner 2026-10-16 20:38: no widening to HTML's default).
-//  M5  an element step reads shown elements and their text as expect_text does.
+// reproduced as the review's probe found it (M4 and M5, the browser
+// adapter's, went with the adapter).
 //  H2  an ask is a package's by its name, never by its need's words.
 //  M1  the language's standard library is the language's: never listed, asked for or granted.
 //  M2  a module a run could not find is a package only by the rows, never a project-like name.
 //  L5, L7, L8, L10 as the review lists them.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
-import { spawn, spawnSync } from 'node:child_process';
-import { createServer } from 'node:http';
-import { fileURLToPath } from 'node:url';
 import { liveRoom, events, rowId } from './helpers/room.js';
 import { usualClef } from './helpers/levels.js';
 import { lintText } from './helpers/prompt-lint.js';
 import { normalizePackages, piecePackages, installedPackages, stdlibRow } from '../src/packages.js';
 import { MESSAGES } from '../src/prompts.js';
 import { TOOLCHAINS } from '../src/toolchains.js';
-
-if (!process.env.PLAYWRIGHT_BROWSERS_PATH && existsSync('/opt/pw-browsers')) process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/pw-browsers';
-if (!process.env.NODE_PATH && existsSync('/opt/node-tools/node_modules/playwright')) process.env.NODE_PATH = '/opt/node-tools/node_modules';
-const ADAPTER = fileURLToPath(new URL('../container/adapters/browser-check.mjs', import.meta.url));
-const browserReady = (() => {
-  const r = spawnSync('node', [ADAPTER], {input: JSON.stringify({checks: []}), encoding: 'utf8', timeout: 60_000, env: process.env});
-  return r.status === 0 && /"inventory"/.test(r.stdout) ? '' : `Chromium or Playwright is unavailable: ${(r.stdout + r.stderr).trim().slice(0, 160)}`;
-})();
-// deadline_ms: the verification's time the adapter has (no step has a time of its own).
-async function runAdapter(html, checks, deadline_ms = 30_000) {
-  const server = createServer((q, s) => { s.writeHead(200, {'content-type': 'text/html'}); s.end(html); });
-  await new Promise(r => server.listen(0, '127.0.0.1', r));
-  const base = `http://127.0.0.1:${server.address().port}`;
-  try {
-    const out = await new Promise((resolve, reject) => {
-      const p = spawn(process.execPath, [ADAPTER], {env: process.env});
-      let text = '';
-      p.stdout.on('data', d => text += d);
-      p.on('error', reject);
-      p.on('close', () => resolve(text));
-      p.stdin.end(JSON.stringify({deadline_ms, origins: [base], checks: checks.map(c => ({...c, base_url: base}))}));
-    });
-    return Object.fromEntries(out.trim().split('\n').map(l => JSON.parse(l)).filter(x => 'passed' in x).map(x => [x.id, x]));
-  } finally { server.close(); }
-}
-
-// ------------------------------------------------------------ M4 and M5, in Chromium
-// Owner 2026-10-16 20:38 (no "runtime fixing it via matching"): a selector
-// runs as written, so input[type=text] is not widened to an input with no
-// type. A step that waits for what never comes waits out the verification's
-// time, then fails as the page's (no infrastructure: owner 2026-10-16 05:39,
-// the worker gets the complaint), so each runs alone with a short one.
-test('M4 + M5: in Chromium, a selector runs as written (input[type=text] does not match an input with no type); hidden elements are not matched; text is matched as written', {skip: browserReady || false}, async () => {
-  const html = '<!doctype html><html><head><style>.done{display:none}</style></head><body><h1>Todos archive</h1><input placeholder="Task"><button>Add</button>'
-    + '<ul id="list"><li class="done">Buy milk</li><li>Feed cat</li></ul><div hidden><input type="text" id="tmpl"></div><svg viewBox="0 0 10 10" width="10" height="10"></svg></body></html>';
-  const r = await runAdapter(html, [
-    {id: 'asWritten', steps: [{goto: '/'}, {expect_no_element: {selector: 'input[type=text]'}}, {expect_element: {selector: 'input'}}]},
-    {id: 'hiddenItem', steps: [{goto: '/'}, {expect_no_element: {selector: 'li', text: 'Buy milk'}}]},
-    {id: 'shownItem', steps: [{goto: '/'}, {expect_element: {selector: 'li', text: 'Feed cat'}}]},
-    {id: 'svg', steps: [{goto: '/'}, {expect_element: {selector: 'svg[viewBox="0 0 10 10"]'}}]}]);
-  const [hidden, cased] = await Promise.all([
-    runAdapter(html, [{id: 'hiddenInput', steps: [{goto: '/'}, {expect_element: {selector: 'input#tmpl'}}]}], 10_000),
-    runAdapter(html, [{id: 'case', steps: [{goto: '/'}, {expect_element: {selector: 'h1', text: 'TODOS'}}]}], 10_000)]);
-  assert.equal(r.asWritten.passed, true, JSON.stringify(r.asWritten));
-  assert.deepEqual([hidden.hiddenInput.passed, hidden.hiddenInput.miss, hidden.hiddenInput.infrastructure], [false, true, undefined]);
-  assert.match(hidden.hiddenInput.detail, /input\[type=text\]#tmpl \(hidden\)/);
-  assert.equal(r.hiddenItem.passed, true, JSON.stringify(r.hiddenItem));
-  assert.equal(r.shownItem.passed, true);
-  assert.deepEqual([cased.case.passed, cased.case.infrastructure], [false, undefined], 'the text as written, its case too');
-  assert.equal(r.svg.passed, true, JSON.stringify(r.svg));
-});
 
 // ------------------------------------------------------------ packages
 const PYTEST = {name: 'pytest', language: 'python', provides: 'tests'};
@@ -102,7 +46,7 @@ test('H2 (owner, 2026-10-16 20:43): a worker\'s ask by any name its world does n
 test('H2: the manager is the interface for what exists: a package its row holds, or the name asked for granted new, is one of its functions on an ask (grant), at every depth; Clef scores it, and a grant is listed on the asker\'s whole line; a manager whose grants Clef finds give nothing hands the ask up', async () => {
   const REQUESTS = {name: 'requests', language: 'python', provides: 'HTTP client'};
   // Clef: a package a row holds gives the need; of the names granted new, only flask as a Python package does.
-  const grantP = (key, state) => { const o = state.packages_offered?.[Number(key.split('_')[1])]?.package || ''; return !/not yet installed/.test(o) ? 0.95 : /^flask \(a Python package/.test(o) ? 0.95 : 0.1; };
+  const grantP = (key, state) => { const o = state.packages_offered?.[Number(key.split('_')[1])]?.package || ''; return !/ package\)$/.test(o) ? 0.95 : /^flask \(a Python package/.test(o) ? 0.95 : 0.1; };
   const {room} = liveRoom({clef: usualClef({'^grant_\\d+$': grantP, '^ask_parent$': 0.6})});
   room.save('settings', {...room.settings(), pipeline: 'v8'});
   await room.provision(TOP, null, 'Root objective', 'a tracker', [], [], [PYTEST, REQUESTS], 'manager', {seq: 1});
@@ -125,12 +69,11 @@ test('H2: the manager is the interface for what exists: a package its row holds,
   assert.ok(room.packagesOf(BACKEND).some(p => p.name === 'requests') && room.packagesOf(SERVER).some(p => p.name === 'requests'));
   assert.match(events(room, 'package_granted').at(-1).body, /^"Root objective" granted requests to "Server"\.$/);
   assert.equal(events(room, 'package_relayed').length, 0, 'no walk of the runtime\'s own');
-  // A manager with a manager above it grants a name no row lists, new (every manager has the same functions); it is listed on the whole line, so each level's box installs it.
+  // A manager with a manager above it grants a name no row lists, new (every manager has the same functions); it is listed on the whole line.
   await room.workerAsk(SERVER, {need: 'a web framework', name: 'flask'});
   await room.routeHeld(BACKEND);
   assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for flask: grant\(flask, Python\) p=0\.950/);
   for (const id of [SERVER, BACKEND, TOP]) assert.deepEqual(room.packagesOf(id).find(p => p.name === 'flask'), {name: 'flask', language: 'python'}, id);
-  assert.deepEqual(room.packageInstalls(TOP), [{toolchain: 'python', packages: ['requests', 'flask']}]);
 });
 
 test('M1: the installed set and the rows\' packages hold no standard library module; its modules are row data (stdlib_provides)', () => {

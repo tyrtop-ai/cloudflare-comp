@@ -7,26 +7,28 @@ export { BuildExecutor } from './build-executor.js';
 export { Box } from './box.js';
 export { BoxProbe, BoxProbePeer } from './box-probe.js';
 import { boxProbeRoute } from './box-probe.js';
-import { freshBox, compileBoxSpec, BOX_COLD_MS } from './box.js';
+import { freshBox, sessionBoxSpec, BOX_COLD_MS } from './box.js';
+import { boxSession } from './box-session.js';
+import { compilerWorld, compilerSession } from './compiler.js';
 import { BoxPrewarm, levelBoxSpec } from './box-prewarm.js';
 export { BenchRun } from './bench-run.js';
 import { benchRoute } from './bench-run.js';
 import { clip, isId, isRowId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
-import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, judgeRequirement, sourceModel, pieceReach, PIECE_REACH_BAR, reviewLevel, chooseCall } from './model.js';
+import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, sourceModel, pieceReach, PIECE_REACH_BAR, reviewLevel, chooseCall } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
-import { toolchainById, toolchainOf, TOOLCHAINS, COMPILE_ROWS, installed as installedRows, parseModeOf, scopeManifestOf, codeRowOf, pageScripts, pageModes } from './toolchains.js';
+import { toolchainOf, TOOLCHAINS, COMPILE_ROWS, installed as installedRows } from './toolchains.js';
 // v8 S9: amendments and the prompt queue.
 import { effectiveGoal, goalView, promptText, reorderError } from './amend.js';
-import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, checkLimitsOf, DEFAULT_CHECK_SECONDS } from './checks.js';
+import { statusEntry, runNotes, checkLimitsOf, DEFAULT_CHECK_SECONDS } from './checks.js';
 import { getArtifactStore } from './artifact-store.js';
 import { RETRY, MESSAGES, BASE_LABEL, CLEF, clefText } from './prompts.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
 import { baselineFromManifest } from './baseline-linker.js';
-import { LINKABLE, parseSource, parseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, splitImports, moduleSpecifiers, boundNames, swappedCalls, isInterfaceError } from './linker.js';
+import { LINKABLE, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, splitImports, moduleSpecifiers, boundNames, swappedCalls, isInterfaceError } from './linker.js';
 import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, promiseText, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, pieceOps, usesText, labelWrites, testPieces, testPiecesText } from './interfaces.js';
-import { snapshotHash, validateBuildFiles, validateBoxFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
+import { snapshotHash, validateBuildFiles, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, failureKey, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, lowestCommon, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText, readRequirement, requirementRoute, requirementText } from './problems.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
@@ -128,30 +130,6 @@ const isCompilerNode = n => roleOf(n) === 'compiler';
 const RUNTIME_GLUE = ['glue/index.js','package.json','glue/smoke.js'];
 // v7.15.5 review: new runner tests a run writes after its first, as start()'s methods change.
 const RUNNER_REWRITES = 2;
-// v8 M3 review (M4): the Worker's own syntax step for a row whose native
-// parser runs here (a row's native field names it; the box's syntax command
-// is the row's syntax field). v8 M3 review 2, v8 ship-verified (M2): in each
-// mode its runtimes read the file in (syntaxOf); a page ('page'), each of
-// its inline scripts in the mode its type gives (the row's page_scripts).
-const NATIVE_SYNTAX = Object.freeze({acorn: (path, text, mode, row) => {
-  if (mode !== 'page') return mode.split('+').map(m => parseError(path, text, m || 'either')).find(Boolean) || null;
-  for (const s of pageScripts(path, text, row).filter(s => !s.src)) {
-    try { parseSource(s.body, s.mode); } catch (e) {
-      const at = typeof e.loc?.line === 'number' ? ` at line ${s.line + e.loc.line - 1}` : '';
-      return `${path}: the inline <script> on line ${s.line} does not parse as JavaScript read as ${s.mode === 'module' ? 'an ES module' : 'a classic script'}, as the page runs it (${String(e.message).replace(/\s*\(\d+:\d+\)$/, '')}${at}).`;
-    }
-  }
-  return null;
-}});
-// The modes the pages of a bundle load each file in (pageModes), worked out once per bundle while its pages are the same.
-const PAGE_MODES = new WeakMap();
-function pageModesOf(files, row) {
-  const kept = PAGE_MODES.get(files), isPage = p => (row.page_scripts.pages || []).some(e => p.toLowerCase().endsWith(e));
-  if (kept && kept.size === files.size && kept.pages.every(([p, t]) => files.get(p) === t)) return kept.modes;
-  const modes = pageModes(files, row);
-  PAGE_MODES.set(files, {size: files.size, pages: [...files].filter(([p]) => isPage(p)), modes});
-  return modes;
-}
 // A room started before v7.14 (no schema mark) is reset, not migrated.
 const ROOM_SCHEMA = '7.14';
 // Problem rows hold JSON in these columns.
@@ -518,8 +496,6 @@ export class ControlRoom extends DurableObject {
     // Export index is populated on successful Artifacts writes, not at download time.
     db.exec('CREATE TABLE IF NOT EXISTS artifact_contents (agent TEXT NOT NULL, path TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY(agent,path))');
     // v8 M3: each builder's stored piece, on its row: the joined files with their writer and own path, placed marks, and glue for the builder's own files.
-    // v8 M3 review (M4): the files a syntax step compiled cleanly, by row, step and the digest of their exact bytes.
-    db.exec('CREATE TABLE IF NOT EXISTS syntax_clean (key TEXT PRIMARY KEY)');
     db.exec("CREATE TABLE IF NOT EXISTS piece_files (builder TEXT NOT NULL, path TEXT NOT NULL, content TEXT NOT NULL, owner TEXT NOT NULL DEFAULT '', owner_path TEXT NOT NULL DEFAULT '', placed INTEGER NOT NULL DEFAULT 0, glue INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(builder,path))");
     db.exec('CREATE TABLE IF NOT EXISTS builder_sources (builder TEXT NOT NULL, child TEXT NOT NULL, source_path TEXT NOT NULL, label TEXT NOT NULL, destination TEXT NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(builder,child,source_path))');
     // Pure routing index. The durable, private export notebook is stored in the
@@ -695,9 +671,10 @@ export class ControlRoom extends DurableObject {
   referenceLine(name) { return `const { ${name} } = require('./${name}');`; }
   // The path of an agent's one placed contract, for the single-fence fallback (§3.2), or null.
   placedPath(id) {const p=this.designOf(id).contracts.filter(c=>PLACED_KINDS.has(contractKind(c))&&c.path);return p.length===1?p[0].path:null;}
-  // The toolchain rows this deployment runs: the Container's last inventory
-  // (meta toolchain_inventory, recorded by the verification step from S4),
-  // else every row of the phase-1 image (src/toolchains.js).
+  // The toolchain rows this deployment runs: a room's saved box inventory
+  // (meta toolchain_inventory, which the check runner recorded before the
+  // compiler agent; nothing records it now), else every row of the phase-1
+  // image (src/toolchains.js).
   installedToolchains() { const inv=this.read('toolchain_inventory',null); return inv?installedRows(inv):[...TOOLCHAINS]; }
   // v7, live 4: one prompt handler (see HANDLER_PREFIX), spawned for the
   // goal: it creates Root's row with the promise it is given and ends.
@@ -714,48 +691,10 @@ export class ControlRoom extends DurableObject {
   }
   promptHandlers() { return query(this.db(),'SELECT id,kind,prompt,prompt_id,root,created_root,spawned_at,ended_at FROM prompt_handlers ORDER BY spawned_at,id'); }
   installedSet() { return installedPackages(this.installedToolchains(),this.read('toolchain_inventory',null)); }
-  // What a row's box installs before its checks: the packages its row lists
-  // beyond the image's and the language's standard library, per language
-  // (one with no language goes as such: the box says it has no install for it).
-  packageInstalls(id) {
-    const rows=this.installedToolchains(),image=new Set(this.installedSet().map(p=>p.name)),by=new Map();
-    for(const p of this.packagesOf(id)) {
-      if(image.has(p.name)||p.language&&stdlibRow(p.name,rows.filter(r=>r.id===p.language)))continue;
-      by.set(p.language||'',[...(by.get(p.language||'')||[]),p.name]);
-    }
-    return [...by].map(([toolchain,packages])=>({toolchain,packages}));
-  }
   // v8 live 4: a row's packages, as its row lists them (the room's manager is created with the installed set).
   packagesOf(id) { return this.v8()?normalizePackages(parse(this.node(id)?.packages,[])):[]; }
-  // A row's packages as a prompt shows them: every one its row lists, as it lists it (owner, 2026-10-15 22:11: "same way as interfaces"), with what the box observed when it could not install one.
-  packageView(id) {
-    return this.packagesOf(id).map(p=>{const seen=this.installSeen(p);return seen&&!seen.passed?{...p,not_installed:seen.detail}:p;});
-  }
-  // v8 (owner, 2026-10-15 22:12, "why are packages not allowed now?"): what
-  // the box last observed installing package p, in its language: {passed,
-  // detail, ts}, or null before a box tried it.
-  installSeen(p) { return this.read('package_installs',{})[`${p?.language||''}|${p?.name}`]||null; }
-  // A package as a manager's options and a worker's answers name it, with
-  // what the box observed when it did not install it.
-  seenLine(p) { const seen=this.installSeen(p);return seen&&!seen.passed?MESSAGES.package_not_installed({names:packageLine(p),observed:seen.detail}):packageLine(p); }
-  // The box's report of the packages it installed (report.installed): each
-  // recorded by language and name (installSeen), and the room's record says
-  // what it installed and what it did not. The entries it did not install,
-  // each as what the compiler observed: an item routed as the others are,
-  // from the level whose box it was, down to the rows that list them.
-  recordInstalls(id, installed) {
-    const list=(Array.isArray(installed)?installed:[]).filter(x=>Array.isArray(x?.packages)&&x.packages.length);
-    if(!list.length)return [];
-    const seen=this.read('package_installs',{}),ts=Date.now(),lang=x=>(toolchainById(x.toolchain)||COMPILE_ROWS.find(r=>r.id===x.toolchain))?.name||x.toolchain||'no language';
-    for(const x of list)for(const n of x.packages)seen[`${x.toolchain||''}|${n}`]={passed:!!x.passed,detail:x.passed?'':String(x.detail||''),ts};
-    this.save('package_installs',seen);
-    const ok=list.filter(x=>x.passed),bad=list.filter(x=>!x.passed);
-    this.event(id,bad.length?'packages_not_installed':'packages_installed',clip([...ok.map(x=>`The box installed ${x.packages.join(', ')} (${lang(x)}).`),...bad.map(x=>`The box did not install ${x.packages.join(', ')} (${lang(x)}): ${x.detail||'no detail'}`)].join(' '),900));
-    const holders=x=>this.subtree(id).filter(w=>this.isWorker(this.node(w))&&this.packagesOf(w).some(p=>x.packages.includes(p.name)&&(p.language||'')===(x.toolchain||'')));
-    return bad.map(x=>({kind:'install',path:'',sites:[],parties:holders(x).map(w=>({path:'',owner:w,owner_path:'',digest:'',role:'holder'})),
-      detail:MESSAGES.package_not_installed({names:`${x.packages.join(', ')} (${lang(x)})`,observed:String(x.detail||'no detail')}),
-      facts:{stage:'install',toolchain:x.toolchain||'',packages:[...x.packages],failure:String(x.detail||'').split('\n')[0]}}));
-  }
+  // A row's packages as a prompt shows them: every one its row lists, as it lists it (owner, 2026-10-15 22:11: "same way as interfaces").
+  packageView(id) { return this.packagesOf(id); }
   // v8: a room held at a stop only Continue moves on: what an agent sent up
   // its line reached the room (escalate: checks_failed,
   // ...). The room records every hold that
@@ -1415,9 +1354,9 @@ export class ControlRoom extends DurableObject {
     const digest=await snapshotHash(files),spec=this.specOf(this.validationRows()),status=this.read('validation_status',{});
     // A pass is for the prompt as it stands: a change given since that has not passed is not in it.
     const last=this.read('compile_passed',null),hit=last?.digest===digest&&(last.goal_rev??1)===this.goalRev()?last:null;
-    // v8 ship-verified: the files that ship though no syntax step compiled them or no box held them, as the compiler observed, beside the pass.
+    // v8 ship-verified: the files that ship though no box held them, beside the pass.
     const unchecked=hit?(this.uncheckedOf(bundle)?.list||[]).map(x=>x.path):[];
-    const note=hit?`Every validation passed on exactly these files (snapshot ${digest.slice(0,16)})${unchecked.length?`; ${unchecked.length} of them no syntax step compiled or no box held: ${unchecked.join(', ')}`:''}.`:
+    const note=hit?`Every validation passed on exactly these files (snapshot ${digest.slice(0,16)})${unchecked.length?`; ${unchecked.length} of them no box held: ${unchecked.join(', ')}`:''}.`:
       last?.digest===digest?`These files passed every validation before the prompt's latest change (revision ${this.goalRev()}), which has not passed on them yet.`:
       last?.digest?`These files differ from the last run that passed every validation (snapshot ${last.digest.slice(0,16)}), so they have not passed as exported.`:
       'The validations have not all passed on these files yet.';
@@ -2522,7 +2461,7 @@ export class ControlRoom extends DurableObject {
     return files;
   }
   // The run's build executor (one Container per run): v7 only. A v8
-  // compile runs in a fresh box (runChecks); bench rooms are v8, so no room
+  // compile runs in its compiler's own box (levelCompiler); bench rooms are v8, so no room
   // shares an executor with another any more (capability boxes S1).
   buildExecutor() {return this.env.BUILD_EXECUTORS.getByName(`${this.get('room_id','test-room')}:${this.get('run_nonce','legacy')}:build`);}
   // Speed v1: start the run's Container just before a compile the room has
@@ -2546,8 +2485,8 @@ export class ControlRoom extends DurableObject {
   // describes start() beside a runner test in the same exec; prechecked skips
   // the checks a run of the same files passed moments ago.
   async containerRun(nodeId, label, files, options = {}) {
-    // Capability boxes S1: v8 code runs only in a fresh box (runChecks), never in the shared, internet-on v7 executor.
-    if(this.v8())return {infrastructure:'A v8 room runs code only in a fresh box with the internet off (runChecks).'};
+    // Capability boxes S1: v8 code runs only in its agents' own boxes (levelCompiler, a worker's run), never in the shared v7 executor.
+    if(this.v8())return {infrastructure:'A v8 room runs code only in its agents\' own boxes.'};
     if(!this.env.BUILD_EXECUTORS)return {infrastructure:'BUILD_EXECUTORS binding unavailable; cannot build or run the application.'};
     const key=await sha256(label);
     let report,snapshot,digest;
@@ -3702,7 +3641,7 @@ export class ControlRoom extends DurableObject {
   passthroughPaths() { return new Set(query(this.db(),'SELECT path FROM base_passthrough').map(r=>r.path)); }
   // v8 ship-verified (M1): the base's files carried untouched (never built,
   // never seen by a model) ship with the bundle of the row that holds the
-  // base, so its checks run with them and its syntax step compiles them: each
+  // base, so its compiler's box holds them: each
   // that is text at a path the box holds joins the files after the
   // builder's (carried); the others are listed with why the box cannot hold
   // them (unsent). A piece's file at exactly the same path ships instead.
@@ -4079,70 +4018,6 @@ export class ControlRoom extends DurableObject {
     if(prompts&&prompts.at<=Date.now()+1000)await this.advancePrompts();
     else if(prompts)await this.scheduleAlarm(prompts.at);
   }
-  // Capability boxes S1 (Level A): one fresh, single-use box per compile,
-  // with the internet off (on for its install stage when the plan installs
-  // the packages the rows list: compileBoxSpec), runs the build runner on the level's validations
-  // (mode 'checks', the request BuildExecutor took): {report} or
-  // {infrastructure}. The runner's own isolation still runs inside; the box
-  // adds the VM boundary. A box that cannot be opened, or that does not
-  // confirm it is fresh with the internet as asked, is infrastructure
-  // (the compiler runs the checks again): there is no fallback to a shared or
-  // internet-on Container. v8 M3: a box opens only while the room has a slot
-  // for it (boxSlot).
-  // links: the bundle's symbolic links (path to target), which the box writes as links.
-  async runChecks(id, input, files, plan, toolchains, links=new Map()) {
-    if(!this.env.BOXES)return {infrastructure:'BOXES binding unavailable: the validations run only in a fresh box with the internet off.'};
-    // v8 live 5: the prewarmed box when it was opened for exactly this compile's spec.
-    const warm=await this.boxPrewarm()?.take(compileBoxSpec(plan))??null;
-    if(warm?.error) {
-      this.span('container','checks',warm.began,Date.now(),{node:id,files:files.size,box:{fresh:true,internet:false,prewarmed:true},error:clip(warm.error,300)});
-      return {infrastructure:warm.error};
-    }
-    const release=warm?.release||await this.boxSlot();
-    try {return await this.runChecksBox(id,input,files,plan,toolchains,warm,links);}
-    finally {release();}
-  }
-  async runChecksBox(id, input, files, plan, toolchains, warm=null, links=new Map()) {
-    let snapshot;
-    try {snapshot=validateBoxFiles(files);}
-    catch(error) {
-      if(warm){const closing=Promise.resolve().then(()=>warm.box.close()).catch(()=>{});if(this.ctx.waitUntil)this.ctx.waitUntil(closing);}
-      // The box cannot hold this bundle (no file, too many, one at a path it refuses): what the compiler observed of it.
-      const detail=String(error?.message||error);
-      if(!error?.path)return {report:{mode:'checks',passed:false,checks:plan.checks.map(c=>({id:c.id,kind:c.kind,passed:false,detail:`not run: ${detail}`,frames:[]})),issues:[],inventory:null}};
-      return {report:{mode:'checks',passed:false,checks:[],issues:[{path:error.path,stage:'snapshot',detail}],inventory:null}};
-    }
-    const key=await sha256(`checks:${input}`),start=Date.now(),spec=compileBoxSpec(plan);
-    let box=null;
-    try {
-      box=warm?.box||freshBox(this.env.BOXES);
-      const {box:opened,...report}=await box.compile(spec,{fingerprint:key,files:Object.fromEntries(snapshot),mode:'checks',plan,toolchains,limits:checkLimitsOf(this.settings()),...(links.size?{links:Object.fromEntries(links)}:{})})||{};
-      // v8 live 8: the prewarmed box's Container had stopped before this compile took it: the checks run in a fresh box.
-      if(warm&&report.prewarm_closed) {
-        this.span('container','checks',start,Date.now(),{node:id,files:snapshot.size,box:{prewarmed:true},error:'the prewarmed box had stopped'});
-        this.event(id,'box_reopened','The box opened for these checks had stopped before they ran; they run in a fresh box.');
-        box=null;
-        return this.runChecksBox(id,input,files,plan,toolchains,null);
-      }
-      if(opened?.fresh!==true||opened?.internet!==spec.internet) {
-        this.span('container','checks',start,Date.now(),{node:id,files:snapshot.size,error:`box not confirmed fresh with the internet ${spec.internet?'on for its install':'off'}`});
-        return {infrastructure:`The box did not confirm a fresh start with the internet ${spec.internet?'on for its install':'off'}; the checks were not run in it.`};
-      }
-      this.span('container','checks',start,Date.now(),{node:id,files:snapshot.size,passed:!!report?.passed,checks:Array.isArray(report?.checks)?report.checks.length:0,
-        box:{fresh:true,internet:spec.internet,start_ms:opened.start_ms,ready_ms:opened.ready_ms,cold:opened.cold===true||opened.ready_ms>BOX_COLD_MS,image:opened.image,instance:opened.instance,name:opened.name,
-          ...(warm?{prewarmed:true,waited_ms:warm.waited_ms,prewarm_ms:Math.max(0,(warm.ready_at??start)-warm.began)}:{})},exec_ms:opened.exec_ms});
-      // The level's compiler names the box its run opened.
-      const named=this.read(`level_compiler:${id}`,null);
-      if(named&&opened.name)this.save(`level_compiler:${id}`,{...named,box:opened.name});
-      if(report.mode!=='checks'||!Array.isArray(report.checks))return {infrastructure:'The box answered without a report of the validations: its image predates them.'};
-      return {report};
-    } catch(e) {
-      // The box closes itself (compile's finally, and its alarm); this is the backstop for an RPC that broke first.
-      if(box&&typeof box.close==='function'){const closing=Promise.resolve().then(()=>box.close()).catch(()=>{});if(this.ctx.waitUntil)this.ctx.waitUntil(closing);}
-      this.span('container','checks',start,Date.now(),{node:id,files:snapshot.size,box:{fresh:true,internet:spec.internet},error:clip(e?.message||e,300)});
-      return {infrastructure:String(e?.message||e)};
-    }
-  }
   // ---------- v8 M3 review: what a compile leaves ----------
   // A validation's passes (piece_pass:<id>): per row that ran it (at), the
   // last run there when it passed: its check's key and the digest of the
@@ -4151,83 +4026,18 @@ export class ControlRoom extends DurableObject {
     const {[at]:last,...others}=this.read(`piece_pass:${v.id}`,null)?.at||{};
     this.save(`piece_pass:${v.id}`,{at:passed?{...others,[at]:{check:this.checkKey(v),digest,ts:Date.now()}}:others});
   }
-  // The rows that compile files here: the installed toolchain rows and the
-  // compile rows the box's inventory confirms (none before it reported one).
+  // The languages a manager's grant of a new package offers: the installed
+  // toolchain rows and the compile rows a room's saved box inventory
+  // confirms (a room from before the compiler agent; none in a new one).
   compileRows() {
     const inv=this.read('toolchain_inventory',null);
     return [...this.installedToolchains(),...(inv?installedRows(inv,COMPILE_ROWS):[])];
   }
-  // A file's syntax step, as data: the row that compiles it (codeRowOf, among
-  // every row there is), with the box's command (syntax) or the Worker's own
-  // parser (native, NATIVE_SYNTAX); null for a file no row describes; {row:
-  // null, why} for code of a row the box has not installed. v8 M3 review 2 (M2), v8
-  // ship-verified (M2): mode, the modes its runtimes read it in, joined by
-  // '+': the one its row's runtime reads it in at its path (parseModeOf; ''
-  // for a row with no parse_mode) and each a page among these files loads
-  // it in (pageModes); 'page' for a page whose inline scripts run.
-  syntaxOf(path, files) {
-    const text=files?.get(path),known=[...TOOLCHAINS,...COMPILE_ROWS],rows=this.compileRows();
-    const c=codeRowOf(path,text,known),page=!c&&known.find(r=>pageScripts(path,text,r).some(s=>!s.src));
-    if(!c&&!page)return null;
-    const row=rows.find(r=>r.id===(page||c.row)?.id);
-    // unconfirmed: a compile row the box's inventory has not reported on yet.
-    if(!row)return {row:null,why:`no installed toolchain row compiles ${page?`the scripts ${path} runs`:path} (${(page||c.row).name})`,unconfirmed:!this.read('toolchain_inventory',null)};
-    let mode='page';
-    if(!page) {
-      const own=parseModeOf(path,files,row),loads=row.page_scripts?pageModesOf(files,row).get(path):null;
-      mode=[...new Set([own,...(loads||[])])].filter(Boolean).sort().join('+');
-    }
-    return row.syntax?.length?{row,box:true,mode}:NATIVE_SYNTAX[row.native]?{row,box:false,mode,parse:NATIVE_SYNTAX[row.native]}:{row:null,why:`${row.name} has no syntax step`};
-  }
-  syntaxKey(row, text, mode='') { return `${row.id}:${textHash(JSON.stringify(row.syntax||row.native))}:${mode?`${mode}:`:''}${textHash(String(text??''))}`; }
-  // M4: the files of a bundle whose exact bytes no syntax step compiled in
-  // their modes (syntax_clean, by row, modes and digest): a file of a row
-  // with a syntax step, whoever wrote it (a piece, the glue, the base). v8 M3
-  // review 2 (L1): the Worker's parser too reads the base's own files.
-  uncompiled(files) {
-    const out=new Set();
-    for(const [p,t] of files) {
-      const s=this.syntaxOf(p,files);
-      if(s?.row&&!query(this.db(),'SELECT key FROM syntax_clean WHERE key=?',this.syntaxKey(s.row,t,s.mode)).length)out.add(p);
-    }
-    return out;
-  }
-  // v8 ship-verified (L1): the code among these files no installed row compiles: [{path, why, unconfirmed}].
-  uncompilable(files) {
-    const out=[];
-    for(const p of files.keys()){const s=this.syntaxOf(p,files);if(s&&!s.row)out.push({path:p,why:s.why,unconfirmed:s.unconfirmed});}
-    return out;
-  }
-  // v8 ship-verified (L1, M1): what of a bundle ships with no syntax step
-  // over it: code no installed row compiles (uncompilable) and the carried
-  // files its box does not hold (unsent), as observed. {list} or null.
+  // v8 ship-verified (M1): what of a bundle ships though its box did not
+  // hold it (unsent): {list} or null.
   uncheckedOf(bundle) {
-    const list=[...this.uncompilable(this.boxHeld(bundle.files)).map(x=>({path:x.path,why:x.why})),...(bundle.unsent||[]).map(x=>({path:x.path,why:x.why}))].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
+    const list=(bundle.unsent||[]).map(x=>({path:x.path,why:x.why})).sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
     return list.length?{list}:null;
-  }
-  // The Worker's own parser over the files it has not compiled: {issues, clean: [keys]}.
-  // v8 M3 review 2 (M2): in the modes its runtimes read each in; a file
-  // whose scope manifest does not parse is that manifest's issue.
-  localSyntax(files, fresh) {
-    const issues=[],clean=[];
-    for(const p of fresh) {
-      const s=this.syntaxOf(p,files);
-      if(!s?.row||s.box)continue;
-      if(s.mode.split('+').includes('invalid')){const at=scopeManifestOf(p,files,s.row);issues.push({path:at,kind:'source',stage:'syntax',detail:`${s.row.id} syntax: ${at} does not parse as JSON, so ${s.row.name} cannot tell how to read ${p}.`});continue;}
-      const error=s.parse(p,files.get(p),s.mode,s.row);
-      if(error)issues.push({path:p,kind:'source',stage:'syntax',detail:`${s.row.id} syntax: ${error}`});
-      else clean.push(this.syntaxKey(s.row,files.get(p),s.mode));
-    }
-    return {issues,clean};
-  }
-  // What compiled cleanly: every file of a row whose syntax stage passed in the box, and the files the Worker parsed.
-  markCompiled(files, syntax, stages, clean) {
-    const keys=[...clean];
-    for(const s of syntax||[]) {
-      if(!(stages||[]).some(x=>x.name===`syntax:${s.toolchain}`&&x.passed))continue;
-      for(const p of s.files){const at=files.has(p)&&this.syntaxOf(p,files);if(at?.row?.id===s.toolchain)keys.push(this.syntaxKey(at.row,files.get(p),at.mode));}
-    }
-    for(const k of keys)this.db().exec('INSERT OR IGNORE INTO syntax_clean(key) VALUES (?)',k);
   }
   // ---------- managers solve problems ----------
   // Every open problem this manager holds is placed among its own direct
@@ -5053,7 +4863,7 @@ export class ControlRoom extends DurableObject {
       // What it held was about the branch that is gone; it starts with nothing.
       db.exec("UPDATE problems SET status='closed',outcome='retasked',updated=? WHERE holder=? AND status!='closed'",Date.now(),c);
       this.set(`builder_gen:${c}`,Number(this.get(`builder_gen:${c}`,'0'))+1);
-      for(const k of ['linked','link_state','link_reported','builder_requested','bundle','capacity_blocked','rounds_exhausted','repair_rounds','repair_stalled','repair_waves','manager_reconciled','rolled','compile_reported','compile_blocked','compile_issues','verified','piece_reach'])
+      for(const k of ['linked','link_state','link_reported','builder_requested','bundle','capacity_blocked','rounds_exhausted','repair_rounds','repair_stalled','repair_waves','manager_reconciled','rolled','compile_reported','compile_blocked','verified','piece_reach'])
         db.exec('DELETE FROM meta WHERE key=?',`${k}:${c}`);
       db.exec("UPDATE agents SET phase='decompose' WHERE id=?",c);
     }
@@ -6879,7 +6689,7 @@ export class ControlRoom extends DurableObject {
       catch {failed++;}
     }
     if(typeof this.ctx.storage.deleteAll==='function'){await this.ctx.storage.deleteAlarm?.();await this.ctx.storage.deleteAll();}
-    else for(const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','validations','splitters','piece_files','syntax_clean','problems','repair_tickets','goal_revisions','prompts','meta'])this.db().exec(`DELETE FROM ${table}`);
+    else for(const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','validations','splitters','piece_files','problems','repair_tickets','goal_revisions','prompts','meta'])this.db().exec(`DELETE FROM ${table}`);
     return {repos_deleted:deleted,repos_failed:failed};
   }
   async agentTurn(id) {
@@ -7745,8 +7555,8 @@ export class ControlRoom extends DurableObject {
     } catch(e) { this.set('status','error'); this.event('system','error',clip(e?.message||e,1500)); }
     finally {
       this.busy=false;this.budgetSpent=false;this.spendCall=null;this.turnsLeft=null;
-      // v8 live 5: a prewarmed box no compile of this run took is stopped.
-      this.prewarm?.discard('the run ended before a compile took it');
+      // v8 live 5: a prewarmed box no session of this run took is stopped.
+      this.prewarm?.discard('the run ended before a session took it');
       // v8 S9 review: what this run left of its budget.
       this.set('budget_left',String(Math.max(0,cap-spent)));
     }
@@ -7779,7 +7589,7 @@ export class ControlRoom extends DurableObject {
       if(loaded.error)return {error:clip(loaded.error,600)};
     }
     // v8 S9: a Start keeps the queued prompts (they apply once this run ends) and forgets the rest.
-    for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','validations','splitters','piece_files','syntax_clean','problems','repair_tickets','goal_revisions',...INPUT_TABLES,'meta']) this.db().exec(`DELETE FROM ${table}`);
+    for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','validations','splitters','piece_files','problems','repair_tickets','goal_revisions',...INPUT_TABLES,'meta']) this.db().exec(`DELETE FROM ${table}`);
     this.db().exec("DELETE FROM prompts WHERE status!='queued'");
     // v8 S9: the Start budget, each queued prompt's run budget unless the prompt has its own.
     {let b;try{b=normalizeTurnBudget(budget);}catch{b=20;}this.set('start_budget',String(b));}
@@ -8512,7 +8322,7 @@ export class ControlRoom extends DurableObject {
       if(!job)this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(stated?contracts:own.map(c=>mine(c.name)||c)),id);
       this.save(`split_feedback:${id}`,null);
       this.save(`level_job:${id}`,{...(job||{kind:'split'}),admitted:{contracts,joins}});
-      // The first level a room admits says which box its first compile needs.
+      // The first level a room admits says which box its first session needs.
       if(!this.get('prewarmed'))this.prewarmLevel(this.specOf(this.validationRows()));
       this.event(id,pieces.length?'split_admitted':'hand_down',clip(`${pieces.length?`Admitted ${pieces.length} pieces: ${pieces.map(p=>`"${p.label}" (${p.contracts.join(', ')})`).join('; ')}; ${level.validations.length} validation(s).`:`${why||'The level goes to one worker.'} ${level.validations.length} validation(s) of its own.`}${dropped.size?` Its splitter took out ${[...dropped].join(', ')}.`:''}`,1200));
     }).catch(release);
@@ -8720,7 +8530,7 @@ export class ControlRoom extends DurableObject {
       // language: one option per code language the box compiles (owner,
       // 2026-10-15 22:12: "why are packages not allowed now?"; every manager
       // has it, whatever its depth, 22:22): each language whose row says how
-      // the box installs its packages (install); the box installs it.
+      // its packages install (install); the agents install it in their boxes.
       const [named]=normalizePackages(item.name?[item.name]:[]);
       if(named&&!mine.some(p=>p.name===named.name)&&!held.has(named.name))
         for(const row of this.compileRows().filter(r=>r.install))grants.push({package:{name:named.name,language:row.id},fresh:row.name});
@@ -8752,7 +8562,7 @@ export class ControlRoom extends DurableObject {
       assignment:view.assignment,my_contracts:lines(view.mine),
       children:view.children.map((c,i)=>({slot:i,label:c.label,contracts:lines(c.contracts),...(item.packages?.length?{packages:this.packagesOf(c.id).map(p=>p.name).filter(n=>item.packages.includes(n))}:{}),...(item.kind==='complaint'?{wrote:wrote(c)}:{})})),
       ...(offered.length?{contracts_offered:offered.map((o,j)=>({slot:j,contract:contractLine(o.contract)}))}:{}),
-      ...(granted.length?{packages_offered:granted.map((o,j)=>({slot:j,package:o.fresh&&!this.installSeen(o.package)?`${o.package.name} (a ${o.fresh} package, not yet installed: the box installs it)`:this.seenLine(o.package)}))}:{}),
+      ...(granted.length?{packages_offered:granted.map((o,j)=>({slot:j,package:o.fresh?`${o.package.name} (a ${o.fresh} package)`:packageLine(o.package)}))}:{}),
       options:options.map(o=>o.call)};
     const what=item.kind==='ask'?`the ask for ${item.name||`"${clip(item.need,120)}"`}`:`the ${item.kind}`;
     let ps=[null];
@@ -8854,7 +8664,7 @@ export class ControlRoom extends DurableObject {
   // The package p manager m granted the asker: it is listed on every row of
   // the asker's line that does not list it (m's and those above it too, for
   // one m's row did not hold), so a piece's packages stay a part of its
-  // parent's and each level's box installs what its subtree uses; the asker hears it.
+  // parent's; the asker hears it, and installs it in its box as it judges.
   async grantPackage(m, ask, p) {
     const n=this.node(ask.worker);
     if(!n||!p)return;
@@ -9006,7 +8816,8 @@ export class ControlRoom extends DurableObject {
   }
   // A worker's turn is one session of its functions (src/worker.js): it
   // reads and writes its own files (staged for the turn's one commit), runs
-  // its examples, asks by name, and ends with done or wait. What the turn
+  // commands in its own box (closed when the session ends), asks by name,
+  // and ends with done or wait. What the turn
   // still owes once the session ended (its commit, its messages read, its
   // status as done or wait said) is a plan kept with a cursor, so a restart
   // finishes it. A session that ended with neither (its context window was
@@ -9023,13 +8834,19 @@ export class ControlRoom extends DurableObject {
     } else {
       const inbox=this.receive(id),ownFiles=await this.ownFiles(id),view=this.workerView(id,inbox,ownFiles);
       this.event(id,'working',`Turn ${n.turn+1}; received ${inbox.length} messages.`);
-      const world=workerWorld({files:new Map(ownFiles.map(f=>[f.path,f.content])),
-        write:(path,content)=>this.putFile(id,path,content),runExamples:()=>this.runExamples(id),ask:a=>this.workerAsk(id,a),
+      // Its own box holds its files as they stand (src/box-session.js), the image its validations need.
+      const own=new Map(ownFiles.map(f=>[f.path,f.content])),byId=this.validationsById();
+      const box=this.sessionBox(sessionBoxSpec([...new Set(this.designOf(id).contracts.flatMap(c=>c.serves||[]))].map(v=>byId.get(v)).filter(Boolean)),()=>Object.fromEntries(this.boxHeld(world.files)));
+      const world=workerWorld({files:own,write:(path,content)=>this.putFile(id,path,content),box,ask:a=>this.workerAsk(id,a),
         outstanding:()=>this.openAsks(id).length>0,
         ...(this.heldDigest(id)?{readBase:path=>this.readBaseFile(path)}:{})});
-      const out=await workerSession(this.inferenceEnv('worker'),view,world);
+      const started=Date.now();
+      let out;
+      try {out=await workerSession(this.inferenceEnv('worker'),view,world);}
+      finally {await box.close();}
+      if(box.commands)this.boxSpan(id,'worker',started,box);
       const said=[out.transcript.length?`${out.transcript.length} call(s) in ${out.rounds} round(s)`:'no call',world.written.length?`wrote ${world.written.join(', ')}`:'',
-        world.unchanged.length?`unchanged ${world.unchanged.join(', ')}`:'',world.examples?`ran its examples ${world.examples} time(s)`:'',world.asked.length?`asked ${world.asked.length}`:''].filter(Boolean).join('; ');
+        world.unchanged.length?`unchanged ${world.unchanged.join(', ')}`:'',world.runs?`ran ${world.runs} command(s) in its box`:'',world.asked.length?`asked ${world.asked.length}`:''].filter(Boolean).join('; ');
       this.event(id,'session',clip(out.end?`${said}; ended with ${out.end.done?'done':'wait'}.`:`${said}; ended without done or wait (${out.reason==='context'?'its context window was full':out.reason}).`,700));
       plan={end:out.end,reason:out.reason,inbox};
       this.db().exec('INSERT INTO pending_turns(agent,payload,cursor) VALUES (?,?,0)',id,JSON.stringify(plan));
@@ -9088,7 +8905,7 @@ export class ControlRoom extends DurableObject {
     }
     const held=name?this.packagesOf(id).find(p=>p.name===name):null;
     if(held) {
-      const seen=this.installSeen(held),text=seen&&!seen.passed?this.seenLine(held):MESSAGES.package_yours({need,names:packageLine(held),many:false});
+      const text=MESSAGES.package_yours({need,names:packageLine(held),many:false});
       this.recordAnswer(id,{key,kind:'provided',text});
       return {answered:text};
     }
@@ -9105,56 +8922,31 @@ export class ControlRoom extends DurableObject {
     this.wake(up);
     return {sent:true,says:MESSAGES.ask_sent()};
   }
-  // A worker's examples (its run_examples function), run on its own files as
-  // they stand (its staged writes included), the way its compiler runs them:
-  // the validations that serve the contracts it delivers, in one fresh box
-  // with the internet off (file checks here, documents judged by Clef), and
-  // each file's syntax step. Each comes back as the examples it renders and
-  // what was observed: pass, or the observation in the compiler's words. The
-  // worker reads no validation: no id, kind or steps as data. Nothing here
-  // changes a validation's status or passes.
-  async runExamples(id) {
-    const design=this.designOf(id),byId=this.validationsById(),contracts=design.contracts;
-    const runs=[...new Set(contracts.flatMap(c=>c.serves||[]))].map(v=>byId.get(v)).filter(Boolean);
-    const own=await this.ownFiles(id),files=this.boxHeld(new Map(own.map(f=>[f.path,f.content])));
-    const digest=await snapshotHash(files),started=Date.now(),fresh=this.uncompiled(files),parsed=this.localSyntax(files,fresh);
-    const compile=new Map([...fresh].map(p=>[p,this.syntaxOf(p,files)?.row]).filter(([,row])=>row));
-    const spec={contracts,validations:runs};
-    const {plan,toolchains,local,container}=checkPlan(spec,files,{rows:this.installedToolchains(),compile,install:this.packageInstalls(id),box:this.read('toolchain_inventory',null)});
-    const results=new Map(local);
-    for(const v of runs)if(v.check?.kind==='file')results.set(v.id,{passed:false,...fileResult(v.check,files)});
-    const [judged,run]=await Promise.all([this.judgeRuns(id,runs,files,contracts),container?this.runChecks(id,`examples:${id}:${digest}`,files,plan,toolchains):null]);
-    for(const [vid,x] of judged)results.set(vid,x);
-    for(const c of run?.report?.checks||[])results.set(c.id,c);
-    if(run?.report?.inventory)this.save('toolchain_inventory',run.report.inventory);
-    const notInstalled=this.recordInstalls(id,run?.report?.installed).map(x=>x.detail);
-    if(run&&!run.infrastructure)this.markCompiled(files,plan.syntax,run.report?.stages,parsed.clean);
-    const shown=v=>[...new Set(checkExamples(v.check))];
-    const observed=v=>{const r=results.get(v.id);if(run?.infrastructure&&!r)return `not run: ${run.infrastructure}`;if(!r)return 'not run';if(r.infrastructure)return `not run: ${r.detail}`;return r.passed?'pass':String(r.detail||'it did not hold');};
-    const examples=runs.map(v=>({examples:shown(v),observed:observed(v)}));
-    // A file the Worker's parser read is named at its path; a syntax step of the box, by the files it compiled (its words name the file).
-    const issues=[...(run?.report?.issues||[]),...parsed.issues].filter(x=>x?.path||x?.files?.length).map(x=>x.path?{file:x.path,observed:x.detail}:{files:x.files,observed:x.detail});
-    const passed=examples.filter(e=>e.observed==='pass').length;
-    this.span('worker','run_examples',started,Date.now(),{worker:id,validations:runs.length,passed,files:files.size,...(run?.infrastructure?{infrastructure:true}:{})},id);
-    this.event(id,'examples_run',clip(`Ran its examples on its ${files.size} file(s): ${passed} of ${examples.length} pass${issues.length?`; ${issues.length} file(s) do not compile`:''}${run?.infrastructure?`; the box: ${clip(run.infrastructure,200)}`:''}.`,600));
-    if(!examples.length&&!issues.length&&!notInstalled.length)return {examples:[],says:MESSAGES.no_examples()};
-    return {examples,...(issues.length?{files_that_do_not_compile:issues}:{}),...(notInstalled.length?{packages_not_installed:notInstalled}:{}),passed,of:examples.length};
+  // ---------- the boxes of the agents' sessions ----------
+  // A box an agent's session runs its commands in (src/box-session.js): the
+  // prewarmed box when it was opened for exactly this spec and still runs,
+  // else a fresh one, opened while the room has a slot for it (boxSlot).
+  // {box, opened, release}; a box that cannot be opened throws, which the
+  // session's command reads as its result.
+  async openBox(spec) {
+    if(!this.env.BOXES)throw new Error('BOXES binding unavailable');
+    const warm=await this.boxPrewarm()?.take(spec)??null;
+    if(warm&&!warm.error) {
+      if(await Promise.resolve(warm.box.alive()).catch(()=>false))return {box:warm.box,opened:{...warm.opened,prewarmed:true,waited_ms:warm.waited_ms},release:warm.release};
+      await Promise.resolve(warm.box.close()).catch(()=>{});warm.release();
+    }
+    const release=await this.boxSlot(),box=freshBox(this.env.BOXES);
+    try {return {box,opened:await box.open(spec,checkLimitsOf(this.settings()).total_ms),release};}
+    catch(e) {await Promise.resolve(box.close()).catch(()=>{});release();throw e;}
   }
-  // Clef judges each document check among runs, as a compile does: [[id, result]].
-  judgeRuns(id, runs, files, contracts) {
-    const contractOf=new Map(contracts.map(c=>[c.name,c]));
-    return Promise.all(runs.filter(v=>v.check?.kind==='judge').map(async v=>{
-      const content=files.get(v.check.path);
-      if(typeof content!=='string'||!content.trim()){const note=`${v.check.path} is ${typeof content==='string'?'empty':'missing'}`;return [v.id,{id:v.id,kind:'judge',frames:[],passed:false,detail:note,observed:{what:'local',note}}];}
-      const says=v.says||(v.serves||[]).map(n=>contractOf.get(n)?.does).filter(Boolean).join('; ');
-      // A judgement Clef could not give is infrastructure: the compiler runs it again, a turn of the room's budget each time.
-      try {
-        const j=await judgeRequirement(this.inferenceEnv(),{says,question:v.check.question,path:v.check.path,content});
-        return [v.id,{id:v.id,kind:'judge',frames:[],passed:j.passed,p:j.p,detail:j.detail,observed:{what:'judge',p:j.p}}];
-      } catch(e) {
-        return [v.id,{id:v.id,kind:'judge',frames:[],passed:false,infrastructure:true,detail:`Clef could not judge ${v.check.path}: ${e?.message||e}`}];
-      }
-    }));
+  // One session's box: files() its files as they stand ({path: text}), links() its symbolic links.
+  sessionBox(spec, files, links=()=>({})) {
+    return boxSession({open:()=>this.openBox(spec),files,links,totalMs:checkLimitsOf(this.settings()).total_ms});
+  }
+  // A session's box, as a span: its name, image, whether it was prewarmed, and the commands run in it.
+  boxSpan(id, name, started, box, extra={}) {
+    const o=box.opened;
+    this.span('container',name,started,Date.now(),{node:id,commands:box.commands,...extra,...(o?{box:{fresh:o.fresh===true,internet:o.internet,image:o.image,instance:o.instance,name:o.name,start_ms:o.start_ms,ready_ms:o.ready_ms,cold:o.cold===true||o.ready_ms>BOX_COLD_MS,...(o.prewarmed?{prewarmed:true,waited_ms:o.waited_ms}:{})}}:{})},id);
   }
   // ---------- the room's view ----------
   // The room is done when the manager it created is done and its compiler's
@@ -9167,27 +8959,26 @@ export class ControlRoom extends DurableObject {
   }
   // v8: a level's compile, the same at every manager. Its builder joined
   // the piece (bundleFiles: the children's assembled pieces, linked); its
-  // compiler verifies, in one fresh single-use box with the internet off,
-  // every validation held in its live subtree whose last pass was not on
-  // this exact bundle (passedOn), and compiles every file whose exact bytes
-  // no syntax step compiled in the modes its runtimes load it (syntax_clean).
-  // Of the validations it holds itself, one that Clef finds reaches another
-  // piece (pieceScope) is held by the level above from then on (rollUp).
-  // Every failure is a complaint, routed down to the worker responsible for
-  // it as the compiler observed it (routeComplaint). A check that could not
-  // run (infrastructure) is nobody's work: the compiler runs it again, a turn
-  // of the room's budget each time. Its
-  // record of its last finished compile (verified:<id>, with the bundle's
-  // digest) says that every validation of its subtree passed on exactly the
-  // bundle it ships up. Returns {passed} | {reported} | {held} | {moved} | {again}.
-  // owned: the digest it took first.
+  // compiler, an agent (src/compiler.js), verifies every validation held in
+  // its live subtree whose last pass was not on this exact bundle (passedOn),
+  // in its own single-use box that holds the bundle (levelCompiler). Of the
+  // validations it holds itself, one that Clef finds reaches another piece
+  // (pieceScope) is held by the level above from then on (rollUp). Each
+  // failed result is a complaint with the compiler's observation, routed by
+  // the contracts its validation serves (routeComplaint). A validation the
+  // compiler gave no result for has none: it is not passed, and the compiler
+  // runs again, a turn of the room's budget each time. Its record of its last
+  // finished compile (verified:<id>, with the bundle's digest) says that every
+  // validation of its subtree passed on exactly the bundle it ships up.
+  // Returns {passed} | {reported} | {held} | {moved} | {again}. owned: the
+  // digest it took first.
   async compileLevel(id, {begun=Date.now(), owned:taken=null}={}) {
     const depth=this.depthOf(id);
     // A level with an escalation outstanding in its subtree waits for Continue.
     if(this.escalatedBelow(id).length){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
     const owned=taken??this.ownedDigest(id),joins=this.pieceInput(id);
-    const bundle=await this.bundleFiles(id),{files,origin}=bundle;
-    const digest=await snapshotHash(files),all=this.subtreeValidations(id),here=new Set(this.read(`checks:${id}`,[])),box=this.boxHeld(files);
+    const bundle=await this.bundleFiles(id),{files}=bundle;
+    const digest=await snapshotHash(files),all=this.subtreeValidations(id),here=new Set(this.read(`checks:${id}`,[]));
     const span=(outcome,extra={})=>this.span('piece','piece_checks',begun,Date.now(),{manager:id,depth,held:here.size,subtree:all.length,outcome,...extra},id);
     // The files it owns, or what its piece joins, changed after they were taken: it runs again on them as they are now.
     const moved=extra=>{
@@ -9207,51 +8998,17 @@ export class ControlRoom extends DurableObject {
     };
     const due=v=>!this.passedOn(v,digest);
     const scope=await this.pieceScope(id,all.filter(v=>here.has(v.id)&&due(v)),bundle,digest),unjudged=scope.unjudged;
-    const runs=[...scope.runs,...all.filter(v=>!here.has(v.id)&&due(v))],spec=this.specOf(runs);
-    // What of the piece no syntax step compiled, and the files whose issues stand.
-    const standing=this.read(`compile_issues:${id}`,null),fresh=this.uncompiled(box);
-    if(standing?.owned===owned)for(const p of standing.paths||[])if(box.has(p))fresh.add(p);
-    // Code whose compile row the box's inventory has not confirmed yet: the box opens, and reports it.
-    const asks=this.uncompilable(box).some(x=>x.unconfirmed);
-    if(!runs.length&&!unjudged.length&&!fresh.size&&!asks)return finish({ran:0});
+    const runs=[...scope.runs,...all.filter(v=>!here.has(v.id)&&due(v))];
+    if(!runs.length&&!unjudged.length)return finish({ran:0});
     const input=`${digest}:${all.map(v=>v.id).join(',')}`;
     if(this.read(`compile_blocked:${id}`,null)?.input===input){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
     if(runs.length)this.event(id,'checks_started',`Running ${runs.length} validation(s) on ${files.size} file(s) (snapshot ${digest.slice(0,14)}).`);
-    else this.event(id,'piece_compiling',`Compiling ${fresh.size} of the ${files.size} file(s) of ${this.node(id)?.label||id}'s piece (snapshot ${digest.slice(0,14)}); no validation is due here.`);
-    // The Worker's own parser for a row that has one (native), the box's syntax step for the others: each only over the files it has not compiled.
-    const parsed=this.localSyntax(box,fresh);
-    const compile=new Map([...fresh].map(p=>[p,this.syntaxOf(p,files)?.row]).filter(([,row])=>row));
-    const {plan,toolchains,local,container}=checkPlan(spec,box,{rows:this.installedToolchains(),compile,inventory:asks,install:this.packageInstalls(id),box:this.read('toolchain_inventory',null)});
-    const results=new Map(local);
-    for(const v of runs)if(v.check?.kind==='file')results.set(v.id,{id:v.id,kind:'file',frames:[],...fileResult(v.check,files)});
-    // Clef judges each document, in parallel with the box.
-    const judging=this.judgeRuns(id,runs,files,spec.contracts);
-    const boxStart=Date.now();
-    const [judged,run]=await Promise.all([judging,container?this.runChecks(id,input,box,plan,toolchains,bundle.links):null]);
-    if(container)this.span('piece','piece_box',boxStart,Date.now(),{manager:id,depth,checks:plan.checks.length,files:files.size,compiled:plan.syntax.reduce((n,s)=>n+s.files.length,0),...(run?.infrastructure?{infrastructure:true}:{passed:!!run?.report?.passed})},id);
-    for(const [vid,x] of judged)results.set(vid,x);
-    // What Clef gave no answer for, whether the piece runs it: not run, as a check the box could not run is.
-    for(const v of unjudged)results.set(v.id,{id:v.id,passed:false,infrastructure:true,detail:'not run: Clef gave no answer on whether this piece runs it'});
-    const report=run?.report||null;
-    if(report?.inventory)this.save('toolchain_inventory',report.inventory);
-    // What the box did not install is what the compiler observed, as a failing check is.
-    const notInstalled=this.recordInstalls(id,report?.installed);
-    for(const c of report?.checks||[])results.set(c.id,c);
-    // What the syntax steps compiled cleanly is known by its bytes from now on.
-    if(!run?.infrastructure)this.markCompiled(box,plan.syntax,report?.stages,parsed.clean);
-    // A file the run was to compile that is still not compiled, with no issue of its own, is no file this run compiled (unbuilt);
-    // one that only now has a row (the box's inventory came with this run) compiles in a run of its own.
-    const left=run?.infrastructure?new Set():this.uncompiled(box),named=new Set([...(report?.issues||[]),...parsed.issues].flatMap(i=>i.path?[i.path]:i.files||[]));
-    const unbuilt=[...left].filter(p=>fresh.has(p)&&!named.has(p)),newly=[...left].filter(p=>!fresh.has(p));
-    const notBuilt=unbuilt.length?`the syntax step left ${unbuilt.length} file(s) uncompiled with no issue of their own (${clip(unbuilt.join(', '),200)})`:'';
-    if(run?.infrastructure)for(const c of plan.checks)if(!results.has(c.id))results.set(c.id,{id:c.id,passed:false,infrastructure:true,detail:`not run: ${clip(run.infrastructure,200)}`});
-    // Each validation's status; the other levels' keep theirs.
-    const status=this.read('validation_status',{}),issues=[...(report?.issues||[]),...parsed.issues],bad=new Set(issues.flatMap(i=>i.path?[i.path]:i.files||[]));
-    if(!run?.infrastructure)this.save(`compile_issues:${id}`,{owned,digest,paths:[...bad],ts:Date.now()});
-    const passes=[],kept=[...runs,...unjudged];
+    const results=runs.length?await this.levelCompiler(id,runs,bundle):new Map();
+    // Each validation's status; the other levels' keep theirs. A result is the compiler's verdict, its detail what it observed.
+    const status=this.read('validation_status',{}),passes=[],kept=[...runs,...unjudged],notJudged=new Set(unjudged.map(v=>v.id));
     for(const v of kept) {
-      const res=results.get(v.id),passed=!res||res.infrastructure?null:!!res.passed;
-      status[v.id]=statusEntry(passed,digest,res?.detail||'not run');
+      const res=results.get(v.id),passed=res?res.passed:null;
+      status[v.id]=statusEntry(passed,digest,res?res.observed:notJudged.has(v.id)?'not run: Clef gave no answer on whether this piece runs it':'no result: the compiler gave none');
       // A pass is for the exact bundle it ran on (its digest); a failure leaves this row none.
       if(passed!==null)this.savePass(v,id,{digest,passed});
       if(passed)passes.push(v.id);
@@ -9260,27 +9017,25 @@ export class ControlRoom extends DurableObject {
     const stale=moved({ran:runs.length,passed:passes.length});
     if(stale)return stale;
     const failed=kept.filter(v=>status[v.id].passed===false),untested=kept.filter(v=>status[v.id].passed===null);
-    const line=[kept.length?`${kept.length-failed.length-untested.length} of ${kept.length} validation(s) pass`+(failed.length?`; failing: ${failed.map(v=>v.id).join(', ')}`:'')+(untested.length?`; not run: ${untested.map(v=>v.id).join(', ')}`:''):'',
-      issues.length||!kept.length&&!notInstalled.length?`${issues.length} file(s) do not compile`:'',notInstalled.length?`the box did not install ${notInstalled.flatMap(x=>x.facts.packages).join(', ')}`:''].filter(Boolean).join('; ');
-    const blocked=untested.length>0||!!report?.infrastructure_issue||!!run?.infrastructure||!!notBuilt;
-    if(!failed.length&&!untested.length&&!issues.length&&!notInstalled.length&&!blocked) {
+    const line=`${kept.length-failed.length-untested.length} of ${kept.length} validation(s) pass`+(failed.length?`; failing: ${failed.map(v=>v.id).join(', ')}`:'')+(untested.length?`; no result: ${untested.map(v=>v.id).join(', ')}`:'');
+    if(!failed.length&&!untested.length) {
       this.save(`compile_reported:${id}`,null);this.save(`compile_blocked:${id}`,null);this.set(`compile_infrastructure:${id}`,'');
       this.closeProblemsFrom(id,'resolved');
-      if(!runs.length)this.event(id,'piece_compiled',`Every file of ${this.node(id)?.label||id}'s piece compiles (${fresh.size} compiled now; snapshot ${digest.slice(0,14)}).`);
-      else this.event(id,'checks_passed',`Every validation due here passed (${kept.length}) against snapshot ${digest.slice(0,14)}.`);
-      if(newly.length)return this.compileLevel(id,{begun,owned});
+      this.event(id,'checks_passed',`Every validation due here passed (${kept.length}) against snapshot ${digest.slice(0,14)}.`);
       return finish({ran:runs.length,passed:passes.length});
     }
     // This run is not a verified compile.
     this.save(`verified:${id}`,null);
-    const items=[...checkProblems({...spec,validations:kept},results,issues,{origin:p=>origin.get(p)||null}),...notInstalled];
+    // Each failed validation is a complaint: what the compiler observed, routed by the contracts it serves.
+    const items=failed.map(v=>({kind:'run',path:'',sites:[],parties:[],detail:status[v.id].detail,
+      facts:{validation:{id:v.id,serves:v.serves||[],check_kind:v.check?.kind||''},failure:failureHead(status[v.id].detail)}}));
     this.event(id,'checks_reported',clip(`The compiler of ${this.node(id)?.label||id}: ${line}.`,900));
     span('reported',{ran:runs.length,passed:passes.length,failed:failed.length});
     if(!items.length) {
-      // Only checks that could not run: nobody's work. The compiler runs them
-      // again until it observes them, each run a turn of the room's budget;
-      // once the budget is spent, Continue runs them (compile_blocked).
-      const why=run?.infrastructure||report?.infrastructure_issue||notBuilt||untested.map(v=>`${v.id}: ${status[v.id].detail}`).join('; ');
+      // Only validations with no result: nobody's work. The compiler runs
+      // again until it gives them one, each run a turn of the room's budget;
+      // once the budget is spent, Continue runs it (compile_blocked).
+      const why=untested.map(v=>`${v.id}: ${status[v.id].detail}`).join('; ');
       this.set(`compile_infrastructure:${id}`,clip(why,950));
       this.event(id,'build_infrastructure',clip(why,950));
       if(this.budgetSpent) {
@@ -9298,9 +9053,30 @@ export class ControlRoom extends DurableObject {
     for(const item of items)await this.routeComplaint(id,item,{wave,input,source:id});
     return {reported:true};
   }
+  // The compiler's session on a level's bundle (src/compiler.js): its
+  // validations as the splitter wrote them, the contracts they serve or run
+  // by, as declared, and the files' paths; its own box holds the bundle (the
+  // files the box holds, and the bundle's symbolic links). Its model is the
+  // room's compiler model; each model call after the first counts against
+  // the room's turn budget. Map id -> {passed, observed}: the results it gave.
+  async levelCompiler(id, runs, bundle) {
+    const spec=this.specOf(runs),files=this.boxHeld(bundle.files),started=Date.now();
+    const named=new Set(runs.flatMap(v=>[...(v.serves||[]),v.check?.serve,Array.isArray(v.check?.argv)?v.check.argv[0]:null,...(v.check?.steps||[]).map(x=>x?.call)]).filter(Boolean));
+    const request={validations:runs.map(v=>({id:v.id,serves:v.serves||[],check:v.check,...(v.says?{says:v.says}:{})})),contracts:spec.contracts.filter(c=>named.has(c.name)),files:[...files.keys()]};
+    const box=this.sessionBox(sessionBoxSpec(runs),()=>Object.fromEntries(files),()=>Object.fromEntries(bundle.links||new Map()));
+    const world=compilerWorld({files,validations:runs.map(v=>v.id),box});
+    let out;
+    try {out=await compilerSession(this.inferenceEnv('compiler'),request,world,{spend:()=>this.spendCall?this.spendCall():true});}
+    finally {await box.close();}
+    this.boxSpan(id,'compiler',started,box,{validations:runs.length,results:world.results.size});
+    const rec=this.read(`level_compiler:${id}`,null);
+    if(rec&&box.opened?.name)this.save(`level_compiler:${id}`,{...rec,box:box.opened.name});
+    this.event(id,'compiler_session',clip(`${out.transcript.length} call(s) in ${out.rounds} round(s); ran ${box.commands} command(s) in its box; gave ${world.results.size} of ${runs.length} result(s); ended ${out.end?'with done':`without done (${out.reason==='context'?'its context window was full':out.reason})`}.`,700));
+    return world.results;
+  }
   async clear() {
     if (this.busy || this.get('status')==='running') return {error:'Experiment is running'};
-    for (const name of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','validations','splitters','piece_files','syntax_clean','problems','repair_tickets','goal_revisions','prompts',...INPUT_TABLES,'meta']) this.db().exec(`DELETE FROM ${name}`);
+    for (const name of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','validations','splitters','piece_files','problems','repair_tickets','goal_revisions','prompts',...INPUT_TABLES,'meta']) this.db().exec(`DELETE FROM ${name}`);
     this.queuedAt.clear();
     return this.snapshot();
   }

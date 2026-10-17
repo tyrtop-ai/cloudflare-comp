@@ -1,24 +1,18 @@
 // B1: benchmark loaders (src/bench.js). Tiny synthetic tasks in each
-// format; no real dataset is fetched or copied. The graders they make run in
-// the real Container verification (container/build-runner.mjs verifyChecks),
-// as a benchmark run grades a shipped bundle, against correct, wrong and
-// forging solutions.
+// format; no real dataset is fetched or copied. The graders they make run
+// as a benchmark run grades a shipped bundle (src/bench-run.js gradeBundle),
+// in a box whose commands run for real here, against correct and wrong
+// solutions.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {tmpdir} from 'node:os';
 import {gzipSync} from 'node:zlib';
 import {readFileSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
-import {register} from 'node:module';
-process.env.BUILD_RUNNER_WORKDIR = tmpdir();
-register('./cloudflare-loader.mjs', import.meta.url);
-const {verifyChecks} = await import('../container/build-runner.mjs');
-const {checkPlan} = await import('../src/checks.js');
-const {snapshotHash} = await import('../src/build-verification.js');
-const {TOOLCHAINS} = await import('../src/toolchains.js');
+import {fakeBoxes} from './helpers/boxes.js';
+const {gradeBundle} = await import('../src/bench-run.js');
 const bench = await import('../src/bench.js');
 const {DEFAULT_ALLOW} = await import('../src/fetcher.js');
-const {parseRows, detectFormat, taskFromRow, loadTasks, loadDataset, fetchDataset, benchPolicy, roomOutcome, gradeOutcome, aggregate, compareRuns, BENCH_LIMITS, FIXTURE, PASS_MARK} = bench;
+const {parseRows, detectFormat, taskFromRow, loadTasks, loadDataset, fetchDataset, benchPolicy, roomOutcome, gradeOutcome, aggregate, compareRuns, BENCH_LIMITS, FIXTURE} = bench;
 
 import { HUMANEVAL, MBPP, MULTIPLE_JS, MULTIPLE_RB, GENERIC } from './helpers/bench-fixtures.js';
 const jsonl = rows => rows.map(r => JSON.stringify(r)).join('\n') + '\n';
@@ -46,7 +40,6 @@ test('detectFormat reads the format from the keys, never the URL', () => {
 });
 
 // ------------------------------------------------------------------ tasks and graders
-const ROWS = JSON.parse(JSON.stringify(TOOLCHAINS));
 // The room's goal is the row's prompt as the benchmark wrote it: no language,
 // path, library or signature added (the owner: "there shouldn't be any
 // version pinning or code type pinning or specific prompt pinning").
@@ -58,18 +51,18 @@ function assertGrader(t, {language, entry, prompt}) {
   const g = t.grader;
   assert.equal(g.check.kind, 'command');
   assert.equal(g.check.run, language === 'python' ? `python3 -I ${FIXTURE.harness}` : `node -r ./${FIXTURE.harness} -e 0`);
-  assert.deepEqual(g.check.expect, {exit: 0, stdout_has: [`${PASS_MARK} n0nce`]});
+  assert.deepEqual(g.check.expect, {exit: 0});
   // The tests are in the grader's input files, never in the prompt the room starts from.
   const tests = g.check.files[FIXTURE.tests];
   assert.ok(tests.trim());
   for (const line of tests.split('\n').filter(l => l.trim().length > 12)) assert.ok(!t.prompt.includes(line.trim()), `${t.id}: the prompt quotes a test line: ${line}`);
-  assert.ok(!t.prompt.includes('n0nce') && !t.prompt.includes(FIXTURE.harness));
+  assert.ok(!t.prompt.includes(FIXTURE.harness));
   // The harness is told no path: it finds the entry wherever the room put it.
   assert.doesNotMatch(g.check.files[FIXTURE.harness], /solution\.(?:py|js)/);
 }
 
 test('HumanEval rows: the entry point, the prompt verbatim as the goal, the tests hidden in a command check', () => {
-  const tasks = HUMANEVAL.map((r, i) => taskFromRow(r, i, {nonce: 'n0nce'}));
+  const tasks = HUMANEVAL.map((r, i) => taskFromRow(r, i));
   assert.deepEqual(tasks.map(t => t.id), ['Toy/0', 'Toy/1', 'Toy/2']);
   for (const [i, t] of tasks.entries()) assertGrader(t, {language: 'python', entry: HUMANEVAL[i].entry_point, prompt: HUMANEVAL[i].prompt});
   assert.ok(tasks[0].prompt.includes('>>> total([1, 2])'), 'the docstring examples are the prompt\'s own');
@@ -78,7 +71,7 @@ test('HumanEval rows: the entry point, the prompt verbatim as the goal, the test
 });
 
 test('MBPP rows: the function the asserts call, from the reference code\'s names, for the grader only; the text alone is the goal; the asserts stay hidden', () => {
-  const tasks = MBPP.map((r, i) => taskFromRow(r, i, {nonce: 'n0nce'}));
+  const tasks = MBPP.map((r, i) => taskFromRow(r, i));
   assert.deepEqual(tasks.map(t => [t.id, t.entry]), [['MBPP/901', 'cube_it'], ['MBPP/902', 'dash_join'], ['MBPP/903', 'is_even']]);
   for (const [i, t] of tasks.entries()) assertGrader(t, {language: 'python', entry: t.entry, prompt: MBPP[i].text || MBPP[i].prompt});
   assert.equal(tasks[0].prompt, 'Write a function to cube a number.');
@@ -89,7 +82,7 @@ test('MBPP rows: the function the asserts call, from the reference code\'s names
 });
 
 test('MultiPL-E rows: every language loads (owner: "Any code type"); JavaScript\'s entry is the last function of the prompt; another language\'s tests run after the solution, by the command its toolchain row runs a file with', () => {
-  const {tasks, skipped, formats} = loadTasks([...MULTIPLE_JS, ...MULTIPLE_RB], {limit: 10, nonce: 'n0nce'});
+  const {tasks, skipped, formats} = loadTasks([...MULTIPLE_JS, ...MULTIPLE_RB], {limit: 10});
   assert.deepEqual(tasks.map(t => [t.id, t.language, t.entry]), [['Toy_0_add_two', 'javascript', 'add_two'], ['Toy_1_rev', 'javascript', 'rev'], ['Toy_2_neg', 'javascript', 'neg'], ['Toy_3_rs', 'rust', null], ['Toy_0_add_two_rb', 'ruby', null]]);
   for (const [i, t] of tasks.slice(0, 3).entries()) assertGrader(t, {language: 'javascript', entry: t.entry, prompt: MULTIPLE_JS[i].prompt});
   assert.deepEqual(formats, {'multipl-e': 5});
@@ -107,7 +100,7 @@ test('MultiPL-E rows: every language loads (owner: "Any code type"); JavaScript\
 });
 
 test('generic {id, language, prompt, tests} rows: the language from the row (a row naming none is skipped), the entry from the row or the prompt', () => {
-  const {tasks, skipped} = loadTasks(GENERIC, {nonce: 'n0nce'});
+  const {tasks, skipped} = loadTasks(GENERIC);
   assert.deepEqual(tasks.map(t => [t.id, t.language, t.entry]), [['g-py', 'python', 'triple'], ['g-js', 'javascript', 'greet'], ['g-check', 'python', 'inc']]);
   for (const [i, t] of tasks.entries()) assertGrader(t, {language: t.language, entry: t.entry, prompt: GENERIC[i].prompt});
   assert.deepEqual(skipped.map(s => s.id), ['g-none']);
@@ -119,10 +112,10 @@ test('generic {id, language, prompt, tests} rows: the language from the row (a r
 // Owner 2026-10-15 05:16/05:17 "Any code type" / "there shouldn't be any ... code type pinning": the row's entry is used as written, in its own language.
 test('an entry is taken as the row writes it: no length or JS/Python name shape decides which tasks exist', () => {
   const longName = 'f' + 'x'.repeat(80);
-  const py = taskFromRow({...HUMANEVAL[0], task_id: 'Toy/longname', entry_point: longName}, 0, {nonce: 'n0nce'});
+  const py = taskFromRow({...HUMANEVAL[0], task_id: 'Toy/longname', entry_point: longName}, 0);
   assert.equal(py.skip, undefined);
   assert.equal(py.entry, longName);
-  const rb = taskFromRow({id: 'g-rb', language: 'ruby', entry: 'empty?', prompt: 'Write empty?(xs).', tests: 'raise unless empty?([])'}, 0, {nonce: 'n0nce'});
+  const rb = taskFromRow({id: 'g-rb', language: 'ruby', entry: 'empty?', prompt: 'Write empty?(xs).', tests: 'raise unless empty?([])'}, 0);
   assert.equal(rb.skip, undefined);
   assert.equal(rb.entry, 'empty?');
   // The harness looks for files naming the entry with the name quoted as text, not as a pattern.
@@ -134,7 +127,7 @@ test('an entry is taken as the row writes it: no length or JS/Python name shape 
   assert.match(taskFromRow({id: 'g-none', language: 'python', prompt: 'Do it.', tests: 'assert True'}).skip, /no entry function/);
 });
 
-test('the task limit, duplicate ids, and a fresh nonce per task; a task\'s tests and prompt are kept whole, whatever their length', () => {
+test('the task limit and duplicate ids; a task\'s tests and prompt are kept whole, whatever their length', () => {
   assert.equal(BENCH_LIMITS.goal, undefined);
   assert.equal(BENCH_LIMITS.fixture, undefined);
   assert.equal(loadTasks([...HUMANEVAL, ...MBPP], {limit: 4}).tasks.length, 4);
@@ -158,23 +151,14 @@ test('the task limit, duplicate ids, and a fresh nonce per task; a task\'s tests
   assert.deepEqual(twins.tasks.map(t => t.id), [`${stem}a`, `${stem}b`]);
   // Every skipped row is listed.
   assert.equal(loadTasks(Array.from({length: 120}, () => ({question: 1}))).skipped.length, 120);
-  const [a, b] = loadTasks(HUMANEVAL).tasks.map(t => t.grader.check.files[FIXTURE.nonce]);
-  assert.match(a, /^[0-9a-f]{32}$/);
-  assert.notEqual(a, b);
   assert.match(taskFromRow({question: 1}).skip, /unrecognised row/);
 });
 
-// ------------------------------------------------------------------ the real verification
+// ------------------------------------------------------------------ grading
 const hasPython = spawnSync('python3', ['--version']).status === 0;
-// The grader on a bundle, as the run plans it (src/checks.js checkPlan) and the box runs it.
-async function verify(t, solution) {
-  const files = new Map(Object.entries(solution));
-  const {plan, toolchains} = checkPlan({contracts: [], validations: [t.grader]}, files, {rows: ROWS});
-  const report = await verifyChecks({mode: 'checks', fingerprint: 'f', snapshot_hash: await snapshotHash(files), files: Object.fromEntries(files), toolchains,
-    plan: {...plan, syntax: []}, limits: {total_ms: 60_000}}, {isolation: []});
-  return report.checks[0];
-}
-test('Python graders in the Container\'s verifyChecks: a correct solution passes wherever it is placed; wrong and forged ones fail', {skip: !hasPython && 'python3 is not installed'}, async () => {
+// The grader on a bundle, as a run grades it: its command in a box of its own.
+const verify = (t, solution) => gradeBundle({BOXES: fakeBoxes()}, t.grader, new Map(Object.entries(solution)), {total_ms: 60_000});
+test('Python graders: a correct solution passes wherever it is placed; a wrong one fails', {skip: !hasPython && 'python3 is not installed'}, async () => {
   const [he0, he1] = HUMANEVAL.map(r => taskFromRow(r));
   assert.equal((await verify(he0, {'solution.py': 'def total(xs):\n    return sum(xs)\n'})).passed, true);
   // Placed under a builder's directory, importing nothing the bundle lacks; the prompt's helper comes from the prompt.
@@ -188,18 +172,12 @@ test('Python graders in the Container\'s verifyChecks: a correct solution passes
     {'app/core.py': 'from app.helpers import add\n\ndef total(xs):\n    return add(xs)\n', 'app/helpers.py': add},
     {'lib/core.py': 'from helpers import add\n\ndef total(xs):\n    return add(xs)\n', 'lib/helpers.py': add},
     {'my-app/main.py': 'def total(xs):\n    return sum(xs)\n\nif __name__ == "__main__":\n    print(total([1, 2]))\n'},
-    // A file named like a module the supervisor imports is not imported in its place.
+    // A file named like a standard module is not imported in its place: the harness runs isolated.
     {'json.py': 'def helper():\n    return 1\n', 'secrets.py': 'TOKEN = 1\n', 'sums.py': 'def total(xs):\n    return sum(xs)\n'}
   ]) { const c = await verify(he0, layout); assert.equal(c.passed, true, `${Object.keys(layout).join(', ')}: ${c.detail}`); }
   const wrong = await verify(he0, {'solution.py': 'def total(xs):\n    return 0\n'});
   assert.equal(wrong.passed, false);
   assert.match(wrong.detail, /exit 1/);
-  // Forgeries the protocol answers: exiting 0 at import, printing the mark without the nonce.
-  for (const forged of ['import os\nos._exit(0)\n', 'print("BENCH-PASS 0000")\nimport sys\nsys.exit(0)\n', 'def total(xs):\n    return 0\nimport sys\nsys.stdout.write("BENCH-PASS ")\n'])
-    assert.equal((await verify(he0, {'solution.py': forged})).passed, false, forged);
-  // The solution cannot read the nonce or the tests: both are gone before it loads.
-  const peek = await verify(he0, {'solution.py': 'import os\nseen = sorted(os.listdir("."))\nassert "bench_nonce.txt" not in seen and "bench_tests.txt" not in seen, seen\ndef total(xs):\n    return sum(xs)\n'});
-  assert.equal(peek.passed, true, peek.detail);
   const [mb] = MBPP.map(r => taskFromRow(r));
   assert.equal((await verify(mb, {'solution.py': 'def cube_it(n):\n    return n ** 3\n'})).passed, true);
   assert.equal((await verify(mb, {'solution.py': 'def cube_it(n):\n    return n * 3\n'})).passed, false);
@@ -208,7 +186,7 @@ test('Python graders in the Container\'s verifyChecks: a correct solution passes
   assert.match(none.detail, /exit 3/);
 });
 
-test('JavaScript graders in the Container\'s verifyChecks: ESM, CommonJS and plain declarations pass wherever they are placed; wrong and forged ones fail', async () => {
+test('JavaScript graders: ESM, CommonJS and plain declarations pass wherever they are placed; a wrong one fails', async () => {
   const [add] = MULTIPLE_JS.map(r => taskFromRow(r));
   for (const sol of [{'solution.js': 'export function add_two(a, b) { return a + b; }\n'}, {'solution.js': 'module.exports = { add_two: (a, b) => a + b };\n'},
     {'solution.js': 'function add_two(a, b) { return a + b; }\n'}, {'components/root/add.js': 'function add_two(a, b) { return a + b; }\nmodule.exports = { add_two };\n'},
@@ -219,14 +197,12 @@ test('JavaScript graders in the Container\'s verifyChecks: ESM, CommonJS and pla
     {'a.test.js': "const { add_two } = require('./z');\nrequire('assert').equal(add_two(1, 2), 3);\n", 'z.js': 'function add_two(a, b) { return a + b; }\nmodule.exports = { add_two };\n'}])
     assert.equal((await verify(add, sol)).passed, true, JSON.stringify(sol));
   assert.equal((await verify(add, {'solution.js': 'export function add_two(a, b) { return a - b; }\n'})).passed, false);
-  for (const forged of ['process.exit(0);\n', "console.log('BENCH-PASS 1234');\nprocess.exit(0);\n"])
-    assert.equal((await verify(add, {'solution.js': forged})).passed, false, forged);
   const [, g] = loadTasks(GENERIC).tasks;
   assert.equal((await verify(g, {'solution.js': 'export const greet = name => `hi ${name}`;\n'})).passed, true);
 });
 
 const hasRuby = spawnSync('ruby', ['--version']).status === 0;
-test('Ruby graders in the Container\'s verifyChecks: the tests run after the solution, wherever the room put it; a wrong solution fails with what the tests printed', {skip: !hasRuby && 'ruby is not installed'}, async () => {
+test('Ruby graders: the tests run after the solution, wherever the room put it; a wrong solution fails with what the tests printed', {skip: !hasRuby && 'ruby is not installed'}, async () => {
   const [rb] = MULTIPLE_RB.map(r => taskFromRow(r));
   for (const sol of [{'add.rb': 'def add_two(a, b)\n  a + b\nend\n'}, {'lib/math/add.rb': '# adds\ndef add_two(a, b) = a + b\n', 'README.md': '# x\n'}]) {
     const c = await verify(rb, sol);
@@ -236,8 +212,6 @@ test('Ruby graders in the Container\'s verifyChecks: the tests run after the sol
   assert.equal(wrong.passed, false);
   assert.match(wrong.detail, /expected but was|Failure/, 'the detail is the whole observation, the tests\' output with it');
   assert.match(wrong.detail, /exit 1/);
-  const forged = await verify(rb, {'add.rb': 'puts "BENCH-PASS 1234"\ndef add_two(a, b)\n  0\nend\n'});
-  assert.equal(forged.passed, false, 'the mark without the nonce is not the verdict');
   const none = await verify(rb, {'README.md': '# nothing to run\n'});
   assert.match(none.detail, /exit 3/);
 });
@@ -339,12 +313,12 @@ test('fetchDataset: no deadline on a dataset: every page is read, however long t
 test('loadDataset: from a URL or pasted text, with a stable digest; errors for nothing usable', async () => {
   const url = 'https://raw.githubusercontent.com/toy/bench/main/mbpp.jsonl';
   const fetch = fakeFetch({[url]: body(jsonl(MBPP))});
-  const fromUrl = await loadDataset({url}, {fetch, policy: policy(), limit: 2, nonce: 'n0nce'});
+  const fromUrl = await loadDataset({url}, {fetch, policy: policy(), limit: 2});
   assert.deepEqual(fromUrl.tasks.map(t => t.id), ['MBPP/901', 'MBPP/902']);
   assert.equal(fromUrl.source, url);
   assert.equal(fromUrl.rows, 3);
   assert.match(fromUrl.digest, /^[0-9a-f]{64}$/);
-  const pasted = await loadDataset(jsonl(MBPP), {fetch, policy: policy(), limit: 2, nonce: 'n0nce'});
+  const pasted = await loadDataset(jsonl(MBPP), {fetch, policy: policy(), limit: 2});
   assert.equal(pasted.digest, fromUrl.digest, 'the same content, the same digest');
   assert.equal(pasted.source, 'inline');
   assert.equal((await loadDataset({text: jsonl(GENERIC), name: 'mine.jsonl'}, {fetch, policy: policy()})).source, 'inline: mine.jsonl');
@@ -414,13 +388,13 @@ test('aggregate and compareRuns: pass@1 over scored tasks, mean time, tokens, Co
 test('a task\'s goal is its prompt alone: the runtime adds no signature, parameter list, path or library, and the reference code is never read into it', () => {
   const row = {task_id: 627, text: 'Write a python function to find the smallest missing number from a sorted array.',
     code: 'def find_First_Missing(array,start=0,end=None):\n    if end is None:  # secret-marker\n        end = len(array) - 1\n    return start', test_list: ['assert find_First_Missing([0,1,2,3]) == 4']};
-  const t = taskFromRow(row, 0, {nonce: 'n0nce'});
+  const t = taskFromRow(row, 0);
   assert.equal(t.prompt, row.text);
   assert.equal(t.entry, 'find_First_Missing', 'the grader still knows the function its tests call');
   assert.ok(!t.prompt.includes('find_First_Missing') && !t.prompt.includes('secret-marker') && !t.prompt.includes('start='));
   // A prompt is never trimmed, fenced or wrapped either.
   const spaced = '\n\ndef double(n):\n    """Twice n."""\n\n';
-  assert.equal(taskFromRow({...HUMANEVAL[2], prompt: spaced}, 0, {nonce: 'n0nce'}).prompt, spaced);
+  assert.equal(taskFromRow({...HUMANEVAL[2], prompt: spaced}, 0).prompt, spaced);
 });
 
 test('a rows page that cannot be read is the dataset\'s error: no retry, and no part of a benchmark is run', async () => {
@@ -460,10 +434,10 @@ test('the dataset digest covers the tasks used, not the text fetched: the same t
   const rows = Array.from({length: 30}, (_, i) => ({...HUMANEVAL[2], task_id: `Toy/${i}`}));
   const fetch = async url => { const u = new URL(url), o = +u.searchParams.get('offset'), n = +u.searchParams.get('length');
     return new Response(JSON.stringify({rows: rows.slice(o, o + n).map(row => ({row})), num_rows_total: 30, extra: n}), {headers: {'content-type': 'application/json'}}); };
-  const a = await loadDataset({url: base}, {fetch, policy: policy(), limit: 10, nonce: 'n'});
-  const b = await loadDataset({text: rows.slice(0, 10).map(r => JSON.stringify(r)).join('\n') + '\n\n'}, {policy: policy(), limit: 10, nonce: 'n'});
+  const a = await loadDataset({url: base}, {fetch, policy: policy(), limit: 10});
+  const b = await loadDataset({text: rows.slice(0, 10).map(r => JSON.stringify(r)).join('\n') + '\n\n'}, {policy: policy(), limit: 10});
   assert.equal(a.digest, b.digest);
-  const c = await loadDataset({url: base}, {fetch, policy: policy(), limit: 20, nonce: 'n'});
+  const c = await loadDataset({url: base}, {fetch, policy: policy(), limit: 20});
   assert.notEqual(a.digest, c.digest, 'twenty tasks are not ten');
   assert.equal(await bench.taskDigest(a.tasks[3]), await bench.taskDigest(c.tasks[3]), 'but each shared task digests the same');
 });
