@@ -13,6 +13,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { liveRoom, events, rowId } from './helpers/room.js';
+import { usualClef } from './helpers/levels.js';
 import { lintText } from './helpers/prompt-lint.js';
 import { normalizePackages, needWords, readsModule, piecePackages, PACKAGES_MAX, installedPackages, stdlibHints } from '../src/packages.js';
 import { MESSAGES } from '../src/prompts.js';
@@ -78,34 +79,46 @@ async function line(rootPackages = [PYTEST], {packages = 'none'} = {}) {
   return room;
 }
 
-test('H2: an ask is a package\'s by its name alone; the review\'s probe asks, worded like packages, stay contract asks', async () => {
+test('H2 (owner, 2026-10-16 20:43): a worker\'s ask by any name its world does not hold goes to its manager; the runtime never reads a name or a need as a package\'s, and never answers for the language', async () => {
   const room = await line();
   for (const a of [{name: 'formatDate', need: 'a helper from the shared utilities package that formats dates for display'}, {name: 'saveTodos', need: 'the storage dependency that persists the list'},
-    {name: '', need: 'which framework should the page use for routing'}, {name: 'Store', need: 'the class another piece will install into the app'}, {name: 'addTodo', need: 'the to-do library'}])
-    assert.equal(room.askKind(SERVER, a.name, a.need).kind, 'contract', JSON.stringify(a));
-  // brokerAnswer leaves a contract ask to askManager, and no package answer is recorded for it.
-  assert.equal(room.brokerAnswer(SERVER, {key: 'fn saveTodos', name: 'saveTodos', question: 'the storage dependency that persists the list'}), false);
+    {name: '', need: 'which framework should the page use for routing'}, {name: 'Store', need: 'the class another piece will install into the app'}, {name: 'addTodo', need: 'the to-do library'},
+    {name: 'pytest', need: 'the class another piece writes'}, {name: 'flask', need: ''}, {name: 'socket', need: 'raw TCP'}, {name: 'http.client', need: 'raw TCP'}]) {
+    assert.equal(room.askKind(SERVER, a.name).kind, 'contract', JSON.stringify(a));
+    assert.equal(room.brokerAnswer(SERVER, {key: `fn ${a.name}`, name: a.name, question: a.need}), false, JSON.stringify(a));
+  }
   assert.equal(events(room, 'package_answer').length, 0);
-  // A name the rows know as a package's is one, whatever its need says.
-  assert.equal(room.askKind(SERVER, 'pytest', 'the class another piece writes').kind, 'package');
-  assert.equal(room.askKind(SERVER, 'flask', '').kind, 'package');
-  // A contract of that name is the contract's.
-  await room.provision(JSON_PIECE, TOP, 'Json', 'the json piece', [{name: 'json', kind: 'function', path: 'json_tools.py', does: 'reads json'}], [], [], 'manager', {seq: 2});
-  assert.equal(room.askKind(SERVER, 'json', 'parse').kind, 'contract');
+  assert.deepEqual(room.read(`fn_answers:${SERVER}`, []), [], 'nothing answered for it');
+  assert.deepEqual(room.packagesOf(SERVER), [], 'nothing granted');
 });
 
-test('M1: a module of the language\'s standard library is part of the language: answered as such, never granted, listed or logged for the person', async () => {
-  const room = await line();
-  for (const name of ['socket', 'asyncio', 'typing', 'wsgiref', 'http.client', 'itertools']) {
-    assert.equal(room.askKind(SERVER, name, 'raw TCP').kind, 'package', name);
-    assert.equal(room.brokerAnswer(SERVER, {key: `fn ${name}`, name, question: 'raw TCP'}), true);
-    assert.deepEqual(room.read(`fn_answers:${SERVER}`, []).at(-1).text.value, MESSAGES.package_stdlib({name}));
-  }
-  assert.deepEqual(room.packagesOf(SERVER), [], 'never granted');
-  assert.ok(!room.catalogue(SERVER).some(e => e.kind === 'package'));
-  assert.equal(room.read('package_requests', null), null, 'nothing waits for the person');
-  assert.ok(!('package_requests' in room.snapshot()));
-  // The installed set and the rows' packages hold no standard library module; its modules are row data (stdlib_provides).
+test('H2: the manager is the interface for what exists: a package its row holds is one of its functions on an ask (grant), Clef scores it, and a grant goes down the asker\'s line; a manager without it hands the ask up', async () => {
+  const REQUESTS = {name: 'requests', language: 'python', provides: 'HTTP client'};
+  const {room} = liveRoom({clef: usualClef({'^grant_\\d+$': 0.95, '^ask_parent$': 0.6, '^extend$': 0.1})});
+  room.save('settings', {...room.settings(), pipeline: 'v8'});
+  await room.provision(TOP, null, 'Root objective', 'a tracker', [], [], [PYTEST, REQUESTS], 'manager', {seq: 1});
+  await room.provision(BACKEND, TOP, 'Backend', 'the backend', [], [], [PYTEST], 'manager', {seq: 1});
+  await room.provision(SERVER, BACKEND, 'Server', 'the server', [{name: 'app.py', kind: 'file', path: 'app.py', does: 'the server'}], [], [], 'worker', {seq: 1});
+  room.db().exec("UPDATE agents SET phase='implement' WHERE id=?", SERVER);
+  // Its manager holds pytest: grant(pytest) is among its functions, and the highest.
+  assert.deepEqual(await room.workerAsk(SERVER, {need: 'a test runner', name: 'pytest'}), {sent: true, says: MESSAGES.ask_sent()});
+  await room.routeHeld(BACKEND);
+  assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for pytest: grant\(pytest\) p=0\.950; the others: extend\(need\) p=0\.100, ask_parent\(need\) p=0\.600\.$/);
+  assert.deepEqual(room.packagesOf(SERVER).map(p => p.name), ['pytest']);
+  const granted = MESSAGES.package_granted({need: 'a test runner', names: 'pytest (tests)', many: false});
+  assert.deepEqual(room.read(`fn_answers:${SERVER}`, []).map(a => [a.key, a.kind, a.text]), [['fn pytest', 'provided', granted]]);
+  // requests is Root's alone: Backend has no grant for it and hands it up; Root grants it to every row between.
+  await room.workerAsk(SERVER, {need: 'fetch a page over HTTP', name: 'httpx'});
+  await room.routeHeld(BACKEND);
+  assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for httpx: ask_parent\(need\)/);
+  await room.routeHeld(TOP);
+  assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for httpx: grant\(requests\) p=0\.950/);
+  assert.ok(room.packagesOf(BACKEND).some(p => p.name === 'requests') && room.packagesOf(SERVER).some(p => p.name === 'requests'));
+  assert.match(events(room, 'package_granted').at(-1).body, /^"Root objective" granted requests to "Server"\.$/);
+  assert.equal(events(room, 'package_relayed').length, 0, 'no walk of the runtime\'s own');
+});
+
+test('M1: the installed set and the rows\' packages hold no standard library module; its modules are row data (stdlib_provides)', () => {
   assert.deepEqual(installedPackages().map(p => p.name), ['pytest']);
   assert.ok(stdlibHints().some(p => p.name === 'http.server') && stdlibHints().some(p => p.name === 'node:http'));
   assert.ok(TOOLCHAINS.every(r => !(r.packages || []).some(p => /^node:|^http\.server$/.test(p.name))));

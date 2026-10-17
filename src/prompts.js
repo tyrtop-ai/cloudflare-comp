@@ -144,11 +144,12 @@ export const CLEF = Object.freeze({
   internal: 'Does validation {i} test something a user of the result meets, rather than an internal detail of the code such as a class name, an import or the first line of a script? Answer NO if it looks only at such a detail.',
   // A manager's choice: each function it may call on an ask, a complaint or a change is one option, and the highest is called.
   answer: 'Does contract {j} give what the request needs, so the requester can use it instead of making its own? Answer NO if it does something else or only part of it. Judge by what it does, not by its name.',
+  grant: 'Does package {j} give what the request needs, so the requester can use it instead of making its own? Answer NO if it does something else or only part of it.',
   route_complaint: 'Does child {i}\'s responsibility, as its contracts and the files it wrote show, cover what this complaint is about?',
   route_change: 'Does this change concern what child {i} delivers, as its contracts show? Answer NO if it leaves everything child {i} delivers as it is.',
   extend_complaint: 'Is this complaint about a contract of the assigned work that no child delivers, as their contracts show?',
   extend_change: 'Does this change ask for something none of the children delivers, as their contracts show, that the assigned work must add?',
-  ask_parent: 'Does none of the contracts offered give what the request needs, so it is asked one level up? Answer NO if one of them gives it.',
+  ask_parent: 'Does none of the contracts or packages offered give what the request needs, so it is asked one level up? Answer NO if one of them gives it.',
   judge: 'Does this file meet the requirement? Answer NO if the file is missing, meets only part of it, or contradicts it.',
   // A contract may name an existing file only when the assignment asks to change it.
   base_change: 'Does the assignment ask to change existing file {i}, directly or by clear implication? Answer NO if it only needs it read, or asks only for new files beside it.',

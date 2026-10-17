@@ -261,7 +261,7 @@ test('results from older files are stale, in the room\'s state and in RUN.md',as
   assert.match(notes,/0 of 3 pass\./);
 });
 
-test('a worker\'s copy of a path another piece\'s contract places stays in its own files and is left out of the join; the owner\'s file ships there',async()=>{
+test('a worker\'s file at a path another piece\'s contract places is its own: it ships in its own folder, nothing is left out, and the placing piece\'s file ships at the path',async()=>{
   const GOAL='A notes page and a guide for it.';
   const level={contracts:[{name:'GUIDE.md',kind:'doc',path:'GUIDE.md',does:'the guide'},{name:'NOTES.md',kind:'doc',path:'NOTES.md',does:'notes'}],
     validations:[has('a','GUIDE.md','Usage'),has('b','GUIDE.md','# Guide'),has('c','GUIDE.md','open it'),has('d','NOTES.md','# Notes'),has('e','NOTES.md','notes'),has('f','NOTES.md','page')],
@@ -275,8 +275,11 @@ test('a worker\'s copy of a path another piece\'s contract places stays in its o
   assert.deepEqual(room.files(w.id).map(f=>f.path).sort(),['GUIDE.md','NOTES.md']);
   const app=await room.appFiles(),at=p=>app.files.find(f=>f.path===p)?.content;
   assert.equal(at('GUIDE.md'),'# Guide\n\nUsage: open it.\n');
-  assert.deepEqual(app.files.map(f=>f.path),[...notesOf(room),'GUIDE.md','NOTES.md']);
-  assert.match(events(room,'bundle_stray')[0].body,/a copy of a path another piece's contract places: GUIDE\.md \(written by Notes, placed by Guide\)/);
+  const copy=packagePath('Notes','GUIDE.md',w.id);
+  assert.equal(at(copy),'# Another guide\n');
+  assert.deepEqual(app.files.map(f=>f.path).sort(),[...notesOf(room),'GUIDE.md','NOTES.md',copy].sort());
+  assert.equal(events(room,'bundle_stray').length,0,'nothing is left out');
+  assert.equal(events(room,'bundle_conflict').length,0,'one copy is placed at each path');
   assert.deepEqual(lintRequests(room,calls),[]);
 });
 
