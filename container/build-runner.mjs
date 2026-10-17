@@ -767,7 +767,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
     Object.assign(inventory,await hostnameInventory({prefix:checkPrefix,cwd:scratch,env,python:!!inventory.python,ms:left()}));
 
     // 2. Install: the packages the agents' rows list (plan.install: per row,
-    // its names), each row by its install command, into one tree beside the
+    // its names, after the row's toolchain when the box lacks it), each row by its install command, into one tree beside the
     // fresh copies (install.tree, under the scratch folder: a folder above
     // every copy, so the language's own lookup finds it, and install.env
     // names it to the checks). The install has the box's network; the checks
@@ -787,7 +787,9 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
         await mkdir(tree,{recursive:true});
         const r=await execCheck(row.install.argv.flatMap(a=>a==='{packages}'?names:[fill(a)]),{cwd:scratch,env,prefix:limitPrefix,ms:left()});
         const out=[r.stdout,r.stderr].filter(t=>t.trim()).join('\n'),passed=r.code===0&&!r.timedOut;
-        if(passed){for(const [k,v] of Object.entries(row.install.env||{}))env[k]=listed(String(v).replaceAll('{tree}',tree),env);await execCheck(['chmod','-R','a-w',tree],{cwd:scratch,env});}
+        // A row's toolchain (src/toolchains.js) among what it installed: its env too names it to the checks.
+        const withToolchain=Array.isArray(row.toolchain?.packages)&&row.toolchain.packages.length>0&&row.toolchain.packages.every(p=>names.includes(p));
+        if(passed){for(const [k,v] of Object.entries({...row.install.env,...(withToolchain?row.toolchain.env:{})}))env[k]=listed(String(v).replaceAll('{tree}',tree),env);await execCheck(['chmod','-R','a-w',tree],{cwd:scratch,env});}
         installed.push({toolchain:row.id,packages:names,passed,...(passed?{}:{detail:r.timedOut?`timed out after ${seconds(r.ms)}${out?`: ${out}`:''}`:`exit ${r.code}${out?`: ${out}`:''}`})});
         return passed?{detail:names.join(' ')}:{passed:false,detail:installed.at(-1).detail};
       });

@@ -22,6 +22,10 @@ ARG BOX_BROWSER=0
 # and the base's own apt-get and dpkg-deb for C's, C++'s and shell's (the
 # system's packages, unpacked into the check's tree as the box's user).
 # Channels only, no versions pinned: the inventory records what each box had.
+# Owner 2026-10-17 ("It needs the ability to create C#"): a language the
+# image lacks (C#, JSX/TSX) is not installed here: its row's toolchain
+# (src/toolchains.js) is installed by the box's install stage when a level
+# uses it, as packages are.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pytest python3-pip ca-certificates iputils-ping \
     golang-go gcc g++ libc6-dev default-jdk-headless ruby php-cli rustc cargo rustfmt maven composer unzip \
  && rm -rf /var/lib/apt/lists/*

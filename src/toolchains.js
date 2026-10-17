@@ -172,6 +172,12 @@ mkdir -p "$a/lists/partial" "$a/archives/partial" && apt-get $o update && apt-ge
 for d in "$a"/archives/*.deb; do [ -e "$d" ] || continue; dpkg-deb -x "$d" "$t" || exit 1; done
 m=$(gcc -print-multiarch 2>/dev/null); ln -sfn "usr/lib/$m" "$t/lib-arch" && ln -sfn "usr/include/$m" "$t/include-arch" || exit 1
 find "$t/usr/lib/$m" "$t/usr/lib" "$t/lib/$m" -maxdepth 1 -name 'lib*.so' 2>/dev/null | sed 's#.*/lib\(.*\)\.so$#-l\1#' | sort -u > "$t/link"; rm -rf "$a"`;
+// C#'s compiler (mcs, run by mono): the toolchain install names it
+// (CSHARP_MCS), else it is the system's. A file runs as a program of the
+// bundle's C# files in its folder and the folders under it (as an SDK
+// project compiles them), with mono's debug information for its stack.
+const CSHARP_MCS = '"${CSHARP_MCS:-/usr/lib/mono/4.5/mcs.exe}"';
+const CSHARP_RUN = `d=$(mktemp -d) && find "$(dirname "$0")" -type f -name '*.cs' > "$d/files" && mono ${CSHARP_MCS} -debug -out:"$d/main.exe" @"$d/files" && exec mono --debug "$d/main.exe" "$@"`;
 const SH_SYNTAX = 'for f do case "$(head -n 1 "./$f")" in "#!"*bash*) bash -n "./$f";; *) sh -n "./$f";; esac || s=1; done; exit ${s:-0}';
 export const COMPILE_ROWS = Object.freeze([
   Object.freeze({ id:'typescript', name:'TypeScript', extensions:['.ts','.mts','.cts'], requires:{node:'22.18.0'}, run_file:['node','{path}'],
@@ -233,6 +239,32 @@ export const COMPILE_ROWS = Object.freeze([
     call_adapter:['ruby','/opt/adapters/call.rb'], stack:'ruby',
     install:{argv:['gem','install','--no-document','--install-dir','{tree}','{packages}'], tree:'ruby-gems', env:{GEM_PATH:'{tree}'}},
     syntax:['sh','-c','for f do ruby -c "./$f" >/dev/null || s=1; done; exit ${s:-0}','sh','{files}'] }),
+  // Owner 2026-10-17 ("It needs the ability to create C#. OR at least have
+  // the splitter install the ability for C#"): a language the image lacks,
+  // which the box installs when a level uses it. toolchain: the packages
+  // the row's own install adds before the agents' (the row's toolchain,
+  // from the install source as it stands: no version named), when the box's
+  // inventory does not report the row's requires; env: what names that
+  // toolchain to the checks, as install.env names the tree (checkPlan puts
+  // it in the plan's install, build-runner.mjs applies its env).
+  // C#'s toolchain and packages are the system's (APT_INSTALL, as C's):
+  // Debian's Mono compiler and runtime. Its syntax step is mcs's own
+  // reading without compiling (--parse); its call checks build the file
+  // with a driver (call-native.mjs, call-csharp.mjs).
+  Object.freeze({ id:'csharp', name:'C#', extensions:['.cs'], requires:{mono:''}, run_file:['sh','-c',CSHARP_RUN,'{path}'],
+    toolchain:{packages:['mono-mcs','mono-runtime'], env:{MONO_CONFIG:'{tree}/etc/mono/config', CSHARP_MCS:'{tree}/usr/lib/mono/4.5/mcs.exe'}},
+    install:{argv:['sh','-c',APT_INSTALL,'{tree}','{packages}'], tree:'csharp-packages', env:{PATH:'{tree}/usr/bin:{$PATH}',LD_LIBRARY_PATH:'{tree}/usr/lib:{tree}/lib-arch:{$LD_LIBRARY_PATH}'}},
+    syntax:['sh','-c',`mono ${CSHARP_MCS} --parse "$@"`,'sh','{files}'],
+    call_adapter:['node','/opt/adapters/call-native.mjs','csharp'], stack:'csharp' }),
+  // JSX and TSX: read and run by esbuild (npm's, into a tree of the row's
+  // own, scripts off as the JavaScript row's but esbuild's own, which puts
+  // its program in place), its packages npm's beside it (NODE_PATH); a file runs as one
+  // CommonJS file esbuild bundles of it and the files it imports, its
+  // packages loaded as they are.
+  Object.freeze({ id:'jsx', name:'JSX', extensions:['.jsx','.tsx'], requires:{esbuild:''}, run_file:['sh','-c','d=$(mktemp -d) && esbuild "$0" --bundle --platform=node --packages=external --format=cjs --jsx=automatic --log-level=error --outfile="$d/main.cjs" && exec node "$d/main.cjs" "$@"','{path}'],
+    toolchain:{packages:['esbuild'], env:{}},
+    install:{argv:['sh','-c','cd "$0" && npm install --no-save --no-package-lock --ignore-scripts --no-audit --no-fund --prefix . "$@" && if [ -d node_modules/esbuild ]; then npm rebuild --prefix . esbuild; fi','{tree}','{packages}'], tree:'jsx-packages', env:{PATH:'{tree}/node_modules/.bin:{$PATH}',NODE_PATH:'{tree}/node_modules:{$NODE_PATH}'}},
+    syntax:['sh','-c','for f do esbuild --log-level=error --jsx=automatic "./$f" >/dev/null || s=1; done; exit ${s:-0}','sh','{files}'] }),
   // PHP's packages are Composer's, required into the tree; an ini file there
   // (PHP_INI_SCAN_DIR, beside PHP's own) loads their autoloader first.
   Object.freeze({ id:'php', name:'PHP', extensions:['.php'], shebang:['php'], requires:{php:''}, run_file:['php','{path}'],
@@ -241,8 +273,10 @@ export const COMPILE_ROWS = Object.freeze([
     syntax:['sh','-c','for f do php -l "./$f" >/dev/null || s=1; done; exit ${s:-0}','sh','{files}'] })
 ]);
 // The extensions of the files whose functions a call check can call: each
-// row's that has a call adapter (the splitter's world shows them, and its
-// contract and call_check functions refuse a function in any other file).
+// row's that has a call adapter (the splitter's world shows them). A
+// function in any other file is one the box has no call adapter for yet,
+// which its contract and call_check functions say (src/validations.js
+// uncallable); a command or route of it is checked by command and http checks.
 export const CALL_EXTENSIONS = Object.freeze([...TOOLCHAINS, ...COMPILE_ROWS].filter(t => t.call_adapter).flatMap(t => t.extensions || []));
 // Stack-frame readers by a row's stack field (named groups path, line and
 // fn) and the frame reader: shared with the Container (container/stack-frames.mjs).
@@ -298,7 +332,21 @@ export function manifestOf(path) {
 // v8 ship-verified: rows (TOOLCHAINS, or COMPILE_ROWS); a row's requires
 // holds only for tools the inventory reports, each at a version no lower
 // than the one given (a list of names, with no versions, meets none).
+// Owner 2026-10-17: a row with a toolchain install is installed whatever
+// the inventory reports, since the box installs its toolchain
+// (toolchainsToInstall) when the inventory does not report its requires.
 export function installed(inventory, rows = TOOLCHAINS) {
+  const holds = requirementsMet(inventory);
+  return rows.filter(t => holds(t) || !!t.toolchain);
+}
+// The rows among these whose toolchain the box installs: each with a
+// toolchain install whose requires the inventory does not report (none
+// reported yet: every one).
+export function toolchainsToInstall(inventory, rows = COMPILE_ROWS) {
+  const holds = requirementsMet(inventory);
+  return rows.filter(t => t?.toolchain?.packages?.length && !holds(t));
+}
+function requirementsMet(inventory) {
   const names = new Set(), versions = new Map();
   const add = n => { const s = String(n); names.add(s); names.add(s.replace(/\d+$/, '')); };
   if (Array.isArray(inventory) || inventory instanceof Set) for (const n of inventory) add(n);
@@ -309,7 +357,7 @@ export function installed(inventory, rows = TOOLCHAINS) {
   }
   const has = exe => names.has(exe) || names.has(exe.replace(/\d+$/, ''));
   const atLeast = (v, min) => { if (!min) return true; if (typeof v !== 'string') return false; const a = v.split('.').map(Number), b = min.split('.').map(Number); for (let i = 0; i < b.length; i++) if ((a[i] || 0) !== b[i]) return (a[i] || 0) > b[i]; return true; };
-  return rows.filter(t => t.requires ? Object.entries(t.requires).every(([n, min]) => has(n) && atLeast(versions.get(n), min)) : !t.executables.length || has(t.executables[0]));
+  return t => t.requires ? Object.entries(t.requires).every(([n, min]) => has(n) && atLeast(versions.get(n), min)) : !t.executables.length || has(t.executables[0]);
 }
 
 // v8 ship-verified (L1): the interpreter a file's #! line names (the word

@@ -4,7 +4,7 @@
 // (fileResult), has Clef judge the documents, and turns every failed
 // validation into an item (checkProblems) whose detail is what the compiler
 // observed, as it observed it: the complaint a worker reads.
-import { TOOLCHAINS, COMPILE_ROWS, toolchainOf, runRowOf, callRowOf } from './toolchains.js';
+import { TOOLCHAINS, COMPILE_ROWS, toolchainOf, runRowOf, callRowOf, toolchainsToInstall } from './toolchains.js';
 import { kindOf } from './contracts.js';
 import { failureHead } from './problems.js';
 import { clip } from './protocol.js';
@@ -57,7 +57,10 @@ export function callModule(check, contracts = []) {
 // the room needs the box's inventory, so the box opens. install: the
 // packages the box installs before the checks, per row ([{toolchain,
 // packages: [names]}]: the packages the agents' rows list beyond the image's).
-export function checkPlan(spec, files, {rows = TOOLCHAINS, compile = null, inventory = false, install = []} = {}) {
+// box: the box's last inventory (null before one): a row the box runs here
+// whose toolchain it lacks (toolchainsToInstall) installs it first, its
+// toolchain's packages before the agents' in that row's install.
+export function checkPlan(spec, files, {rows = TOOLCHAINS, compile = null, inventory = false, install = [], box = null} = {}) {
   const all = rowsOf(rows), paths = [...files.keys()], list = spec?.validations || [], contracts = spec?.contracts || [];
   const commandsOf = new Map(contracts.filter(d => kindOf(d) === 'command' && d.path).map(d => [d.name, d]));
   const served = new Set(list.map(v => v.check?.serve).filter(Boolean)), runs = runsOf(contracts).filter(r => served.has(r.id));
@@ -108,8 +111,13 @@ export function checkPlan(spec, files, {rows = TOOLCHAINS, compile = null, inven
       checks.push({id: v.id, kind: 'call', module: path, adapter: row.id, steps: c.steps});
     } else checks.push({id: v.id, kind: c.kind, serve: c.serve, steps: c.steps});
   }
-  return {plan: {syntax, install: installs.map(x => ({toolchain: x.toolchain, packages: [...x.packages]})), project: [], runs, commands, checks}, toolchains, local,
-    container: inventory || syntax.length > 0 || checks.length > 0 || installs.length > 0};
+  const planned = installs.map(x => ({toolchain: x.toolchain, packages: [...x.packages]}));
+  for (const row of toolchainsToInstall(box, toolchains)) {
+    const x = planned.find(i => i.toolchain === row.id), own = row.toolchain.packages;
+    if (x) x.packages = [...own, ...x.packages.filter(n => !own.includes(n))]; else planned.push({toolchain: row.id, packages: [...own]});
+  }
+  return {plan: {syntax, install: planned, project: [], runs, commands, checks}, toolchains, local,
+    container: inventory || syntax.length > 0 || checks.length > 0 || planned.length > 0};
 }
 
 // A file check, in the Worker (§4.1 step 2), run exactly as the splitter
