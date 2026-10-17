@@ -6297,7 +6297,7 @@ export class ControlRoom extends DurableObject {
     return ok;
   }
   // The requests a worker waits on: those on its line (route_workers), and those the room holds for the person (v8 M2).
-  openAsks(id) { return [...new Set([...query(this.db(),'SELECT topic FROM route_workers WHERE worker=? ORDER BY topic',id).map(r=>r.topic),...this.read('room_asks',[]).filter(a=>a.worker===id).map(a=>a.key)])]; }
+  openAsks(id) { return [...new Set(query(this.db(),'SELECT topic FROM route_workers WHERE worker=? ORDER BY topic',id).map(r=>r.topic))]; }
   // Capability boxes S5 (§5): the broker, the one path from a v8 worker to
   // anything outside its own files. Its catalogue (the world's available):
   // what it delivers, the names it may call, its packages, the existing
