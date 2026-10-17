@@ -18,7 +18,7 @@ import { contractText, assignedPiece, fileGateError, writerPathError, deliveredF
 import { buildPathError } from '../container/build-path.mjs';
 import { toolchainById, toolchainOf, TOOLCHAINS, COMPILE_ROWS, installed as installedRows, browserProject, parseModeOf, scopeManifestOf, codeRowOf, pageScripts, pageModes } from './toolchains.js';
 // v8 S9: amendments and the prompt queue.
-import { effectiveGoal, goalView, promptText, reorderError, QUEUE_ON_FAIL } from './amend.js';
+import { effectiveGoal, goalView, promptText, reorderError } from './amend.js';
 import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS } from './checks.js';
 import { getArtifactStore } from './artifact-store.js';
 import { RETRY, MESSAGES, BASE_LABEL, CLEF, clefText } from './prompts.js';
@@ -1162,7 +1162,7 @@ export class ControlRoom extends DurableObject {
       ...(this.read('base_pending',[]).length?{base_pending:this.read('base_pending',[])}:{}),
       // v8 S8b: the prompt's links (title, address, size, cut or why not read) and what the run starts from.
       ...this.inputsHead(),
-      // v8 S9: the prompts (queued, running, done, failed, skipped) and the queue's policy.
+      // v8 S9: the prompts (queued, running, done, failed, skipped), each whole.
       ...this.promptsHead()
     };
   }
@@ -7627,18 +7627,18 @@ export class ControlRoom extends DurableObject {
     for(const id of picked){const at=this.queuedAt.get(id)??now;this.queuedAt.delete(id);this.span('dispatch','ready_to_dispatch',at,now,{active,parallel:this.settings().parallel},id);}
     return picked;
   }
-  // An agent can finish its files and mistakenly wait for a message nobody
+  // v7: an agent can finish its files and mistakenly wait for a message nobody
   // owes it (observed with the builder). When the whole tree is quiescent,
   // let such a leaf inspect its persisted work once more and decide whether
   // to return. This is not an approval gate and never declares it done for it.
   // One nudge per file-manifest state prevents self-generated infinite loops.
+  // A v8 room never nudges: an agent's wait is its own call (drive).
   nudgeQuiescentManager() {
     // Repair paused rooms and any lost signals from interrupted writes. This
     // runs only when no work is ready; the fingerprint bounds repeated probes.
     for (const manager of this.allNodes().filter(n=>this.manager(n.id)&&n.status==='waiting')) {
       const children=this.children(manager.id);
-      // v8: a row whose escalation is outstanding waits for Continue.
-      if(!children.length||this.v8()&&this.escalatedRow(manager.id))continue;
+      if(!children.length)continue;
       const signature=children.map(c=>`${c.id}:${c.status}`).join('|');
       if(this.get(`manager_reconciled:${manager.id}`)===signature)continue;
       const allDone=children.every(c=>c.status==='done'||c.status==='retired');
@@ -7653,13 +7653,10 @@ export class ControlRoom extends DurableObject {
   nudgeQuiescentLeaf() {
     if (this.read('queue',[]).some(id=>this.node(id)?.status==='ready')) return false;
     for (const n of this.allNodes()) {
-      // v8 M2: the parent's wait decides below, the same for every row (the top's parent is a handler that has ended).
       if (n.status !== 'waiting' || this.children(n.id).some(c=>c.status!=='done' && c.status!=='retired')) continue;
       // Builder and compiler turns are driven by their manager's schedule, a
       // problem or Continue, never the generic idle nudge.
       if(isRuntimeNode(n) && this.env.MOCK_AI!=='true')continue;
-      // v8: a row whose escalation is outstanding waits for Continue, as a manager does.
-      if(this.v8()&&this.escalatedRow(n.id))continue;
       if(query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? LIMIT 1',n.id).length)continue;
       const parent = this.node(n.parent);
       if (parent?.status !== 'waiting') continue;
@@ -7723,10 +7720,10 @@ export class ControlRoom extends DurableObject {
         while (!stopping() && active.size<this.settings().parallel) {
           tally();
           let [id]=this.takeReadyBatch(1,spent>=cap);
-          if (!id && active.size===0 && this.nudgeQuiescentManager()) [id]=this.takeReadyBatch(1,spent>=cap);
+          if (!id && active.size===0 && !this.v8() && this.nudgeQuiescentManager()) [id]=this.takeReadyBatch(1,spent>=cap);
           // v7.15.15 review 2 (#1): a worker waiting on a request nobody holds any more is answered (and so woken) before the idle nudge, which skips it.
           if (!id && active.size===0 && this.planned() && await this.settleRequests(true)) [id]=this.takeReadyBatch(1,spent>=cap);
-          if (!id && spent<cap && active.size===0 && this.nudgeQuiescentLeaf()) [id]=this.takeReadyBatch(1);
+          if (!id && spent<cap && active.size===0 && !this.v8() && this.nudgeQuiescentLeaf()) [id]=this.takeReadyBatch(1);
           if (!id) break;
           const step=Number(this.get('step','0'))+1;
           this.set('step',step);
@@ -7794,11 +7791,9 @@ export class ControlRoom extends DurableObject {
       finally { this.busy=false; }
       if(loaded.error)return {error:clip(loaded.error,600)};
     }
-    // v8 S9: a Start keeps the queued prompts (they apply once this run completes) and forgets the rest.
-    const keep={queue_on_fail:this.get('queue_on_fail','')};
+    // v8 S9: a Start keeps the queued prompts (they apply once this run ends) and forgets the rest.
     for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','validations','splitters','piece_files','syntax_clean','problems','repair_tickets','goal_revisions',...INPUT_TABLES,'meta']) this.db().exec(`DELETE FROM ${table}`);
     this.db().exec("DELETE FROM prompts WHERE status!='queued'");
-    if(keep.queue_on_fail)this.set('queue_on_fail',keep.queue_on_fail);
     // v8 S9: the Start budget, each queued prompt's run budget unless the prompt has its own.
     {let b;try{b=normalizeTurnBudget(budget);}catch{b=20;}this.set('start_budget',String(b));}
     this.queuedAt.clear();
@@ -7956,16 +7951,14 @@ export class ControlRoom extends DurableObject {
   // (goalView); null in a room with no change, whose readers keep their own clip.
   goalFor(limit) { const changes=this.goalChanges(); return changes.length?goalView(this.baseGoal(),changes,limit):null; }
   promptRows(where='1=1',...args) { return query(this.db(),`SELECT * FROM prompts WHERE ${where} ORDER BY seq`,...args).map(r=>({...r,outcome:parse(r.outcome,{})})); }
-  queueOnFail() { return this.get('queue_on_fail','stop')==='continue'?'continue':'stop'; }
-  // The room-wide repair ceiling across changes (S9 review): reset only by Start.
+  // v7: the room-wide repair ceiling across its repair waves (roundsLeft).
   roomRoundCap() { return Math.min(80,2*this.roundCap()); }
   // What the dashboard shows of the prompts, in the snapshot and every delta
-  // alike (small: the texts are clipped).
+  // alike: each prompt whole, as the person wrote and edited it.
   promptsHead() {
     const rows=this.promptRows().slice(-60);
-    return {prompts:rows.map(r=>({id:r.id,text:clip(r.text,1200),status:r.status,kind:r.kind,budget:r.budget,goal_rev:r.goal_rev,outcome:r.outcome,created:r.created,started:r.started,finished:r.finished,edited:r.edited,version:r.version??0})),
-      queue_on_fail:this.queueOnFail(),queue_stopped:this.get('queue_stopped',''),goal_rev:this.goalRev(),
-      room_repair_rounds:Number(this.get('room_repair_rounds','0')),room_repair_cap:this.roomRoundCap()};
+    return {prompts:rows.map(r=>({id:r.id,text:r.text,status:r.status,kind:r.kind,budget:r.budget,goal_rev:r.goal_rev,outcome:r.outcome,created:r.created,started:r.started,finished:r.finished,edited:r.edited,version:r.version??0})),
+      goal_rev:this.goalRev()};
   }
   // Where a new prompt goes: after the last one (queued), or, for one applied
   // now, after the finished ones and before the queued.
@@ -7991,9 +7984,6 @@ export class ControlRoom extends DurableObject {
     const id=crypto.randomUUID();
     this.db().exec("INSERT INTO prompts(id,seq,text,status,kind,budget,goal_rev,outcome,created,version) VALUES (?,?,?,'queued','queued',?,NULL,'{}',?,0)",id,this.promptSeq(true),t.text,budget,Date.now());
     this.event('system','prompt_queued',clip(`Queued: ${t.text}`,600));
-    // S9 review: a room that failed or holds for you never reaches the queue on its own: the banner says so.
-    if(this.v8()&&this.started()&&!this.busy&&this.get('status')!=='running'&&this.runFailed()&&!this.promptRows("status='running'").length)
-      this.stopQueue('The room failed, so the queued prompts wait: Continue it, apply a change now, or Go on to apply the next prompt to it.');
     await this.kickQueue();
     return {prompt:this.promptRows('id=?',id)[0],...this.promptsHead()};
   }
@@ -8031,20 +8021,6 @@ export class ControlRoom extends DurableObject {
     this.event('system','prompt_skipped',clip(`Skipped: ${row.text}`,600));
     return this.promptsHead();
   }
-  // queue_on_fail ('stop' | 'continue'); resume: true lets a stopped queue go
-  // on: its next prompt applies, to a failed room too (Go on).
-  async queuePolicy({queue_on_fail, resume=false}={}) {
-    if(queue_on_fail!==undefined) {
-      if(!QUEUE_ON_FAIL.includes(queue_on_fail))return {error:`queue_on_fail must be ${QUEUE_ON_FAIL.join(' or ')}`};
-      this.set('queue_on_fail',queue_on_fail);
-    }
-    if(resume&&this.get('queue_stopped')) {
-      this.set('queue_stopped','');
-      this.event('system','queue_resumed','The prompt queue goes on.');
-      await this.kickQueue(true);
-    }
-    return this.promptsHead();
-  }
   // The DO alarm advances the queue, so it runs with the dashboard closed.
   // One alarm per object: the earliest due time wins, and alarm() reschedules the rest.
   async scheduleAlarm(at) {
@@ -8054,13 +8030,17 @@ export class ControlRoom extends DurableObject {
     if(!now||now>at)await s.setAlarm(at);
     return true;
   }
-  // The queue's next prompt is due: by the alarm, or now when the room has no
-  // alarm. force: Go on, which applies it whatever the room's state.
-  async kickQueue(force=false) {
+  // Whether the room's run has ended where the queue's next prompt applies:
+  // it completed, or it failed (the prompt goes to the failed room, as a
+  // change applied now does).
+  queueReady() { return this.get('status')==='complete'||this.runFailed(); }
+  // The queue's next prompt is due once the room's run has ended: by the
+  // alarm, or now when the room has no alarm.
+  async kickQueue() {
     if(!this.v8()||this.busy||this.get('status')==='running')return;
-    if(!(this.get('status')==='complete'||force)||this.get('queue_stopped')||!this.promptRows("status='queued'").length)return;
+    if(!this.queueReady()||!this.promptRows("status='queued'").length)return;
     const at=Date.now()+PROMPT_ALARM_MS;
-    this.save('prompts_due',{at,...force?{force:true}:{}});
+    this.save('prompts_due',{at});
     if(!await this.scheduleAlarm(at))await this.advancePrompts();
   }
   // A prompt's end, with what the room reached.
@@ -8076,40 +8056,23 @@ export class ControlRoom extends DurableObject {
     const status=this.get('status','idle');
     return status==='failed'||status==='error'||this.roomHolds().some(h=>FAIL_HOLDS.includes(h.kind));
   }
-  // After a failed prompt: the queue stops (stop), or its next prompt is due (continue).
-  async afterFailure(why) {
-    if(!this.promptRows("status='queued'").length)return;
-    if(this.queueOnFail()==='stop')return this.stopQueue(`${why}; the queue waits. Continue the room, skip or edit the next prompt, Go on, or let the queue continue on failure.`);
-    await this.kickQueue(true);
-  }
   // drive's end: the running prompt's outcome, then the queue's next step.
-  // Complete: done, and the next queued prompt is applied by the alarm. A
-  // failure (the room failed, or holds where only the user can go on) fails
-  // it; the queue stops there unless queue_on_fail is continue. Any other
-  // pause (the budget, a stop) leaves it running: Continue finishes it.
+  // Complete: done. A failure (the room failed, or holds where only the
+  // user can go on) fails it. Either way the next queued prompt is applied
+  // by the alarm. Any other pause (the budget, a stop) leaves it running:
+  // Continue finishes it.
   async promptsAfterRun() {
     if(!query(this.db(),'SELECT id FROM prompts LIMIT 1').length)return;
     const status=this.get('status','idle');
     const failed=this.runFailed(),hold=this.read('paused_state',null);
     if(status!=='complete'&&!failed)return;
     for(const p of this.promptRows("status='running'"))this.finishPrompt(p.id,failed?'failed':'done',failed?{error:clip(hold?.text||this.failedDescendantReason(this.roomManager()||this.topId())||status,400)}:{});
-    if(status==='complete')this.set('queue_stopped','');
-    if(!this.promptRows("status='queued'").length)return;
-    if(failed)return this.afterFailure(`the last prompt failed (${hold?.kind||status})`);
     await this.kickQueue();
-  }
-  stopQueue(why) {
-    this.save('prompts_due',null);
-    if(this.get('queue_stopped'))return;
-    this.set('queue_stopped',clip(why,600));
-    this.event('system','queue_stopped',clip(why,600));
   }
   // The queue's head, applied as an amendment (compare-and-set on its status).
   async advancePrompts() {
-    const due=this.read('prompts_due',null);
     this.save('prompts_due',null);
-    if(this.busy||this.get('status')==='running'||this.get('queue_stopped'))return {skipped:true};
-    if(this.get('status')!=='complete'&&!due?.force&&!(this.runFailed()&&this.queueOnFail()==='continue'))return {skipped:true};
+    if(this.busy||this.get('status')==='running'||!this.queueReady())return {skipped:true};
     const head=this.promptRows("status='queued'")[0];
     if(!head)return {skipped:true};
     const refused=this.amendRefusal();
@@ -8180,9 +8143,8 @@ export class ControlRoom extends DurableObject {
     this.db().exec('INSERT INTO goal_revisions(rev,prompt,text,effective,ts) VALUES (?,?,?,?,?) ON CONFLICT(rev) DO UPDATE SET prompt=excluded.prompt,text=excluded.text,effective=excluded.effective,ts=excluded.ts',rev,prompt||'',text,goal,Date.now());
     this.set('goal',goal);
   }
-  // Each change starts with fresh repair rounds and checks (the room-wide
-  // ceiling, room_repair_rounds, is never reset here), and a failed part (a
-  // failed room's) is revived: a worker with files is done again, one
+  // Each change starts with fresh repair state and checks, and a failed
+  // part (a failed room's) is revived: a worker with files is done again, one
   // without takes another turn, a manager decides again.
   resetForAmendment() {
     this.db().exec("DELETE FROM meta WHERE key LIKE 'repair_rounds%' OR key LIKE 'repair_stalled:%' OR key LIKE 'repair_waves:%' OR key LIKE 'rounds_exhausted:%' OR key LIKE 'manager_model_calls:%'");
@@ -8217,8 +8179,9 @@ export class ControlRoom extends DurableObject {
   //  - it routes, with Clef: a complaint the compiler observed goes down to
   //    the worker responsible for it, verbatim; a change to the child whose
   //    contracts it concerns, or to its splitter when none covers it; an ask
-  //    a child's scope walk found inside its assignment to the contract that
-  //    gives it, or to its splitter;
+  //    a child's scope walk found inside its assignment it answers with a
+  //    contract its children deliver, or passes up with ask_parent (an ask
+  //    held nowhere up to the room archives the asker);
   //  - when every live child is done, its builder joins their pieces and its
   //    compiler verifies every validation of its subtree not passed on its
   //    exact bundle (compileLevel).
@@ -8644,10 +8607,13 @@ export class ControlRoom extends DurableObject {
     const wait=()=>{if(!this.escalatedRow(id))return false;this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return true;};
     if(wait())return;
     if(!this.levelIndex(id))return this.splitStep(id);
-    // An admission a restart interrupted: what it still owes.
-    if(job?.admitted)return this.finishLevel(id);
+    // An admission a restart interrupted: what it still owes, and then the
+    // turn goes on as any turn of it does (its children may have returned
+    // before the restart: this turn is theirs).
+    if(job?.admitted)await this.finishLevel(id);
+    const owed=this.read(`level_job:${id}`,null);
     if(this.unspawned(id)){await this.spawnLevel(id);return void this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);}
-    if(job)return this.splitStep(id,job);
+    if(owed)return this.splitStep(id,owed);
     this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
     const inbox=this.receive(id);
     if(inbox.length)this.acknowledge(id,inbox);
@@ -9367,7 +9333,6 @@ export default {
         else if (sub==='/reorder') r=await stub.reorderPrompts(payload.order);
         else if (sub==='/remove') r=await stub.removePrompt(payload.id);
         else if (sub==='/skip') r=await stub.skipPrompt(payload.id);
-        else if (sub==='/policy') r=await stub.queuePolicy({...(payload.queue_on_fail!==undefined?{queue_on_fail:payload.queue_on_fail}:{}),resume:payload.resume===true});
         else return json({error:'Unknown API route'},404);
         return json(r,r?.error?r.status||400:200);
       }
