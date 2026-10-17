@@ -28,14 +28,16 @@ const nameList = (v, what) => Array.isArray(v) && v.every(x => typeof x === 'str
 // carry: what an earlier session of the same level declared before its
 // context window filled ({contracts, validations, pieces}); this one goes on from it.
 // programs: every executable the box has (its inventory), beyond the rows'.
-export function splitterState({own = [], held = [], have = [], calls = [], rows = TOOLCHAINS, base = [], maxPieces = 7, divide = true, carry = null, programs = []} = {}) {
+// readBase(path), given to a level that holds the project the work starts
+// from: one file of it, whole (the room's readBaseFile), as read_file shows it.
+export function splitterState({own = [], held = [], have = [], calls = [], rows = TOOLCHAINS, base = [], maxPieces = 7, divide = true, carry = null, programs = [], readBase = null} = {}) {
   const installed = (Array.isArray(rows) ? rows : TOOLCHAINS).filter(r => r && typeof r.id === 'string');
   return {own, held, have: have.filter(c => c?.name && !own.some(o => o.name === c.name)), calls, rows: installed, ids: new Set(installed.map(r => r.id)),
     executables: new Set([...installed.flatMap(r => r.executables || []), ...programs]), base: new Set(base instanceof Set ? [...base] : Array.isArray(base) ? base : []),
-    maxPieces, divide, contracts: [...(carry?.contracts || [])], validations: [...(carry?.validations || [])], pieces: [...(carry?.pieces || [])], done: false};
+    maxPieces, divide, readBase: typeof readBase === 'function' ? readBase : null, contracts: [...(carry?.contracts || [])], validations: [...(carry?.validations || [])], pieces: [...(carry?.pieces || [])], done: false};
 }
-// The functions offered: piece only when the level may divide.
-export const splitterTools = divide => TOOLS.splitter.filter(t => divide || t.name !== 'piece');
+// The functions offered: piece only when the level may divide, read_file only when it holds the project the work starts from.
+export const splitterTools = (divide, reads = false) => TOOLS.splitter.filter(t => (divide || t.name !== 'piece') && (reads || t.name !== 'read_file'));
 
 // This level's contracts (given, then declared), and every contract present (with those it has).
 const levelContracts = s => [...s.own, ...s.contracts];
@@ -164,12 +166,20 @@ export function levelOf(s) {
   const pieces = s.pieces.map(p => ({...p}));
   return {contracts, validations: s.validations.map(v => ({...v})), pieces};
 }
+// read_file: one file of the project the work starts from, whole, or that it has no file at the path.
+function readBase(s, a) {
+  const unknown = Object.keys(a || {}).filter(k => k !== 'path');
+  if (unknown.length) return {error: `read_file has no field ${unknown.map(k => `"${k.slice(0, 40)}"`).join(', ')}; its fields are path`};
+  if (typeof a.path !== 'string' || !a.path) return {error: 'path is the text of a relative path'};
+  return s.readBase(a.path);
+}
 // One call: {result, end?}.
 export function splitterCall(s, name, args) {
   if (name === 'contract') return {result: contract(s, args)};
   if (CHECK_TOOL_KINDS[name]) return {result: checkCall(s, CHECK_TOOL_KINDS[name], args)};
   if (name === 'piece' && s.divide) return {result: piece(s, args)};
   if (name === 'level') return {result: levelView(s)};
+  if (name === 'read_file' && s.readBase) return {result: readBase(s, args)};
   if (name === 'done') {
     const missing = missingOf(s);
     if (missing.length) return {result: {complete: false, missing}};
@@ -186,7 +196,7 @@ export function splitterCall(s, name, args) {
 // without done. Each answer may take what the model's context window leaves
 // (maxTokens Infinity: modelRequest's room).
 export async function splitLevel(env, request, world = {}, {spend = null} = {}) {
-  const s = splitterState(world), tools = splitterTools(s.divide);
+  const s = splitterState(world), tools = splitterTools(s.divide, !!s.readBase);
   const out = await session(env, {system: systemPrompt('splitter'), user: JSON.stringify(request), tools, role: 'splitter', call: 'splitLevel', maxTokens: Infinity,
     handle: (name, args) => splitterCall(s, name, args), spend});
   return {level: out.ended ? out.end : null, state: s, ended: out.ended, reason: out.reason, rounds: out.rounds, transcript: out.transcript};

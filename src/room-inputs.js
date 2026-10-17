@@ -220,7 +220,7 @@ export function baseFileRead(path, {text = null, carried = null, label} = {}) {
   const p = String(path ?? '');
   if (typeof text === 'string') return {path: p, label, content: text};
   if (carried) return {path: p, label, bytes: carried.bytes?.byteLength ?? carried.bytes?.length ?? 0, carried_untouched: carried.reason || 'carried untouched'};
-  return {error: `The project the work starts from has no file ${JSON.stringify(p.slice(0, 400))}; existing_files lists its paths.`};
+  return {error: `There is no file ${JSON.stringify(p.slice(0, 400))} among the files the work starts from; existing_files lists their paths.`};
 }
 
 // The source summaries as a splitter reads them: each quoted, its outline

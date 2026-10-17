@@ -21,8 +21,8 @@ const CHECKS = ['file_check', 'judge_check', 'command_check', 'call_check', 'htt
 // Calls in order; the results.
 const calls = (s, list) => list.map(([fn, args = {}]) => splitterCall(s, fn, args).result);
 
-test('the splitter\'s functions are contract, the six check functions, piece, level and done, each with an object schema; piece is offered only when the level may divide', () => {
-  assert.deepEqual(TOOLS.splitter.map(t => t.name), ['contract', ...CHECKS, 'piece', 'level', 'done']);
+test('the splitter\'s functions are contract, the six check functions, piece, level, read_file and done, each with an object schema; piece is offered only when the level may divide, read_file only when it holds the files the work starts from', () => {
+  assert.deepEqual(TOOLS.splitter.map(t => t.name), ['contract', ...CHECKS, 'piece', 'level', 'read_file', 'done']);
   for (const t of TOOLS.splitter) {
     assert.equal(t.parameters.type, 'object', t.name);
     assert.ok(typeof t.description === 'string' && t.description.length > 20, t.name);
@@ -32,7 +32,13 @@ test('the splitter\'s functions are contract, the six check functions, piece, le
   assert.deepEqual(TOOLS.splitter[0].parameters.properties.kind.enum, ['function', 'file', 'page', 'route', 'command', 'doc', 'data']);
   assert.deepEqual(splitterTools(true).map(t => t.name), ['contract', ...CHECKS, 'piece', 'level', 'done']);
   assert.deepEqual(splitterTools(false).map(t => t.name), ['contract', ...CHECKS, 'level', 'done']);
+  assert.deepEqual(splitterTools(true, true).map(t => t.name), ['contract', ...CHECKS, 'piece', 'level', 'read_file', 'done'], 'read_file only for a level that holds the files the work starts from');
   assert.deepEqual(splitterCall(splitterState({divide: false}), 'piece', {label: 'A', task: 'x', contracts: []}).result, {error: 'There is no function "piece".'});
+  // read_file shows a file the work starts from as the room serves it (its readBaseFile), or why not.
+  const reads = splitterState({readBase: p => p === 'src/a.js' ? {path: p, label: 'base', content: 'a\n'} : {error: `no ${p}`}});
+  assert.deepEqual(calls(reads, [['read_file', {path: 'src/a.js'}], ['read_file', {path: 'b.js'}], ['read_file', {}], ['read_file', {path: 'src/a.js', lines: 2}]]),
+    [{path: 'src/a.js', label: 'base', content: 'a\n'}, {error: 'no b.js'}, {error: 'path is the text of a relative path'}, {error: 'read_file has no field "lines"; its fields are path'}]);
+  assert.deepEqual(splitterCall(splitterState({}), 'read_file', {path: 'src/a.js'}).result, {error: 'There is no function "read_file".'});
 });
 
 test('contract: stored exactly as given, or refused with exactly why: a kind outside the seven, no path for a placed kind, a language the box does not run, a name already declared, a field it does not have, a run on what is not started; a path names the place it does among the files, in any folder', () => {

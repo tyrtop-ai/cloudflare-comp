@@ -99,7 +99,7 @@ test('no format carries a filled-in validation, contract or piece to copy', () =
 
 test('the splitter\'s functions are prompt texts too: each description and each parameter\'s is linted, names no other agent, and holds no filled-in value to copy', () => {
   const texts = Object.entries(promptTexts()).filter(([k]) => k.startsWith('TOOLS.splitter.'));
-  assert.deepEqual([...new Set(texts.map(([k]) => k.split('.')[2]))], ['contract', 'file_check', 'judge_check', 'command_check', 'call_check', 'http_check', 'browser_check', 'piece', 'level', 'done']);
+  assert.deepEqual([...new Set(texts.map(([k]) => k.split('.')[2]))], ['contract', 'file_check', 'judge_check', 'command_check', 'call_check', 'http_check', 'browser_check', 'piece', 'level', 'read_file', 'done']);
   assert.deepEqual([...new Set(texts.map(([k]) => k.split('.')[2]))], TOOLS.splitter.map(t => t.name), 'in the order the splitter is offered them');
   assert.ok(texts.length >= 20, 'every function and every described parameter');
   for (const [name, text] of texts) {

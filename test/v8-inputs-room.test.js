@@ -11,7 +11,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import {liveRoom, events, fileBlocks} from './helpers/room.js';
+import {liveRoom, events, fileBlocks, levelCalls} from './helpers/room.js';
 import {lintRequests, crashAt, reopen} from './helpers/levels.js';
 import {SOURCE_CLAUSE, SOURCE_LABEL, chunkText} from '../src/fetcher.js';
 import {BASE_LABEL, MESSAGES} from '../src/prompts.js';
@@ -313,6 +313,29 @@ test('README on a base repo: the splitter sees every base file; a file a worker 
   assert.deepEqual([room.snapshot().base.kind, room.snapshot().base.source, room.snapshot().base.files], ['repo', 'https://github.com/acme-example/widget', 3]);
   assert.deepEqual((await room.exportHead()).base_files.map(f => f.path), ['bin/widget.js', 'package.json', 'src/shout.js']);
   assert.deepEqual(lintRequests(room, calls, ['Src/Shout.js']), []);
+});
+
+test('a level that holds the base reads any base file whole with read_file: its splitter and its worker; a path the base does not hold says so', async () => {
+  const seen = {};
+  const split = (user, n, system, {round, results, tools}) => {
+    if (round === 1) { seen.tools = tools; return [{name: 'read_file', arguments: {path: 'bin/widget.js'}}, {name: 'read_file', arguments: {path: 'nope.js'}}]; }
+    if (round === 2) { seen.results = results; return levelCalls(README_LEVEL, {user, tools}).filter(c => c.name !== 'done'); }
+    return [{name: 'done', arguments: {}}];
+  };
+  const leaf = (user, n, system, {round = 1, results = []} = {}) => {
+    if (round === 1) return [{name: 'read_file', arguments: {path: 'src/shout.js'}}];
+    seen.leaf = results;
+    return [{name: 'write_file', arguments: {path: 'README.md', content: GOOD_README}}, {name: 'done', arguments: {summary: 'wrote it'}}];
+  };
+  const r = liveRoom({split, clef: clefFor({judge: readmeJudge}), leaf, room_id: 'room-one-0001'});
+  Object.assign(r.env, {TEST_FETCH: fakeFetch(repoRoutes()), GITHUB_TOKEN: SECRET});
+  await r.room.start(README_GOAL, 20, {pipeline: 'v8'}, 'room-one-0001', {base: {repo: 'acme-example/widget'}, selfHosts: ['control.example.com']});
+  await r.drain();
+  assert.equal(r.room.get('status'), 'complete', trace(r.room));
+  assert.ok(seen.tools.includes('read_file'), 'the splitter is offered read_file');
+  assert.deepEqual(seen.results.map(x => x.result), [{path: 'bin/widget.js', label: BASE_LABEL, content: BASE_FILES['bin/widget.js']},
+    {error: 'There is no file "nope.js" among the files the work starts from; existing_files lists their paths.'}]);
+  assert.deepEqual(seen.leaf.map(x => x.result), [{path: 'src/shout.js', label: BASE_LABEL, content: BASE_FILES['src/shout.js']}], 'the worker reads a base file it has no file at');
 });
 
 test('a base that cannot be used refuses the Start and leaves the previous run as it was', async () => {
@@ -671,7 +694,7 @@ test('readBaseFile: any file of the project the room starts from, whole: text as
   assert.deepEqual(room.readBaseFile('src/shout.js'), {path: 'src/shout.js', label: BASE_LABEL, content: BOM_SHOUT});
   assert.equal(room.readBaseFile('dist/bundle.js').content, 'bundled\n');
   assert.deepEqual(room.readBaseFile('logo.png'), {path: 'logo.png', label: BASE_LABEL, bytes: PNG.length, carried_untouched: 'binary'});
-  assert.match(room.readBaseFile('nope.txt').error, /has no file "nope\.txt"; existing_files lists its paths/);
+  assert.match(room.readBaseFile('nope.txt').error, /no file "nope\.txt" among the files the work starts from; existing_files lists their paths/);
   assert.deepEqual(baseFileRead('a.txt', {text: '', label: 'L'}), {path: 'a.txt', label: 'L', content: ''});
 });
 
