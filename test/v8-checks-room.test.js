@@ -361,7 +361,7 @@ test('checkPlan: command contracts run by their own path, call checks load the f
   assert.deepEqual(plan.checks.map(c=>c.id),['V1','V2']);
   assert.deepEqual(plan.checks[1],{id:'V2',kind:'call',module:'conv.py',adapter:'python',steps:[{call:'to_f',args:[0],expect:32}]});
   assert.equal(local.get('V5').detail,'gone.py, the file of the command gone, is missing');
-  assert.equal(local.get('V6').detail,'no function contract declares missing_fn with a file','no function contract places missing_fn');
+  assert.equal(local.get('V6').detail,'no function contract declares missing_fn');
   // The declared file, whatever else in the bundle defines the name: the call adapter observes whether the file gives it.
   const unreached=checkPlan({contracts:[{name:'gone_fn',kind:'function',path:'gone.py'},{name:'shout',kind:'function',path:'words.js'},{name:'whisper',kind:'function',path:'soft.py'},
     {name:'add',kind:'function',path:'add.ts'},{name:'up',kind:'function',path:'up.rb'},{name:'twice',kind:'function',path:'twice.php'},{name:'fib',kind:'function',path:'fib.go'},{name:'odd',kind:'function',path:'odd.kt'}],
@@ -377,7 +377,11 @@ test('checkPlan: command contracts run by their own path, call checks load the f
   assert.deepEqual(unreached.toolchains.map(r=>r.id).sort(),['javascript','php','python','ruby','typescript']);
   assert.deepEqual(toolchains.map(r=>r.id),['python','text']);
   // The contract's path, as written: conv.py, never another bundle file that defines to_f.
-  assert.deepEqual(callModule({steps:[{call:'to_f'}]},spec.contracts),{name:'to_f',path:'conv.py'});
+  assert.deepEqual(callModule({steps:[{call:'to_f'}]},spec.contracts,files),{name:'to_f',path:'conv.py'});
+  // Pending the owner: a function contract with no path names no file; only then is the file found among those that define the name, a placed one first.
+  const pathless=[{name:'to_f',kind:'function'}];
+  assert.deepEqual(callModule({steps:[{call:'to_f'}]},pathless,files),{name:'to_f',path:'components/x-1/conv.py',undeclared:true});
+  assert.deepEqual(callModule({steps:[{call:'to_f'}]},pathless,files,new Set(['conv.py'])),{name:'to_f',path:'conv.py',undeclared:true});
   // Only file and judge checks: no box.
   assert.equal(checkPlan({...spec,validations:spec.validations.slice(2,4)},new Map([['GUIDE.md','x']]),{rows:[TOOLCHAINS[2]]}).container,false);
   assert.deepEqual(fileResult({path:'GUIDE.md',has:['# g']},files),{passed:true,detail:''});
