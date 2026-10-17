@@ -230,6 +230,30 @@ test('a package granted to a worker is listed up its line, and the compiler\'s b
   assert.ok(starts.length>0&&starts.every(([,o])=>o.enableInternet===true),JSON.stringify(starts));
 });
 
+// Owner 2026-10-15 22:12: a package the box did not install is observed and reported, never dropped: the room's record says so, the
+// compile does not pass, and what the box printed goes down, as a complaint, to the worker whose row lists it; its catalogue and its
+// manager's options say it too. The next compile's box installs it, and the room completes.
+test('a granted package the box did not install reaches the room and the worker that holds it; once the box installs it, the room completes',{skip:!hasPython&&'python3 is not installed'},async()=>{
+  let room,tries=0;
+  const executor={build:async req=>{const r=await verifyChecks({...req,plan:{...req.plan,install:[]},snapshot_hash:await snapshotHash(req.files)},{isolation:[]});
+    if(!req.plan.install.length)return r;
+    const ok=++tries>1;
+    return {...r,passed:r.passed&&ok,installed:req.plan.install.map(x=>({...x,passed:ok,...(ok?{}:{detail:'exit 1: ERROR: No matching distribution found for flask'})}))};}};
+  let granted=false;
+  const ask=()=>{const w=room.agentRows().find(r=>r.role==='worker'&&r.interfaces.some(c=>c.name==='temp'));if(!granted&&(granted=true))room.grantPackage(room.roomManager(),{worker:w.id,key:'fn flask',need:'a web framework',name:'flask'},{name:'flask',language:'python'});return wrote('temp.py',RIGHT_TEMP);};
+  const made=v8Room({level:TEMP_LEVEL,splitWhen:t=>t.startsWith(TEMP_GOAL),executor,answers:{temp:[ask,wrote('temp.py',RIGHT_TEMP)],'USAGE.md':[wrote('USAGE.md',USAGE_MD)]}});
+  room=made.room;
+  await room.start(TEMP_GOAL,30,{pipeline:'v8'});
+  await made.drain();
+  assert.equal(room.get('status'),'complete',tail(room));
+  assert.ok(tries>1);
+  assert.match(events(room,'packages_not_installed')[0]?.body||'',/The box did not install flask \(Python\): exit 1: ERROR: No matching distribution found for flask/);
+  const w=room.agentRows().find(r=>r.role==='worker'&&r.interfaces.some(c=>c.name==='temp'));
+  assert.ok(events(room,'complaint_routed').some(e=>e.recipient===w.id&&/The box did not install flask \(Python\): exit 1/.test(e.body)),JSON.stringify(events(room,'complaint_routed')));
+  assert.ok(events(room,'packages_installed').length>0);
+  assert.equal(room.installSeen({name:'flask',language:'python'}).passed,true);
+});
+
 // ------------------------------------------------------------ the holds, stale results, construction
 test('a level whose piece delivered no file: its validations run on the empty bundle as on any other, and what the compiler observed (the file is missing) goes down to the worker as a complaint; nothing escalates, and the room completes',async()=>{
   const {room,drain}=v8Room({level:README_LEVEL,judge:readmeJudge,answers:{'README.md':[blocks([],'nothing yet'),wrote('README.md',GOOD_README)]}});
@@ -330,16 +354,19 @@ test('checkPlan: a command contract in Go or Ruby runs by its row\'s run_file, a
 });
 
 // Owner 2026-10-15 22:12 ("why are packages not allowed now?"): every row's packages go to the box, which installs them by the row's install command
-// (npm for JavaScript and TypeScript, pip for Python, gem for Ruby, go for Go, cargo for Rust, maven for Java, composer for PHP) or says it has none; none is dropped on the way.
+// (npm for JavaScript and TypeScript, pip for Python, gem for Ruby, go for Go, cargo for Rust, maven for Java, composer for PHP, the system's
+// own, apt-get, for C, C++ and shell) or says it has none; none is dropped on the way.
 test('checkPlan: every language\'s packages go to the box with its row, each installed by its language\'s own package manager',()=>{
-  const files=new Map([['greet.rb','require "colorize"\nputs "hi"\n'],['main.go','package main\nfunc main() {}\n'],['m.rs','fn main() {}\n'],['M.java','class M {}\n'],['p.php','<?php\n'],['a.ts','export {}\n'],['c.c','int main(void){return 0;}\n']]);
-  const install=[['ruby','colorize'],['go','github.com/x/y'],['rust','itoa'],['java','org.x:y:1'],['php','x/y'],['typescript','left-pad'],['c','libfoo']].map(([toolchain,p])=>({toolchain,packages:[p]}));
+  const files=new Map([['greet.rb','require "colorize"\nputs "hi"\n'],['main.go','package main\nfunc main() {}\n'],['m.rs','fn main() {}\n'],['M.java','class M {}\n'],['p.php','<?php\n'],['a.ts','export {}\n'],['c.c','int main(void){return 0;}\n'],['x.cpp','int main(){}\n'],['s.sh','jq .\n']]);
+  const install=[['ruby','colorize'],['go','github.com/x/y'],['rust','itoa'],['java','org.x:y:1'],['php','x/y'],['typescript','left-pad'],['c','libfoo-dev'],['cpp','libbar-dev'],['shell','jq'],['','nameless']].map(([toolchain,p])=>({toolchain,packages:[p]}));
   const {plan,toolchains}=checkPlan({contracts:[],validations:[]},files,{rows:TOOLCHAINS,install});
   assert.deepEqual(plan.install,install);
   const by=id=>toolchains.find(r=>r.id===id);
-  for(const [id,tool] of [['ruby','gem'],['go','go get'],['rust','cargo add'],['java','mvn'],['php','composer require'],['typescript','npm']])assert.ok(by(id).install.argv.join(' ').includes(tool),id);
-  // C has no package manager of its own: its row has no install, and the box says so.
-  assert.equal(by('c').install,undefined);
+  for(const [id,tool] of [['ruby','gem'],['go','go get'],['rust','cargo add'],['java','mvn'],['php','composer require'],['typescript','npm'],['c','apt-get'],['cpp','apt-get'],['shell','apt-get']])assert.ok(by(id).install.argv.join(' ').includes(tool),id);
+  // A package with no language goes too: the box says it has no install for it.
+  assert.ok(!toolchains.some(r=>r.id===''));
+  // A plan whose only work is an install opens the box, so what it installs is observed.
+  assert.equal(checkPlan({contracts:[],validations:[]},new Map(),{rows:TOOLCHAINS,install:[{toolchain:'c',packages:['libfoo-dev']}]}).container,true);
 });
 
 // Owner 2026-10-16 20:38: a call check runs against the file its function contract declares, as written; nothing searches the bundle by name.
