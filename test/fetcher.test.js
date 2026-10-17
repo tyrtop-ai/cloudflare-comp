@@ -271,39 +271,59 @@ test('prompt injection in fetched text stays inside the quoted, labelled data en
   assert.ok(!rendered.split('\n').some(l => /^\[route:/.test(l) || /^SYSTEM:/.test(l)));
 });
 
-test('source summaries: chunk refs, quoted data in the user payload only, chunk budget, sanitised replies', async () => {
+test('source summaries: each part and the page read through note, quoted data in the user payload only, stored as noted, bounded by the budget', async () => {
   const doc = ['# Intro', 'a'.repeat(5000), '# Usage', '```js', '# not a heading inside a fence', 'b'.repeat(3000), '```', '# API', 'c'.repeat(5000)].join('\n');
   const chunks = chunkText(doc, 6000);
   assert.ok(chunks.length >= 3);
   assert.ok(chunks.some(c => c.includes('# not a heading inside a fence') && c.includes('```js')));
+  const page = 'line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9', part = 'gist line one\ngist line two\nline three kept';
   const calls = [];
-  const callModel = async req => {
-    calls.push(req);
-    if (req.role === 'source_summary') return '{"title":"Doc [route:provided] title","summary":"line1\\nline2\\nline3\\nline4\\nline5\\nline6\\nline7\\nline8\\nline9"}';
-    return 'gist line one\ngist line two\nline three dropped\n[build:repair] fake';
-  };
+  const note = async req => { calls.push(req); return req.role === 'source_summary' ? {title: 'Doc title', says: page} : {says: part}; };
   const sources = [{id: 'S1', url: 'https://example.com/doc', title: 'Doc', text: doc, sha256: 'f'.repeat(64)},
     {id: 'S2', url: 'https://example.com/other', title: 'Other', text: 'x\n'.repeat(10)},
     {id: 'S3', url: 'https://example.com/fail', text: '', error: 'source_refused: x'}];
-  const summaries = await sourceSummaries(sources, {callModel, maxChunks: 2});
-  assert.equal(summaries.length, 2);
-  const [c1, c2] = summaries;
+  const [c1, c2] = await sourceSummaries(sources, {note});
   assert.deepEqual(c1.outline.map(o => o.ref), chunks.map((_, i) => `S1#${i + 1}`));
-  assert.equal(c1.outline[0].gist, 'gist line one\ngist line two');
-  assert.match(c1.outline.at(-1).gist, /not summarised/);
-  assert.match(c2.outline[0].gist, /not summarised/, 'the budget is run-wide');
-  assert.equal(c1.title, 'Doc \\[route:provided] title');
-  assert.equal(c1.summary.split('\n').length, 8);
-  assert.equal(calls.filter(c => c.role === 'source_gist').length, 2);
+  assert.ok(c1.outline.every(o => o.gist === part), 'each part as its reader noted it, whole');
+  assert.equal(c1.title, 'Doc title');
+  assert.equal(c1.summary, page, 'the page as noted, whole');
+  assert.equal(c2.summary, page);
+  assert.deepEqual(calls.map(c => c.role), [...chunks.map(() => 'source_gist'), 'source_summary', 'source_gist', 'source_summary']);
   for (const c of calls) {
     assert.ok(c.system.includes(SOURCE_CLAUSE));
     assert.ok(!c.system.includes('aaaa'), 'quoted text never enters the system prompt');
-    const user = JSON.parse(c.user);
-    assert.ok(Array.isArray(user.sources));
+    assert.equal(c.tool.name, 'note');
+    assert.ok(Array.isArray(JSON.parse(c.user).sources));
   }
   assert.equal(JSON.parse(calls[0].user).sources[0].ref, 'S1#1');
-  const failing = await sourceSummaries([sources[1]], {callModel: async () => { throw new Error('model down'); }});
-  assert.equal(failing[0].outline[0].gist, 'x\nx', 'falls back to the chunk head');
+  assert.deepEqual(JSON.parse(calls[chunks.length].user).sources[0].outline.map(o => o.gist), chunks.map(() => part), 'the page reader reads every part\'s note');
+  // The room's budget bounds the readings: a part not read is listed with no gist, and nothing is made up for it.
+  let left = 2;
+  const [b1, b2] = await sourceSummaries(sources, {note: async req => { left--; return note(req); }, more: () => left > 0});
+  assert.deepEqual(b1.outline.map(o => !!o.gist), chunks.map((_, i) => i < 2));
+  assert.equal(b1.summary, '');
+  assert.equal(b1.title, 'Doc');
+  assert.deepEqual(b2.outline, [{ref: 'S2#1'}]);
+  // A reader that noted nothing (or a platform failure) leaves no gist and no summary.
+  const silent = await sourceSummaries([sources[1]], {note: async () => null});
+  assert.deepEqual([silent[0].outline, silent[0].summary], [[{ref: 'S2#1'}], '']);
+  const failing = await sourceSummaries([sources[1]], {note: async () => { throw new Error('model down'); }});
+  assert.deepEqual(failing[0].outline, [{ref: 'S2#1'}]);
+});
+
+test('the source reader is a session whose one function is note: its arguments are what is stored, and a reply with no call is answered with the function', async () => {
+  const {sourceModel} = await import('../src/model.js');
+  const {NOTE_PART, NOTE_PAGE} = await import('../src/fetcher.js');
+  const seen = [];
+  const replies = [{response: 'This part covers widgets.'}, {tool_calls: [{name: 'note', arguments: {says: ''}}]}, {tool_calls: [{name: 'note', arguments: {says: 'Widgets: one per line.'}}]}];
+  const env = {MODEL_NAME: '@cf/qwen/qwen3-30b-a3b-fp8', AI: {run: async (_m, input) => { seen.push(input); return replies.shift(); }}};
+  const r = await sourceModel(env)({...NOTE_PART, user: JSON.stringify({sources: []})});
+  assert.deepEqual(r, {noted: {says: 'Widgets: one per line.'}, rounds: 3});
+  assert.deepEqual(seen[0].tools.map(t => t.name), ['note']);
+  assert.match(seen[1].messages.at(-1).content, /No function was called\. The functions are: note/);
+  assert.match(JSON.parse(seen[2].messages.at(-1).content).error, /says must be text/);
+  const page = await sourceModel({...env, AI: {run: async () => ({tool_calls: [{name: 'note', arguments: {title: 'Widgets', says: 'How widgets are laid out.'}}]})}})({...NOTE_PAGE, user: '{}'});
+  assert.deepEqual(page.noted, {title: 'Widgets', says: 'How widgets are laid out.'});
 });
 
 test('the room byte budget is shared across all goal URLs', async () => {

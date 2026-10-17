@@ -41,7 +41,7 @@ import { branchDirectory, packageDirectory, packagePath, partsRoot, PARTS_ROOT }
 import { placeChecks, checkEntries, installedModule, outsideFailure, routeNames, checkUses, importClosure, textHash } from './piece.js';
 import { unresolvedNames } from './toolchains.js';
 import { zipFiles } from './zip.js';
-import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, rootRefs, chunksFor, baseNotes, sha256Bytes, gitMode, MAX_SOURCE_CHUNKS, SOURCE_CLAUSE, summariesFor, namedIn } from './room-inputs.js';
+import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, namedIn } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
 import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer, packageAnswer } from './broker.js';
 import { normalizePackages, installedPackages, heldByName, heldForNeed, packageLanguage, languageAnswer, readsModule, piecePackages, packageLine, needOf } from './packages.js';
@@ -661,7 +661,7 @@ export class ControlRoom extends DurableObject {
   }
   sourceRows() { return query(this.db(),'SELECT id,url,final_url,title,sha256,bytes,truncated,error,status,content_type,summary,fetched_at FROM sources ORDER BY CAST(SUBSTR(id,2) AS INTEGER)').map(r=>({...r,truncated:!!r.truncated,summary:parse(r.summary,null)})); }
   // The chunk refs a row holds (polyglot-bench §2a.4): the room's manager
-  // the first chunks of each source (at most MAX_REFS); a piece those its
+  // every chunk of every source; a piece those its
   // parent's split cited for it, never more than its parent holds
   // (assignRefs), as with contracts. A row given none holds none.
   sourceRefs(id) { return this.node(id)?this.read(`source_refs:${id}`,null)||[]:[]; }
@@ -678,7 +678,7 @@ export class ControlRoom extends DurableObject {
   }
   // What a model reads of the sources, quoted beside SOURCE_CLAUSE: a
   // splitter the summaries of the refs it holds (and their outlines), a
-  // worker the chunks it holds, whole within the budget, the rest as gists.
+  // worker the chunks it holds, whole.
   sourceInputs(id, mode='chunks') {
     const held=this.sourceRefs(id);
     if(!held.length)return {};
@@ -688,27 +688,28 @@ export class ControlRoom extends DurableObject {
   }
   // §2a.1: the URLs written in the prompt, fetched once per run under the
   // owner's allowlist (FETCH_ALLOW), never this deployment's own host, and
-  // summarised (each source a summary and an outline) by the compiler's
-  // model. A link that cannot be read is recorded with why, and the run goes on without it.
-  async loadSources() {
-    if(this.get('sources_loaded'))return;
+  // read (each source a summary and an outline) by readers on the compiler's
+  // model. A link that cannot be read is recorded with why, and the run goes
+  // on without it. budget: the run's turns; returns the turns the readers took.
+  async loadSources(budget) {
+    if(this.get('sources_loaded'))return 0;
     const goal=this.userGoal(),started=Date.now();
     // S8b review: the owner's list as written (URL forms, :443, a JSON array); one with no usable entry is said.
     const given=this.env.FETCH_ALLOW,report=given!=null&&String(given).trim()?allowReport(given):null;
     if(report&&!report.allow.length)this.event('room','fetch_allow_unreadable',clip(`FETCH_ALLOW has no usable host suffix (${report.dropped.join(', ')||String(given)}), so every link is refused; set it to host names such as docs.example.com.`,600));
     // Every host this deployment answers on (the request's and SELF_HOSTS) is refused.
     const selfHosts=[...this.read('fetch_self_hosts',[]),...selfHostsOf(this.env)];
-    // Each gist and summary call counts against the run's budget, as a manager's model call does; a small budget reads fewer chunks.
-    const budget=Number(this.get('budget','0'))||20;let calls=0;
-    const model=sourceModel(this.inferenceEnv('compiler')),callModel=args=>{calls++;return model(args);};
-    const {rows,chunks}=await loadSources(goal,{fetch:this.fetcher(),allow:report?report.allow:given,selfHosts,callModel,maxChunks:Math.min(MAX_SOURCE_CHUNKS,Math.max(2,Math.floor(budget/2)))});
-    this.spentExtra=(this.spentExtra||0)+calls;
+    // Each reader's model calls count against the run's budget, as a manager's do; the readings go on while the budget lasts.
+    let calls=0;
+    const read=sourceModel(this.inferenceEnv('compiler')),note=async args=>{const r=await read(args);calls+=r.rounds;return r.noted;};
+    const {rows,chunks}=await loadSources(goal,{fetch:this.fetcher(),allow:report?report.allow:given,selfHosts,note,more:()=>calls<budget});
     if(report&&!report.allow.length)for(const r of rows)if(r.error&&/allowlist/.test(r.error))r.error=clip(`${r.error} (FETCH_ALLOW has no usable entry)`,300);
     for(const r of rows)this.db().exec('INSERT INTO sources(id,url,final_url,title,sha256,bytes,truncated,error,status,content_type,summary,fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',
       r.id,r.url,r.final_url,r.title,r.sha256,r.bytes,r.truncated?1:0,r.error,r.status,r.content_type,r.summary?JSON.stringify(r.summary):null,Date.now());
     for(const c of chunks)this.db().exec('INSERT INTO source_chunks(ref,source,n,text) VALUES (?,?,?,?) ON CONFLICT(ref) DO NOTHING',c.ref,c.source,c.n,c.text);
     this.set('sources_loaded','1');
     if(rows.length)this.event('room','sources_read',clip(`The prompt's ${rows.length} link(s), in ${Date.now()-started} ms: ${rows.map(r=>r.error?`${r.id} not read (${r.error})`:`${r.id} ${r.title||r.url} (${r.bytes} bytes${r.truncated?', cut at the cap':''}, ${chunks.filter(c=>c.source===r.id).length} part(s))`).join('; ')}.`,1500));
+    return calls;
   }
   // v8 S6 review: what one reference is rendered from (useReferences): the
   // rows, the levels' languages, whether their code runs in a browser, and
@@ -7867,13 +7868,14 @@ export class ControlRoom extends DurableObject {
       this.activeTurns.delete(id); this.turnSteps.delete(id);
     }
   }
-  async drive(budget) {
+  // spentBefore: turns this run already spent before its first dispatch (v8: the linked pages' readings, openRoom).
+  async drive(budget, spentBefore=0) {
     let cap=normalizeTurnBudget(budget);
     // v8 S9 review: turns the user gave with a change (budget_added) join this run's budget, also while it runs.
     const added=()=>{const a=Number(this.get('budget_added','0'))||0;if(a>0){cap+=a;this.set('budget_added','0');this.set('budget',cap);}};
     this.set('budget',cap);added();
     const prompted=query(this.db(),"SELECT id FROM prompts WHERE status='running' LIMIT 1").length>0;
-    let spent=0;
+    let spent=spentBefore;
     const active=new Set();
     // A manager turn that asked its model adds to spent (spentExtra); once
     // the budget is spent, managers still run but ask no model (budgetSpent).
@@ -8015,7 +8017,8 @@ export class ControlRoom extends DurableObject {
     this.ctx.waitUntil((async()=>{
       // v7.15: Root promises start, the only runtime-written promise (live rooms).
       // v8: the room creates the manager the prompt goes to.
-      try { if(v8)await this.openRoom(task);else await this.handPrompt({prompt:goal,task,interfaces:this.live()?rootPromise(whole):[]}); await this.drive(budget); }
+      // v8: the turns the linked pages' readers took count in this run's budget.
+      try { let read=0; if(v8)read=await this.openRoom(task,budget);else await this.handPrompt({prompt:goal,task,interfaces:this.live()?rootPromise(whole):[]}); await this.drive(budget,read); }
       catch(e) { this.set('status','error');this.event('system','error',clip(e?.message||e,1200));this.busy=false; }
     })());
     return {status:'running'};
@@ -8435,15 +8438,16 @@ export class ControlRoom extends DurableObject {
   // id is that manager's parent in its id), with the installed packages, the
   // linked pages' chunks and the existing files it starts from, and keeps
   // its own record of which manager it created.
-  async openRoom(prompt) {
-    await this.loadSources();
+  // Returns the turns the linked pages' readers took (loadSources).
+  async openRoom(prompt, budget) {
+    const read=await this.loadSources(normalizeTurnBudget(budget));
     const all=this.allRefs(),base=this.read('base',null),label=clip(String(prompt).split(/(?<=[.!?])\s|\n/)[0],60)||'Prompt';
     const m=await this.provision(await rowId(this.get('room_id',''),1,'manager'),null,label,prompt,[],[],this.installedSet(),'manager',{seq:1});
     this.set('room_manager',m.id);this.set('levels_format',LEVELS_FORMAT);
-    if(all.length)this.save(`source_refs:${m.id}`,rootRefs(null,all));
+    if(all.length)this.save(`source_refs:${m.id}`,all);
     if(base)this.save(`base_digest:${m.id}`,base.digest||'');
     this.event('room','room_opened',`The room created "${m.label}" from the prompt (${this.installedSet().length} packages); it is done when that manager's compiler has every validation of its subtree passing on its exact bundle.`,m.id);
-    return m;
+    return read;
   }
   // ---------- the level file ----------
   // A manager's level is a file in its own repository (LEVEL_FILE): the

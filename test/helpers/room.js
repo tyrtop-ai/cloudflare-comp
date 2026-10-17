@@ -119,8 +119,14 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),build=null,runner=()=>
     }
     const {messages}=input,system=messages[0].content,text=messages[1].content,user=JSON.parse(text.replace(/ \/no_think$/,''));
     calls.raw.push({system,text});
-    // v8 S8b: a linked page's gist and summary calls (src/fetcher.js sourceSummaries), by their system text.
-    if(/^(?:Summarise the quoted chunk|Summarise one quoted document)/.test(system)){calls.source.push(user);if(!source)throw new Error('no source model in this test');const a=await source(user,system);return {response:typeof a==='string'?a:JSON.stringify(a)};}
+    // v8 S8b: a linked page's readers (src/fetcher.js NOTE_PART, NOTE_PAGE), by their system text: a
+    // session whose one function is note. The fake's object is note's arguments; a text is a reply with no call.
+    if(/^You read (?:one part of a page|the notes on the parts of one page)/.test(system)&&input.tools){
+      if(messages.filter(m=>m.role==='assistant').length===0)calls.source.push(user);
+      if(!source)throw new Error('no source model in this test');
+      const a=await source(user,system);
+      return typeof a==='string'?{response:a}:{tool_calls:[{name:'note',arguments:a}]};
+    }
     // v8: a v8 prompt is ROLE[role] + FORMAT[role]; its role paragraph says
     // which fake answers. A fake's string answer is sent as written (a
     // worker's file blocks), an object as JSON.

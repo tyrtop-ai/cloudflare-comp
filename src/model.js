@@ -6,6 +6,7 @@ import { workerAction } from './worker-output.js';
 import { CLEF, clefText } from './prompts.js';
 import { contractLine } from './contracts.js';
 import { checkSummary, internalCandidate } from './validations.js';
+import { session } from './session.js';
 export { NO_ANSWER };
 // v8 (S6): a call runs v8's prompts when the room's pipeline is v8. The room
 // says so in the env it passes (inferenceEnv's PIPELINE), so every call site
@@ -803,12 +804,21 @@ export async function pieceReach(env, {name='', contracts=[], files=[], installe
   }
   return out;
 }
-// v8 S8b: the model call src/fetcher.js sourceSummaries makes for each
-// chunk's gist and each source's summary, on the compiler's model with role
-// 'source' (a span per call); the quoted text travels in the user JSON only.
-export const SOURCE_SUMMARY_TOKENS = 700;
-export const sourceModel = env => async ({role:part, system, user}) =>
-  withoutThinking(await run(env, system, user, SOURCE_SUMMARY_TOKENS, {call: part==='source_gist'?'sourceGist':'sourceSummary', role:'source', noThink:true}));
+// v8 S8b: reading a linked page (src/fetcher.js sourceSummaries), on the
+// compiler's model with role 'source': a session of function calls whose one
+// function is `note` (NOTE_PART, NOTE_PAGE); the quoted text travels in the
+// user JSON only. note's own argument check: each field it asks for is
+// text. Resolves with {noted: the arguments it noted, or null when the
+// session ended without a note, rounds: the model calls it made}.
+export const sourceModel = env => async ({call, system, user, tool}) => {
+  const fields = tool.parameters.required;
+  const r = await session(env, {system, user, tools: [tool], role: 'source', call, noThink: true,
+    handle: (_name, args) => {
+      const missing = fields.filter(k => typeof args[k] !== 'string' || !args[k].trim());
+      return missing.length ? {result: {error: `${missing.join(' and ')} must be text.`}} : {result: {noted: true}, end: Object.fromEntries(fields.map(k => [k, args[k]]))};
+    }});
+  return {noted: r.ended ? r.end : null, rounds: r.rounds};
+};
 // v8 §4.3 (S4b): Clef judges a document requirement, yes or no, from the
 // file alone: state {requirement, file:{path, text}}, the question CLEF.judge
 // with the check's own question appended. The whole document is read, in
