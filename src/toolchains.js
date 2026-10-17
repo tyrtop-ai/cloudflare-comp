@@ -174,6 +174,7 @@ export const COMPILE_ROWS = Object.freeze([
     call_adapter:['node','/opt/adapters/call.mjs'], stack:'v8',
     install:{argv:['npm','install','--no-save','--no-package-lock','--ignore-scripts','--no-audit','--no-fund','--prefix','{scratch}','{packages}'], tree:'node_modules', env:{}} }),
   Object.freeze({ id:'shell', name:'shell', extensions:['.sh','.bash'], shebang:['sh','dash','bash'], requires:{sh:'',bash:''},
+    call_adapter:['node','/opt/adapters/call-native.mjs','shell'],
     syntax:['sh','-c',SH_SYNTAX,'sh','{files}'] }),
   // Owner 2026-10-15 05:16 ("Any code type"): the other languages the box
   // image installs (container/Dockerfile.box), each compiled by its own
@@ -186,19 +187,26 @@ export const COMPILE_ROWS = Object.freeze([
   // the install writes in the folder above every fresh copy requires (go run
   // finds it there), with the module cache as the tree.
   Object.freeze({ id:'go', name:'Go', extensions:['.go'], requires:{gofmt:''}, run_file:['go','run','{path}'],
+    call_adapter:['node','/opt/adapters/call-native.mjs','go'], stack:'go',
     install:{argv:['sh','-c','cd "$0" && export GOMODCACHE="$1" && shift && go mod init checks && go get "$@"','{scratch}','{tree}','{packages}'], tree:'go-modules', env:{GOMODCACHE:'{tree}'}},
     syntax:['sh','-c','gofmt -e "$@" >/dev/null','sh','{files}'] }),
   // Rust's packages are crates: the install builds them in a Cargo library
   // of its own (the tree) and lists, for rustc, each one it asked for
   // (externs: --extern name=its library, and where their dependencies are).
   Object.freeze({ id:'rust', name:'Rust', extensions:['.rs'], requires:{rustfmt:''}, run_file:['sh','-c','d=$(mktemp -d) && rustc --edition 2021 $(cat "${RUST_EXTERNS:-/dev/null}") -o "$d/main" "$0" && exec "$d/main" "$@"','{path}'],
+    call_adapter:['node','/opt/adapters/call-native.mjs','rust'], stack:'rust',
     install:{argv:['sh','-c','cd "$0" && py="$1" && shift && cargo init -q --lib --vcs none --name checks_deps . && cargo add -q "$@" && cargo build -q --message-format=json > build.json && python3 -c "$py" > externs','{tree}',RUST_EXTERNS,'{packages}'], tree:'rust-crates', env:{RUST_EXTERNS:'{tree}/externs'}},
     syntax:['sh','-c','for f do rustfmt --edition 2021 --emit stdout "./$f" >/dev/null || s=1; done; exit ${s:-0}','sh','{files}'] }),
-  Object.freeze({ id:'c', name:'C', extensions:['.c','.h'], requires:{gcc:''}, run_file:['sh','-c','d=$(mktemp -d) && gcc -o "$d/main" "$0" && exec "$d/main" "$@"','{path}'], syntax:['gcc','-fsyntax-only','{files}'] }),
-  Object.freeze({ id:'cpp', name:'C++', extensions:['.cc','.cpp','.cxx','.hpp','.hh'], requires:{'g++':''}, run_file:['sh','-c','d=$(mktemp -d) && g++ -o "$d/main" "$0" && exec "$d/main" "$@"','{path}'], syntax:['g++','-fsyntax-only','{files}'] }),
+  // C and C++ call checks build with g++ (C's driver is C++ too, over the
+  // prototypes gcc writes for the file).
+  Object.freeze({ id:'c', name:'C', extensions:['.c','.h'], requires:{gcc:''}, run_file:['sh','-c','d=$(mktemp -d) && gcc -o "$d/main" "$0" && exec "$d/main" "$@"','{path}'], syntax:['gcc','-fsyntax-only','{files}'],
+    call_adapter:['node','/opt/adapters/call-native.mjs','c'] }),
+  Object.freeze({ id:'cpp', name:'C++', extensions:['.cc','.cpp','.cxx','.hpp','.hh'], requires:{'g++':''}, run_file:['sh','-c','d=$(mktemp -d) && g++ -o "$d/main" "$0" && exec "$d/main" "$@"','{path}'], syntax:['g++','-fsyntax-only','{files}'],
+    call_adapter:['node','/opt/adapters/call-native.mjs','cpp'] }),
   // Java's packages are Maven artifacts (group:artifact:version), copied as
   // jars into the tree, which CLASSPATH names to javac and java.
   Object.freeze({ id:'java', name:'Java', extensions:['.java'], requires:{javac:''}, run_file:['java','{path}'],
+    call_adapter:['node','/opt/adapters/call-native.mjs','java'], stack:'java',
     install:{argv:['sh','-c','for p do mvn -q -B dependency:copy -Dartifact="$p" -DoutputDirectory="$0" || exit 1; done','{tree}','{packages}'], tree:'java-packages', env:{CLASSPATH:'{tree}/*'}},
     syntax:['sh','-c','d=$(mktemp -d) && javac -d "$d" "$@"; s=$?; rm -rf "$d"; exit $s','sh','{files}'] }),
   Object.freeze({ id:'ruby', name:'Ruby', extensions:['.rb'], shebang:['ruby'], requires:{ruby:''}, run_file:['ruby','{path}'],

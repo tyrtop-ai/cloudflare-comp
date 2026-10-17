@@ -12,12 +12,18 @@ export const STACKS = Object.freeze({
   // A backtrace line: /path:line:in 'fn' (Ruby 3.4) or `fn' (before).
   ruby:   '^\\s*(?:from )?(?<path>/[^:\\s]+):(?<line>\\d+):in [`\'](?:[^\'#.]*[#.])?(?<fn>[^\']+)\'',
   // A Throwable as PHP prints it: the throw site (in /path:line), then its trace (#n /path(line): fn(...)).
-  php:    Object.freeze([' in (?<path>/[^:\\s]+):(?<line>\\d+)$', '^#\\d+ (?<path>/[^(]+)\\((?<line>\\d+)\\): (?<fn>[^(\\s]+)\\('])
+  php:    Object.freeze([' in (?<path>/[^:\\s]+):(?<line>\\d+)$', '^#\\d+ (?<path>/[^(]+)\\((?<line>\\d+)\\): (?<fn>[^(\\s]+)\\(']),
+  // A goroutine's frame: its function (package path first), then a tab and /path:line.
+  go:     '^(?:[^\\s/]*/)*(?:[^./\\s]+\\.)?(?<fn>\\S+)\\([^\\n]*\\)\\n\\t(?<path>/[^:\\s]+):(?<line>\\d+)',
+  // A backtrace in full (RUST_BACKTRACE=full): n: address - crate[hash]::fn (or crate::fn::hhash), then at /path:line:column.
+  rust:   '^ *\\d+: +(?:0x[0-9a-f]+ - )?(?:__call_module(?:\\[[0-9a-f]+\\])?::)?(?<fn>\\S+?)(?:::h[0-9a-f]{16})?\\n +at (?<path>/[^:\\n]+):(?<line>\\d+):\\d+$',
+  // A Throwable as Java prints it, each frame at its source's path (the call adapter writes the path).
+  java:   '^\\tat (?:[\\w$.]+/)*(?<fn>[^\\s(]+)\\((?<path>/[^:()]+):(?<line>\\d+)\\)$'
 });
 
 // Where each reader's trace starts: V8 prints the innermost frame (the
 // throw site) first, a Python traceback prints it last.
-export const STACK_INNERMOST = Object.freeze({v8: 'first', python: 'last', ruby: 'first', php: 'first'});
+export const STACK_INNERMOST = Object.freeze({v8: 'first', python: 'last', ruby: 'first', php: 'first', go: 'first', rust: 'first', java: 'first'});
 
 // The frames of a stack trace, as bundle paths: a frame's absolute path is
 // mapped to the longest bundle path it ends with; a frame outside the bundle

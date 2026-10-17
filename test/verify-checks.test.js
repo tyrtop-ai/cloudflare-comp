@@ -310,6 +310,62 @@ test('call checks: TypeScript, Ruby and PHP functions run through their own call
   for(const x of report.checks.filter(x=>!x.passed))short(x);
 });
 
+// Owner 2026-10-15 05:16 ("Any code type"): Go, Rust, C, C++, Java and shell functions are called in their own language,
+// each argument built as the function's parameter type by the language's own compiler or reflection; a type the
+// language gives no way to build from JSON is the runtime's limit (infrastructure), never the file's failure.
+// The tool, as a check's environment runs it (rustup's rustc needs a default toolchain under the box's HOME).
+const has=cmd=>spawnSync(cmd,[cmd==='go'?'version':'--version'],{env:{PATH:process.env.PATH,HOME:'/home/builder'}}).status===0;
+const NATIVE={
+  go:{skip:!has('go'),module:'calc/fib.go',
+    source:'package main\n\nimport "errors"\n\ntype Point struct{ X, Y int }\n\nfunc fib(n int) int {\n\tif n < 2 {\n\t\treturn n\n\t}\n\treturn fib(n-1) + fib(n-2)\n}\nfunc Div(a, b int) (int, error) {\n\tif b == 0 {\n\t\treturn 0, errors.New("divide by zero")\n\t}\n\treturn a / b, nil\n}\nfunc Mk(x, y int) *Point { return &Point{x, y} }\nfunc Norm(p *Point) int { return p.X*p.X + p.Y*p.Y }\nfunc boom(n int) int {\n\tvar m map[string]int\n\tm["x"] = n\n\treturn n\n}\nfunc Apply(f func(int) int) int { return f(1) }\nfunc main() {}\n',
+    ok:[{call:'fib',args:[10],expect:55},{call:'Mk',args:[3,4],save:'p',expect:{X:3,Y:4}},{call:'Norm',args:['$p'],expect:25},{call:'Div',args:[1,0],throws:true}],
+    raises:{call:'boom',args:[1]},frame:{path:'calc/fib.go',line:23,fn:'boom'},unsupported:{call:'Apply',args:[1]}},
+  rust:{skip:!has('rustc'),module:'src/main.rs',
+    source:'#[derive(Debug)]\nstruct Point { x: i32 }\nfn fib(n: u64) -> u64 { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\nfn total(xs: &[i64]) -> i64 { xs.iter().sum() }\nfn shout(s: &str) -> String { s.to_uppercase() }\nfn boom(v: Vec<i32>) -> i32 {\n    v[10]\n}\nfn norm(p: &Point) -> i32 { p.x }\nfn main() {}\n',
+    ok:[{call:'fib',args:[10],expect:55},{call:'total',args:[[1,2,3]],expect:6},{call:'shout',args:['hi'],save:'s',expect:'HI'},{call:'shout',args:['$s'],expect:'HI'}],
+    raises:{call:'boom',args:[[1]]},frame:{path:'src/main.rs',line:7,fn:'boom'},unsupported:{call:'norm',args:[{x:1}]}},
+  c:{skip:!has('gcc')||!has('g++'),module:'lib/calc.c',
+    source:'#include <stdlib.h>\nstruct point { int x, y; };\nint add(int a, int b) { return a + b; }\nstatic double half(double x) { return x / 2; }\nint total(const int *xs, int n) { int s = 0; for (int i = 0; i < n; i++) s += xs[i]; return s; }\nstruct point *mk(int x, int y) { struct point *p = malloc(sizeof *p); p->x = x; p->y = y; return p; }\nint norm(const struct point *p) { return p->x * p->x + p->y * p->y; }\nint main(void) { return add(1, 2); }\n',
+    ok:[{call:'add',args:[2,3],expect:5},{call:'half',args:[3],expect:1.5},{call:'total',args:[[1,2,3],3],expect:6},{call:'mk',args:[3,4],save:'p'},{call:'norm',args:['$p'],expect:25}],
+    unsupported:{call:'norm',args:[{x:1,y:2}]}},
+  cpp:{skip:!has('g++'),module:'lib/calc.cpp',
+    source:'#include <map>\n#include <stdexcept>\n#include <string>\n#include <vector>\nusing namespace std;\nint fib(int n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); }\nmap<string, int> count(const vector<string>& ws) { map<string, int> m; for (auto& w : ws) m[w]++; return m; }\ndouble divide(double a, double b) { if (b == 0) throw invalid_argument("divide by zero"); return a / b; }\nnamespace geo { double area(double w, double h) { return w * h; } }\nstruct Shape { virtual double size() const = 0; };\ndouble measure(const Shape& s) { return s.size(); }\nint main() { return fib(3); }\n',
+    ok:[{call:'fib',args:[10],expect:55},{call:'count',args:[['a','b','a']],expect:{a:2,b:1}},{call:'geo::area',args:[2,3.5],expect:7}],
+    raises:{call:'divide',args:[1,0]},unsupported:{call:'measure',args:[{}]}},
+  java:{skip:!has('javac'),module:'src/com/acme/Calc.java',
+    source:'package com.acme;\n\nimport java.util.*;\n\npublic class Calc {\n    record Point(int x, int y) {}\n    static int fib(int n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); }\n    static long total(List<Long> xs) { long s = 0; for (long x : xs) s += x; return s; }\n    static Point mk(int x, int y) { return new Point(x, y); }\n    static int norm(Point p) { return p.x() * p.x() + p.y() * p.y(); }\n    static int div(int a, int b) {\n        return a / b;\n    }\n    static int apply(Runnable r) { r.run(); return 1; }\n    public static void main(String[] a) {}\n}\n',
+    ok:[{call:'fib',args:[10],expect:55},{call:'total',args:[[1,2,3]],expect:6},{call:'mk',args:[3,4],save:'p',expect:{x:3,y:4}},{call:'norm',args:['$p'],expect:25},{call:'norm',args:[{x:1,y:2}],expect:5}],
+    raises:{call:'div',args:[1,0]},frame:{path:'src/com/acme/Calc.java',line:12,fn:'com.acme.Calc.div'},unsupported:{call:'apply',args:[{}]}},
+  shell:{skip:!has('bash'),module:'bin/lib.sh',
+    source:'#!/bin/sh\ncount=0\ngreet() { echo "hello $1"; }\nbump() { count=$((count + 1)); echo "$count"; }\nfail() { echo "bad thing" >&2; return 3; }\n',
+    ok:[{call:'greet',args:['bob'],save:'g',expect:'hello bob'},{call:'greet',args:['$g'],expect:'hello hello bob'},{call:'bump',args:[],expect:'1'},{call:'bump',args:[],expect:'2'},{call:'fail',args:[],throws:true}],
+    raises:{call:'fail',args:[]}}};
+for(const [id,x] of Object.entries(NATIVE))test(`call checks: a ${id} function is called in its own language`,{skip:x.skip&&`${id} is not installed`,timeout:300_000},async()=>{
+  const {COMPILE_ROWS}=await import('../src/toolchains.js');
+  const rows=[...ROWS,...JSON.parse(JSON.stringify(COMPILE_ROWS))];
+  const step=(n,s)=>({id:`${id}-${n}`,kind:'call',adapter:id,module:x.module,steps:[s]});
+  const plan={checks:[{id:`${id}-ok`,kind:'call',adapter:id,module:x.module,steps:x.ok},step('missing',{call:'nope',args:[]}),
+    ...(x.raises?[step('raises',x.raises)]:[]),...(x.unsupported?[step('unsupported',x.unsupported)]:[])]};
+  const report=await run({[x.module]:x.source},plan,{toolchains:rows,isolation:[],limits:{total_ms:280_000}});
+  const c=byId(report);
+  assert.equal(c[`${id}-ok`].passed,true,c[`${id}-ok`].detail);
+  assert.equal(c[`${id}-missing`].passed,false);
+  assert.notEqual(c[`${id}-missing`].infrastructure,true,c[`${id}-missing`].detail);
+  assert.match(c[`${id}-missing`].detail,new RegExp(`^${x.module.replace(/[./]/g,'\\$&')} has no function nope`));
+  if(x.raises) {
+    const r=c[`${id}-raises`];
+    assert.equal(r.passed,false);assert.notEqual(r.infrastructure,true,r.detail);
+    assert.match(r.detail,new RegExp(` in ${x.module.replace(/[./]/g,'\\$&')} raised `),r.detail);
+    if(x.frame)assert.deepEqual(r.frames[0],x.frame,r.detail);
+  }
+  if(x.unsupported) {
+    const u=c[`${id}-unsupported`];
+    assert.equal(u.passed,false);assert.equal(u.infrastructure,true,u.detail);
+    assert.match(u.detail,/the call adapter cannot/);
+  }
+  for(const y of report.checks.filter(y=>!y.passed))short(y);
+});
+
 test('nonce: a module that exits early, prints its own result lines, or exits in a step never passes',{skip:!hasPython&&'python3 is not installed'},async()=>{
   const forged=n=>`{"nonce":"${'0'.repeat(32)}","step":${n},"ok":true,"value":42}`;
   const files={

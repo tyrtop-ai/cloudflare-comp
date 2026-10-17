@@ -371,10 +371,10 @@ test('checkPlan: command contracts run by their own path, call checks load the f
   assert.deepEqual([...unreached.local.values()].map(x=>[x.id,x.passed,x.infrastructure===true,x.detail]),[
     ['U1',false,false,'gone.py, the file of gone_fn, is missing'],
     // A language the box has no call adapter for: the runtime cannot run the call, which is no worker's failure.
-    ['U7',false,true,"not run: the box has no call adapter for fib.go's language"],
     ['U8',false,true,"not run: the box has no call adapter for odd.kt's language"]]);
-  assert.deepEqual(unreached.plan.checks.map(c=>[c.id,c.module,c.adapter]),[['U2','words.js','javascript'],['U3','soft.py','python'],['U4','add.ts','typescript'],['U5','up.rb','ruby'],['U6','twice.php','php']]);
-  assert.deepEqual(unreached.toolchains.map(r=>r.id).sort(),['javascript','php','python','ruby','typescript']);
+  // Owner 2026-10-15 05:16 ("Any code type"): a Go function is called by the box in Go.
+  assert.deepEqual(unreached.plan.checks.map(c=>[c.id,c.module,c.adapter]),[['U2','words.js','javascript'],['U3','soft.py','python'],['U4','add.ts','typescript'],['U5','up.rb','ruby'],['U6','twice.php','php'],['U7','fib.go','go']]);
+  assert.deepEqual(unreached.toolchains.map(r=>r.id).sort(),['go','javascript','php','python','ruby','typescript']);
   assert.deepEqual(toolchains.map(r=>r.id),['python','text']);
   // The contract's path, as written: conv.py, never another bundle file that defines to_f.
   assert.deepEqual(callModule({steps:[{call:'to_f'}]},spec.contracts,files),{name:'to_f',path:'conv.py'});
