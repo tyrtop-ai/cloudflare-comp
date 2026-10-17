@@ -27,10 +27,11 @@ const nameList = (v, what) => Array.isArray(v) && v.every(x => typeof x === 'str
 // bound on pieces; divide: whether piece is offered at all.
 // carry: what an earlier session of the same level declared before its
 // context window filled ({contracts, validations, pieces}); this one goes on from it.
-export function splitterState({own = [], held = [], have = [], calls = [], rows = TOOLCHAINS, base = [], maxPieces = 7, divide = true, carry = null} = {}) {
+// programs: every executable the box has (its inventory), beyond the rows'.
+export function splitterState({own = [], held = [], have = [], calls = [], rows = TOOLCHAINS, base = [], maxPieces = 7, divide = true, carry = null, programs = []} = {}) {
   const installed = (Array.isArray(rows) ? rows : TOOLCHAINS).filter(r => r && typeof r.id === 'string');
   return {own, held, have: have.filter(c => c?.name && !own.some(o => o.name === c.name)), calls, rows: installed, ids: new Set(installed.map(r => r.id)),
-    executables: new Set(installed.flatMap(r => r.executables || [])), base: new Set(base instanceof Set ? [...base] : Array.isArray(base) ? base : []),
+    executables: new Set([...installed.flatMap(r => r.executables || []), ...programs]), base: new Set(base instanceof Set ? [...base] : Array.isArray(base) ? base : []),
     maxPieces, divide, contracts: [...(carry?.contracts || [])], validations: [...(carry?.validations || [])], pieces: [...(carry?.pieces || [])], done: false};
 }
 // The functions offered: piece only when the level may divide.

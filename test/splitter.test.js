@@ -240,3 +240,12 @@ test('a splitter session that never completes ends when its context window is fu
   assert.deepEqual([out.ended, out.reason, out.level], [false, 'context', null]);
   assert.equal(out.rounds, m.requests.length);
 });
+
+test('a command check may run any program the box has: the rows\' executables and every executable its inventory lists', () => {
+  const s = splitterState({programs: ['ruby', 'go']});
+  assert.equal(splitterCall(s, 'contract', {name: 'greet', kind: 'command', path: 'greet.rb', does: 'greets', run: {run: 'ruby greet.rb'}}).result.stored, 'greet');
+  assert.ok(splitterCall(s, 'command_check', {serves: ['greet'], run: 'ruby greet.rb Ann', expect: {exit: 0, stdout_has: ['Ann']}}).result.id, 'ruby is a program the box has');
+  const none = splitterState();
+  splitterCall(none, 'contract', {name: 'x.md', kind: 'doc', path: 'x.md', does: 'notes'});
+  assert.match(splitterCall(none, 'command_check', {serves: ['x.md'], run: 'ruby x.rb', expect: {exit: 0}}).result.error, /neither a command contract declared so far nor a program the box has/);
+});

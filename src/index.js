@@ -740,6 +740,8 @@ export class ControlRoom extends DurableObject {
   }
   promptHandlers() { return query(this.db(),'SELECT id,kind,prompt,prompt_id,root,created_root,spawned_at,ended_at FROM prompt_handlers ORDER BY spawned_at,id'); }
   installedSet() { return installedPackages(this.installedToolchains(),this.read('toolchain_inventory',null)); }
+  // Every program the box has: the rows' executables and every executable on its PATH, as its inventory lists them.
+  boxPrograms() { return [...new Set([...this.installedToolchains().flatMap(r=>r.executables||[]),...(this.read('toolchain_inventory',null)?.executables||[])])]; }
   // What a row's box installs before its checks: the packages its row lists
   // beyond the image's and the language's standard library, per language.
   packageInstalls(id) {
@@ -8576,7 +8578,7 @@ export class ControlRoom extends DurableObject {
       ...(held.length?{validations_you_have:held.map(v=>({serves:v.serves,check:v.check}))}:{}),
       ...(have.length?{contracts_you_have:have.map(({serves:_,...c})=>c)}:{}),
       ...(calls.length?{contracts_you_may_call:calls.map(({serves:_,...c})=>c)}:{}),
-      box:{programs:[...new Set(rows.flatMap(r=>r.executables||[]))],toolchains:rows.map(r=>({id:r.id,extensions:r.extensions||[]}))},
+      box:{programs:this.boxPrograms(),toolchains:rows.map(r=>({id:r.id,extensions:r.extensions||[]}))},
       ...(packages.length?{your_packages:packages.map(p=>({name:p.name,...(p.provides?{provides:p.provides}:{})}))}:{}),
       ...(typeof digest==='string'&&digest?{base_note:MESSAGES.base_note(),existing_files:{label:BASE_LABEL,digest}}:{}),
       ...this.sourceInputs(id,'summaries'),
@@ -8584,7 +8586,7 @@ export class ControlRoom extends DurableObject {
       ...(feedback?.reason?{previous_answer_problems:[feedback.reason],...(feedback.rejected?.length?{rejected:feedback.rejected}:{})}:{})};
     const carried=this.read(`split_carry:${id}`,null),carry=carried&&carried.key===`${kind}:${job?.key||''}`&&carried.attempt===attempt?carried:null;
     if(carry)request.declared_so_far={contracts:carry.contracts.map(({serves:_,...c})=>c),validations:carry.validations.map(v=>({id:v.id,serves:v.serves,check:v.check})),pieces:carry.pieces};
-    const out=await splitLevel(this.inferenceEnv('worker'),request,{own,held,have,calls,rows,base:[...this.basePaths()],maxPieces:max,divide,carry});
+    const out=await splitLevel(this.inferenceEnv('worker'),request,{own,held,have,calls,rows,base:[...this.basePaths()],maxPieces:max,divide,carry,programs:this.boxPrograms()});
     this.db().exec('UPDATE splitters SET ended_at=?,outcome=?,output=? WHERE id=?',Date.now(),out.level?'done':out.reason,splitterRecord(out),sid);
     const l=out.level;
     this.event(id,'splitter',clip(l?`${sid} declared ${l.contracts.length} contract(s), ${l.validations.length} validation(s), ${l.pieces.length} piece(s) in ${out.rounds} round(s) and ${out.transcript.length} call(s).`:`${sid}'s session ended without done (${out.reason}) after ${out.rounds} round(s) and ${out.transcript.length} call(s).`,600));
