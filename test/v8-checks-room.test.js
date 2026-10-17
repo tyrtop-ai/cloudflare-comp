@@ -10,7 +10,7 @@ import {fileURLToPath} from 'node:url';
 import {liveRoom, events, twoWorkers, linkAndCompile, snapshotHash, fileBlocks, verifyChecks} from './helpers/room.js';
 import {lintRequests, callCheck} from './helpers/levels.js';
 import {checkPlan, fileResult, checkProblems, runNotes, callModule} from '../src/checks.js';
-import {judgeRequirement, judgeParts, JUDGE_BAR} from '../src/model.js';
+import {judgeRequirement, JUDGE_BAR} from '../src/model.js';
 import {CLEF} from '../src/prompts.js';
 import {TOOLCHAINS} from '../src/toolchains.js';
 import {packagePath} from '../src/assembly.js';
@@ -210,15 +210,17 @@ test('repairs go on: validations that keep failing go back to the worker every r
 });
 
 // ------------------------------------------------------------ the holds, stale results, construction
-test('a transient Clef error while judging is asked again, and the room completes',async()=>{
+test('a Clef error while judging is infrastructure, as observed: the room holds checks_blocked, Continue compiles again, and the room completes',async()=>{
   let fail=1;
   const clef=input=>{if(input.questions.judge&&fail-->0)throw new Error('Clef 503 transient');return clefFor({judge:readmeJudge})(input);};
   const {room,calls,drain}=v8Room({level:README_LEVEL,clef,answers:{'README.md':[wrote('README.md',GOOD_README)]}});
   await room.start(README_GOAL,10,{pipeline:'v8'});
   await drain();
+  assert.equal(room.snapshot().pause?.kind,'checks_blocked',tail(room));
+  assert.equal(events(room,'judge_retry').length,0,'the room asks Clef no second time on its own');
+  assert.equal((await room.resume(10)).status,'running');
+  await drain();
   assert.equal(room.get('status'),'complete',tail(room));
-  assert.equal(events(room,'judge_retry').length,1);
-  assert.match(events(room,'judge_retry')[0].body,/Clef 503 transient.*asked again in 500 ms/);
   assert.equal(calls.leaf.length,1);
 });
 
@@ -372,65 +374,34 @@ test('v7 rooms are unchanged: the compiler runs the bundle, and the export keeps
 });
 
 
-// v8 live 2: the to-do page's R3 wanted <link rel="stylesheet" href="styles.css"> and the file had <link rel="stylesheet" href="styles.css" />.
-// v8 live 5: and any text matches modulo whitespace runs, on both sides.
-test('fileResult: markup in a markup file matches whatever the whitespace between tags and attributes, the quote style and a void element\'s "/"; values and text stay exact apart from whitespace runs',()=>{
-  const files=new Map([['index.html','<head>\n  <link rel="stylesheet" href="styles.css" />\n  <meta  charset="utf-8">\n</head>\n<ul>\n  <li>a</li>\n</ul>'],['NOTES.md','Run the   tool, then "stop" it.\nNext line'],
-    ['app.py','if x:   \n    y()\nz()\n'],['page.vue','<template><div class="x"/></template>']]);
+// Owner 2026-10-16 20:38: no runtime "fixing it via matching or whatever". A has text matches as written, nothing else.
+test('fileResult: a has text matches exactly as the splitter wrote it: no markup canonicalising, no whitespace folding',()=>{
+  const files=new Map([['index.html','<head>\n  <link rel="stylesheet" href="styles.css" />\n</head>\n<ul>\n  <li>a</li>\n</ul>'],['app.py','if x:   \n    y()\nz()\n']]);
   const has=(path,...texts)=>fileResult({path,has:texts},files).passed;
-  assert.equal(has('index.html','<link rel="stylesheet" href="styles.css">'),true);
-  assert.equal(has('index.html',"<link rel='stylesheet' href='styles.css'/>"),true);
-  assert.equal(has('index.html','<link  rel="stylesheet"\nhref="styles.css" >','<meta charset="utf-8"/>'),true);
-  assert.equal(has('index.html','<ul><li>a</li></ul>'),true,'whitespace between tags');
-  assert.equal(has('index.html','<link rel="stylesheet" href="style.css">'),false,'another file name is another text');
-  assert.equal(has('index.html','<LINK rel="stylesheet" href="styles.css">'),false,'letter case still counts');
-  // The review's probes: what differs in meaning never matches.
-  const probe=(file,wanted)=>fileResult({path:'p.html',has:[wanted]},new Map([['p.html',file]])).passed;
-  assert.equal(probe('<input value="a = b">','<input value="a=b">'),false,'an attribute value is exact');
-  assert.equal(probe(`<p>He said "no"</p>`,`<p>He said 'no'</p>`),false,'quotes in text are exact');
-  assert.equal(probe(`<p>don't</p>`,`<p>don"t</p>`),false);
-  assert.equal(probe(`<button onclick="f('x')">`,`<button onclick='f("x")'>`),false);
-  assert.equal(probe('<p>x == y</p>','<p>x==y</p>'),false);
-  assert.equal(probe('<a href=/>','<a href=>'),false,'an unquoted "/" is the value');
-  assert.equal(probe('<div class="x"/><p>in</p>','<div class="x"><p>in</p>'),false,'only a void element\'s "/" is dropped');
-  assert.equal(probe('<pre>a    b</pre>','<pre>a b</pre>'),true,'v8 live 5: a whitespace run is one space, in any file');
-  assert.equal(probe('<script>s.replace(/a/ >0)</script>','<script>s.replace(/a>0)</script>'),false);
-  // v8 live 5: code and other text match modulo whitespace runs, on both sides: spaces, tabs and line breaks are one space.
-  assert.equal(has('app.py','if x:\n    y()'),true);
-  assert.equal(has('app.py','if x: y() z()'),true);
-  assert.equal(has('app.py','if x:\ny()'),true);
-  assert.equal(has('app.py','if x:y()'),false,'a run is one space, never none');
-  assert.equal(has('NOTES.md','Run the tool, then "stop" it.'),true,'spaces within a line');
-  assert.equal(has('NOTES.md','it. Next line'),true,'a line break is a run too');
-  assert.equal(has('NOTES.md',"then 'stop' it"),false,'plain text keeps its quotes');
-  assert.equal(has('NOTES.md','run the tool'),false,'plain text keeps its case');
+  assert.equal(has('index.html','<link rel="stylesheet" href="styles.css" />'),true);
+  assert.equal(has('index.html','<link rel="stylesheet" href="styles.css">'),false,'a self-closing "/" is part of the text');
+  assert.equal(has('index.html',"<link rel='stylesheet' href='styles.css' />"),false,'quotes are part of the text');
+  assert.equal(has('index.html','<ul><li>a</li></ul>'),false,'whitespace between tags is part of the text');
+  assert.equal(has('app.py','if x: y()'),false,'a whitespace run is part of the text');
+  assert.equal(has('app.py','    y()\nz()'),true);
 });
 
 
-test('judgeRequirement: Clef yes/no on the file, the bar at 0.6, the whole document in parts of 6,000, every part, and an error is not a failure',async()=>{
+test('judgeRequirement: Clef yes/no on the whole file in one question, the bar at 0.6, and an error is not a failure',async()=>{
   const asked=[];
   const env=p=>({AI:{run:async(_m,input)=>{asked.push(input);return {answers:{judge:{noul:typeof p==='function'?p(input):p}}};}}});
   assert.equal(JUDGE_BAR,0.6);
-  assert.deepEqual(await judgeRequirement(env(0.6),{says:'s',question:'Is it clear?',path:'A.md',content:'# A\n'}),{passed:true,p:0.6,parts:1,detail:''});
+  assert.deepEqual(await judgeRequirement(env(0.6),{says:'s',question:'Is it clear?',path:'A.md',content:'# A\n'}),{passed:true,p:0.6,detail:''});
   assert.equal(asked[0].questions.judge.type,'noul');
   assert.equal(asked[0].questions.judge.instructions,`${CLEF.judge} Specifically: Is it clear?`);
   assert.deepEqual(asked[0].state,{requirement:'s',file:{path:'A.md',text:'# A\n'}});
   assert.equal((await judgeRequirement(env(0.31),{says:'s',question:'Is it clear?',path:'A.md',content:'x'})).detail,'Clef judged p=0.31: Is it clear?');
-  // Cut at the last heading before 6,000 characters; a part may pass.
-  const long=`# One\n${'a'.repeat(4000)}\n## Two\n${'b'.repeat(4000)}\n`;
-  const parts=judgeParts(long);
-  assert.equal(parts.length,2);
-  assert.ok(parts[0].endsWith('a'.repeat(10)));assert.ok(parts[1].startsWith('## Two'));
-  asked.length=0;
-  const r=await judgeRequirement(env(input=>input.state.file.text.startsWith('## Two')?0.8:0.2),{says:'s',question:'q',path:'L.md',content:long});
-  assert.equal(r.passed,true);assert.equal(asked.length,2);
-  // The whole document, every part of it, however long: nothing is left unread.
-  const huge='# A\n'+'x'.repeat(30000);
-  assert.deepEqual(judgeParts(huge).map(x=>x.length),[6000,6000,6000,6000,6000,4]);
+  // The whole document, however long, in one question: never cut into parts, never clipped.
+  const huge=`# One\n${'a'.repeat(4000)}\n## Two\n${'x'.repeat(30000)}\n`;
   asked.length=0;
   const h=await judgeRequirement(env(0.1),{says:'s',question:'q',path:'H.md',content:huge});
-  assert.equal(asked.length,6);
-  assert.equal(asked.map(a=>a.state.file.text).join(''),huge);
+  assert.equal(asked.length,1);
+  assert.equal(asked[0].state.file.text,huge);
   assert.equal(h.detail,'Clef judged p=0.10: q');
   // The requirement and the question go to Clef as written.
   const question='Does it explain '+'every step '.repeat(60)+'?';

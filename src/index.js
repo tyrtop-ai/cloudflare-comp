@@ -9312,16 +9312,12 @@ export class ControlRoom extends DurableObject {
       const content=files.get(v.check.path);
       if(typeof content!=='string'||!content.trim()){const note=`${v.check.path} is ${typeof content==='string'?'empty':'missing'}`;return [v.id,{id:v.id,kind:'judge',frames:[],passed:false,detail:note,observed:{what:'local',note}}];}
       const says=v.says||(v.serves||[]).map(n=>contractOf.get(n)?.does).filter(Boolean).join('; ');
-      // A Clef error is retried twice, with backoff, before it is infrastructure.
-      for(let k=0;;k++) {
-        try {
-          const j=await judgeRequirement(this.inferenceEnv(),{says,question:v.check.question,path:v.check.path,content});
-          return [v.id,{id:v.id,kind:'judge',frames:[],passed:j.passed,p:j.p,detail:j.detail,observed:{what:'judge',p:j.p}}];
-        } catch(e) {
-          if(k>=JUDGE_RETRY_MS.length)return [v.id,{id:v.id,kind:'judge',frames:[],passed:false,infrastructure:true,detail:`Clef could not judge ${v.check.path} after ${k+1} tries: ${clip(e?.message||e,200)}`}];
-          this.event(id,'judge_retry',clip(`Clef could not judge ${v.check.path} for ${v.id} (${clip(e?.message||e,160)}); asked again in ${JUDGE_RETRY_MS[k]} ms.`,400));
-          await new Promise(done=>setTimeout(done,JUDGE_RETRY_MS[k]));
-        }
+      // A Clef error is infrastructure: the room holds and Continue compiles again.
+      try {
+        const j=await judgeRequirement(this.inferenceEnv(),{says,question:v.check.question,path:v.check.path,content});
+        return [v.id,{id:v.id,kind:'judge',frames:[],passed:j.passed,p:j.p,detail:j.detail,observed:{what:'judge',p:j.p}}];
+      } catch(e) {
+        return [v.id,{id:v.id,kind:'judge',frames:[],passed:false,infrastructure:true,detail:`Clef could not judge ${v.check.path}: ${e?.message||e}`}];
       }
     }));
   }

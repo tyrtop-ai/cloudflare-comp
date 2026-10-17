@@ -811,43 +811,22 @@ export const sourceModel = env => async ({role:part, system, user}) =>
   withoutThinking(await run(env, system, user, SOURCE_SUMMARY_TOKENS, {call: part==='source_gist'?'sourceGist':'sourceSummary', role:'source', noThink:true}));
 // v8 §4.3 (S4b): Clef judges a document requirement, yes or no, from the
 // file alone: state {requirement, file:{path, text}}, the question CLEF.judge
-// with the check's own question appended. The whole document is read, in
-// parts of at most JUDGE_CHARS cut at a heading (judgeParts), every part;
-// the requirement passes if any part does (p >= JUDGE_BAR, decision U11),
-// and the reading stops at the first that does. Returns {passed, p, detail,
-// parts}; a Clef that gives no probability throws (the room retries it,
-// then reads it as infrastructure, never as the document's failure). MOCK
-// passes.
-export const JUDGE_BAR = 0.6, JUDGE_CHARS = 6000;
-const HEADING=/\n(?=#{1,6}\s|\S[^\n]*\n[=-]{3,}\s*\n)/g;
-export function judgeParts(text, {size=JUDGE_CHARS}={}) {
-  let rest=String(text??'');
-  const parts=[];
-  while(rest.length) {
-    if(rest.length<=size){parts.push(rest);rest='';break;}
-    const head=rest.slice(0,size),cut=[...head.matchAll(HEADING)].map(m=>m.index).filter(i=>i>0).at(-1)||size;
-    parts.push(rest.slice(0,cut));
-    rest=rest.slice(cut).replace(/^\n/,'');
-  }
-  if(!parts.length)parts.push('');
-  return parts;
-}
+// with the check's own question appended. Clef reads the whole document as
+// written, in one question; the requirement passes at p >= JUDGE_BAR
+// (decision U11). Returns {passed, p, detail}; a Clef that gives no
+// probability throws (the room reads that as infrastructure, never as the
+// document's failure). MOCK passes.
+export const JUDGE_BAR = 0.6;
 export async function judgeRequirement(env, {says='', question='', path='', content=''}) {
-  if (env.MOCK_AI === 'true') return {passed:true,p:1,detail:'',parts:1};
+  if (env.MOCK_AI === 'true') return {passed:true,p:1,detail:''};
   const selector=env.SPLIT_MODEL || '@cf/cloudflare/clef-flash';
   const clef=DECISION_MODELS[selector];
   if (!clef) throw new Error('unsupported Clef decision model');
   const instructions=`${CLEF.judge}${question?` Specifically: ${question}`:''}`;
-  const parts=judgeParts(content);
-  let best=-1,read=0;
-  for (const text of parts) {
-    const output=await clefRun(env,'judgeRequirement',selector,{model:clef,state:{requirement:String(says),file:{path:String(path),text}},questions:{judge:{type:'noul',instructions}}});
-    const p=output?.answers?.judge?.noul;
-    if(typeof p!=='number'||!Number.isFinite(p)||p<0||p>1)throw new Error(`Clef returned no valid probability judging ${path}`);
-    best=Math.max(best,p);read++;
-    if(best>=JUDGE_BAR)break;
-  }
-  return {passed:best>=JUDGE_BAR,p:best,parts:read,detail:best>=JUDGE_BAR?'':`Clef judged p=${best.toFixed(2)}: ${question||says}`};
+  const output=await clefRun(env,'judgeRequirement',selector,{model:clef,state:{requirement:String(says),file:{path:String(path),text:String(content)}},questions:{judge:{type:'noul',instructions}}});
+  const p=output?.answers?.judge?.noul;
+  if(typeof p!=='number'||!Number.isFinite(p)||p<0||p>1)throw new Error(`Clef returned no valid probability judging ${path}`);
+  return {passed:p>=JUDGE_BAR,p,detail:p>=JUDGE_BAR?'':`Clef judged p=${p.toFixed(2)}: ${question||says}`};
 }
 // v7.15.6 (run13): no triage. A failed run with no frame in a component is
 // a requirement the manager routes by the plan (readRequirement in
