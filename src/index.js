@@ -5422,7 +5422,7 @@ export class ControlRoom extends DurableObject {
     const held=this.packagesOf(id),notes=[];
     const out=spawn.map(c=>{
       if(!c||typeof c!=='object')return c;
-      const r=piecePackages(c,held,this.installedToolchains()),{packages:_,...rest}=c;
+      const r=piecePackages(c,held),{packages:_,...rest}=c;
       if(r.given)notes.push(`"${clip(c.label,70)}" gets ${r.packages.map(p=>p.name).join(', ')||'no package'}${r.asks.length?` and asks for ${r.asks.join(', ')}`:''}`);
       return {...rest,packages:r.packages,...(r.asks.length?{package_asks:r.asks}:{})};
     });
@@ -8709,12 +8709,13 @@ export class ControlRoom extends DurableObject {
       // Each package its row holds that the asker's does not: grant gives it down the asker's line.
       const held=new Set(this.packagesOf(item.worker).map(p=>p.name)),mine=this.packagesOf(m);
       const grants=this.packageView(m).filter(p=>!held.has(p.name)).map(p=>({package:p}));
-      // At the top of the line (no manager above m), a name no row on it lists
-      // may be granted new, in each language whose box installs packages (owner,
-      // 2026-10-15 22:12: "why are packages not allowed now?"); the box installs it.
+      // The name asked for, which m's row does not list, granted new in a
+      // language: one option per code language the box compiles (owner,
+      // 2026-10-15 22:12: "why are packages not allowed now?"; every manager
+      // has it, whatever its depth, 22:22); the box installs it.
       const [named]=normalizePackages(item.name?[item.name]:[]);
-      if(named&&!this.agentAbove(m)&&!mine.some(p=>p.name===named.name)&&!held.has(named.name))
-        for(const row of this.compileRows().filter(r=>r.install))grants.push({package:{name:named.name,language:row.id},fresh:row.name});
+      if(named&&!mine.some(p=>p.name===named.name)&&!held.has(named.name))
+        for(const row of this.compileRows().filter(r=>r.id!=='text'))grants.push({package:{name:named.name,language:row.id},fresh:row.name});
       grants.forEach((g,j)=>out.push({fn:'grant',...g,key:`grant_${j}`,question:clefText('grant',{j}),call:`grant(${g.package.name}${g.fresh?`, ${g.fresh}`:''})`}));
       out.push({fn:'ask_parent',key:'ask_parent',question:CLEF.ask_parent,call:'ask_parent(need)'});
       return out;
@@ -8815,7 +8816,7 @@ export class ControlRoom extends DurableObject {
   // ---------- asks ----------
   // An ask a worker sent (workerAsk), held by manager m: m's choice answers
   // it with a contract its children deliver (none of the asker's own line),
-  // grants it a package (one m's row holds, or at the top of the line a name no row holds), or asks its
+  // grants it a package (one m's row holds, or the name asked for, new), or asks its
   // own parent the same. At the room (the parent of the manager it created), an
   // ask no manager up to it holds archives the asker with its subtree, and
   // its manager's splitter rebuilds what it delivered (rebuildOrphans).
@@ -8827,7 +8828,7 @@ export class ControlRoom extends DurableObject {
     const pick=await this.managerChoice(m,{kind:'ask',worker:ask.worker,need:ask.need,name:ask.name||''},held);
     if(!pick)return;
     if(pick.fn==='answer')return this.answerAsk(ask,pick.contract);
-    if(pick.fn==='grant')return this.grantPackage(m,ask,pick.package,{fresh:!!pick.fresh});
+    if(pick.fn==='grant')return this.grantPackage(m,ask,pick.package);
     const up=this.agentAbove(m);
     if(up) {
       this.insertProblem({...held,holder:up});
@@ -8856,14 +8857,14 @@ export class ControlRoom extends DurableObject {
     }
     this.answerAsker(n.id,ask,text||MESSAGES.provided({contract:contractLine(c),reference:this.referenceLine(c.name,c,n.id)}),c.name);
   }
-  // The package p that manager m's row holds, granted to the asker: it is
-  // added to the packages of every row between m and the asker, so a piece's
-  // packages stay a part of its parent's, and the asker hears it. fresh: a
-  // package granted new at the top of the line, listed on m's row too.
-  async grantPackage(m, ask, p, {fresh=false}={}) {
+  // The package p manager m granted the asker: it is listed on every row of
+  // the asker's line that does not list it (m's and those above it too, for
+  // one m's row did not hold), so a piece's packages stay a part of its
+  // parent's and each level's box installs what its subtree uses; the asker hears it.
+  async grantPackage(m, ask, p) {
     const n=this.node(ask.worker);
     if(!n||!p)return;
-    for(let x=n.id;x&&(x!==m||fresh);x=x===m?null:this.agentAbove(x)) {
+    for(let x=n.id;x;x=this.agentAbove(x)) {
       const own=normalizePackages(parse(this.node(x)?.packages,[]));
       if(!own.some(q=>q.name===p.name))this.db().exec('UPDATE agents SET packages=? WHERE id=?',JSON.stringify(normalizePackages([...own,p])),x);
     }
@@ -9194,9 +9195,9 @@ export class ControlRoom extends DurableObject {
     const [judged,run]=await Promise.all([judging,container?this.runChecks(id,input,box,plan,toolchains):null]);
     if(container)this.span('piece','piece_box',boxStart,Date.now(),{manager:id,depth,checks:plan.checks.length,files:files.size,compiled:plan.syntax.reduce((n,s)=>n+s.files.length,0),...(run?.infrastructure?{infrastructure:true}:{passed:!!run?.report?.passed})},id);
     for(const [vid,x] of judged)results.set(vid,x);
-    const report=run?.report||null;
     // What Clef gave no answer for, whether the piece runs it: not run, as a check the box could not run is.
     for(const v of unjudged)results.set(v.id,{id:v.id,passed:false,infrastructure:true,detail:'not run: Clef gave no answer on whether this piece runs it'});
+    const report=run?.report||null;
     if(report?.inventory)this.save('toolchain_inventory',report.inventory);
     for(const c of report?.checks||[])results.set(c.id,c);
     // What the syntax steps compiled cleanly is known by its bytes from now on.

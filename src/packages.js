@@ -1,23 +1,23 @@
 // v8 live 4: packages, the modules an agent's row lists beside its
 // contracts (owner, 2026-10-15 22:11: "packages should be listed in the
-// durable object upon creation, same way as interfaces"). A language's
-// standard library is part of the language, always there for every agent, so
-// no row lists it, no ask is needed for it and none grants it. Root's row
-// holds what the image installs; a split gives each piece a part of its
-// parent's, as it gives contracts; an ask by a name its row does not hold
-// goes to its manager as a contract ask does, whose choice grants a package
-// its row holds or asks one level up; at the top of the line a name no row
-// holds may be granted new (packages are allowed, 22:12), and the compiler's
-// box installs it. Pure: no room, no model.
+// durable object upon creation, same way as interfaces"). Root's row holds
+// what the image installs; a split gives each piece a part of its parent's,
+// as it gives contracts, and a name the splitter gave a piece that its
+// parent's row does not list is the piece's ask; an ask by a name its row
+// does not hold goes to its manager as a contract ask does, whose choice
+// grants a package (one its row holds, or the name new, in a language: every
+// manager has the same functions, whatever its depth) or asks one level up
+// (packages are allowed, 22:12); the compiler's box installs what a row
+// lists. A package's name is whatever the agent gave: no list or name shape
+// decides what is one. Pure: no room, no model.
 import {TOOLCHAINS, toolchainById, toolchainOf} from './toolchains.js';
 
 // A package as a row lists it: {name, language, provides}.
-const NAME = /^(?:@[\w.-]+\/)?[A-Za-z_][\w.:-]{0,80}$/;
 export function normalizePackages(raw) {
   const out = [], seen = new Set();
   for (const p of Array.isArray(raw) ? raw : []) {
     const name = typeof p === 'string' ? p.trim() : typeof p?.name === 'string' ? p.name.trim() : '';
-    if (!NAME.test(name) || seen.has(name)) continue;
+    if (!name || seen.has(name)) continue;
     const language = typeof p?.language === 'string' && p.language ? p.language : '';
     seen.add(name);
     out.push({name, ...(language ? {language} : {}), ...(typeof p?.provides === 'string' && p.provides ? {provides: p.provides} : {})});
@@ -26,7 +26,7 @@ export function normalizePackages(raw) {
 }
 // The names a splitter gave a piece: names, or {name} items, or one string of them.
 export const packageNames = raw => [...new Set((Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[\s,;]+/) : [])
-  .map(p => typeof p === 'string' ? p.trim() : typeof p?.name === 'string' ? p.name.trim() : '').filter(n => NAME.test(n)))];
+  .map(p => typeof p === 'string' ? p.trim() : typeof p?.name === 'string' ? p.name.trim() : '').filter(Boolean))];
 
 // A version string's [major, minor, patch].
 const version = v => String(v ?? '').split(/[^\d]+/).filter(Boolean).slice(0, 3).map(Number);
@@ -49,7 +49,6 @@ export function installedLine(packages, inventory = null) {
 }
 
 // ------------------------------------------------------------ names
-const rowOf = (lang, rows) => rows.find(r => r.id === lang) || null;
 // A module's name without its row's module_prefix (node:fs is fs), and its top-level name.
 const bare = (name, row) => { const n = String(name ?? '').trim(), pre = row?.module_prefix || ''; return pre && n.startsWith(pre) ? n.slice(pre.length) : n; };
 const topOf = (name, row) => bare(name, row).split(/[./]/)[0];
@@ -62,19 +61,9 @@ export function inStdlib(name, row) {
   if (String(row.stdlib_names || '').split(/\s+/).includes(topOf(n, row))) return true;
   return (row.stdlib_provides || []).some(p => bare(p.name, row) === bare(n, row) || bare(p.name, row).split(/[./]/)[0] === topOf(n, row) && !bare(n, row).includes('.'));
 }
-// The row whose standard library holds a name, or null.
+// The row whose standard library holds a name, or null (what the box need
+// not install for a row: packageInstalls).
 export const stdlibRow = (name, rows = TOOLCHAINS) => rows.find(r => inStdlib(name, r)) || null;
-// ------------------------------------------------------------ holding a name
-// The packages a list holds by name: the name itself, the name with or
-// without its row's module_prefix, or the modules under a dotted parent
-// (urllib holds urllib.request, urllib.parse).
-export function heldByName(held, name, rows = TOOLCHAINS) {
-  const n = String(name ?? '').trim();
-  if (!n) return [];
-  const same = p => { const row = rowOf(p.language, rows); return p.name === n || bare(p.name, row) === bare(n, row); };
-  const exact = held.filter(same);
-  return exact.length ? exact : held.filter(p => p.name.startsWith(`${n}.`));
-}
 // One package as an answer names it: "http.server (HTTP server)".
 export const packageLine = p => `${p.name}${p.provides ? ` (${p.provides})` : ''}`;
 // ------------------------------------------------------------ pieces
@@ -86,14 +75,13 @@ export const pieceLanguages = contracts => {
 };
 // A split's piece's packages (v8 live 4, as its contracts): its parent's
 // packages of the piece's languages (all of them when its contracts name
-// none), and the names it was given that its parent's row lists in those
-// languages (v8 live 4 review: added to that set, never replacing it); a
-// given name its parent's row does not list is an ask, which goes up as a
-// worker's does, to its manager (a module of a standard library needs none:
-// it is part of the language, always there).
-export function piecePackages(piece, parentHeld = [], rows = TOOLCHAINS) {
+// none), and the names it was given that its parent's row lists (v8 live 4
+// review: added to that set, never replacing it); a given name its parent's
+// row does not list is an ask, which goes up as a worker's does, to its
+// manager, whose choice answers it.
+export function piecePackages(piece, parentHeld = []) {
   const langs = pieceLanguages(piece?.interfaces), fits = p => !langs || !p.language || langs.includes(p.language);
-  const own = parentHeld.filter(fits), given = packageNames(piece?.packages), packages = [...own], asks = [];
-  for (const n of given) { const hit = heldByName(parentHeld.filter(fits), n, rows); if (hit.length) packages.push(...hit); else if (!stdlibRow(n, rows)) asks.push(n); }
+  const given = packageNames(piece?.packages), packages = parentHeld.filter(fits), asks = [];
+  for (const n of given) { const hit = parentHeld.filter(p => p.name === n); if (hit.length) packages.push(...hit); else asks.push(n); }
   return {packages: normalizePackages(packages), asks, given: given.length > 0};
 }

@@ -181,17 +181,19 @@ test('an ask goes to the asker\'s manager as one choice among its functions, eac
     }
     return deliver({'report.js': reportFile(user)});
   };
-  // The report piece's manager has no child to answer it: ask_parent is the one function it may call, and Clef is not asked.
+  // The report piece's manager has no child to answer it: it may grant the name new, as every manager may, or ask one level up; Clef finds ask_parent.
   const {asked: choices, clef} = recorded({'^ask_parent$': (_k, state) => state.assignment === TRACKER ? 0.1 : 0.95});
   const {room, calls} = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf, clef});
   assert.equal(room.get('status'), 'complete', trail(room));
   const m = room.roomManager(), rp = room.children(m).find(c => c.label === 'Ticket report'), w = room.liveChildren(rp.id)[0];
   assert.ok(asked && calls.leafRounds.some(r => r.round === 3));
-  // One choice Clef scores per ask: the room's manager's (the piece's only child is the asker's own line, so it has nothing to answer with).
-  const asks = choices.filter(c => c.state.item.kind === 'ask');
+  // One choice Clef scores per ask at each manager it reaches: the piece's manager has the same functions as the room's (owner, 2026-10-15 22:22), less the contracts it has none to answer with.
+  const all = choices.filter(c => c.state.item.kind === 'ask'), asks = all.filter(c => c.state.assignment === TRACKER);
+  assert.equal(all.length, 4);
   assert.equal(asks.length, 2);
-  // At the top of the line a name no row holds may also be granted new, as a package in each language whose box installs packages: Clef's choice, as every option is.
-  assert.deepEqual(Object.keys(asks[0].questions), ['answer_0', 'answer_1', 'grant_0', 'grant_1', 'ask_parent'], 'the store\'s contracts, none of the asker\'s line, the top\'s new grants, and no extend');
+  for (const below of all.filter(c => c.state.assignment !== TRACKER)) assert.deepEqual(Object.keys(below.questions), ['grant_0', 'grant_1', 'ask_parent']);
+  // A name no row holds may be granted new, as a package in each code language the box compiles: Clef's choice, as every option is.
+  assert.deepEqual(Object.keys(asks[0].questions), ['answer_0', 'answer_1', 'grant_0', 'grant_1', 'ask_parent'], 'the store\'s contracts, none of the asker\'s line, the new grants, and no extend');
   assert.deepEqual(asks[0].state.packages_offered.map(p => p.package), ['getTicket (a JavaScript package, not yet installed: the box installs it)', 'getTicket (a Python package, not yet installed: the box installs it)']);
   assert.equal(asks[0].questions.ask_parent.instructions, CLEF.ask_parent);
   assert.equal(asks[0].questions.answer_1.instructions, clefText('answer', {j: 1}));
@@ -201,7 +203,7 @@ test('an ask goes to the asker\'s manager as one choice among its functions, eac
   // Each choice is an event with Clef's p for the chosen call and the others'.
   const said = events(room, 'manager_choice').filter(e => /^On the ask/.test(e.body)).map(e => [e.actor, e.body]);
   assert.deepEqual(said.map(([a]) => a), [rp.id, rp.id, m, m]);
-  assert.equal(said[0][1], 'On the ask for getTicket: ask_parent(need) (the only function it may call).');
+  assert.equal(said[0][1], 'On the ask for getTicket: ask_parent(need) p=0.950; the others: grant(getTicket, JavaScript) p=0.200, grant(getTicket, Python) p=0.200.');
   assert.equal(said[2][1], 'On the ask for getTicket: answer(getTicket) p=0.950; the others: answer(createTicket) p=0.900, grant(getTicket, JavaScript) p=0.200, grant(getTicket, Python) p=0.200, ask_parent(need) p=0.100.');
   assert.equal(events(room, 'ask_parent').length, 2);
   // The answer reached the asker: the contract, how to refer to it, and its entry calls it.

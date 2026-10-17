@@ -92,9 +92,11 @@ test('H2 (owner, 2026-10-16 20:43): a worker\'s ask by any name its world does n
   assert.deepEqual(room.packagesOf(SERVER), [], 'nothing granted');
 });
 
-test('H2: the manager is the interface for what exists: a package its row holds is one of its functions on an ask (grant), Clef scores it, and a grant goes down the asker\'s line; a manager without it hands the ask up', async () => {
+test('H2: the manager is the interface for what exists: a package its row holds, or the name asked for granted new, is one of its functions on an ask (grant), at every depth; Clef scores it, and a grant is listed on the asker\'s whole line; a manager whose grants Clef finds give nothing hands the ask up', async () => {
   const REQUESTS = {name: 'requests', language: 'python', provides: 'HTTP client'};
-  const {room} = liveRoom({clef: usualClef({'^grant_\\d+$': 0.95, '^ask_parent$': 0.6})});
+  // Clef: a package a row holds gives the need; of the names granted new, only flask as a Python package does.
+  const grantP = (key, state) => { const o = state.packages_offered?.[Number(key.split('_')[1])]?.package || ''; return !/not yet installed/.test(o) ? 0.95 : /^flask \(a Python package/.test(o) ? 0.95 : 0.1; };
+  const {room} = liveRoom({clef: usualClef({'^grant_\\d+$': grantP, '^ask_parent$': 0.6})});
   room.save('settings', {...room.settings(), pipeline: 'v8'});
   await room.provision(TOP, null, 'Root objective', 'a tracker', [], [], [PYTEST, REQUESTS], 'manager', {seq: 1});
   await room.provision(BACKEND, TOP, 'Backend', 'the backend', [], [], [PYTEST], 'manager', {seq: 1});
@@ -107,15 +109,21 @@ test('H2: the manager is the interface for what exists: a package its row holds 
   assert.deepEqual(room.packagesOf(SERVER).map(p => p.name), ['pytest']);
   const granted = MESSAGES.package_granted({need: 'a test runner', names: 'pytest (tests)', many: false});
   assert.deepEqual(room.read(`fn_answers:${SERVER}`, []).map(a => [a.key.replace(/ \([0-9a-f]{8}\)$/, ''), a.kind, a.text]), [['fn pytest', 'provided', granted]]);
-  // requests is Root's alone: Backend has no grant for it and hands it up; Root grants it to every row between.
+  // requests is Root's alone: Backend may grant httpx new, which Clef finds gives nothing here, and hands it up; Root grants requests to every row between.
   await room.workerAsk(SERVER, {need: 'fetch a page over HTTP', name: 'httpx'});
   await room.routeHeld(BACKEND);
-  assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for httpx: ask_parent\(need\)/);
+  assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for httpx: ask_parent\(need\) p=0\.600; the others: grant\(httpx, JavaScript\) p=0\.100, grant\(httpx, Python\) p=0\.100\.$/);
   await room.routeHeld(TOP);
   assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for httpx: grant\(requests\) p=0\.950/);
   assert.ok(room.packagesOf(BACKEND).some(p => p.name === 'requests') && room.packagesOf(SERVER).some(p => p.name === 'requests'));
   assert.match(events(room, 'package_granted').at(-1).body, /^"Root objective" granted requests to "Server"\.$/);
   assert.equal(events(room, 'package_relayed').length, 0, 'no walk of the runtime\'s own');
+  // A manager below the top grants a name no row lists, new, as the top would (every manager has the same functions); it is listed on the whole line, so each level's box installs it.
+  await room.workerAsk(SERVER, {need: 'a web framework', name: 'flask'});
+  await room.routeHeld(BACKEND);
+  assert.match(events(room, 'manager_choice').at(-1).body, /^On the ask for flask: grant\(flask, Python\) p=0\.950/);
+  for (const id of [SERVER, BACKEND, TOP]) assert.deepEqual(room.packagesOf(id).find(p => p.name === 'flask'), {name: 'flask', language: 'python'}, id);
+  assert.deepEqual(room.packageInstalls(TOP), [{toolchain: 'python', packages: ['requests', 'flask']}]);
 });
 
 test('M1: the installed set and the rows\' packages hold no standard library module; its modules are row data (stdlib_provides)', () => {
@@ -137,10 +145,10 @@ test('L7: the module prefix is row data; each code row says how its box installs
   for (const row of TOOLCHAINS.filter(r => r.id !== 'text')) assert.ok(Array.isArray(row.install?.argv) && row.install.argv.includes('{packages}') && row.install.tree, row.id);
 });
 
-test('L10: a splitter\'s named packages are read in the piece\'s language and added to its default set', () => {
+test('L10: a splitter\'s named packages its parent\'s row lists are added to the piece\'s default set (its languages\'), by name; any other is asked', () => {
   const parent = [PYTEST, {name: 'requests', language: 'python', provides: 'HTTP client'}, {name: 'express', language: 'javascript', provides: 'HTTP server'}];
   const piece = {interfaces: [{name: 'app.py', kind: 'file', path: 'app.py'}]};
-  assert.deepEqual(piecePackages({...piece, packages: ['express']}, parent).asks, ['express'], 'another language\'s package is not the piece\'s');
+  assert.deepEqual(piecePackages({...piece, packages: ['express']}, parent), {packages: [PYTEST, parent[1], parent[2]], asks: [], given: true}, 'the splitter named it and the parent lists it: the piece has it');
   assert.deepEqual(piecePackages({...piece, packages: ['pytest']}, parent).packages.map(p => p.name), ['pytest', 'requests'], 'named, and the default set too');
-  assert.deepEqual(piecePackages({...piece, packages: ['json', 'http.server']}, parent).asks, [], 'a standard library module needs no ask');
+  assert.deepEqual(piecePackages({...piece, packages: ['json', 'http.server']}, parent).asks, ['json', 'http.server'], 'a name its parent\'s row does not list is asked of its manager: no word list of the runtime\'s answers it');
 });
