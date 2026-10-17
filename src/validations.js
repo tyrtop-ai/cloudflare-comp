@@ -410,30 +410,6 @@ export function exerciseWords(c) {
   return c.path ? `file or judge checks of ${c.path}, each text it holds and each question one example${runs}` : `checks of ${c.name}`;
 }
 
-// The facts of a division Clef's review reads: the paths each piece places,
-// the contracts no piece delivers and those several deliver, the paths
-// several pieces place, and the files of contracts the level already has
-// that a contract of this division places again.
-export function divisionOf(contracts, pieces, have = []) {
-  const byName = new Map(contracts.map(c => [c.name, c])), places = pieces.map(p => [...new Set(p.contracts.map(n => byName.get(n)?.path).filter(Boolean))]);
-  const out = {places};
-  if (pieces.length) {
-    const undelivered = contracts.filter(c => !pieces.some(p => p.contracts.includes(c.name))).map(c => c.name);
-    const several = contracts.map(c => ({contract: c.name, pieces: pieces.filter(p => p.contracts.includes(c.name)).map(p => p.label)})).filter(x => x.pieces.length > 1);
-    const paths = new Map();
-    pieces.forEach((p, i) => { for (const at of places[i]) paths.set(at, [...(paths.get(at) || []), p.label]); });
-    const shared = [...paths].filter(([, by]) => by.length > 1).map(([path, by]) => ({path, pieces: by}));
-    if (undelivered.length) out.undelivered = undelivered;
-    if (several.length) out.delivered_by_several = several;
-    if (shared.length) out.placed_by_several = shared;
-  }
-  const had = have.filter(c => c?.name);
-  const replaced = contracts.filter(c => c.path).flatMap(c => had.filter(h => h.path === c.path).map(h => ({contract: c.name, path: c.path, has: h.name})));
-  if (replaced.length) out.placed_already = replaced;
-  return out;
-}
-
-
 // A file check that looks for texts inside a file of a code row: Clef is
 // asked whether it tests what a user meets rather than an internal detail.
 export const internalCandidate = check => check?.kind === 'file' && Array.isArray(check.has) && check.has.length > 0 && !!toolchainOf(String(check.path || '')) && toolchainOf(String(check.path)).id !== 'text';

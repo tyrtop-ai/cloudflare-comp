@@ -125,18 +125,18 @@ test('F5: a finished v8 room made before levels exports its top row\'s bundle, p
 });
 
 // ------------------------------------------------------------------ F7
-test('F7 (v8 live 6): two pieces placing one path, and a contract a job adds at a path its level has, are no miss of the runtime: they are facts for Clef\'s review; functions of one piece share a file', () => {
+test('F7 (v8 live 6): two pieces placing one path, and a contract a job adds at a path its level has, are no miss of the runtime, and the runtime works out nothing about them: the division is Clef\'s review to judge; functions of one piece share a file', () => {
   const C = CONTRACTS.map(c => ['shout', 'loud'].includes(c.name) ? {...c, path: 'words.py'} : c);
   const two = stated({contracts: C, validations: VALIDATIONS, pieces: [{label: 'Shouter', task: 'Write shout', contracts: ['shout']}, {label: 'Louder', task: 'Write loud', contracts: ['loud']}, {label: 'Rest', task: 'the rest', contracts: ['whisper', 'soft', 'NOTES.md']}]});
   assert.deepEqual(two.done, {complete: true});
-  assert.deepEqual(two.level.division.placed_by_several, [{path: 'words.py', pieces: ['Shouter', 'Louder']}]);
+  assert.deepEqual(Object.keys(two.level), ['contracts', 'validations', 'pieces']);
   const one = stated({contracts: C, validations: VALIDATIONS, pieces: [{label: 'Loud', task: 'Write shout and loud', contracts: ['shout', 'loud']}, {label: 'Rest', task: 'the rest', contracts: ['whisper', 'soft', 'NOTES.md']}]});
-  assert.deepEqual([one.done, one.level.division.placed_by_several], [{complete: true}, undefined], 'one piece may define two functions in one file');
+  assert.deepEqual(one.done, {complete: true}, 'one piece may define two functions in one file');
   // A job at a level that may not divide (piece is not offered): its contracts, with no pieces.
   const job = stated({contracts: [{name: 'reverse', kind: 'function', path: 'shout.py', does: 'reverses a word'}], validations: [call('r1', ['reverse'], 'reverse', 'ab', 'ba'), call('r2', ['reverse'], 'reverse', 'a', 'a'), call('r3', ['reverse'], 'reverse', 'xyz', 'zyx')], pieces: []}, {have: [CONTRACTS[0]], divide: false});
-  assert.deepEqual([job.done, job.level.division.placed_already], [{complete: true}, [{contract: 'reverse', path: 'shout.py', has: 'shout'}]]);
+  assert.deepEqual([job.done, job.level.pieces, job.level.division], [{complete: true}, [], undefined]);
 });
-test('F7 (v8 live 6): Clef reads which files each piece places; a division that places one file from two pieces is its to judge, and when it says NO the splitter divides again and the next division is admitted', {skip}, async () => {
+test('F7 (v8 live 6): Clef reads the original and the pieces as written; a division that places one file from two pieces is its to judge from the contracts\' own lines, and when it says NO the splitter divides again and the next division is admitted', {skip}, async () => {
   const C = CONTRACTS.map(c => ['shout', 'loud'].includes(c.name) ? {...c, path: 'words.py'} : c);
   const flat = [{label: 'Shouter', task: 'Write shout', contracts: ['shout']}, {label: 'Louder', task: 'Write loud, which uses shout', contracts: ['loud'], uses: ['shout']}, {label: 'Quiet', task: 'Write whisper and soft', contracts: ['whisper', 'soft']}, {label: 'Notes', task: 'Write NOTES.md', contracts: ['NOTES.md']}];
   let n = 0;
@@ -145,16 +145,17 @@ test('F7 (v8 live 6): Clef reads which files each piece places; a division that 
     if (round === 1) n++;
     return n === 1 ? {contracts: C, validations: VALIDATIONS, pieces: flat} : {contracts: CONTRACTS, validations: VALIDATIONS, pieces: flat};
   };
-  const shared = (key, state) => state.division?.files_placed_by_several_pieces ? 0.1 : 0.9;
+  const shared = (key, state) => state.contracts.filter(l => / in words\.py/.test(l)).length > 1 ? 0.1 : 0.9;
   const r = await toolkit({split, clef: clefFor([], {'^split_valid$': shared})});
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
   const m = at(r.room);
   assert.ok(!events(r.room, 'split_defects').length, 'the runtime rejected nothing');
   const reviews = r.calls.clef.filter(c => 'split_valid' in (c.questions || {}) && c.state?.assignment?.startsWith(GOAL));
   assert.equal(reviews.length, 2);
-  assert.deepEqual(reviews[0].state.division, {files_placed_by_several_pieces: [{path: 'words.py', pieces: ['Shouter', 'Louder']}]});
-  assert.deepEqual(reviews[0].state.pieces.map(p => p.places), [['words.py'], ['words.py'], ['whisper.py', 'soft.py'], ['NOTES.md']]);
-  assert.equal(reviews[1].state.division, undefined, 'the next division places each file from one piece');
+  // No facts the runtime worked out: the assignment, the contracts' lines, the pieces as declared, the validations.
+  for (const r of reviews) assert.deepEqual(Object.keys(r.state), ['assignment', 'contracts', 'pieces', 'validations']);
+  assert.deepEqual(reviews[0].state.pieces.map(p => Object.keys(p)), flat.map(() => ['slot', 'label', 'task', 'contracts']));
+  assert.equal(reviews[0].state.contracts.filter(l => / in words\.py/.test(l)).length, 2, 'the contracts\' lines say where each is placed');
   assert.match(events(r.room, 'split_review').find(e => e.actor === m.Root).body, /NO, so its splitter tries again/);
   assert.ok(!events(r.room, 'bundle_conflict').length, 'no file is placed twice');
 });

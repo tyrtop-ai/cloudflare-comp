@@ -146,6 +146,6 @@ test('Clef questions are filled by key, and run data never enters a system promp
   assert.equal(clefText('scope', {i: 3}), CLEF.scope.replace('{i}', '3'));
   assert.equal(clefText('answer', {j: 1}), CLEF.answer.replace('{j}', '1'));
   for (const role of ROLES) assert.doesNotMatch(systemPrompt(role), /\$\{|\{i\}|\{j\}|\{contract\}/);
-  assert.equal(RETRY.too_small(9, 4), 'Your previous answer, listed in rejected, had 9 pieces, and some were too small to be worth a task of their own. Use fewer, larger pieces this time, at least 2 and at most 4, each delivering whole contracts.');
+  assert.equal(RETRY.too_small(9), 'Your previous answer, listed in rejected, had 9 pieces, and some were too small to be worth a task of their own. Divide the assignment into larger pieces this time, at least 2, each delivering whole contracts.');
   assert.equal(MESSAGES.unchanged({path: 'a/b'}), 'unchanged: a/b is already exactly this text.');
 });

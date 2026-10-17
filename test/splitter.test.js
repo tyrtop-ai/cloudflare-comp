@@ -171,9 +171,10 @@ test('level shows everything declared so far; done reports what the level still 
     'the division has 0 pieces of at least 2, each declared with piece.']}});
   calls(s, [run('-40 C', '-40'), callOf(0, 32), callOf(100, 212),
     ['piece', {label: 'A', task: 'Write to_f.', contracts: ['to_f', 'convert']}], ['piece', {label: 'B', task: 'Write convert.', contracts: ['convert', 'NOTES.md']}]]);
-  // A contract two pieces deliver is no miss of done: it is a fact of the division, which Clef's review reads.
+  // A contract two pieces deliver is no miss of done: the division is Clef's review to judge, and the level is the pieces as declared.
   assert.deepEqual(missingOf(s), []);
-  assert.deepEqual(levelOf(s).division.delivered_by_several, [{contract: 'convert', pieces: ['A', 'B']}]);
+  assert.deepEqual(Object.keys(levelOf(s)), ['contracts', 'validations', 'pieces']);
+  assert.deepEqual(levelOf(s).pieces.map(p => [p.label, p.contracts]), [['A', ['to_f', 'convert']], ['B', ['convert', 'NOTES.md']]]);
   assert.equal(s.done, false);
   assert.deepEqual(splitterCall(s, 'done', {}).result, {complete: true});
   // A level that may not divide (piece is not offered) completes with no pieces.
@@ -183,7 +184,7 @@ test('level shows everything declared so far; done reports what the level still 
   assert.deepEqual(done.result, {complete: true});
   assert.deepEqual(done.end.contracts.map(c => c.name), ['to_f', 'convert']);
   assert.equal(done.end.validations.length, 5);
-  assert.deepEqual(done.end.division, {places: []});
+  assert.deepEqual(done.end.pieces, []);
 });
 
 test('when piece is offered, the level is a division: done lists it as missing until two pieces are declared, and the session goes on; how large or sound the pieces are is not done\'s to say', () => {
@@ -197,7 +198,7 @@ test('when piece is offered, the level is a division: done lists it as missing u
   const done = splitterCall(s, 'done', {});
   assert.deepEqual(done.result, {complete: true}, 'two pieces that repeat each other are Clef\'s to judge');
   assert.deepEqual(done.end.pieces.map(p => p.label), ['Everything', 'Also everything']);
-  assert.deepEqual(done.end.division.delivered_by_several, [{contract: 'convert', pieces: ['Everything', 'Also everything']}, {contract: 'to_f', pieces: ['Everything', 'Also everything']}]);
+  assert.equal(done.end.division, undefined, 'the runtime works out nothing about the division');
 });
 
 // ------------------------------------------------------------ the session

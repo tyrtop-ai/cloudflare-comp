@@ -8586,7 +8586,8 @@ export class ControlRoom extends DurableObject {
   // for the level's contracts and validations. Otherwise piece is offered,
   // the splitter proposes a division (its done completes two or more
   // pieces), and Clef's review alone decides whether that division is
-  // valid, up to SPLIT_ATTEMPTS attempts. A pending job (level_job:<id>:
+  // valid: each NO is a new session with its objection (larger pieces, or a
+  // different division), up to SPLIT_ATTEMPTS attempts. A pending job (level_job:<id>:
   // a rebuild of what an archived child delivered, or an extension for a
   // change or an ask none of its children covers) is an attempt of the same
   // kind on a level that has its design, under the same pre-grade: Clef
@@ -8621,7 +8622,7 @@ export class ControlRoom extends DurableObject {
     }
     // With piece offered, done completes only a division (two or more pieces), and Clef's review alone admits it, retries it or hands the level down.
     const pieces=level.pieces,retry=feedback?.retry||'';
-    const review=await reviewLevel(this.inferenceEnv(),{assignment:job?.text||given.prompt,contracts:level.contracts,pieces,validations:level.validations,division:level.division,attempt,retry});
+    const review=await reviewLevel(this.inferenceEnv(),{assignment:job?.text||given.prompt,contracts:level.contracts,pieces,validations:level.validations,attempt,retry});
     level.validations=level.validations.map((v,j)=>({...v,notes:review.notes[j]||{}}));
     const doubted=level.validations.filter(v=>Object.values(v.notes).some(p=>typeof p==='number'&&p<VALIDATION_DOUBT_BAR));
     if(doubted.length)this.event(id,'validations_doubtful',clip(`Clef doubts ${doubted.map(v=>`${v.id} (${Object.entries(v.notes).filter(([,p])=>p<VALIDATION_DOUBT_BAR).map(([k,p])=>`${k} p=${p.toFixed(3)}`).join(', ')})`).join('; ')}; each is kept, marked.`,900));
@@ -8629,16 +8630,16 @@ export class ControlRoom extends DurableObject {
       this.recordAttempt(id,{attempt,job:key,splitter:out.sid,pieces:0,outcome:'admitted',ms:Date.now()-started});
       return this.admitLevel(id,{...level,pieces:[]},{job,why:'The level goes to one worker.'});
     }
-    const validBar=cfg.valid_bar,sizeBar=cfg.size_bar,ok=review.valid>=validBar&&review.size>=sizeBar,next=ok?'':review.size<sizeBar?'fewer':'different',bound=pieces.length-1;
-    const stop=ok?'':attempt>=SPLIT_ATTEMPTS?`on attempt ${attempt} of ${SPLIT_ATTEMPTS}`:next==='fewer'&&bound<2?`with pieces too small at ${pieces.length}, and fewer than two is no division`:'';
+    const validBar=cfg.valid_bar,sizeBar=cfg.size_bar,ok=review.valid>=validBar&&review.size>=sizeBar,next=ok?'':review.size<sizeBar?'larger':'different';
+    const stop=ok||attempt<SPLIT_ATTEMPTS?'':`on attempt ${attempt} of ${SPLIT_ATTEMPTS}`;
     this.recordAttempt(id,{attempt,job:key,splitter:out.sid,pieces:pieces.length,valid_p:r3(review.valid),size_p:r3(review.size),scope_ps:review.scope.map(r3),valid_bar:validBar,size_bar:sizeBar,
       ...(retry?{retry}:{}),outcome:ok?'admitted':stop?'handed down':`retry ${next}`,ms:Date.now()-started});
-    const said=`Clef's review of ${pieces.length} pieces (attempt ${attempt} of ${SPLIT_ATTEMPTS}${retry?`, retried with ${retry==='fewer'?'fewer pieces':'a different division'}`:''}): split_valid p=${review.valid.toFixed(3)} (bar ${validBar}), split_size p=${review.size.toFixed(3)} (bar ${sizeBar})`;
+    const said=`Clef's review of ${pieces.length} pieces (attempt ${attempt} of ${SPLIT_ATTEMPTS}${retry?`, retried with ${retry==='different'?'a different division':'larger pieces'}`:''}): split_valid p=${review.valid.toFixed(3)} (bar ${validBar}), split_size p=${review.size.toFixed(3)} (bar ${sizeBar})`;
     if(ok){this.event(id,'split_review',`${said}: YES, the pieces are admitted.`);return this.admitLevel(id,level,{job,scope:review.scope});}
     if(stop){this.event(id,'split_review',`${said}: NO ${stop}, so the level goes to one worker.`);return this.admitLevel(id,{...level,pieces:[]},{job,why:`${said}: NO ${stop}.`});}
     const shown=pieces.map(c=>({label:c.label,task:c.task,contracts:c.contracts}));
-    this.save(`split_feedback:${id}`,next==='fewer'?{kind:'too_small',retry:'fewer',reason:RETRY.too_small(pieces.length,bound),bound,rejected:shown}:{kind:'invalid',retry:'different',reason:RETRY.different,rejected:shown});
-    this.event(id,'split_review',`${said}: NO, so its splitter tries again with ${next==='fewer'?`fewer, larger pieces (at most ${bound})`:'a different division along its contracts'}.`);
+    this.save(`split_feedback:${id}`,next==='larger'?{kind:'too_small',retry:'larger',reason:RETRY.too_small(pieces.length),rejected:shown}:{kind:'invalid',retry:'different',reason:RETRY.different,rejected:shown});
+    this.event(id,'split_review',`${said}: NO, so its splitter tries again with ${next==='larger'?'larger pieces':'a different division along its contracts'}.`);
     this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
     this.save('queue',addLast(this.read('queue',[]),id));
   }
@@ -8654,7 +8655,7 @@ export class ControlRoom extends DurableObject {
     // The names the level may call: its row's uses, and for a rebuild those the rows it replaces were handed.
     const job=kind==='split'?null:this.read(`level_job:${id}`,null),calls=[...this.callableOf(id),...this.namedContracts(id,job?.uses||[])].filter((c,i,a)=>a.findIndex(x=>x.name===c.name)===i&&!own.some(o=>o.name===c.name)&&!have.some(o=>o.name===c.name));
     this.db().exec("INSERT INTO splitters(id,manager,kind,attempt,spawned_at,ended_at,outcome,output) VALUES (?,?,?,?,?,NULL,'','{}')",sid,id,kind,attempt,Date.now());
-    const max=divide?feedback?.retry==='fewer'&&Number.isInteger(feedback.bound)?Math.min(feedback.bound,this.maxChildren()):this.maxChildren():0;
+    const max=divide?this.maxChildren():0;
     const request={assignment,
       ...(own.length?{contracts_you_deliver:own.map(({serves:_,...c})=>c)}:{}),
       ...(held.length?{validations_you_have:held.map(v=>({serves:v.serves,check:v.check}))}:{}),

@@ -7,6 +7,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {levelRoom, usualClef, deliver, events} from './helpers/levels.js';
+// After the room helper registered the cloudflare: loader.
+const {SPLIT_ATTEMPTS} = await import('../src/index.js');
 
 const PROMPT = 'Add a usage guide and a greeting command: `hello Ada` prints a greeting for Ada.';
 const command = (id, who) => ({id, serves: ['hello'], check: {kind: 'command', run: `hello ${who}`, expect: {exit: 0, stdout_has: [`Hello, ${who}!`]}}});
@@ -28,9 +30,9 @@ test('Clef never deletes: with NO to every review question, every validation, co
   const leaf = user => deliver(Object.fromEntries(user.prompt.deliver.map(c => [c.path, FILES[c.path]])));
   const {room, calls} = await levelRoom({prompt: PROMPT, split: () => LEVEL, leaf, clef});
   assert.equal(room.get('status'), 'complete', events(room).slice(-10).map(e => `${e.kind}: ${e.body.slice(0, 200)}`).join('\n'));
-  // Reviewed NO, with pieces too small and fewer than two no division: the level goes to one worker; nothing is removed.
-  assert.equal(calls.split.length, 1);
-  assert.match(events(room, 'split_review')[0].body, /NO with pieces too small at 2, and fewer than two is no division, so the level goes to one worker/);
+  // Reviewed NO on every attempt: the splitter retries, and the last NO hands the level to one worker; nothing is removed.
+  assert.equal(calls.split.length, SPLIT_ATTEMPTS);
+  assert.match(events(room, 'split_review').at(-1).body, /NO on attempt 3 of 3, so the level goes to one worker/);
   assert.equal(room.validationRows().length, LEVEL.validations.length, 'every validation is a row');
   for (const v of room.validationRows()) {
     assert.equal(v.notes.exercises, 0.05, v.id);

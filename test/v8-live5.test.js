@@ -176,15 +176,15 @@ test('live 5: once the pre-grade lets the level divide, the splitter\'s done wit
 });
 
 // ------------------------------------------------------------ retries by objection
-test('live 5: a too-small NO retries with fewer, larger pieces: the previous pieces and the bound reach the splitter', async () => {
+test('live 5: a too-small NO retries with larger pieces: the previous pieces and Clef\'s objection reach the splitter, under the room\'s bound alone', async () => {
   const {room, calls} = await room5({review: [{valid: 0.9, size: 0.3}, {valid: 0.9, size: 0.8}], pieces: (_u, n) => n === 1 ? THREE : TWO});
   assert.equal(room.get('status'), 'complete', tail(room));
   assert.equal(calls.split.length, 2);
   const retry = calls.split[1];
-  assert.equal(retry.max_pieces, 2, 'at most one piece fewer');
-  assert.deepEqual(retry.previous_answer_problems, [RETRY.too_small(3, 2)]);
+  assert.equal(retry.max_pieces, DEFAULT_ROOM_SETTINGS.max_children, 'the bound is the room\'s');
+  assert.deepEqual(retry.previous_answer_problems, [RETRY.too_small(3)]);
   assert.deepEqual(retry.rejected.map(p => p.label), ['Guide', 'Questions', 'Tips']);
-  assert.deepEqual(attemptsOf(room).filter(a => a.attempt > 0).map(a => [a.attempt, a.pieces, a.retry || '', a.outcome]), [[1, 3, '', 'retry fewer'], [2, 2, 'fewer', 'admitted']]);
+  assert.deepEqual(attemptsOf(room).filter(a => a.attempt > 0).map(a => [a.attempt, a.pieces, a.retry || '', a.outcome]), [[1, 3, '', 'retry larger'], [2, 2, 'larger', 'admitted']]);
   assert.equal(kids(room).filter(c => c.role === 'manager').length, 2);
 });
 
@@ -198,20 +198,22 @@ test('live 5: a valid NO (size YES) retries with another division along the cont
   assert.deepEqual(attemptsOf(room).filter(a => a.attempt > 0).map(a => [a.retry || '', a.outcome]), [['', 'retry different'], ['different', 'admitted']]);
   // Both objections: too small takes precedence.
   const both = await room5({review: [{valid: 0.1, size: 0.1}, {valid: 0.9, size: 0.9}], pieces: (_u, n) => n === 1 ? THREE : TWO});
-  assert.deepEqual(both.calls.split[1].previous_answer_problems, [RETRY.too_small(3, 2)]);
+  assert.deepEqual(both.calls.split[1].previous_answer_problems, [RETRY.too_small(3)]);
 });
 
-test('live 5: three NOs hand the level down to one worker; too small at two pieces does too, at once', async () => {
+test('live 5: three NOs hand the level down to one worker; a too-small NO on two pieces gets its two retries too', async () => {
   const {room, calls} = await room5({review: [{valid: 0.1, size: 0.9}], pieces: () => THREE});
   assert.equal(room.get('status'), 'complete', tail(room));
   assert.equal(calls.split.length, SPLIT_ATTEMPTS);
   assert.match(events(room, 'hand_down')[0].body, /split_valid p=0\.100 \(bar 0\.5\).*: NO on attempt 3 of 3\. 9 validation\(s\) of its own\.$/);
   assert.deepEqual(kids(room).map(c => c.role), ['worker']);
   assert.deepEqual(attemptsOf(room).map(a => a.outcome || 'pre'), ['pre', 'retry different', 'retry different', 'handed down']);
-  // Fewer than two pieces is no division: a too-small NO on two pieces hands down without a retry.
+  // Two pieces Clef calls too small: the runtime does not conclude that no other division can pass; the splitter retries twice with larger pieces, and the third NO hands down.
   const two = await room5({review: [{valid: 0.9, size: 0.2}]});
-  assert.equal(two.calls.split.length, 1);
-  assert.match(events(two.room, 'hand_down')[0].body, /NO with pieces too small at 2, and fewer than two is no division/);
+  assert.equal(two.calls.split.length, SPLIT_ATTEMPTS);
+  assert.ok(two.calls.split.slice(1).every(u => u.max_pieces === DEFAULT_ROOM_SETTINGS.max_children && u.previous_answer_problems[0] === RETRY.too_small(2)));
+  assert.deepEqual(attemptsOf(two.room).map(a => a.outcome || 'pre'), ['pre', 'retry larger', 'retry larger', 'handed down']);
+  assert.match(events(two.room, 'hand_down')[0].body, /NO on attempt 3 of 3/);
   assert.equal(passed(two.room), 9);
 });
 

@@ -162,7 +162,7 @@ export const clefText = (key, vars = {}) => CLEF[key].replace(/\{(\w+)\}/g, (m, 
 // (previous_answer_problems), never in the system text.
 export const RETRY = Object.freeze({
   // A splitter's new session after Clef's review objected to its division.
-  too_small: (count, bound) => `Your previous answer, listed in rejected, had ${count} pieces, and some were too small to be worth a task of their own. Use fewer, larger pieces this time, at least 2 and at most ${bound}, each delivering whole contracts.`,
+  too_small: count => `Your previous answer, listed in rejected, had ${count} pieces, and some were too small to be worth a task of their own. Divide the assignment into larger pieces this time, at least 2, each delivering whole contracts.`,
   different: 'Your previous division, listed in rejected, was not one whose pieces could be made at the same time. Divide the assignment another way, along its contracts, so that each piece delivers contracts of its own and together the pieces deliver all of them.'
 });
 
@@ -227,7 +227,7 @@ export function promptTexts() {
   // Each message with every field filled by a sample (a plural where it has one).
   const filled = new Proxy({}, {get: (_, k) => k === 'many' ? true : `sample ${String(k)}`});
   for (const [k, f] of Object.entries(MESSAGES)) out[`MESSAGES.${k}`] = f(filled);
-  const sample = {too_small: f => f(5, 4)};
+  const sample = {too_small: f => f(5)};
   for (const [k, v] of Object.entries(RETRY)) out[`RETRY.${k}`] = typeof v === 'function' ? sample[k](v) : v;
   return out;
 }
