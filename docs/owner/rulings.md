@@ -8,7 +8,7 @@ Owner, 2026-10-16: "throw out the fucking card writer. You're too attached to th
 - **worker:** writes code. It is the only agent that does (owner, 2026-10-16 05:21: "worker - writes code. only agent that writes code").
 - **splitter:** splits its manager's assignment into smaller pieces, and builds that level's validations as contracts.
 - **builder:** writes the glue between the workers' interfaces, and may rename interface names.
-- **compiler:** makes sure the joined code works: the box, the syntax step, the validations.
+- **compiler:** makes sure the joined code works. Since the redesign (below) it is an agent: in a single-use box of its own it builds and runs the joined files as it judges, and gives its verdict on each validation. There is no syntax step.
 - **No prompt handler.** Owner: "why do we need a prompt handler anymore? we have a dedicated splitter?" The room creates the top manager's row; the room is the boundary with the person and the end of every line. Queued prompts and amendments go straight to the top manager as changes on its row.
 
 ## Flow (the same at every level)
@@ -38,7 +38,7 @@ Owner, 2026-10-16: "throw out the fucking card writer. You're too attached to th
 
 ## What stays, renamed
 
-- **The validation states** (`requirement_status` becomes `validation_status`), passes keyed to exact bytes, the top verifying what ships, base_confirm (the person grants changing existing files), sources and refs, packages and the broker, interface facts in contract lines.
+- **The validation states** (`requirement_status` becomes `validation_status`), passes keyed to exact bytes, the top verifying what ships, sources and refs, packages and the broker, interface facts in contract lines.
 - **Benchmarks:** see "There are no hidden tests inside a room" below; the grader is outside the room.
 
 ## Done when
@@ -82,7 +82,7 @@ Owner: "the top manager shouldn't even know it's a top manager." and "the room s
    - Benchmarks need no masking: the grader runs outside the room, after it finishes.
 6. **No blocklists and no path rules.** Agents have their world: the commands that exist in their box and the files they can see. Nothing is blocked; anything else doesn't exist for them.
    - Delete: the command denylist, the shell-character rule, reserved commands, the "Interim" path rules in card.js and the file gate, and the benchmark tamper scan.
-   - What replaces them is construction: validations run in single-use, internet-off boxes; a worker's files are paths inside its own repo, written through its `write_file` function; the harness and the solution run in separate boxes.
+   - What replaces them is construction: code runs only in single-use boxes; a worker's files are paths inside its own repo, written through its `write_file` function; the grader runs outside the room, in a box of its own. (Since the redesign below, a worker's and a compiler's box have the internet on, and the grading box has it off.)
 
 ## What each ruling builds (not only what it deletes)
 
@@ -92,10 +92,10 @@ Owner: "the top manager shouldn't even know it's a top manager." and "the room s
    - The manager does not need the original design (owner: "the manager doesn't need to know that, that's why we use an artifact for that"). It routes with Clef, on its level file's children: their labels and the contracts each delivers, the interfaces it owns (owner: "owns the interfaces of its children"). It does not read the piece prompts its splitter wrote; the builder and the workers read those.
 3. **Each role's world, enumerated.** No blocklists and no path rules: each role is given its world, and nothing outside it exists for that role.
    - **worker:** actions are write files in its repo, ask its manager, and done. It sees its entry in the manager's artifact, the complaints routed to it, its own files, and what the broker lists. Its world is its own repo, and every file it writes there is part of what the builder joins and ships: a file at a contract path is placed at that path, and any other file is placed under the worker's own folder in the bundle.
-   - **splitter:** proposes pieces, contracts and validations. A validation can use what exists in a box: the installed toolchains' executables and the contracts' own commands, which the splitter is shown. A validation that uses something not in that world can't execute. That is an executability fact, not a block, and it returns to the splitter as its defect, never to a worker.
+   - **splitter:** proposes pieces, contracts and validations. Since the redesign (below) it is shown no program list and refused nothing for its language: a validation is stored as written, and the compiler agent finds out in its box what running it takes.
    - **builder:** sees its children's pieces and the design artifact. Its actions are renames and glue.
-   - **compiler:** a fresh, single-use, internet-off box per level.
-   - **harness:** its own box, separate from the solution.
+   - **compiler:** an agent with a single-use box of its own per session, the internet on (the redesign, below).
+   - **grader:** one command in a box of its own with the internet off, after the room completes.
 
 ## A worker's input (owner, binding)
 
@@ -135,16 +135,17 @@ Owner: "every model should work that way, where the runtime should only be inter
 
 - Each model works in a session of function calls (Workers AI `tools` → `tool_calls` → `tool` results). The runtime defines the functions and runs them. It never parses a model's prose or a flat answer, and never repairs, reinterprets or matches what a model wrote.
 - A function's result is all the feedback there is: it stores what was asked, or says exactly why it can't (its own argument checks), and reports what exists. A mistake is a function result inside the model's own session, not a runtime retry, a defect list or a repair.
-- What the runtime may expose: what exists in the agent's world (other agents' names and contracts it may use, its files, its packages), and what it can do (write a file, run its examples in its box, ask by name).
+- What the runtime may expose: what exists in the agent's world (other agents' names and contracts it may use, its files, its packages), and what it can do (write a file, run a command in its box, ask by name).
 - What goes: `readLevel`'s lenient reading (name resolution, twins, inferred kinds and runs, route patterns, step splitting, throws-in-expect), the splitter's defect/retry loop, the worker's file-block and control-block parsers, format fallbacks, `code_retry`, `rewriteFile`, the await fixer, the runtime's glue writer and relinking, and `linkComponents` parsing.
 - **Managers (Clef) work through functions too** (owner, 2026-10-16: "worker asks it manager (clef) where does it this go, clef walks up the tree to find it, which is a function"). The runtime does not walk the tree, pick the moment, or ask Clef yes/no questions in a loop (the former `askUp`, `resolveAsk`, `routeComplaint`, `routeChange`). A manager's turn is Clef choosing among the functions it has: each available function is one of Clef's typed options, scored, and the highest is called. A walk is a chain of managers each calling `ask_parent`; the room, as the top manager's parent, archives on an ask no one above holds, then the compensating controls rebuild.
 
 ### Interfaces, per role
 - **Splitter:** `contract`, `validation`, `piece`, `level`, `done`. `done` returns what the owner's rules still need (three different examples per called or run contract), or hands the level to Clef.
-- **Worker:** `read_file`, `write_file`, `run_examples` (its examples in its own box, as the compiler would run them), `ask` (by name, through the broker), `done`.
+- **Worker:** `read_file`, `write_file`, `run` (one command in its own box, which holds its files; since the redesign, in place of `run_examples`), `ask` (by name, through the broker), `done`, `wait`.
+- **Compiler (since the redesign):** `list_files`, `read_file`, `run`, `result(validation, passed, observed)`, `done`.
 - **Builder:** read its children's files and the design artifact, `write_file` (glue), `rename` (interface names), `done`.
 - **Source reading:** `note` for what a linked page says: a reader of its own for each part of a page and one for the page. Each reader is an agent of the room, drawn in the graph like the others.
-- **Manager (Clef):** `children()` (each live child's label and the contracts it delivers, never the tasks its splitter wrote: owner, "the manager doesn't need to know that, that's why we use an artifact for that"), and its level's own choices (split or hand down; admit or retry a split; whether a document meets its question).
+- **Manager (Clef):** `children()` (each live child's label and the contracts it delivers, never the tasks its splitter wrote: owner, "the manager doesn't need to know that, that's why we use an artifact for that"), and its level's own choices (split or hand down; admit or retry a split). Since the redesign Clef judges no document: the compiler agent does.
   - **On an ask:** `answer(contract)` to the asker, `grant(package)` down the asker's line, or `ask_parent(need)` (the same call one level up). An ask no manager up to the room holds archives the asker at the room (rule 4). No level grows for an ask.
   - **On a complaint or a change:** `route_to(child)`, or `extend` (hands it to its splitter): for a change, or for a complaint naming a contract no live child delivers (rule 4 (b) 3).
 
@@ -155,9 +156,31 @@ The owner answered the eight groups the red team had left waiting on the owner.
 - **The box is the isolation** (owner: "the compilers are designed to have a seperate box so that the code runs can be verified. I really don't understand what scenario you're trying to make up or build here. I'm not going to design for some 1% scenario that hasn't happened/shouldn't happen. Please do not introduce scope creep"). The box's own protections go, and nothing replaces them: the call adapters' and the bench grader's anti-forgery protocols, the prlimit caps, the read-only package tree, the browser check's network blocking, the HTTP check's path and origin rules, the "ready below 500" rule, and the refusal of a check's input file at a bundle path.
 - **Interfaces never change the data** (owner: "The agents are given interfaces that control what they are able to see. Those interfaces shouldn't be mutating the data ever. I understand the concern of wanting to protect from prompt injection, but yet again, 1% scenario, small agents, don't fucking care. If 3 agents explode, they explode. I can't have the arhictecture be changing for \"safety reasons\" when the architecture hasn't been tested correctly one time."). The text sanitising goes (invisible characters, hidden HTML, envelope escaping, skipped file names), and so do the "untrusted" and "data, not instructions" labels and the fetcher's content-type refusal. The fetcher's guards go the same way ("see 2"): suffix lists and blocked names over `FETCH_ALLOW`, the redirect count, and links in follow-up prompts not being read.
 - **Agents change only their own repo** (owner: "technically the agents should only be able to change their own repo. They can copy from other agents repos, and the functions can control what artifacts they have visibility into"). The export is always a new branch, so the room's files are its own copy of the base.
-- **Any language** (owner: "How is this tool going to create C# if you don't give it the ability to create C#? ... It needs the ability to create C#. OR at least have the splitter install the ability for C#").
+- **Any language** (owner: "How is this tool going to create C# if you don't give it the ability to create C#? ... It needs the ability to create C#. OR at least have the splitter install the ability for C#"). The redesign below meets it: the agents install what their files need.
 - **An unchanged answer is a problem-statement failure** (owner: "In what situation does a worker build the same solution? When the problem statement was incorrect or unfilled. ergo problem statement failure, not worker or routing failure"). It goes to the splitter that wrote the statement. The same covers an adapter's real limit (the owner asked "what implementation can't be built as json?"; only live values such as callbacks or handles can't, and nothing is built for them).
-- **Status:** this session's permission check refused the first three rulings' edits in Auto mode even after the owner's answers, so they wait for the owner to switch the session to Accept edits. The language, unchanged-answer, symlink and function-path work is in progress.
+- **Status:** applied. The box protections went with the v8 check runner in the redesign below, and the bench harness keeps no anti-forgery protocol. Fetched and base text reach models as they are, with no labels; `FETCH_ALLOW` is used as written and every redirect is followed; every prompt's links are read; the room changes its own copy of the base with no grant hold (base_confirm is gone). An unchanged answer goes to the splitter, base symlinks are kept, and a function contract names its file.
+
+## The redesign, 2026-10-17 (binding): the runtime knows no language; the compiler is an agent
+
+The owner, verbatim:
+
+> The runtime should be language adrogenous. It's just moving data around.
+>
+> "how is the compiler agent going to figure out how to compile its files?" it can install shit. It's smart enough to do that
+>
+> the manager routes ideas
+>
+> the workers work on their own little box, so they work on the architecture that was handed to them.
+
+The owner had asked "why does the runtime need to know what language the agents are speaking", and was told everywhere v8 used the language. The answer above is the design. Earlier rulings still bind.
+
+- **The compiler is an agent** (`src/compiler.js`). A level's compile is one session of functions on the compiler model: `list_files` and `read_file` over the level's joined files; `run(argv, stdin?)`, one command in its single-use box, which holds those files, runs as the box's root with the internet on, and returns the exit code, stdout and stderr as printed and whether it ran out of time; `result(validation, passed, observed)`, its verdict on one validation with what it observed; and `done`. It is given its validations as the splitter wrote them, the contracts they serve, and the files' paths, and it is not told about other agents. It installs whatever building and running the files needs, the way it judges.
+- **The runtime moves the results along.** A failed result is a complaint with the compiler's observed text, which the managers route by the contracts its validation serves (`route_to` / `extend`, as before). A validation with no result is not passed, and the compiler runs again within the room's budget. The room is done when the final compiler's results are all passed ("the room should be able to tell when its done by observing the final compiler").
+- **Each worker has its own box.** A worker's `run(argv, stdin?)` runs one command in a box of its own that holds its files, in place of `run_examples`; it can install, build and try its code there. Its prompt still shows its examples, rendered from the validations.
+- **What went** (v8 only; v7 is untouched): the v8 check runner (`verifyChecks` in `container/build-runner.mjs`), the call adapters, the stack readers, the syntax pass, `checkPlan` and `runChecks`, Clef's document question (the compiler judges documents), the runtime's package and toolchain installs (a package stays a name on a row, and the agents install it), the splitter's language and call-adapter refusals, the per-language name rules, the splitter's box program list, and with the runner every box protection the 2026-10-17 rulings ruled out. Nothing was built in their place.
+- **Bench grading** runs the grader's command in a box of its own with the internet off; the harness keeps only its job and no anti-forgery protocol.
+- **Kept as data:** the splitter's check kinds and their fields (command, http, browser, call, file, judge), which the compiler reads; the manager's routing ("the manager routes ideas").
+- **"Any code type"** is met by design: the agents install what they need. No language has been tested end to end through a live compiler agent yet.
 
 ## What the dashboard shows (owner)
 - **Every agent is in the graph** (owner, 2026-10-16: "the every agent should be visible in the tree...e.g. splitter manager worker etc"): the managers and workers, each splitter step, builder and compiler, and each link reader the room runs on the prompt's links.
