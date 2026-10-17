@@ -39,7 +39,7 @@ import { inheritServes, otherName, kindOf as contractKind, contractLine, gateLin
 import { branchDirectory, packageDirectory, packagePath, partsRoot, PARTS_ROOT } from './assembly.js';
 import { placeChecks, checkUses, textHash } from './piece.js';
 import { zipFiles } from './zip.js';
-import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, namedIn, existingFiles } from './room-inputs.js';
+import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, namedIn, existingFiles, baseFileRead } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
 import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer } from './broker.js';
 import { normalizePackages, installedPackages, stdlibRow, piecePackages, packageLine } from './packages.js';
@@ -662,6 +662,11 @@ export class ControlRoom extends DurableObject {
   holdsBase(id) { return this.get(`base_digest:${id}`,null)!==null; }
   // The project the room started from, as an agent that holds it sees it: every base file by path and size, and the files carried untouched by path.
   existingFiles() { return existingFiles(query(this.db(),'SELECT path,LENGTH(CAST(content AS BLOB)) AS bytes FROM base_files ORDER BY path'),query(this.db(),'SELECT path,reason FROM base_passthrough ORDER BY path'),BASE_LABEL); }
+  // One file of that project, whole, as the splitter's and the worker's read functions return it (room-inputs.js baseFileRead): any path existingFiles lists.
+  readBaseFile(path) {
+    const p=String(path??'');
+    return baseFileRead(p,{text:query(this.db(),'SELECT content FROM base_files WHERE path=?',p)[0]?.content??null,carried:query(this.db(),'SELECT bytes,reason FROM base_passthrough WHERE path=?',p)[0]??null,label:BASE_LABEL});
+  }
   heldDigest(id) { return this.holdsBase(id)?this.read(`base_digest:${id}`,null)??this.read('base',null)?.digest??null:null; }
   allRefs() { return query(this.db(),'SELECT ref FROM source_chunks ORDER BY CAST(SUBSTR(source,2) AS INTEGER),n').map(r=>r.ref); }
   assignRefs(child, parent, raw) {

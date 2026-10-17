@@ -201,13 +201,26 @@ export function narrowRefs(raw, held) {
 
 // The project a room starts from, as its agents see it: every file of it,
 // by path and size, with nothing left out or summarised by the runtime, and
-// the files carried untouched by path. A file's text is not inlined: a
-// whole repo does not fit a model's context window (reading a base file is
-// a function the splitter and the worker would need; see the report).
+// the files carried untouched by path. A file's text is not inlined (a
+// whole repo does not fit a model's context window): an agent reads any of
+// them whole with its read function (baseFileRead, the room's readBaseFile).
 // files: [{path, bytes}]; passthrough: [{path, reason}].
 export function existingFiles(files, passthrough = [], label) {
   return {label, files: files.map(f => ({path: f.path, bytes: f.bytes})),
     ...(passthrough.length ? {carried_untouched: passthrough.map(p => ({path: p.path, reason: p.reason || 'carried untouched'}))} : {})};
+}
+
+// One file of the project the room starts from, as a read function returns
+// it: a text file whole ({path, label, content}); a file carried as bytes,
+// whose content is not text, by its path, size and why ({path, label,
+// bytes, carried_untouched}); a path the project does not hold, {error}
+// with the path. text: the base file's text or null; carried: its
+// base_passthrough row ({bytes, reason}) or null.
+export function baseFileRead(path, {text = null, carried = null, label} = {}) {
+  const p = String(path ?? '');
+  if (typeof text === 'string') return {path: p, label, content: text};
+  if (carried) return {path: p, label, bytes: carried.bytes?.byteLength ?? carried.bytes?.length ?? 0, carried_untouched: carried.reason || 'carried untouched'};
+  return {error: `The project the work starts from has no file ${JSON.stringify(p.slice(0, 400))}; existing_files lists its paths.`};
 }
 
 // The source summaries as a splitter reads them: each quoted, its outline

@@ -15,7 +15,7 @@ import {liveRoom, events, fileBlocks} from './helpers/room.js';
 import {lintRequests, crashAt, reopen} from './helpers/levels.js';
 import {SOURCE_CLAUSE, SOURCE_LABEL, chunkText} from '../src/fetcher.js';
 import {BASE_LABEL, MESSAGES} from '../src/prompts.js';
-import {normalizeBase, narrowRefs, keepBaseFiles, summariesFor, chunksFor, baseFromApp, loadBase} from '../src/room-inputs.js';
+import {normalizeBase, narrowRefs, keepBaseFiles, summariesFor, chunksFor, baseFromApp, loadBase, baseFileRead} from '../src/room-inputs.js';
 import {STORE_ROW_BYTES} from '../src/base.js';
 import {splitterState, splitterCall} from '../src/splitter.js';
 // After helpers/room.js has registered the cloudflare: loader.
@@ -658,6 +658,21 @@ test('S8b review M5: files the room does not build are carried untouched (bytes,
   await assert.rejects(exportToGitHub({token: 'fixture-token', options: githubExportOptions({repo: 'acme-example/widget', onto_base: true}, 'room-m5m5-0001'),
     app: {...app, base: {...app.base, resolved_sha: 'f'.repeat(40)}}, room: 'room-m5m5-0001'}, {git: g, fetch: api}), /the branch has moved/);
   assert.throws(() => githubExportOptions({repo: 'acme-example/widget', onto_base: true, dir: 'apps/x'}, 'room-m5m5-0001'), /leave dir out/);
+});
+
+// Owner 2026-10-16 05:39: "they have their world that exists". The room serves any base file whole to a read function.
+test('readBaseFile: any file of the project the room starts from, whole: text as it is, a carried file by its size and why, a path it does not hold said so', async () => {
+  const tip = await commitFiles(new MemoryFS(), '/r', FULL_REPO, 'refs/heads/main');
+  const {room, drain} = inputsRoom({level: README_LEVEL, judge: readmeJudge, fetch: fakeFetch(repoRoutes(FULL_REPO, tip)), answers: {'README.md': [wrote([['README.md', GOOD_README]])]}});
+  await room.start(README_GOAL, 20, {pipeline: 'v8'}, 'room-read-0001', {base: {repo: 'acme-example/widget'}, selfHosts: ['c.example.com']});
+  await drain();
+  const listed = room.existingFiles();
+  for (const f of listed.files) assert.equal(room.readBaseFile(f.path).content.length > 0, true, f.path);
+  assert.deepEqual(room.readBaseFile('src/shout.js'), {path: 'src/shout.js', label: BASE_LABEL, content: BOM_SHOUT});
+  assert.equal(room.readBaseFile('dist/bundle.js').content, 'bundled\n');
+  assert.deepEqual(room.readBaseFile('logo.png'), {path: 'logo.png', label: BASE_LABEL, bytes: PNG.length, carried_untouched: 'binary'});
+  assert.match(room.readBaseFile('nope.txt').error, /has no file "nope\.txt"; existing_files lists its paths/);
+  assert.deepEqual(baseFileRead('a.txt', {text: '', label: 'L'}), {path: 'a.txt', label: 'L', content: ''});
 });
 
 // ------------------------------------------------------------ M6 and the LOWs
