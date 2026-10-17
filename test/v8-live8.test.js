@@ -54,7 +54,7 @@ test('a route or a command that states no run is stored without one: nothing inf
 });
 
 test('a browser step holding several actions is refused with the step form; a call expecting {"throws": true} expects that value, as written', () => {
-  const ctx = {paths: new Set(), functions: new Set(['f']), served: new Set(['web']), commands: new Set(), executables: new Set()};
+  const ctx = {paths: new Set(), functions: new Set(['f']), served: new Set(['web'])};
   assert.equal(readCheck({kind: 'browser', serve: 'web', steps: [{goto: '/tickets', expect_text: 'Test Ticket'}]}, ctx).error,
     'step 1 of the browser check: a browser step is an object with exactly one of "goto", "reload", "press", "fill", "click", "expect_text", "expect_no_text", "expect_count", "expect_element", "expect_no_element"; this one has "goto", "expect_text"');
   assert.deepEqual(readCheck({kind: 'call', steps: [{call: 'f', args: [25, 'invalid', 'C'], expect: {throws: true}}]}, ctx).check.steps, [{call: 'f', args: [25, 'invalid', 'C'], expect: {throws: true}}]);
@@ -69,7 +69,7 @@ test('replay, CLI "Invalid Unit Tests": its answer as calls; the stored form\'s 
   assert.ok(out.slice(2).every(r => r.error === 'serves names "test_conversion_function", which is not declared. Declared: none'));
 });
 
-test('replay, issue tracker: its answers as calls, in order; each mistake is a result in the session (a run naming a command not declared yet, a route not declared, a text for a list, a check serving what states no run), and done lists what is still short', () => {
+test('replay, issue tracker: its answers as calls, in order; each mistake is a result in the session (a route not declared, a text for a list, a check serving what states no run), and done lists what is still short', () => {
   // The answers were made when a run was one text: each is replayed as its words, the argument list the functions now take.
   const words = run => typeof run === 'string' ? run.split(/\s+/) : run;
   const replay = a => { const s = splitterState({maxPieces: FIXTURE.tracker.max_children}), r = {};
@@ -81,13 +81,16 @@ test('replay, issue tracker: its answers as calls, in order; each mistake is a r
   const [one, two, three] = FIXTURE.tracker.answers.map(replay);
   assert.match(one['validation api-endpoint-validation'].error, /^serves names "PUT \/tickets\/1", "DELETE \/tickets\/1", which are not declared\. Declared: /);
   assert.equal(one.done.complete, false);
-  assert.equal(two['contract POST /tickets'].error, 'its run starts "start-server", which is neither a command contract declared so far nor a program the box has (node, npm, npx, python3, pytest)');
+  // Owner 2026-10-17 ("The runtime should be language adrogenous."): a run is stored as its argument list as written, whatever program it names, so the route that runs "start-server" is stored.
+  assert.deepEqual(two['contract POST /tickets'], {stored: 'POST /tickets', kind: 'route', examples_needed: 3});
   assert.equal(two['validation start-server-validation-1'].error, 'the command check: stdout_has is a list of texts');
-  assert.equal(two['validation start-server-validation-3'].error, 'the http check serves "start-server", which is not a declared contract that states how it runs (none states one yet)');
+  assert.equal(two['validation start-server-validation-3'].error, 'the http check serves "start-server", which is not a declared contract that states how it runs (POST /tickets, GET /tickets, PUT /tickets/:id, DELETE /tickets/:id)');
   assert.deepEqual(['get-tickets', 'update-ticket', 'delete-ticket'].map(id => two[`validation ${id}-validation-3`].examples_so_far), [{getTickets: 3}, {updateTicket: 3}, {deleteTicket: 3}]);
-  assert.deepEqual(two.done, {complete: false, missing: ['start-server has 0 different examples of 3 from the validations that serve it.']});
+  assert.deepEqual(two.done, {complete: false, missing: [...['POST /tickets', 'GET /tickets', 'PUT /tickets/:id', 'DELETE /tickets/:id', 'start-server'].map(n => `${n} has 0 different examples of 3 from the validations that serve it.`)]});
   assert.equal(three['validation create-ticket-validation-3'].examples_so_far.createTicket, 3);
-  assert.equal(three.done.missing.length, 4, three.done.missing.join('\n'));
+  // Its routes, each run by "start-server" as written, are stored, so done lists the three of them its failed checks left short.
+  assert.deepEqual(three.done.missing, [...['getTickets', 'updateTicket', 'deleteTicket'].map(n => `${n} has 0 different examples of 3 from the validations that serve it: steps that call it.`),
+    ...['POST /tickets', 'GET /tickets', 'PUT /tickets/:id', 'start-server'].map(n => `${n} has 0 different examples of 3 from the validations that serve it.`)]);
 });
 
 // Three examples is the least a splitter writes for what is called or run, never the most a worker reads: the to-do

@@ -8,9 +8,8 @@
 // pieces}. Whether the division is valid, and whether pieces are too small,
 // is Clef's review alone (src/model.js reviewLevel), which reads the
 // assignment and the pieces as written.
-import { TOOLCHAINS, toolchainOf } from './toolchains.js';
-import { normalizeContract, kindOf, nameError, ownNameError, PLACED_KINDS, PATH_NAMED, CONTRACT_KINDS } from './contracts.js';
-import { readCheck, uncallable, CHECK_FIELDS, runOf, servedRun, runsOf, unheldPath, ownExamples, checkExamples, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
+import { normalizeContract, kindOf, nameError, PLACED_KINDS, PATH_NAMED, CONTRACT_KINDS } from './contracts.js';
+import { readCheck, CHECK_FIELDS, runOf, servedRun, runsOf, unheldPath, ownExamples, checkExamples, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
 import { rootedPath } from '../container/build-path.mjs';
 import { session } from './session.js';
 import { systemPrompt, TOOLS, CHECK_TOOL_KINDS } from './prompts.js';
@@ -22,26 +21,24 @@ const nameList = (v, what) => Array.isArray(v) && v.every(x => typeof x === 'str
 // The splitter's world for one session. own: the contracts this level was
 // given (declared already, by their names; their validations held above are
 // held: {id, serves, check}). have: the contracts the level already has (a
-// job adds to it). calls: the contracts it may call. rows: the installed
-// toolchain rows. base: the existing files' paths. maxPieces: the room's
+// job adds to it). calls: the contracts it may call. base: the existing
+// files' paths. maxPieces: the room's
 // bound on pieces when the session starts; room(): that bound as it stands
 // now (the room's agent and depth limits, read when piece and done are
 // called); take(count): the room takes a division of count pieces for this
 // level, true when it fits; divide: whether piece is offered at all.
 // carry: what an earlier session of the same level declared before its
 // context window filled ({contracts, validations, pieces}); this one goes on from it.
-// programs: every executable the box has (its inventory), beyond the rows'.
 // readBase(path), given to a level that holds the project the work starts
 // from: one file of it, whole (the room's readBaseFile), as read_file shows it.
 // refs: the outline refs of the linked pages this level holds, the only refs
 // a piece may be given. droppable: the ids of the held validations that
 // serve only the contracts this level delivers, which drop_validation takes
 // out (a rebuild, which rewrites what they are known by).
-export function splitterState({own = [], held = [], have = [], calls = [], rows = TOOLCHAINS, base = [], maxPieces = 7, room = null, take = null, divide = true, carry = null, programs = [], readBase = null, refs = [], droppable = []} = {}) {
+export function splitterState({own = [], held = [], have = [], calls = [], base = [], maxPieces = 7, room = null, take = null, divide = true, carry = null, readBase = null, refs = [], droppable = []} = {}) {
   const dropped = [...(carry?.dropped || [])];
-  const installed = (Array.isArray(rows) ? rows : TOOLCHAINS).filter(r => r && typeof r.id === 'string');
-  return {own, held: held.filter(h => !dropped.includes(h.id)), droppable: droppable.filter(id => !dropped.includes(id)), dropped, have: have.filter(c => c?.name && !own.some(o => o.name === c.name)), calls, rows: installed, ids: new Set(installed.map(r => r.id)),
-    executables: new Set([...installed.flatMap(r => r.executables || []), ...programs]), base: new Set(base instanceof Set ? [...base] : Array.isArray(base) ? base : []),
+  return {own, held: held.filter(h => !dropped.includes(h.id)), droppable: droppable.filter(id => !dropped.includes(id)), dropped, have: have.filter(c => c?.name && !own.some(o => o.name === c.name)), calls,
+    base: new Set(base instanceof Set ? [...base] : Array.isArray(base) ? base : []),
     room: typeof room === 'function' ? room : () => maxPieces, take: typeof take === 'function' ? take : () => true, divide, readBase: typeof readBase === 'function' ? readBase : null, refs: [...(refs || [])], contracts: [...(carry?.contracts || [])], validations: [...(carry?.validations || [])], pieces: [...(carry?.pieces || [])], done: false};
 }
 // The functions offered: piece and drop_piece only when the level may divide, read_file only when it holds the project the work starts from, drop_validation only when it holds validations it may take out.
@@ -55,10 +52,10 @@ const levelContracts = s => [...s.own, ...s.contracts];
 const present = s => [...levelContracts(s), ...s.have];
 // What a level's checks run by, from what is declared so far.
 function checkWorld(s) {
-  const all = present(s), commands = new Set(all.filter(c => kindOf(c) === 'command').map(c => c.name));
+  const all = present(s);
   const served = new Set([...levelContracts(s).filter(c => c.run), ...runsOf(s.have).map(r => ({name: r.id}))].map(c => c.name));
   return {paths: new Set([...all.map(c => c.path).filter(Boolean), ...s.base]), functions: new Set(all.filter(c => kindOf(c) === 'function').map(c => c.name)),
-    functionPaths: new Map(all.filter(c => kindOf(c) === 'function' && c.path).map(c => [c.name, c.path])), served, commands, executables: s.executables};
+    functionPaths: new Map(all.filter(c => kindOf(c) === 'function' && c.path).map(c => [c.name, c.path])), served};
 }
 // A contract's different examples, from the validations that serve it (those held above it, and this session's): a function's, the steps that call it.
 const examplesOf = (s, c) => ownExamples(c, [...s.held.filter(h => (c.serves || []).includes(h.id)), ...s.validations.filter(v => v.serves.includes(c.name))]);
@@ -83,19 +80,15 @@ function contract(s, a) {
   if ((PLACED_KINDS.has(kind) || kind === 'function') && !path) return {error: `a ${kind} contract needs the relative path of its file`};
   const unheld = path ? unheldPath(path) : '';
   if (unheld) return {error: unheld};
-  // A function's name is its own language's (ownNameError); the other kinds' names are their kind's.
-  const bad = kind === 'function' ? ownNameError({name, path}, s.rows) : nameError({name, kind, ...(path ? {path} : {})}, {v8: true});
+  // A function's name is stored as written; the other kinds' names are their kind's (a route a method and a path, a placed file its path).
+  const bad = kind === 'function' ? '' : nameError({name, kind, ...(path ? {path} : {})}, {v8: true});
   if (bad) return {error: bad};
-  const row = path ? toolchainOf(path) : null;
-  if (row && row.id !== 'text' && !s.ids.has(row.id)) return {error: `${path} is written in ${row.id}, which the box does not run (it runs ${listed([...s.ids])})`};
-  // A function contract is known by the call checks that call it: its file is one the box has a call adapter for.
-  if (kind === 'function' && uncallable(path)) return {error: `${name} cannot be a function contract at ${path}: ${uncallable(path)}`};
   for (const k of ['does', 'outputs', 'effects']) if (a[k] !== undefined && typeof a[k] !== 'string') return {error: `${k} is a text`};
   if (a.inputs !== undefined && (!Array.isArray(a.inputs) || !a.inputs.every(x => plain(x) && typeof x.name === 'string' && x.name && (x.is === undefined || typeof x.is === 'string') && Object.keys(x).every(k => k === 'name' || k === 'is'))))
     return {error: 'inputs is a list of inputs, each with a name and what it is (is), and no other field'};
   let run = null;
   if (a.run !== undefined) {
-    const r = runOf(a.run, {kind}, {commands: new Set(present(s).filter(c => kindOf(c) === 'command').map(c => c.name)), executables: s.executables});
+    const r = runOf(a.run, {kind});
     if (r.error) return {error: r.error};
     run = r.run;
   }

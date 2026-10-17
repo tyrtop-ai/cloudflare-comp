@@ -16,7 +16,7 @@ import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfa
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
-import { toolchainById, toolchainOf, TOOLCHAINS, COMPILE_ROWS, CALL_EXTENSIONS, installed as installedRows, parseModeOf, scopeManifestOf, codeRowOf, pageScripts, pageModes } from './toolchains.js';
+import { toolchainById, toolchainOf, TOOLCHAINS, COMPILE_ROWS, installed as installedRows, parseModeOf, scopeManifestOf, codeRowOf, pageScripts, pageModes } from './toolchains.js';
 // v8 S9: amendments and the prompt queue.
 import { effectiveGoal, goalView, promptText, reorderError } from './amend.js';
 import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, checkLimitsOf, DEFAULT_CHECK_SECONDS } from './checks.js';
@@ -705,8 +705,6 @@ export class ControlRoom extends DurableObject {
   }
   promptHandlers() { return query(this.db(),'SELECT id,kind,prompt,prompt_id,root,created_root,spawned_at,ended_at FROM prompt_handlers ORDER BY spawned_at,id'); }
   installedSet() { return installedPackages(this.installedToolchains(),this.read('toolchain_inventory',null)); }
-  // Every program the box has: the rows' executables and every executable on its PATH, as its inventory lists them.
-  boxPrograms() { return [...new Set([...this.installedToolchains().flatMap(r=>r.executables||[]),...(this.read('toolchain_inventory',null)?.executables||[])])]; }
   // What a row's box installs before its checks: the packages its row lists
   // beyond the image's and the language's standard library, per language
   // (one with no language goes as such: the box says it has no install for it).
@@ -8389,7 +8387,7 @@ export class ControlRoom extends DurableObject {
   // with its result. {sid, level, reason, rounds}: level is null when the
   // session ended without done.
   async runSplitter(id, {kind, assignment, own, divide, attempt, feedback}) {
-    const sid=await rowId(id,query(this.db(),'SELECT COUNT(*) AS n FROM splitters WHERE manager=?',id)[0].n+1,'splitter'),rows=this.installedToolchains(),packages=this.packageView(id),digest=this.heldDigest(id),held=this.validationRows().filter(v=>own.some(c=>(c.serves||[]).includes(v.id)));
+    const sid=await rowId(id,query(this.db(),'SELECT COUNT(*) AS n FROM splitters WHERE manager=?',id)[0].n+1,'splitter'),packages=this.packageView(id),digest=this.heldDigest(id),held=this.validationRows().filter(v=>own.some(c=>(c.serves||[]).includes(v.id)));
     // A job adds to a level that has its design (its level file): the contracts it has already, apart from those the job restates.
     const have=kind==='split'?[]:(this.levelDesign(id)?.contracts||[]).filter(c=>!own.some(o=>o.name===c.name));
     // The names the level may call: its row's uses, and for a rebuild those the rows it replaces were handed.
@@ -8408,14 +8406,13 @@ export class ControlRoom extends DurableObject {
       ...(job?.complaints?.length?{complaints:job.complaints}:{}),
       ...(have.length?{contracts_you_have:have.map(({serves:_,...c})=>c)}:{}),
       ...(calls.length?{contracts_you_may_call:calls.map(({serves:_,...c})=>c)}:{}),
-      box:{programs:this.boxPrograms(),toolchains:rows.map(r=>({id:r.id,extensions:r.extensions||[]})),calls_functions_in:CALL_EXTENSIONS},
       ...(packages.length?{your_packages:packages.map(p=>({name:p.name,...(p.provides?{provides:p.provides}:{})}))}:{}),
       ...(typeof digest==='string'&&digest?{base_note:MESSAGES.base_note(),existing_files:this.existingFiles()}:{}),
       ...this.sourceInputs(id,'summaries'),
       max_pieces:max,
       ...(feedback?.reason?{previous_answer_problems:[feedback.reason],...(feedback.rejected?.length?{rejected:feedback.rejected}:{})}:{})};
     if(carry)request.declared_so_far={contracts:carry.contracts.map(({serves:_,...c})=>c),validations:carry.validations.map(v=>({id:v.id,serves:v.serves,check:v.check})),pieces:carry.pieces,...(carry.dropped?.length?{dropped_validations:carry.dropped}:{})};
-    const out=await splitLevel(this.inferenceEnv('splitter'),request,{own,held,have,calls,rows,base:[...this.basePaths()],room,take:k=>this.takePieces(id,k),divide,carry,droppable,programs:this.boxPrograms(),refs:this.sourceRefs(id),...(typeof digest==='string'&&digest?{readBase:p=>this.readBaseFile(p)}:{})},{spend:()=>this.spendCall?this.spendCall():true});
+    const out=await splitLevel(this.inferenceEnv('splitter'),request,{own,held,have,calls,base:[...this.basePaths()],room,take:k=>this.takePieces(id,k),divide,carry,droppable,refs:this.sourceRefs(id),...(typeof digest==='string'&&digest?{readBase:p=>this.readBaseFile(p)}:{})},{spend:()=>this.spendCall?this.spendCall():true});
     this.db().exec('UPDATE splitters SET ended_at=?,outcome=?,output=? WHERE id=?',Date.now(),out.level?'done':out.reason,splitterRecord(out),sid);
     const l=out.level;
     this.event(id,'splitter',clip(l?`${sid} declared ${l.contracts.length} contract(s), ${l.validations.length} validation(s), ${l.pieces.length} piece(s) in ${out.rounds} round(s) and ${out.transcript.length} call(s).`:`${sid}'s session ended without done (${out.reason}) after ${out.rounds} round(s) and ${out.transcript.length} call(s).`,600));

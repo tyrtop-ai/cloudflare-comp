@@ -10,7 +10,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {splitterState, splitterTools, splitterCall, levelView, levelOf, missingOf, splitLevel} from '../src/splitter.js';
 import {TOOLS, systemPrompt} from '../src/prompts.js';
-import {TOOLCHAINS, CALL_EXTENSIONS} from '../src/toolchains.js';
 
 const CONVERT = {name: 'convert', kind: 'command', path: 'convert.py', does: 'converts a Celsius temperature', inputs: [{name: 'celsius', is: 'a number'}], outputs: 'the Fahrenheit value'};
 const TO_F = {name: 'to_f', kind: 'function', path: 'conv.py', does: 'converts Celsius to Fahrenheit', inputs: [{name: 'c', is: 'degrees'}], outputs: 'degrees F'};
@@ -42,7 +41,7 @@ test('the splitter\'s functions are contract, the six check functions, piece, dr
   assert.deepEqual(splitterCall(splitterState({}), 'read_file', {path: 'src/a.js'}).result, {error: 'There is no function "read_file".'});
 });
 
-test('contract: stored exactly as given, or refused with exactly why: a kind outside the seven, no path for a contract that lives in a file (a function\'s included), a language the box does not run, a name already declared, a field it does not have, a run on what is not started; a path names the place it does among the files, in any folder', () => {
+test('contract: stored exactly as given, or refused with exactly why: a kind outside the seven, no path for a contract that lives in a file (a function\'s included), a name already declared, a field it does not have, a run on what is not started; a path names the place it does among the files, in any folder', () => {
   const s = splitterState({own: [{name: 'given', kind: 'doc', path: 'GIVEN.md', does: 'given'}], have: [{name: 'had', kind: 'function', path: 'had.py', does: 'had'}]});
   assert.deepEqual(calls(s, [['contract', CONVERT], ['contract', TO_F], ['contract', {name: 'README.md', kind: 'doc', path: 'README.md', does: 'how to run it'}]]),
     [{stored: 'convert', kind: 'command', examples_needed: 3}, {stored: 'to_f', kind: 'function', examples_needed: 3}, {stored: 'README.md', kind: 'doc'}]);
@@ -66,33 +65,22 @@ test('contract: stored exactly as given, or refused with exactly why: a kind out
   assert.equal(why({name: 'had', kind: 'function', does: 'x'}), '"had" is already declared: it is a contract your level already has');
   assert.equal(why({name: 'add', kind: 'function', does: 'x', params: ['a']}), 'contract has no field "params"; its fields are name, kind, path, does, inputs, outputs, effects, run');
   assert.equal(why({name: 'add', kind: 'function', path: 'add.py', does: 'x', run: {static: true}}), 'a function contract is not started, so it states no run');
-  assert.equal(why({name: 'GET /items', kind: 'route', does: 'x', run: {run: ['serve-items']}}), 'its run starts "serve-items", which is neither a command contract declared so far nor a program the box has (node, npm, npx, python3, pytest)');
-  // A function's name is judged by its own language alone, with no length bound and no list of built-in names.
-  assert.equal(why({name: 'add one', kind: 'function', path: 'calc.py', does: 'x'}), '"add one" is not a valid python function name');
-  assert.equal(why({name: 'lambda', kind: 'function', path: 'calc.py', does: 'x'}), '"lambda" is not a valid python function name (a reserved word)');
-  // Each language's own identifier rule, Unicode as the language has it.
-  for (const [name, path] of [['größe', 'calc.py'], ['maß', 'calc.js']]) assert.equal(why({name, kind: 'function', path, does: 'x'}), undefined, path);
-  assert.equal(why({name: 'class', kind: 'function', path: 'src/k.js', does: 'x'}), '"class" is not a valid javascript function name (a reserved word)');
-  for (const [name, path] of [['from', 'src/a.ts'], ['delete', 'src/a.go'], ['valid?', 'lib/a.rb'], ['from_js', 'src/from.js'], ['fetch', 'src/afetch.js'], ['process', 'src/proc.js'], ['f'.repeat(70), 'src/long.js'], ['g'.repeat(70), 'long.py']])
-    assert.equal(splitterCall(s, 'contract', {name, kind: 'function', path, does: 'x'}).result.stored, name, `${name.slice(0, 20)} at ${path}`);
+  // Owner 2026-10-17 ("The runtime should be language adrogenous. It's just moving data around."): a run is its argument list as written, whatever program it names.
+  assert.deepEqual(splitterCall(s, 'contract', {name: 'GET /things', kind: 'route', does: 'x', run: {run: ['serve-items']}}).result, {stored: 'GET /things', kind: 'route', examples_needed: 3});
+  assert.deepEqual(levelView(s).contracts.find(c => c.name === 'GET /things').run, {argv: ['serve-items']});
+  // A function's name is stored as written, whatever its file's language: no identifier rule, no reserved word, no length bound.
+  for (const [name, path] of [['add one', 'calc.py'], ['lambda', 'calc2.py'], ['größe', 'calc3.py'], ['maß', 'calc.js'], ['class', 'src/k.js'], ['from', 'src/a.ts'], ['delete', 'src/a.go'], ['valid?', 'lib/a.rb'],
+    ['from_js', 'src/from.js'], ['fetch', 'src/afetch.js'], ['process', 'src/proc.js'], ['f'.repeat(70), 'src/long.js'], ['g'.repeat(70), 'long.py'], ['Add', 'src/Calc.cs'], ['Calc.Mul', 'src/Calc.cs']])
+    assert.deepEqual(splitterCall(s, 'contract', {name, kind: 'function', path, does: 'x'}).result, {stored: name, kind: 'function', examples_needed: 3}, `${name.slice(0, 20)} at ${path}`);
   assert.equal(splitterCall(s, 'contract', {name: 'c'.repeat(70), kind: 'command', path: 'bin/c', does: 'x'}).result.stored, 'c'.repeat(70), 'a command word of any length');
-  // A command's name is the key its run is looked up by: stored as written, in any form (owner 2026-10-16 20:40: refused only for the kind, the path, the language or a name already taken).
+  // A command's name is the key its run is looked up by: stored as written, in any form (owner 2026-10-16 20:40: refused only for the kind, the path or a name already taken).
   for (const [i, name] of ['convert temp', 'todo:add', '.run', '-x', 'Größe'].entries())
     assert.equal(splitterCall(s, 'contract', {name, kind: 'command', path: `bin/c${i}.py`, does: 'x'}).result.stored, name, name);
-  const js = splitterState({rows: TOOLCHAINS.filter(r => r.id === 'javascript')});
-  assert.equal(splitterCall(js, 'contract', {name: 'app.py', kind: 'file', path: 'app.py', does: 'x'}).result.error, 'app.py is written in python, which the box does not run (it runs javascript)');
-  // Owner 2026-10-17 ("It needs the ability to create C#"): C# is a language the image lacks and the box installs, with a call adapter, so a C# function contract is stored.
-  assert.deepEqual(splitterCall(s, 'contract', {name: 'Add', kind: 'function', path: 'src/Calc.cs', does: 'adds two numbers'}).result, {stored: 'Add', kind: 'function', examples_needed: 3});
-  assert.deepEqual(splitterCall(s, 'contract', {name: 'Calc.Mul', kind: 'function', path: 'src/Calc.cs', does: 'multiplies'}).result.stored, 'Calc.Mul');
-  // Owner 2026-10-15 05:16 ("Any code type"): a function contract is called by call checks; in a file the box has no call adapter for, it is refused because no check can call it (a capability the box lacks), and the refusal names the files it calls functions in.
-  const calls_in = CALL_EXTENSIONS.join(', ');
-  for (const path of ['ui/App.jsx', 'ui/App.tsx', 'src/Main.kt', 'app.swift'])
-    assert.equal(why({name: 'render', kind: 'function', path, does: 'x'}), `render cannot be a function contract at ${path}: the box has no call adapter for ${path}'s language, so no check can call a function of it (it calls functions in files of ${calls_in})`);
-  for (const ext of ['.go', '.rs', '.c', '.cpp', '.java', '.sh', '.rb', '.php', '.ts', '.cs']) assert.ok(CALL_EXTENSIONS.includes(ext), ext);
-  // A command in a language with no call adapter (JSX, which the box installs) is checked by command checks: stored.
+  // A contract in a file of any language is stored: the runtime knows no language, and no row, adapter or program list decides what a level may declare.
+  for (const [name, path] of [['render', 'ui/App.jsx'], ['renderTs', 'ui/App.tsx'], ['main', 'src/Main.kt'], ['view', 'app.swift'], ['parse', 'lib/parse.hs']])
+    assert.deepEqual(splitterCall(s, 'contract', {name, kind: 'function', path, does: 'x'}).result, {stored: name, kind: 'function', examples_needed: 3}, path);
   assert.equal(splitterCall(s, 'contract', {name: 'render-page', kind: 'command', path: 'ui/App.jsx', does: 'prints the page'}).result.stored, 'render-page');
-  // A file of such a language is still any other contract's file.
-  assert.equal(splitterCall(s, 'contract', {name: 'ui/App.tsx', kind: 'file', path: 'ui/App.tsx', does: 'x'}).result.stored, 'ui/App.tsx');
+  for (const path of ['app.py', 'ui/App.tsx', 'src/lib.zig']) assert.equal(splitterCall(s, 'contract', {name: path, kind: 'file', path, does: 'x'}).result.stored, path);
   // A route states its run as given; with none it is stored without one.
   assert.deepEqual(calls(s, [['contract', {name: 'GET /items', kind: 'route', path: 'server.py', does: 'lists items', run: {run: ['python3', 'server.py'], ready: '/health'}}], ['contract', {name: 'GET /other', kind: 'route', path: 'server.py', does: 'x'}], ['contract', {name: 'index.html', kind: 'page', path: 'index.html', does: 'the page'}]]),
     [{stored: 'GET /items', kind: 'route', examples_needed: 3}, {stored: 'GET /other', kind: 'route', examples_needed: 3}, {stored: 'index.html', kind: 'page'}]);
@@ -110,17 +98,17 @@ test('a check function: serves names declared contracts exactly (the error lists
   assert.equal(why('command_check', {...one, serves: ['./convert.py']}), 'serves names "./convert.py", which is not declared. Declared: convert, to_f, had', 'no path or alias resolution');
   assert.equal(why('command_check', {...one, serves: []}), 'serves names no contract');
   assert.equal(why('command_check', {...one, serves: 'convert'}), 'serves is a list of names');
-  assert.equal(why('command_check', {serves: ['convert'], run: ['ruby', 'x.rb']}), 'the command check runs "ruby", which is neither a command contract declared so far nor a program the box has (node, npm, npx, python3, pytest)');
+  // A command check runs its argument list as written, whatever program it names.
+  assert.deepEqual(splitterCall(s, 'command_check', {serves: ['convert'], run: ['ruby', 'x.rb']}).result, {id: 'v3', examples: ['ruby x.rb → it exits 0'], examples_so_far: {convert: 2}});
   assert.equal(why('call_check', {serves: ['to_f'], steps: [{call: 'to_c', args: [1]}]}), 'step 1 of the call check calls "to_c", which is not a function contract declared so far (to_f, had)');
   assert.equal(why('command_check', {...one, id: 'mine'}), 'command_check has no field "id"; its fields are serves, run, stdin, files, expect');
-  // A function the level already has in a file the box has no call adapter for (one stored before contract refused it): no call check of it is stored, and the result says why.
+  // A call check of a function in a file of any language is stored as written.
   const old = splitterState({have: [{name: 'odd', kind: 'function', path: 'odd.kt', does: 'odd'}]});
-  assert.equal(splitterCall(old, 'call_check', {serves: ['odd'], steps: [{call: 'odd', args: [1], expect: true}]}).result.error,
-    `the call check calls odd: the box has no call adapter for odd.kt's language, so no check can call a function of it (it calls functions in files of ${CALL_EXTENSIONS.join(', ')})`);
+  assert.deepEqual(splitterCall(old, 'call_check', {serves: ['odd'], steps: [{call: 'odd', args: [1], expect: true}]}).result, {id: 'v1', examples: ['odd(1) → true'], examples_so_far: {odd: 1}});
   // A contract the level already has may be served; the check serves only what it names.
   assert.deepEqual(splitterCall(s, 'call_check', {serves: ['had'], steps: [{call: 'had', args: [1], expect: 1}]}).result.examples_so_far, {had: 1});
   assert.deepEqual(splitterCall(s, 'call_check', {serves: ['to_f'], steps: [{call: 'to_f', args: [0], expect: 32}, {call: 'to_f', args: [100], expect: 212}]}).result,
-    {id: 'v4', examples: ['to_f(0) → 32', 'to_f(0) → 32; to_f(100) → 212'], examples_so_far: {to_f: 2}});
+    {id: 'v5', examples: ['to_f(0) → 32', 'to_f(0) → 32; to_f(100) → 212'], examples_so_far: {to_f: 2}});
   // An example is what it is: the same call written three times, or written again after other steps, is one example.
   const add = splitterState({});
   calls(add, [['contract', {name: 'add', kind: 'function', path: 'add.js', does: 'adds'}], ['contract', {name: 'reset', kind: 'function', path: 'add.js', does: 'resets'}]]);
@@ -142,7 +130,7 @@ test('a check function: serves names declared contracts exactly (the error lists
   calls(flask, [['contract', {name: 'GET /items/<id>', kind: 'route', does: 'one item', run: {run: ['python3', 'app.py']}}]]);
   assert.deepEqual(splitterCall(flask, 'http_check', {serves: ['GET /items/<id>'], serve: 'GET /items/<id>', steps: [1, 2, 3].map(n => ({path: `/items/${n}`}))}).result.examples_so_far, {'GET /items/<id>': 3});
   assert.deepEqual(splitterCall(flask, 'done', {}).result, {complete: true});
-  // A command run by its own file, through a program the box has, with no run declared: three runs that serve it are its three examples.
+  // A command run by its own file, with no run declared: three runs that serve it are its three examples.
   const cli = splitterState({divide: false});
   calls(cli, [['contract', {name: 'convert', kind: 'command', path: 'convert.py', does: 'converts'}]]);
   assert.deepEqual(['100', '0', '-40'].map(t => splitterCall(cli, 'command_check', {serves: ['convert'], run: ['python3', 'convert.py', t, 'C']}).result.examples_so_far), [{convert: 1}, {convert: 2}, {convert: 3}]);
@@ -331,13 +319,16 @@ test('a splitter session that never completes ends when its context window is fu
   assert.equal(out.rounds, m.requests.length);
 });
 
-test('a command check may run any program the box has: the rows\' executables and every executable its inventory lists', () => {
-  const s = splitterState({programs: ['ruby', 'go']});
-  assert.equal(splitterCall(s, 'contract', {name: 'greet', kind: 'command', path: 'greet.rb', does: 'greets', run: {run: ['ruby', 'greet.rb']}}).result.stored, 'greet');
-  assert.ok(splitterCall(s, 'command_check', {serves: ['greet'], run: ['ruby', 'greet.rb', 'Ann'], expect: {exit: 0, stdout_has: ['Ann']}}).result.id, 'ruby is a program the box has');
-  const none = splitterState();
-  splitterCall(none, 'contract', {name: 'x.md', kind: 'doc', path: 'x.md', does: 'notes'});
-  assert.match(splitterCall(none, 'command_check', {serves: ['x.md'], run: ['ruby', 'x.rb'], expect: {exit: 0}}).result.error, /neither a command contract declared so far nor a program the box has/);
+// Owner 2026-10-17 ("The runtime should be language adrogenous. It's just moving data around."; the compiler "can install shit"): the splitter's world lists no programs, and a command or a run names any program, kept as written.
+test('a command check and a contract\'s run may name any program: the splitter\'s world lists none, and each argument list is kept as written', () => {
+  const s = splitterState();
+  assert.deepEqual(splitterCall(s, 'contract', {name: 'greet', kind: 'command', path: 'greet.rb', does: 'greets', run: {run: ['ruby', 'greet.rb']}}).result, {stored: 'greet', kind: 'command', examples_needed: 3});
+  assert.deepEqual(levelView(s).contracts[0].run, {argv: ['ruby', 'greet.rb']});
+  assert.deepEqual(splitterCall(s, 'command_check', {serves: ['greet'], run: ['ruby', 'greet.rb', 'Ann'], expect: {exit: 0, stdout_has: ['Ann']}}).result, {id: 'v1', examples: ['ruby greet.rb Ann → it exits 0 and its output contains "Ann"'], examples_so_far: {greet: 1}});
+  splitterCall(s, 'contract', {name: 'x.md', kind: 'doc', path: 'x.md', does: 'notes'});
+  assert.equal(levelView(s).validations.length, 1);
+  assert.deepEqual(splitterCall(s, 'command_check', {serves: ['x.md'], run: ['some-tool-no-row-names', '--flag'], expect: {exit: 0}}).result.id, 'v2');
+  assert.equal(levelView(s).validations[1].check.argv[0], 'some-tool-no-row-names');
 });
 
 // Owner, 2026-10-17: a worker that answers a complaint with its files unchanged shows its problem statement was wrong or incomplete, and
