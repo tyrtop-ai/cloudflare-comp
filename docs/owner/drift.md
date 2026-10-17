@@ -12,12 +12,6 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: The broker quotes an existing file or a linked page as it is. It drops the text heuristics and injection labels, which protect against something the function architecture already rules out.
 - Status: The owner answered on 2026-10-17 (group 2: "The agents are given interfaces that control what they are able to see. Those interfaces shouldn't be mutating the data ever"); this session's permission check still refused the edit in Auto mode, so it waits for the owner to switch the session to Accept edits. Earlier: not done: this session's permission check refused the edit as a security weakening, so it waits for the owner's decision; the patch is saved at scratchpad audit/r2-worker-code-4.patch
 
-### R2-compiler/record-6: Only JavaScript, Python, TypeScript and shell exist in the box; other code types cannot run
-- drift, `src/toolchains.js:9`
-- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous || 05:17: "there shouldn't be any version pinning or code type pinning or specific prompt pinning."
-- Required: The box runs whatever code type the work is written in, with no fixed set of languages pinned by the runtime.
-- Status: in progress: the owner ruled 2026-10-17 "It needs the ability to create C#. OR at least have the splitter install the ability for C#". Earlier: waiting on the owner: the box runs a fixed set of languages (Dockerfile.box); a function contract in .jsx, .tsx, .kt, .cs or .swift is refused at declaration with the reason. Calling them needs their toolchains in the image (esbuild or typescript, kotlinc, dotnet-sdk, swiftc) and an adapter each, or toolchains installed at run time.
-
 ### R2-edges/chrono-1: Base files wait behind a person's grant (base_confirm hold), vetted by Clef and a text heuristic
 - extra, `src/room-inputs.js:259`
 - Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists. || 2026-10-15 15:52 (answering Claude's 'no editing repo files you didn't confirm'): "i mean the runtime should just make it architecturall …
@@ -35,12 +29,6 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Owner (2026-10-15 15:55): The benchmark's tampering scan. - wtf? that's inferrior || 2026-10-15 15:52: "otherwise for testing, they should just get their own little testing box instead of limiting what they can do" || 2026-10-16 05:39: "text heuristics - I don't understand what this is for. Like architecturally, this is protecting from someting that shouldn't happen."
 - Required: Drop the anti-tamper machinery (nonce, token pipe, unlinking, assertion counting). Get isolation the way the owner described, from the test running in its own box apart from the solution, and simply run the benchmark's tests.
 - Status: The owner answered on 2026-10-17 (group 1: "the compilers are designed to have a seperate box so that the code runs can be verified... I'm not going to design for some 1% scenario"); this session's permission check still refused the edit in Auto mode, so it waits for the owner to switch the session to Accept edits. Earlier: not done: this session's permission check refused the edit as a security weakening, so it waits for the owner's decision
-
-### R3-compiler/chrono-6: The box still pins a fixed set of code types; .jsx, .tsx, .kt, .cs, .swift and others are listed as code nothing compiles
-- unfixed, `src/toolchains.js:192`
-- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous || 05:17: "there shouldn't be any version pinning or code type pinning or specific prompt pinning."
-- Required: The box runs whatever code type the work is written in, with no runtime-pinned list of languages.
-- Status: in progress: same ruling as R2-compiler/record-6. Earlier: waiting on the owner: the box runs a fixed set of languages (Dockerfile.box); a function contract in .jsx, .tsx, .kt, .cs or .swift is refused at declaration with the reason. Calling them needs their toolchains in the image (esbuild or typescript, kotlinc, dotnet-sdk, swiftc) and an adapter each, or toolchains installed at run time.
 
 ### R3-compiler/code-4: Call adapters run an anti-forgery protocol (nonce file, captured globals, supervisor/worker split) against the code they test
 - extra, `container/adapters/call.mjs:32`
@@ -102,12 +90,6 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: Treat any answer on the ready path as ready in both branches, as pollReady already does, so that a check asserts only what its validation states.
 - Status: The owner answered on 2026-10-17 (group 1: "the compilers are designed to have a seperate box so that the code runs can be verified... I'm not going to design for some 1% scenario"); this session's permission check still refused the edit in Auto mode, so it waits for the owner to switch the session to Accept edits. Earlier: not done: this session's permission check refused making build-runner.mjs's ready poll without a network namespace count any answer as ready (it still requires below 500) as a security weakening, so it waits for the owner's decision.
 
-### R7-compiler/chrono-2: Function contracts are still refused in every language outside the box's fixed call-adapter list (.jsx, .tsx, .kt, .cs, .swift), and a test pins it
-- unfixed, `src/toolchains.js:246`
-- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
-- Required: Let the box run and call code in whatever language the work is written in, rather than refusing contracts outside a fixed list. Drop the test that pins the refusal of those languages.
-- Status: in progress: same ruling as R2-compiler/record-6. Earlier: waiting on the owner: the box runs a fixed set of languages (Dockerfile.box); a function contract in .jsx, .tsx, .kt, .cs or .swift is refused at declaration with the reason. Calling them needs their toolchains in the image (esbuild or typescript, kotlinc, dotnet-sdk, swiftc) and an adapter each, or toolchains installed at run time.
-
 ### R7-compiler/chrono-3: The browser check blocks every request a page makes to anything but the served origins (proxy to 127.0.0.1:1, host-resolver rules, route abort), inside the single-use box
 - extra, `container/adapters/browser-check.mjs:264`
 - Owner (2026-10-15 15:52): i mean the runtime should just make it architecturally impossible for the agents to do something. e.g. only exposing what they have access to so that the agents only know what they exist. otherwise for testing, they should just get their own little testing box instead of limiting what they can do
@@ -164,11 +146,29 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: Answering a complaint with unchanged files must not be possible for the worker. When it does happen, the cause is in the runtime or the routing, and is fixed there instead of escalating a hold.
 - Fixed in: 14d92bb (owner, 2026-10-17: "problem statement failure, not worker or routing failure"): a worker that answers a complaint with done and its files byte for byte unchanged is archived; its level's splitter rebuilds its contracts reading the complaint and that the delivery did not change, and can replace the validations serving them with drop_validation. The worker is not handed the complaint again and the routing is not asked again; handed_before_and_unchanged is gone.
 
+### R2-compiler/record-6: Only JavaScript, Python, TypeScript and shell exist in the box; other code types cannot run
+- drift, `src/toolchains.js:9`
+- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous || 05:17: "there shouldn't be any version pinning or code type pinning or specific prompt pinning."
+- Required: The box runs whatever code type the work is written in, with no fixed set of languages pinned by the runtime.
+- Fixed in: 32f6a3e, e4e09c5 (owner, 2026-10-17: "It needs the ability to create C#. OR at least have the splitter install the ability for C#"): a row the image lacks carries its own toolchain install, which the box runs in its install stage (network on) when a level uses that row. C# (Mono) has syntax, command, HTTP and call checks (a C# call adapter with the same protocol); JSX/TSX (esbuild) has syntax, command and HTTP checks. Left out: Kotlin and Swift, whose toolchains have files over the box's 64 MiB file-size cap (R6-compiler/chrono-1, waiting on the owner), and Swift has no Debian package; a JSX/TSX function contract is refused because no call adapter exists.
+
+### R3-compiler/chrono-6: The box still pins a fixed set of code types; .jsx, .tsx, .kt, .cs, .swift and others are listed as code nothing compiles
+- unfixed, `src/toolchains.js:192`
+- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous || 05:17: "there shouldn't be any version pinning or code type pinning or specific prompt pinning."
+- Required: The box runs whatever code type the work is written in, with no runtime-pinned list of languages.
+- Fixed in: 32f6a3e, e4e09c5 (owner, 2026-10-17: "It needs the ability to create C#. OR at least have the splitter install the ability for C#"): a row the image lacks carries its own toolchain install, which the box runs in its install stage (network on) when a level uses that row. C# (Mono) has syntax, command, HTTP and call checks (a C# call adapter with the same protocol); JSX/TSX (esbuild) has syntax, command and HTTP checks. Left out: Kotlin and Swift, whose toolchains have files over the box's 64 MiB file-size cap (R6-compiler/chrono-1, waiting on the owner), and Swift has no Debian package; a JSX/TSX function contract is refused because no call adapter exists.
+
 ### R4-compiler/chrono-2: The runtime guesses which module a call check loads by scanning every bundle file for the function name, instead of using the served contract's path
 - extra, `src/checks.js:32`
 - Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
 - Required: Run the call check against the file the splitter declared for the function contract it serves (the contract's path), as written. Don't search the bundle by name.
 - Fixed in: 59c00a9: a function contract names its file (contract() refuses one with no path, as for a command); callModule returns the declared path only, and the name scan is gone.
+
+### R7-compiler/chrono-2: Function contracts are still refused in every language outside the box's fixed call-adapter list (.jsx, .tsx, .kt, .cs, .swift), and a test pins it
+- unfixed, `src/toolchains.js:246`
+- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
+- Required: Let the box run and call code in whatever language the work is written in, rather than refusing contracts outside a fixed list. Drop the test that pins the refusal of those languages.
+- Fixed in: 32f6a3e, e4e09c5 (owner, 2026-10-17: "It needs the ability to create C#. OR at least have the splitter install the ability for C#"): a row the image lacks carries its own toolchain install, which the box runs in its install stage (network on) when a level uses that row. C# (Mono) has syntax, command, HTTP and call checks (a C# call adapter with the same protocol); JSX/TSX (esbuild) has syntax, command and HTTP checks. Left out: Kotlin and Swift, whose toolchains have files over the box's 64 MiB file-size cap (R6-compiler/chrono-1, waiting on the owner), and Swift has no Debian package; a JSX/TSX function contract is refused because no call adapter exists.
 
 ### R8-edges/code-2: A base repo's symbolic links are dropped before any agent sees them ('link' skip in fetchGithubRepo)
 - extra, `src/base.js:224`
