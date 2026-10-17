@@ -17,5 +17,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # The box's checks run with HOME=/home/builder, the box user's home in container/Dockerfile.box.
+      - run: sudo install -d -o "$(id -u)" -g "$(id -g)" /home/builder
       - run: npm run check
       - run: npm test

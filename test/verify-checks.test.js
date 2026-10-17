@@ -266,7 +266,7 @@ test('call checks: Python functions keep a saved object across steps, await coro
     {id:'R5',kind:'call',adapter:'python',module:'components/counter/count.py',steps:[{call:'count_words',args:['a']}]}]},{isolation:[]});
   const c=byId(report);
   assert.equal(c.R1.passed,true,c.R1.detail);
-  assert.match(c.R2.detail,/^boom\(0\) in components\/counter\/count\.py raised ZeroDivisionError: integer division or modulo by zero\n--- stack\nTraceback \(most recent call last\):\n[\s\S]*call\.py[\s\S]*  File "components\/counter\/count\.py", line 30, in boom\n    return helper\(x\)\n  File "components\/counter\/count\.py", line 34, in helper\n[\s\S]*ZeroDivisionError: integer division or modulo by zero$/,'the whole traceback, as Python printed it: the adapter\'s frames too');
+  assert.match(c.R2.detail,/^boom\(0\) in components\/counter\/count\.py raised ZeroDivisionError: integer division or modulo by zero\n--- stack\nTraceback \(most recent call last\):\n[\s\S]*call\.py[\s\S]*  File "components\/counter\/count\.py", line 30, in boom\n    return helper\(x\)\n(?: *[~^]+\n)?  File "components\/counter\/count\.py", line 34, in helper\n[\s\S]*ZeroDivisionError: integer division or modulo by zero$/,'the whole traceback, as Python printed it (with the markers newer Pythons print under a frame): the adapter\'s frames too');
   assert.deepEqual(c.R2.frames,[{path:'components/counter/count.py',line:34,fn:'helper'},{path:'components/counter/count.py',line:30,fn:'boom'}],'the raising frame first; the adapter\'s own frames are left out');
   assert.equal(c.R3.detail,'add_words("$c", "x y") in components/counter/count.py returned 2, expected 3');
   assert.match(c.R4.detail,/^components\/counter\/broken\.py does not load: SyntaxError: /);
@@ -304,7 +304,7 @@ test('call checks: TypeScript, Ruby and PHP functions run through their own call
     assert.equal(c.R1.passed,true,c.R1.detail);
     assert.match(c.R2.detail,/^boom\(1\) in lib\/words\.rb raised ArgumentError: bad 1\n--- stack\nlib\/words\.rb:6:in /);
     assert.deepEqual(c.R2.frames[0],{path:'lib/words.rb',line:6,fn:'boom'});
-    assert.equal(c.R3.detail,'lib/words.rb has no function nope (it defines: shout, boom)');
+    assert.match(c.R3.detail,/^lib\/words\.rb has no function nope \(it defines: (shout, boom|boom, shout)\)$/,'the names Ruby lists, in the order it lists them');
   }
   if(hasPhp) {
     assert.equal(c.P1.passed,true,c.P1.detail);
