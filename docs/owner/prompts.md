@@ -2218,3 +2218,22 @@ hows this doing
 ````text
 i need more context for all of those
 ````
+
+## 2026-10-17 19:16 (sent while Claude was working)
+
+````text
+1. - the compilers are designed to have a seperate box so that the code runs can be verified. I really don't understand what scenario you're trying to make up or build here. I'm not going to design for some 1% scenario that hasn't happened/shouldn't happen. Please do not introduce scope creep
+2. you misunderstood that completely. wow. The agents are given interfaces that control what they are able to see. Those interfaces shouldn't be mutating the data ever. I understand the concern of wanting to protect from prompt injection, but yet again, 1% scenario, small agents, don't fucking care. If 3 agents explode, they explode. I can't have the arhictecture be changing for "safety reasons" when the architecture hasn't been tested correctly one time. 
+3. see 2
+4. i actually don't understand what you're asking here. technically the agents should only be able to change their own repo. They can copy from other agents repos, and the functions can control what artifacts they have visibility into
+5. i also don't understand what you're asking here. How is this tool going to create C# if you don't give it the ability to create C#? dumb question. It needs the ability to create C#. OR at least have the splitter install the ability for C#
+6. what implementation can't be built as json? 
+7. In what situation does a worker build the same solution? When the problem statement was incorrect or unfilled. ergo problem statement failure, not worker or routing failure
+8. don't get these, at all
+````
+
+## 2026-10-17 19:27 (sent while Claude was working)
+
+````text
+what is my architecutre?
+````
