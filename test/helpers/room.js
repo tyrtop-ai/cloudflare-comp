@@ -202,11 +202,12 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),build=null,runner=()=>
     if(system.startsWith('You are the RUNNER')){calls.runner.push(user);return {response:runner(user,calls.runner.length)};}
     throw new Error('unexpected model request: '+system.slice(0,80));
   }};
-  const builds=[];
+  // builds.links: the symbolic links each box was given (path to target), beside its files.
+  const builds=[];builds.links=[];
   // v8: a level's validations (mode 'checks') run in the real verifyChecks,
   // with the network kept (isolation []: the tests' sandbox may refuse namespaces).
-  const exec=executor||{build:async({fingerprint,files,options,mode,plan,toolchains,limits})=>{builds.push(files);
-    return mode==='checks'?verifyChecks({mode,fingerprint,snapshot_hash:await snapshotHash(files),files,plan,toolchains,limits},{isolation:[]}):verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files,options});}};
+  const exec=executor||{build:async({fingerprint,files,options,mode,plan,toolchains,limits,links})=>{builds.push(files);builds.links.push(links||{});
+    return mode==='checks'?verifyChecks({mode,fingerprint,snapshot_hash:await snapshotHash(files),files,plan,toolchains,limits,...(links?{links}:{})},{isolation:[]}):verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files,options});}};
   const pending=[],store=given||new Store(),sql=new Sql(),ctx={storage:{sql},waitUntil:p=>pending.push(p)};
   // Capability boxes S1: a v8 compile opens a fresh Box (the real class over
   // a fake Container) whose runner request goes to the same executor.
@@ -226,7 +227,9 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),build=null,runner=()=>
 // that no file at the root is gets a file of its own at the root that
 // takes the name from the file defining it (and a package marker in each
 // folder on the way); a bare reference from a file in a folder to a file
-// beside it becomes relative. Then it calls done.
+// beside it becomes relative, and one from a file at the root to the one
+// file of that name in a folder becomes that file's module path. Then it
+// calls done.
 export function usualBuilder(user, _n, _system, {round, results}) {
   const done = summary => [{name: 'done', arguments: {summary}}];
   if (round === 1) return user.files.length ? user.files.map(f => ({name: 'read_file', arguments: {path: f.path}})) : done('nothing to join');
@@ -270,6 +273,9 @@ export function joinCalls(design, texts) {
         const top = m[1].split('.')[0];
         if (has(`${top}.py`) || paths.some(x => x.startsWith(`${top}/`))) continue;
         if (dirOf(p) && texts.has(`${dirOf(p)}/${top}.py`)) { calls.push({name: 'rename', arguments: {path: p, from: top, to: `.${top}`, name_characters: '_'}}); continue; }
+        // A file at the root (where its contract placed it) reading the module of its piece's own file in a folder: the module's path from the root.
+        const away = !dirOf(p) ? paths.filter(x => x.endsWith(`/${top}.py`)) : [];
+        if (away.length === 1) { calls.push({name: 'rename', arguments: {path: p, from: top, to: away[0].replace(/\.py$/, '').replace(/\//g, '.'), name_characters: '_'}}); continue; }
         const at = contracts.some(c => c.name === top) ? definer(top, '.py') : null;
         if (!at || wrote.has(`${top}.py`)) continue;
         const folders = dirOf(at).split('/').filter(Boolean);

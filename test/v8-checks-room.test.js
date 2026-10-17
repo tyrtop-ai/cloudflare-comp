@@ -406,11 +406,15 @@ test('checkPlan: command contracts run by their own path, call checks load the f
   assert.deepEqual(unreached.toolchains.map(r=>r.id).sort(),['go','javascript','php','python','ruby','typescript']);
   assert.deepEqual(toolchains.map(r=>r.id),['python','text']);
   // The contract's path, as written: conv.py, never another bundle file that defines to_f.
-  assert.deepEqual(callModule({steps:[{call:'to_f'}]},spec.contracts,files),{name:'to_f',path:'conv.py'});
-  // Pending the owner: a function contract with no path names no file; only then is the file found among those that define the name, a placed one first.
+  assert.deepEqual(callModule({steps:[{call:'to_f'}]},spec.contracts),{name:'to_f',path:'conv.py',declared:true});
+  // Owner 2026-10-16 20:38: the splitter names the file through its contract function (test/splitter.test.js); the runtime never finds one by the name.
+  // A function contract stored before the splitter's contract asked for its file names none: its call is the compiler's observation, and no bundle file is searched.
   const pathless=[{name:'to_f',kind:'function'}];
-  assert.deepEqual(callModule({steps:[{call:'to_f'}]},pathless,files),{name:'to_f',path:'components/x-1/conv.py',undeclared:true});
-  assert.deepEqual(callModule({steps:[{call:'to_f'}]},pathless,files,new Set(['conv.py'])),{name:'to_f',path:'conv.py',undeclared:true});
+  assert.deepEqual(callModule({steps:[{call:'to_f'}]},pathless),{name:'to_f',path:'',declared:true});
+  const old=checkPlan({contracts:pathless,validations:[{id:'P1',check:{kind:'call',steps:[{call:'to_f',args:[0],expect:32}]}}]},files,{rows:TOOLCHAINS});
+  assert.deepEqual(old.plan.checks,[]);
+  assert.equal(old.local.get('P1').detail,'the function contract to_f names no file');
+  assert.equal(old.local.get('P1').infrastructure,undefined);
   // Only file and judge checks: no box.
   assert.equal(checkPlan({...spec,validations:spec.validations.slice(2,4)},new Map([['GUIDE.md','x']]),{rows:[TOOLCHAINS[2]]}).container,false);
   assert.deepEqual(fileResult({path:'GUIDE.md',has:['# g']},files),{passed:true,detail:''});

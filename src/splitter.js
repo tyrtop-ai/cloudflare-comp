@@ -77,7 +77,7 @@ function contract(s, a) {
   if (s.own.some(c => c.name === name)) return {error: `"${name}" is already declared: it is one of the contracts you deliver`};
   if (s.contracts.some(c => c.name === name)) return {error: `"${name}" is already declared`};
   if (s.have.some(c => c.name === name)) return {error: `"${name}" is already declared: it is a contract your level already has`};
-  if (PLACED_KINDS.has(kind) && !path) return {error: `a ${kind} contract needs the relative path of its file`};
+  if ((PLACED_KINDS.has(kind) || kind === 'function') && !path) return {error: `a ${kind} contract needs the relative path of its file`};
   const unheld = path ? unheldPath(path) : '';
   if (unheld) return {error: unheld};
   // A function's name is its own language's (ownNameError); the other kinds' names are their kind's.

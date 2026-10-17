@@ -6,18 +6,18 @@ import {byteLength, fetchGithubRepo, parseRepoUrl, REPO_LIMITS, STORE_ROW_BYTES}
 const enc = new TextEncoder();
 const SHA = '0123456789abcdef0123456789abcdef01234567';
 // A minimal ustar writer for fixtures.
-function header(name, size, type, prefix = '') {
+function header(name, size, type, prefix = '', link = '') {
   const h = new Uint8Array(512), put = (o, s) => h.set(enc.encode(s), o);
   put(0, name.slice(0, 100)); put(100, '0000644\0'); put(108, '0000000\0'); put(116, '0000000\0');
   put(124, size.toString(8).padStart(11, '0') + '\0'); put(136, '00000000000\0');
-  h.fill(32, 148, 156); h[156] = type.charCodeAt(0); put(257, 'ustar\0'); put(263, '00'); if (prefix) put(345, prefix);
+  h.fill(32, 148, 156); h[156] = type.charCodeAt(0); if (link) put(157, link); put(257, 'ustar\0'); put(263, '00'); if (prefix) put(345, prefix);
   put(148, h.reduce((a, b) => a + b, 0).toString(8).padStart(6, '0') + '\0 ');
   return h;
 }
 const pad = n => new Uint8Array((512 - n % 512) % 512);
-const entry = (name, data = '', type = '0', prefix = '') => {
+const entry = (name, data = '', type = '0', prefix = '', link = '') => {
   const bytes = typeof data === 'string' ? enc.encode(data) : data;
-  return [header(name, bytes.length, type, prefix), bytes, pad(bytes.length)];
+  return [header(name, bytes.length, type, prefix, link), bytes, pad(bytes.length)];
 };
 const paxData = recs => recs.map(([k, v]) => {
   const body = ` ${k}=${v}\n`;
@@ -29,8 +29,8 @@ const pax = (type, recs, name = 'pax_global_header') => entry(name, paxData(recs
 function tarGz(entries, root = 'widget-' + SHA.slice(0, 7)) {
   const parts = [...pax('g', [['comment', SHA]]), ...entry(root + '/', '', '5')];
   for (const e of entries) {
-    if (e.pax) parts.push(...pax('x', [['path', root + '/' + e.path]], 'PaxHeader'), ...entry('placeholder', e.data));
-    else parts.push(...entry(root + '/' + e.path, e.data ?? '', e.type ?? '0'));
+    if (e.pax) parts.push(...pax('x', [['path', root + '/' + e.path], ...(e.linkpath ? [['linkpath', e.linkpath]] : [])], 'PaxHeader'), ...entry('placeholder', e.data ?? '', e.type ?? '0'));
+    else parts.push(...entry(root + '/' + e.path, e.data ?? '', e.type ?? '0', '', e.link || ''));
   }
   parts.push(new Uint8Array(1024));
   const n = parts.reduce((a, p) => a + p.length, 0), tar = new Uint8Array(n);
@@ -62,7 +62,7 @@ test('repo URLs: only https://github.com/<owner>/<name>', () => {
     assert.equal(parseRepoUrl(bad), null, bad);
 });
 
-test('public repo: default branch without a token, then the tarball; every regular file is the project\'s whatever its directory or extension (owner 2026-10-16 05:39: "no path rules for agents"); content that is not text is carried as bytes; .git and links skipped', async () => {
+test('public repo: default branch without a token, then the tarball; every regular file is the project\'s whatever its directory or extension (owner 2026-10-16 05:39: "no path rules for agents"); content that is not text is carried as bytes; a symbolic link is carried as git holds it, with its target; .git skipped', async () => {
   const longPath = 'docs/' + 'deep/'.repeat(25) + 'notes.md';
   const archive = tarGz([
     {path: 'README.md', data: '# Widget\nA made-up example.\n'},
@@ -81,7 +81,8 @@ test('public repo: default branch without a token, then the tarball; every regul
     {path: 'data/blob.txt', data: new Uint8Array([0x61, 0, 0x62])},
     {path: 'data/latin1.txt', data: new Uint8Array([0x63, 0x61, 0x66, 0xe9])},
     {path: 'big.txt', data: 'x'.repeat(300 * 1024)},
-    {path: 'link-to-readme', data: '', type: '2'},
+    {path: 'link-to-readme', type: '2', link: 'README.md'},
+    {path: 'bin/far', type: '2', pax: true, linkpath: '../' + 'deep/'.repeat(30) + 'tool'},
     {path: longPath, data: 'long path kept', pax: true}
   ]);
   const fetch = fakeFetch({[API]: json({default_branch: 'main', full_name: 'acme-example/widget'}), [TAR('main')]: gz(archive)});
@@ -95,12 +96,18 @@ test('public repo: default branch without a token, then the tarball; every regul
   assert.equal(r.files['big.txt'], 'x'.repeat(300 * 1024), 'a large text file is a base file, whole');
   assert.equal(r.files[longPath], 'long path kept');
   const reasons = Object.fromEntries(r.skipped.map(s => [s.path, s.reason]));
-  assert.deepEqual(reasons, {'.git/': '.git dropped', 'link-to-readme': 'link'});
+  assert.deepEqual(reasons, {'.git/': '.git dropped'});
   // Content that is not text (by its bytes, never by its name) is carried through as bytes, with its mode.
+  // Owner 2026-10-17: "Those interfaces shouldn't be mutating the data ever": a symbolic link is the
+  // project's as git holds it, mode 120000 with its target as its content (a pax linkpath whole).
+  const far = '../' + 'deep/'.repeat(30) + 'tool';
   assert.deepEqual(r.passthrough.map(p => [p.path, p.reason]).sort(), [
-    ['assets/logo.png', 'not UTF-8 text'], ['data/blob.txt', 'binary'], ['data/latin1.txt', 'not UTF-8 text']]);
+    ['assets/logo.png', 'not UTF-8 text'], ['bin/far', `a symbolic link to ${JSON.stringify(far)}`], ['data/blob.txt', 'binary'], ['data/latin1.txt', 'not UTF-8 text'],
+    ['link-to-readme', 'a symbolic link to "README.md"']]);
   assert.deepEqual([...r.passthrough.find(p => p.path === 'data/latin1.txt').bytes], [0x63, 0x61, 0x66, 0xe9]);
-  assert.ok(r.passthrough.every(p => p.mode === 0o644));
+  assert.equal(new TextDecoder().decode(r.passthrough.find(p => p.path === 'link-to-readme').bytes), 'README.md');
+  assert.equal(new TextDecoder().decode(r.passthrough.find(p => p.path === 'bin/far').bytes), far);
+  assert.deepEqual(r.passthrough.map(p => [p.path, p.mode]).sort(), [['assets/logo.png', 0o644], ['bin/far', 0o120000], ['data/blob.txt', 0o644], ['data/latin1.txt', 0o644], ['link-to-readme', 0o120000]]);
   assert.equal(r.modes['README.md'], 0o644);
   assert.equal(r.truncated, false);
   assert.equal(r.count, 12);

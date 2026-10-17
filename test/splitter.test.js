@@ -41,7 +41,7 @@ test('the splitter\'s functions are contract, the six check functions, piece, dr
   assert.deepEqual(splitterCall(splitterState({}), 'read_file', {path: 'src/a.js'}).result, {error: 'There is no function "read_file".'});
 });
 
-test('contract: stored exactly as given, or refused with exactly why: a kind outside the seven, no path for a placed kind, a language the box does not run, a name already declared, a field it does not have, a run on what is not started; a path names the place it does among the files, in any folder', () => {
+test('contract: stored exactly as given, or refused with exactly why: a kind outside the seven, no path for a contract that lives in a file (a function\'s included), a language the box does not run, a name already declared, a field it does not have, a run on what is not started; a path names the place it does among the files, in any folder', () => {
   const s = splitterState({own: [{name: 'given', kind: 'doc', path: 'GIVEN.md', does: 'given'}], have: [{name: 'had', kind: 'function', path: 'had.py', does: 'had'}]});
   assert.deepEqual(calls(s, [['contract', CONVERT], ['contract', TO_F], ['contract', {name: 'README.md', kind: 'doc', path: 'README.md', does: 'how to run it'}]]),
     [{stored: 'convert', kind: 'command', examples_needed: 3}, {stored: 'to_f', kind: 'function', examples_needed: 3}, {stored: 'README.md', kind: 'doc'}]);
@@ -50,6 +50,9 @@ test('contract: stored exactly as given, or refused with exactly why: a kind out
   assert.equal(why({name: 'x', kind: 'script', does: 'x'}), 'kind "script" is not one of function, file, page, route, command, doc, data');
   assert.equal(why({name: 'x', does: 'x'}), 'kind null is not one of function, file, page, route, command, doc, data', 'no kind is inferred');
   assert.equal(why({name: 'notes', kind: 'doc', does: 'x'}), 'a doc contract needs the relative path of its file');
+  // Owner 2026-10-16 20:38 ("The splitter should be given interfaces and then write via those interfaces"): a function contract names its file, as a command does, so a call check calls the file the splitter wrote, never one the runtime finds by the name.
+  assert.equal(why({name: 'add', kind: 'function', does: 'x'}), 'a function contract needs the relative path of its file');
+  assert.equal(levelView(s).contracts.some(c => c.name === 'add'), false, 'nothing stored');
   // A path is read as a rooted file system reads it: '..' from the top is the top, so it names up.md; no folder is the runtime's.
   assert.deepEqual(splitterCall(s, 'contract', {name: '../up.md', kind: 'doc', path: '../up.md', does: 'x'}).result, {stored: 'up.md', kind: 'doc'});
   assert.equal(levelView(s).contracts.find(c => c.name === 'up.md').path, 'up.md');
@@ -61,16 +64,16 @@ test('contract: stored exactly as given, or refused with exactly why: a kind out
   assert.equal(why({name: 'given', kind: 'doc', path: 'GIVEN.md', does: 'x'}), '"given" is already declared: it is one of the contracts you deliver');
   assert.equal(why({name: 'had', kind: 'function', does: 'x'}), '"had" is already declared: it is a contract your level already has');
   assert.equal(why({name: 'add', kind: 'function', does: 'x', params: ['a']}), 'contract has no field "params"; its fields are name, kind, path, does, inputs, outputs, effects, run');
-  assert.equal(why({name: 'add', kind: 'function', does: 'x', run: {static: true}}), 'a function contract is not started, so it states no run');
+  assert.equal(why({name: 'add', kind: 'function', path: 'add.py', does: 'x', run: {static: true}}), 'a function contract is not started, so it states no run');
   assert.equal(why({name: 'GET /items', kind: 'route', does: 'x', run: {run: ['serve-items']}}), 'its run starts "serve-items", which is neither a command contract declared so far nor a program the box has (node, npm, npx, python3, pytest)');
-  // A function's name is judged by its own language alone, with no length bound and no list of built-in names; a language with no name rule, or no path, stores it as written.
+  // A function's name is judged by its own language alone, with no length bound and no list of built-in names.
   assert.equal(why({name: 'add one', kind: 'function', path: 'calc.py', does: 'x'}), '"add one" is not a valid python function name');
   assert.equal(why({name: 'lambda', kind: 'function', path: 'calc.py', does: 'x'}), '"lambda" is not a valid python function name (a reserved word)');
   // Each language's own identifier rule, Unicode as the language has it.
   for (const [name, path] of [['größe', 'calc.py'], ['maß', 'calc.js']]) assert.equal(why({name, kind: 'function', path, does: 'x'}), undefined, path);
   assert.equal(why({name: 'class', kind: 'function', path: 'src/k.js', does: 'x'}), '"class" is not a valid javascript function name (a reserved word)');
-  for (const [name, path] of [['from', 'src/a.ts'], ['delete', 'src/a.go'], ['valid?', 'lib/a.rb'], ['from_js', 'src/from.js'], ['fetch', 'src/afetch.js'], ['process', 'src/proc.js'], ['f'.repeat(70), 'src/long.js'], ['g'.repeat(70), 'long.py'], ['add one', undefined]])
-    assert.equal(splitterCall(s, 'contract', {name, kind: 'function', ...(path ? {path} : {}), does: 'x'}).result.stored, name, `${name.slice(0, 20)} at ${path}`);
+  for (const [name, path] of [['from', 'src/a.ts'], ['delete', 'src/a.go'], ['valid?', 'lib/a.rb'], ['from_js', 'src/from.js'], ['fetch', 'src/afetch.js'], ['process', 'src/proc.js'], ['f'.repeat(70), 'src/long.js'], ['g'.repeat(70), 'long.py']])
+    assert.equal(splitterCall(s, 'contract', {name, kind: 'function', path, does: 'x'}).result.stored, name, `${name.slice(0, 20)} at ${path}`);
   assert.equal(splitterCall(s, 'contract', {name: 'c'.repeat(70), kind: 'command', path: 'bin/c', does: 'x'}).result.stored, 'c'.repeat(70), 'a command word of any length');
   // A command's name is the key its run is looked up by: stored as written, in any form (owner 2026-10-16 20:40: refused only for the kind, the path, the language or a name already taken).
   for (const [i, name] of ['convert temp', 'todo:add', '.run', '-x', 'Größe'].entries())

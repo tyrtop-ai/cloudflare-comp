@@ -24,16 +24,17 @@ const {default: worker} = await import('../src/index.js');
 // ------------------------------------------------------------ fixtures
 const enc = new TextEncoder();
 const SHA = '0123456789abcdef0123456789abcdef01234567';
-function header(name, size, type, mode = 0o644) {
+function header(name, size, type, mode = 0o644, link = '') {
   const h = new Uint8Array(512), put = (o, s) => h.set(enc.encode(s), o);
   put(0, name.slice(0, 100)); put(100, mode.toString(8).padStart(7, '0') + '\0'); put(108, '0000000\0'); put(116, '0000000\0');
   put(124, size.toString(8).padStart(11, '0') + '\0'); put(136, '00000000000\0');
-  h.fill(32, 148, 156); h[156] = type.charCodeAt(0); put(257, 'ustar\0'); put(263, '00');
+  h.fill(32, 148, 156); h[156] = type.charCodeAt(0); if (link) put(157, link); put(257, 'ustar\0'); put(263, '00');
   put(148, h.reduce((a, b) => a + b, 0).toString(8).padStart(6, '0') + '\0 ');
   return h;
 }
-// A file is text, bytes, or {data, mode}.
+// A file is text, bytes, {data, mode}, or {link: target} (a symbolic link, as git archive writes one).
 const entry = (name, data = '', type = '0') => {
+  if (data && typeof data === 'object' && typeof data.link === 'string') return [header(name, 0, '2', 0o777, data.link)];
   const {data: d, mode} = data && typeof data === 'object' && !(data instanceof Uint8Array) ? data : {data, mode: 0o644};
   const b = d instanceof Uint8Array ? d : enc.encode(d);
   return [header(name, b.length, type, mode), b, new Uint8Array((512 - b.length % 512) % 512)];
@@ -668,6 +669,7 @@ async function commitFiles(fs, dir, files, ref) {
   for (const [path, v] of Object.entries(files)) { const parts = path.split('/'); let m = root; for (const p of parts.slice(0, -1)) { if (!m.has(p)) m.set(p, new Map()); m = m.get(p); } m.set(parts.at(-1), v); }
   const write = async m => { const tree = []; for (const [path, v] of m) {
     if (v instanceof Map) tree.push({mode: '040000', path, oid: await write(v), type: 'tree'});
+    else if (typeof v?.link === 'string') tree.push({mode: '120000', path, type: 'blob', oid: await git.writeBlob({fs, dir, blob: enc.encode(v.link)})});
     else tree.push({mode: v.mode === 0o755 ? '100755' : '100644', path, type: 'blob', oid: await git.writeBlob({fs, dir, blob: v.data instanceof Uint8Array ? v.data : typeof v === 'string' ? enc.encode(v) : v instanceof Uint8Array ? v : enc.encode(v.data)})});
   } return git.writeTree({fs, dir, tree}); };
   return git.commit({fs, dir, tree: await write(root), parent: [], ref, author: GIT_AUTHOR, message: 'base\n'});
@@ -731,6 +733,46 @@ test('S8b review M5: files the room does not build are carried untouched (bytes,
   await assert.rejects(exportToGitHub({token: 'fixture-token', options: githubExportOptions({repo: 'acme-example/widget', onto_base: true}, 'room-m5m5-0001'),
     app: {...app, base: {...app.base, resolved_sha: 'f'.repeat(40)}}, room: 'room-m5m5-0001'}, {git: g, fetch: api}), /the branch has moved/);
   assert.throws(() => githubExportOptions({repo: 'acme-example/widget', onto_base: true, dir: 'apps/x'}, 'room-m5m5-0001'), /leave dir out/);
+});
+
+// Owner 2026-10-17: "The agents are given interfaces that control what they are able to see. Those interfaces shouldn't be mutating the data ever."
+// A base repo's symbolic link is the project's as git holds it: the agents see it with its target, the box holds it as a link, and the export writes it as git stores one.
+const LINK_REPO = {...BASE_FILES, 'shout.js': {link: 'src/shout.js'}};
+const LINK_LEVEL = {contracts: [README],
+  validations: [has('a', 'README.md', '## Run'), has('c', 'README.md', '# Widget'),
+    {id: 'd', serves: ['README.md'], check: {kind: 'command', argv: ['node', '-e', 'const fs = require("fs"); console.log(fs.lstatSync("shout.js").isSymbolicLink(), fs.readlinkSync("shout.js"), require("./shout.js").shout("hi"))'], expect: {exit: 0, stdout: 'true src/shout.js HI!'}}}], pieces: []};
+test('a base repo\'s symbolic link is kept as it is: carried with its target, listed and read by the agents as a link, written as a link in the box, exported as mode 120000', async () => {
+  const tip = await commitFiles(new MemoryFS(), '/r', LINK_REPO, 'refs/heads/main');
+  const {room, calls, builds, drain} = inputsRoom({level: LINK_LEVEL, fetch: fakeFetch(repoRoutes(LINK_REPO, tip)), answers: {'README.md': [wrote([['README.md', GOOD_README]])]}});
+  await room.start(README_GOAL, 20, {pipeline: 'v8'}, 'room-link-0001', {base: {repo: 'acme-example/widget'}, selfHosts: ['c.example.com']});
+  await drain();
+  assert.equal(room.get('status'), 'complete', trace(room));
+  assert.ok(allPass(room), trace(room));
+  const why = 'a symbolic link to "src/shout.js"';
+  assert.deepEqual(room.db().exec('SELECT path,mode,reason FROM base_passthrough').toArray().map(r => ({...r})), [{path: 'shout.js', mode: 0o120000, reason: why}]);
+  // What the agents see: listed among the files the work starts from, with its target; read by the read function the same way.
+  assert.deepEqual(calls.split[0].existing_files.carried_untouched, [{path: 'shout.js', reason: why}]);
+  assert.deepEqual(room.readBaseFile('shout.js'), {path: 'shout.js', label: BASE_LABEL, bytes: 'src/shout.js'.length, carried_untouched: why});
+  // The box holds it as a link (the check's own lstat says so), never as a file of its target's text.
+  assert.deepEqual(builds.links.at(-1), {'shout.js': 'src/shout.js'});
+  assert.ok(!('shout.js' in builds.at(-1)));
+  // The export: mode 120000, its target as its content; the ZIP marks it a link; GitHub gets the same blob git had.
+  const app = await room.appFiles(), link = app.files.find(f => f.path === 'shout.js');
+  assert.deepEqual([link.mode, new TextDecoder().decode(fromBase64(link.content_base64)), link.passthrough], ['120000', 'src/shout.js', true]);
+  const zip = zipFiles(app.files);
+  assert.ok([...zip.keys()].some(i => zip[i] === 0x00 && zip[i + 1] === 0x00 && zip[i + 2] === 0xff && zip[i + 3] === 0xa1), 'the ZIP holds a link entry (0o120777)');
+  const fs = new MemoryFS(), made = [];
+  const g = {...git, getRemoteInfo2: async () => ({protocolVersion: 1, capabilities: {}, refs: [{ref: 'refs/heads/main', oid: tip}]}),
+    clone: async ({fs: f, dir, ref}) => { const c = await commitFiles(f, dir, LINK_REPO, 'refs/heads/tmp'); await git.writeRef({fs: f, dir, ref: `refs/remotes/origin/${ref}`, value: c}); },
+    commit: async a => { made.push(a); return git.commit(a); }, push: async () => ({ok: true, refs: {}})};
+  const api = async url => new Response(JSON.stringify(/\/pulls$/.test(url) ? {html_url: 'https://github.com/acme-example/widget/pull/1'} : {default_branch: 'main'}), {status: /\/pulls$/.test(url) ? 201 : 200});
+  const out = await exportToGitHub({token: 'fixture-token', options: githubExportOptions({repo: 'acme-example/widget', dir: 'app'}, 'room-link-0001'), app, room: 'room-link-0001'}, {git: g, fetch: api});
+  const tree = await treeOf(made[0].fs, made[0].dir, out.commit), before = await treeOf(made[0].fs, made[0].dir, tip);
+  assert.deepEqual(tree['app/shout.js'], before['shout.js'], 'mode 120000 and the blob git had');
+  assert.equal(before['shout.js'][0], '120000');
+  // A later room that starts from this one keeps it a link.
+  const next = keepBaseFiles(baseFromApp(app).entries);
+  assert.deepEqual(next.passthrough.filter(p => p.path === 'shout.js').map(p => [p.mode, new TextDecoder().decode(p.bytes)]), [[0o120000, 'src/shout.js']]);
 });
 
 // Owner 2026-10-16 05:39: "they have their world that exists". The room serves any base file whole to a read function.

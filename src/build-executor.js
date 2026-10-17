@@ -15,9 +15,9 @@ export const WARM_GRACE_MS=60_000;
 // The two options the build runner reads (container/build-runner.mjs buildOptions); anything else is dropped.
 export const buildRequestOptions=o=>o&&typeof o==='object'?{...(o.describe_api===true?{describe_api:true}:{}),...(o.prechecked===true?{prechecked:true}:{})}:{};
 // v8 S4a: a verification of a level's validations (container/build-runner.mjs
-// verifyChecks) adds mode 'checks', the toolchain rows it uses, its plan and its limits to the
+// verifyChecks) adds mode 'checks', the toolchain rows it uses, its plan, its limits and the bundle's symbolic links (links: path to target) to the
 // same one exec; any other request is the v7 build, unchanged.
-export const checksRequestFields=({mode,plan,toolchains,limits}={})=>mode==='checks'?{mode:'checks',plan:plan&&typeof plan==='object'?plan:{},toolchains:Array.isArray(toolchains)?toolchains:[],...(limits&&typeof limits==='object'?{limits}:{})}:{};
+export const checksRequestFields=({mode,plan,toolchains,limits,links}={})=>mode==='checks'?{mode:'checks',plan:plan&&typeof plan==='object'?plan:{},toolchains:Array.isArray(toolchains)?toolchains:[],...(limits&&typeof limits==='object'?{limits}:{}),...(links&&typeof links==='object'?{links}:{})}:{};
 
 function isTransientStartupFailure(error) {
   return /starting|startup|not running|not ready|not started|stopped|unavailable|not available|connecting|connection refused|try again|temporarily/i.test(String(error?.message||error));
