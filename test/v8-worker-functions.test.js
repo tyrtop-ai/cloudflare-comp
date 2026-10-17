@@ -79,7 +79,7 @@ test('read_file of a worker that holds the project the work starts from: a path 
 
 // ------------------------------------------------------------ run_examples in a room
 const CLI = 'Write a command-line temperature converter: `convert 100 C` prints the Fahrenheit value.';
-const convertCheck = (id, args, out) => ({id, serves: ['convert'], check: {kind: 'command', run: `convert ${args}`, expect: {exit: 0, stdout_has: [out]}}});
+const convertCheck = (id, args, out) => ({id, serves: ['convert'], check: {kind: 'command', argv: ['convert', ...String(args).split(' ')], expect: {exit: 0, stdout_has: [out]}}});
 const CONVERT = {name: 'convert', kind: 'command', does: 'converts a Celsius temperature to Fahrenheit', path: 'convert.js', outputs: 'the Fahrenheit value'};
 const CLI_LEVEL = {contracts: [CONVERT], validations: [convertCheck('a', '100 C', '212'), convertCheck('b', '0 C', '32'), convertCheck('c', '-40 C', '-40')], pieces: []};
 const CONVERT_JS = "const c = Number(process.argv[2]);\nconsole.log(String(c * 9 / 5 + 32));\n";
@@ -150,7 +150,7 @@ const report = reference => `${reference}\nconst t = createTicket(process.argv.s
 // The worker writes its own reference to a contract it may call, from the contract as declared (its name and path).
 const referTo = c => `const { ${c.name} } = require('./${c.path}');`;
 const callCheck = (id, serves, steps) => ({id, serves, check: {kind: 'call', steps: steps.map(([call, args, expect]) => ({call, args, ...(expect === undefined ? {} : {expect})}))}});
-const command = (id, serves, args, line) => ({id, serves, check: {kind: 'command', run: `report ${args}`, expect: {exit: 0, stdout_has: [line]}}});
+const command = (id, serves, args, line) => ({id, serves, check: {kind: 'command', argv: ['report', ...(Array.isArray(args) ? args : String(args).split(' '))], expect: {exit: 0, stdout_has: [line]}}});
 const T_CONTRACTS = [
   {name: 'createTicket', kind: 'function', does: 'creates an open ticket with a title', inputs: [{name: 'title', is: 'text'}], outputs: 'the ticket {id, title, status}', path: 'store.js'},
   {name: 'getTicket', kind: 'function', does: 'reads one ticket by its id', inputs: [{name: 'id', is: 'a number'}], outputs: 'the ticket, or null', path: 'store.js'},
@@ -162,7 +162,7 @@ const T_VALIDATIONS = [
   callCheck('v4', ['getTicket'], [['createTicket', ['Printer jam']], ['getTicket', [1], {id: 1, title: 'Printer jam', status: 'open'}]]),
   callCheck('v5', ['getTicket'], [['getTicket', [7], null]]),
   callCheck('v6', ['getTicket'], [['createTicket', ['A']], ['createTicket', ['B']], ['getTicket', [2], {id: 2, title: 'B', status: 'open'}]]),
-  command('v7', ['report'], '"Printer jam"', '#1 Printer jam [open]'), command('v8', ['report'], 'Login', '#1 Login [open]'), command('v9', ['report'], 'Coffee machine', '#1 Coffee machine [open]')];
+  command('v7', ['report'], ['Printer jam'], '#1 Printer jam [open]'), command('v8', ['report'], 'Login', '#1 Login [open]'), command('v9', ['report'], 'Coffee machine', '#1 Coffee machine [open]')];
 const T_PIECES = [
   {label: 'Ticket store', task: 'Keep tickets in memory: create them and read them back by id.', contracts: ['createTicket', 'getTicket']},
   {label: 'Ticket report', task: 'The report command: file a ticket with the title given and print it as one line.', contracts: ['report'], uses: ['createTicket']}];
@@ -216,8 +216,9 @@ test('an ask goes to the asker\'s manager as one choice among its functions, eac
   assert.equal(asks.length, 2);
   for (const below of all.filter(c => c.state.assignment !== TRACKER)) assert.deepEqual(Object.keys(below.questions), ['grant_0', 'grant_1', 'ask_parent']);
   // A name no row holds may be granted new, as a package in each code language the box compiles: Clef's choice, as every option is.
-  assert.deepEqual(Object.keys(asks[0].questions), ['answer_0', 'answer_1', 'grant_0', 'grant_1', 'ask_parent'], 'the store\'s contracts, none of the asker\'s line, the new grants, and no extend');
-  assert.deepEqual(asks[0].state.packages_offered.map(p => p.package), ['getTicket (a JavaScript package, not yet installed: the box installs it)', 'getTicket (a Python package, not yet installed: the box installs it)']);
+  // Every package the room's manager's row lists that the asker's does not is a grant, as the row lists it: pytest too, though the tree's contracts are .js (no filter by a guessed language).
+  assert.deepEqual(Object.keys(asks[0].questions), ['answer_0', 'answer_1', 'grant_0', 'grant_1', 'grant_2', 'ask_parent'], 'the store\'s contracts, none of the asker\'s line, its row\'s package, the new grants, and no extend');
+  assert.deepEqual(asks[0].state.packages_offered.map(p => p.package), ['pytest (tests)', 'getTicket (a JavaScript package, not yet installed: the box installs it)', 'getTicket (a Python package, not yet installed: the box installs it)']);
   assert.equal(asks[0].questions.ask_parent.instructions, CLEF.ask_parent);
   assert.equal(asks[0].questions.answer_1.instructions, clefText('answer', {j: 1}));
   assert.deepEqual(asks[0].state.item, {kind: 'ask', need: 'read one ticket back by its id', expected_name: 'getTicket'});
@@ -227,7 +228,7 @@ test('an ask goes to the asker\'s manager as one choice among its functions, eac
   const said = events(room, 'manager_choice').filter(e => /^On the ask/.test(e.body)).map(e => [e.actor, e.body]);
   assert.deepEqual(said.map(([a]) => a), [rp.id, rp.id, m, m]);
   assert.equal(said[0][1], 'On the ask for getTicket: ask_parent(need) p=0.950; the others: grant(getTicket, JavaScript) p=0.200, grant(getTicket, Python) p=0.200.');
-  assert.equal(said[2][1], 'On the ask for getTicket: answer(getTicket) p=0.950; the others: answer(createTicket) p=0.900, grant(getTicket, JavaScript) p=0.200, grant(getTicket, Python) p=0.200, ask_parent(need) p=0.100.');
+  assert.equal(said[2][1], 'On the ask for getTicket: answer(getTicket) p=0.950; the others: answer(createTicket) p=0.900, grant(pytest) p=0.900, grant(getTicket, JavaScript) p=0.200, grant(getTicket, Python) p=0.200, ask_parent(need) p=0.100.');
   assert.equal(events(room, 'ask_parent').length, 2);
   // The answer reached the asker: the contract as declared, which it may call from then on; its entry stays as its splitter wrote it.
   const answers = room.read(`fn_answers:${w.id}`, []);

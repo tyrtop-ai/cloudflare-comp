@@ -16,7 +16,7 @@ const T = 200_000;
 
 const TEMP_GOAL = 'A command-line tool that converts a temperature from Celsius to Fahrenheit, with a short usage guide.';
 // The level the converter's splitter states: the command and its guide, three examples each.
-const command = (id, c, f) => ({id, serves: ['temp'], check: {kind: 'command', run: `temp ${c}`, expect: {exit: 0, stdout_has: [f]}}});
+const command = (id, c, f) => ({id, serves: ['temp'], check: {kind: 'command', argv: ['temp', ...String(c).split(' ')], expect: {exit: 0, stdout_has: [f]}}});
 const judge = (id, question) => ({id, serves: ['USAGE.md'], check: {kind: 'judge', path: 'USAGE.md', question}});
 const TEMP_LEVEL = {
   contracts: [

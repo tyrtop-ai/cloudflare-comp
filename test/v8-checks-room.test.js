@@ -100,7 +100,7 @@ test('README prompt: one worker writes it, Clef judges it, a failed judgement go
 const TEMP_GOAL='A command-line tool that converts a temperature from Celsius to Fahrenheit, with a short usage guide.';
 const TEMP={name:'temp',kind:'command',path:'temp.py',does:'prints the Fahrenheit value of a Celsius temperature',inputs:[{name:'celsius',is:'a number'}]};
 const USAGE={name:'USAGE.md',kind:'doc',path:'USAGE.md',does:'how to use the converter'};
-const tempRun=(id,c,f)=>({id,serves:['temp'],check:{kind:'command',run:`temp ${c}`,expect:{exit:0,stdout_has:[f]}}});
+const tempRun=(id,c,f)=>({id,serves:['temp'],check:{kind:'command',argv: ['temp', ...String(c).split(' ')],expect:{exit:0,stdout_has:[f]}}});
 const TEMP_LEVEL={contracts:[TEMP,USAGE],
   validations:[tempRun('a','100','212'),tempRun('b','0','32'),tempRun('c','-40','-40'),judged('d','USAGE.md','Does it show how to run the converter?'),has('e','USAGE.md','# Usage'),has('f','USAGE.md','temp.py')],
   pieces:[{label:'Converter',task:'Write temp.py, the command that converts Celsius to Fahrenheit',contracts:['temp']},{label:'Usage guide',task:'Write USAGE.md, which explains how to run the converter',contracts:['USAGE.md']}]};
@@ -135,7 +135,7 @@ test('Python temperature CLI: a wrong output fails its command validations, the 
   assert.deepEqual(Object.keys(last.files).sort(),['USAGE.md',notes,'temp.py'].sort());
   assert.deepEqual(first.plan.commands,{temp:['python3','temp.py']});
   assert.deepEqual(first.plan.syntax,[{toolchain:'python',files:['temp.py']}]);
-  assert.deepEqual(first.plan.checks[0],{id:'V1',kind:'command',argv:['temp','100'],run:'temp 100',expect:{exit:0,stdout_has:['212']}});
+  assert.deepEqual(first.plan.checks[0],{id:'V1',kind:'command',argv:['temp','100'],expect:{exit:0,stdout_has:['212']}});
   assert.deepEqual(first.plan.checks.map(c=>c.id),['V1','V2','V3'],'the guide\'s validations run in the Worker');
   assert.deepEqual(first.toolchains.map(r=>r.id),['python']);
   // Owner 2026-10-17 00:25: one time only, the verification's: the room's own setting (check_seconds), sent with every compile; no check or step has one.
@@ -344,7 +344,7 @@ test('a worker\'s file at a path another piece\'s contract places is its own: it
 // Owner 2026-10-15 05:16: "Any code type". A command contract in another language runs by its row's run_file.
 test('checkPlan: a command contract in Go or Ruby runs by its row\'s run_file, and the plan carries that row; the box runs it',async()=>{
   const spec={contracts:[{name:'serve',kind:'command',path:'main.go'},{name:'greet',kind:'command',path:'greet.rb'}],
-    validations:[{id:'V1',check:{kind:'command',run:'greet Ann',expect:{stdout:'hello Ann'}}},{id:'V2',check:{kind:'command',run:'serve',expect:{exit:0}}}]};
+    validations:[{id:'V1',check:{kind:'command',argv:['greet','Ann'],expect:{stdout:'hello Ann'}}},{id:'V2',check:{kind:'command',argv:['serve'],expect:{exit:0}}}]};
   const files=new Map([['main.go','package main\nfunc main() {}\n'],['greet.rb','puts "hello #{ARGV[0]}"\n']]);
   const {plan,toolchains}=checkPlan(spec,files,{rows:TOOLCHAINS});
   assert.deepEqual(plan.commands,{serve:['go','run','main.go'],greet:['ruby','greet.rb']});
@@ -375,11 +375,11 @@ test('checkPlan: command contracts run by their own path, call checks load the f
   const spec={contracts:[{name:'temp',kind:'command',path:'temp.py'},{name:'to_f',kind:'function',path:'conv.py'},{name:'GUIDE.md',kind:'doc',path:'GUIDE.md'},{name:'gone',kind:'command',path:'gone.py'},
     {name:'index.html',kind:'page',path:'index.html',run:{static:true}}],
     validations:[
-      {id:'V1',check:{kind:'command',run:'temp 100',argv:['temp','100'],expect:{stdout_has:['212']}}},
+      {id:'V1',check:{kind:'command',argv:['temp','100'],expect:{stdout_has:['212']}}},
       {id:'V2',check:{kind:'call',steps:[{call:'to_f',args:[0],expect:32}]}},
       {id:'V3',check:{kind:'file',path:'GUIDE.md'}},
       {id:'V4',check:{kind:'judge',path:'GUIDE.md',question:'?'}},
-      {id:'V5',check:{kind:'command',run:'gone',argv:['gone']}},
+      {id:'V5',check:{kind:'command',argv:['gone']}},
       {id:'V6',check:{kind:'call',steps:[{call:'missing_fn',args:[]}]}}]};
   const files=new Map([['temp.py','print(1)\n'],['conv.py','def to_f(c):\n    return c * 9 / 5 + 32\n'],['components/x-1/conv.py','def to_f(c):\n    return 0\n'],['GUIDE.md','# g\n']]);
   const {plan,local,container,toolchains}=checkPlan(spec,files,{rows:TOOLCHAINS});
@@ -420,7 +420,7 @@ test('checkPlan: command contracts run by their own path, call checks load the f
 
 test('checkProblems: a failed validation is a run problem with its observation as it is and the frames of the project\'s files; a load issue is a load problem (at its file, or a syntax step\'s with its files and no party); infrastructure is no problem',()=>{
   const spec={validations:[
-    {id:'V1',serves:['temp'],check:{kind:'command',run:'temp 100',expect:{stdout_has:['212']}}},
+    {id:'V1',serves:['temp'],check:{kind:'command',argv:['temp','100'],expect:{stdout_has:['212']}}},
     {id:'V2',serves:['index.html'],check:{kind:'browser',serve:'index.html',steps:[{goto:'/'}]}},
     {id:'V3',serves:['temp'],check:{kind:'file',path:'temp.py'}}]};
   const detail='temp 100: output lacks "212"; printed "100.0" (at components/c-1/conv.py:3)';
@@ -444,7 +444,7 @@ test('checkProblems: a failed validation is a run problem with its observation a
 });
 
 test('runNotes: the prompt, how to run each contract, and the validation table with the snapshot',()=>{
-  const spec={contracts:[{name:'index.html',kind:'page',path:'index.html',run:{static:true}},{name:'api',kind:'route',run:{run:'serve',argv:['serve'],port:true,ready:'/health'}},
+  const spec={contracts:[{name:'index.html',kind:'page',path:'index.html',run:{static:true}},{name:'api',kind:'route',run:{argv:['serve'],port:true,ready:'/health'}},
     {name:'temp',kind:'command',path:'temp.py',does:'converts'},{name:'GUIDE.md',kind:'doc',path:'GUIDE.md'}],
     validations:[{id:'V1',serves:['temp','api'],check:{kind:'command'}},{id:'V2',serves:['GUIDE.md'],check:{kind:'judge'}},{id:'V3',serves:['index.html'],check:{kind:'browser'}}]};
   const text=runNotes({goal:'Convert temperatures',room:'room-1',digest:'abcdef0123456789ff',passed:false},spec,{V1:{passed:true},V2:{passed:false,detail:'Clef judged p=0.20: q | r'},V3:{passed:null,detail:'not run'}});

@@ -31,7 +31,7 @@ const contracts = [
   {name: 'getTicket', kind: 'function', does: 'reads one ticket by its id', inputs: [{name: 'id', is: 'a number'}], outputs: 'the ticket, or null', path: 'store.js'},
   {name: 'report', kind: 'command', does: 'files a ticket with the title given and prints it as one line', outputs: 'the line #<id> <title> [<status>]', path: 'report.js'}
 ];
-const command = (id, serves, args, line) => ({id, serves, check: {kind: 'command', run: `report ${args}`, expect: {exit: 0, stdout_has: [line]}}});
+const command = (id, serves, args, line) => ({id, serves, check: {kind: 'command', argv: ['report', ...(Array.isArray(args) ? args : String(args).split(' '))], expect: {exit: 0, stdout_has: [line]}}});
 const validations = [
   callCheck('v1', ['createTicket'], [['createTicket', ['Printer jam'], {id: 1, title: 'Printer jam', status: 'open'}]]),
   callCheck('v2', ['createTicket'], [['createTicket', ['A'], undefined], ['createTicket', ['B'], {id: 2, title: 'B', status: 'open'}]]),
@@ -39,7 +39,7 @@ const validations = [
   callCheck('v4', ['getTicket'], [['createTicket', ['Printer jam'], undefined], ['getTicket', [1], {id: 1, title: 'Printer jam', status: 'open'}]]),
   callCheck('v5', ['getTicket'], [['getTicket', [7], null]]),
   callCheck('v6', ['getTicket'], [['createTicket', ['A'], undefined], ['createTicket', ['B'], undefined], ['getTicket', [2], {id: 2, title: 'B', status: 'open'}]]),
-  command('v7', ['report'], '"Printer jam"', '#1 Printer jam [open]'),
+  command('v7', ['report'], ['Printer jam'], '#1 Printer jam [open]'),
   command('v8', ['report'], 'Login', '#1 Login [open]'),
   command('v9', ['report'], 'Coffee machine', '#1 Coffee machine [open]'),
   command('v10', ['createTicket', 'report'], 'Paper out', '#1 Paper out [open]')
@@ -52,7 +52,7 @@ const trackerSplit = user => user.contracts_you_deliver ? {contracts: user.contr
 const trackerLeaf = user => user.prompt.deliver.some(c => c.name === 'report') ? deliver({'report.js': report(referTo(user.prompt.call.find(c => c.name === 'createTicket')))}) : deliver({'store.js': STORE});
 
 const CLI = 'Write a command-line temperature converter: `convert 100 C` prints the Fahrenheit value.';
-const convertCheck = (id, args, out) => ({id, serves: ['convert'], check: {kind: 'command', run: `convert ${args}`, expect: {exit: 0, stdout_has: [out]}}});
+const convertCheck = (id, args, out) => ({id, serves: ['convert'], check: {kind: 'command', argv: ['convert', ...String(args).split(' ')], expect: {exit: 0, stdout_has: [out]}}});
 const CONVERT = {name: 'convert', kind: 'command', does: 'converts a Celsius temperature to Fahrenheit', path: 'convert.js', outputs: 'the Fahrenheit value'};
 const CLI_LEVEL = {contracts: [CONVERT], validations: [convertCheck('a', '100 C', '212'), convertCheck('b', '0 C', '32'), convertCheck('c', '-40 C', '-40')], pieces: []};
 const CONVERT_JS = "const c = Number(process.argv[2]);\nconsole.log(String(c * 9 / 5 + 32));\n";

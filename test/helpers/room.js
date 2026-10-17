@@ -83,8 +83,8 @@ const { start } = require('./index.js');
 // order, ending with done: each contract not among those its request gives
 // (contracts_you_deliver), each validation's serves and check, and each
 // piece when piece is offered.
-// A validation as the call of its kind's function: {serves, ...the check's fields}.
-export const checkCall=v=>{const {kind,argv,...fields}=v.check;return {name:`${kind}_check`,arguments:{serves:v.serves,...fields}};};
+// A validation as the call of its kind's function: {serves, ...the check's fields}; a command's argv is its run, the argument list.
+export const checkCall=v=>{const {kind,argv,run,...fields}=v.check;return {name:`${kind}_check`,arguments:{serves:v.serves,...(argv||run!==undefined?{run:argv??run}:{}),...fields}};};
 export function levelCalls(level,{user={},tools=['contract','piece','level','done']}={}) {
   // A session that goes on from an earlier one (declared_so_far) calls only for what is not declared yet.
   const so=user.declared_so_far||{},given=new Set([...(user.contracts_you_deliver||[]),...(so.contracts||[])].map(c=>c.name)),out=[];

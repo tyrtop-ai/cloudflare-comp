@@ -3,11 +3,12 @@
 // (a runnable check, with serves, the contract names it validates) and each
 // piece is one call, stored as written or refused with the exact reason.
 // This module holds what those functions check and render: whether a check
-// can run as written (executability only: a command is one program and its
-// arguments that exists in the box, a selector is one the adapter reads, a
-// check names what it runs by; a file's path names the place it does in the
-// files, as a rooted file system reads it, and a request's path is sent as
-// written, the box keeping each on its own folder and origin), how a
+// can run as written (executability only: a command is the argument list
+// the splitter gives, its program one the box has, and the box's exec runs
+// it as given; a selector is kept as written for the page's locator to read;
+// a check names what it runs by; a file's path names the place it does in
+// the files, as a rooted file system reads it, and a request's path is sent
+// as written, the box keeping each on its own folder and origin), how a
 // contract is started, and a validation as the examples a worker reads, one
 // per step that exercises a contract. Nothing here reads a model's text
 // leniently, resolves a name written inexactly or repairs a form: a check
@@ -33,43 +34,19 @@ const SAVE = /^[A-Za-z_]\w*$/;
 const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
 // ------------------------------------------------------------ commands
-// The argv of a command line: words split by spaces; '...' and "..." quote
-// (\" and \\ inside "..."). No shell runs it: what would be shell syntax is
-// an argument like any other. A backslash outside quotes or an unclosed quote
-// does not read as one argv.
-export function commandArgv(run) {
-  const s = String(run ?? '');
-  const argv = [];
-  let cur = '', quote = null, word = false;
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i];
-    if (quote) {
-      if (ch === quote) { quote = null; continue; }
-      if (quote === '"' && ch === '\\' && (s[i + 1] === '"' || s[i + 1] === '\\')) { cur += s[++i]; continue; }
-      cur += ch; continue;
-    }
-    if (ch === '"' || ch === "'") { quote = ch; word = true; continue; }
-    if (/\s/.test(ch)) { if (word) { argv.push(cur); cur = ''; word = false; } continue; }
-    if (ch === '\\') return {error: `"${s.slice(0, 80)}" has a backslash outside quotes`};
-    cur += ch; word = true;
-  }
-  if (quote) return {error: `"${s.slice(0, 80)}" has an unclosed quote`};
-  if (word) argv.push(cur);
-  if (!argv.length) return {error: 'it runs nothing'};
-  return {argv};
-}
+// A command as the splitter gives it: its argument list, the program then
+// each argument, every one a text, passed to the box's exec as written (no
+// shell reads it). {argv} or {error}.
+const argvOf = (v, what) => Array.isArray(v) && v.length && v.every(a => typeof a === 'string') ? {argv: [...v]} : {error: `${what} is the command's argument list: the program, then each argument, each a text`};
+// A command's argument list as a line a reader sees: each argument as it is,
+// or quoted (JSON) when it is empty or holds a space, a quote or a backslash.
+export const commandLine = argv => (Array.isArray(argv) ? argv : []).map(a => /^[^\s"'\\]+$/.test(a) ? a : JSON.stringify(a)).join(' ');
 
 // ------------------------------------------------------------ paths
 // Why a repository holds no file at a plain relative path (rootedPath's), or
 // '': the folder it keeps for its own records, or a name or path longer than
 // it holds (isPath, the store's own form).
 export const unheldPath = path => path.split('/').some(x => x.toLowerCase() === '.git') ? MESSAGES.records_folder({path}) : isPath(path) ? '' : MESSAGES.too_long({path});
-
-// ------------------------------------------------------------ elements
-// An element a page has, named by a simple selector: a tag, then any of #id,
-// .class, [attribute] and [attribute=value]. The adapter's querySelectorAll
-// reads it as written.
-export const SELECTOR = /^[a-z][a-z0-9-]*(?:#[A-Za-z_][\w-]*|\.[A-Za-z_][\w-]*|\[[A-Za-z_][\w-]*(?:=(?:[\w-]+|"[^"\\]*"))?\])*$/;
 
 // ------------------------------------------------------------ one check
 // The fields each kind of check has, and each step and expectation.
@@ -110,9 +87,7 @@ export function readCheck(c, ctx) {
     return {check: {kind, path, ...(has.length ? {has} : {}), ...(c.json === true ? {json: true} : {})}};
   }
   if (kind === 'command') {
-    const r = text(c.run, 'its run');
-    if (r.error) return {error: `the command check: ${r.error}`};
-    const parsed = commandArgv(r.text);
+    const parsed = argvOf(c.run, 'its run');
     if (parsed.error) return {error: `the command check: ${parsed.error}`};
     const [first] = parsed.argv;
     if (!ctx.commands.has(first) && !ctx.executables.has(first)) return {error: `the command check runs "${first.slice(0, 80)}", which is neither a command contract declared so far nor a program the box has (${[...ctx.executables].join(', ') || 'none'})`};
@@ -140,7 +115,7 @@ export function readCheck(c, ctx) {
     }
     // A command check that states nothing it observes observes that it exits 0.
     if (!Object.keys(expect).length) expect.exit = 0;
-    return {check: {kind, run: r.text, argv: parsed.argv, ...(c.stdin ? {stdin: c.stdin} : {}), ...(files && Object.keys(files).length ? {files} : {}), expect}};
+    return {check: {kind, argv: parsed.argv, ...(c.stdin ? {stdin: c.stdin} : {}), ...(files && Object.keys(files).length ? {files} : {}), expect}};
   }
   if (kind === 'call') {
     if (!Array.isArray(c.steps) || !c.steps.length) return {error: 'the call check has no steps'};
@@ -236,7 +211,6 @@ function browserStep(s) {
   if (!plain(v) || typeof v.selector !== 'string') return {error: `${k} is an object with selector and, optionally, text`};
   const x = extra(v, ['selector', 'text'], k);
   if (x) return {error: x};
-  if (!SELECTOR.test(v.selector)) return {error: `${k}: "${v.selector.slice(0, 80)}" is not a simple selector (a tag, then any of #id, .class, [attribute] and [attribute=value])`};
   if (v.text !== undefined && (typeof v.text !== 'string' || !v.text)) return {error: `${k}: text is a text`};
   return {step: {[k]: v}};
 }
@@ -244,8 +218,9 @@ function browserStep(s) {
 // ------------------------------------------------------------ how a contract runs
 // Only a page, a route or a command is started, and only by the run its
 // contract states: {static: true} serves its files as they are; {run,
-// ready?} is a command line (a command contract or a program the box has,
-// with its arguments) and the path it answers at once it is up. A contract
+// ready?} is a command's argument list (a command contract or a program the
+// box has, then its arguments), kept as argv, and the path it answers at
+// once it is up. A contract
 // that states no run has none. It serves on the port the box gives it
 // ({port: true, ready}) only when something serves it (servedRun): a route
 // always, a page or a command once a level's http or browser check serves
@@ -254,28 +229,27 @@ export const RUN_KINDS = new Set(['page', 'route', 'command']);
 export function runOf(raw, contract, world) {
   const kind = kindOf(contract);
   if (!RUN_KINDS.has(kind)) return {error: `a ${kind} contract is not started, so it states no run`};
-  if (!plain(raw)) return {error: 'run is an object: static true, or run (a command line) with ready (a path)'};
+  if (!plain(raw)) return {error: 'run is an object: static true, or run (the command\'s argument list) with ready (a path)'};
   if ('static' in raw) return raw.static === true && Object.keys(raw).length === 1 ? {run: {static: true}} : {error: 'a static run is static true and nothing else'};
   const x = extra(raw, ['run', 'ready'], 'run');
   if (x) return {error: x};
-  if (typeof raw.run !== 'string' || !raw.run.trim()) return {error: 'run states static true, or a command line in run'};
-  const parsed = commandArgv(raw.run);
-  if (parsed.error) return {error: `its run: ${parsed.error}`};
+  const parsed = argvOf(raw.run, 'its run');
+  if (parsed.error) return {error: parsed.error};
   const [first] = parsed.argv;
   if (!world.commands.has(first) && !world.executables.has(first)) return {error: `its run starts "${first.slice(0, 80)}", which is neither a command contract declared so far nor a program the box has (${[...world.executables].join(', ') || 'none'})`};
   if (raw.ready !== undefined && typeof raw.ready !== 'string') return {error: 'its ready path is a path'};
-  return {run: {run: raw.run, argv: parsed.argv, ...(raw.ready !== undefined ? {ready: raw.ready} : {})}};
+  return {run: {argv: parsed.argv, ...(raw.ready !== undefined ? {ready: raw.ready} : {})}};
 }
 // A run something serves: it listens on the port the box gives it, ready
 // when its ready path (by default "/") answers.
 export function servedRun(run) {
   if (!run || run.static) return run;
-  return {run: run.run, argv: run.argv, port: true, ready: run.ready || '/'};
+  return {argv: run.argv, port: true, ready: run.ready || '/'};
 }
 // The runs a level's checks may serve, by contract name (checks.js reads
 // them): a static one, or one that listens on its port. A command's own
-// command line, which nothing serves, is not one.
-export const runsOf = contracts => (contracts || []).filter(c => c?.run && (c.run.static || c.run.port)).map(c => c.run.static ? {id: c.name, static: true} : {id: c.name, run: c.run.run, argv: c.run.argv, port: true, ready: c.run.ready || '/'});
+// argument list, which nothing serves, is not one.
+export const runsOf = contracts => (contracts || []).filter(c => c?.run && (c.run.static || c.run.port)).map(c => c.run.static ? {id: c.name, static: true} : {id: c.name, argv: c.run.argv, port: true, ready: c.run.ready || '/'});
 
 // ------------------------------------------------------------ examples
 // A validation as the examples a worker reads: its input and what it
@@ -333,7 +307,7 @@ export function renderExample(check) {
   if (c.kind === 'judge') return `a reader of ${c.path} answers yes to: ${c.question}`;
   if (c.kind === 'command') {
     const with_ = [c.stdin ? `the input ${q(c.stdin)}` : '', c.files ? `the file${Object.keys(c.files).length > 1 ? 's' : ''} ${list(Object.entries(c.files).map(([p, t]) => `${p} holding ${q(t)}`))}` : ''].filter(Boolean);
-    return `${c.run}${with_.length ? ` with ${list(with_)}` : ''} → ${commandOutcome(c.expect) || 'it runs'}`;
+    return `${commandLine(c.argv)}${with_.length ? ` with ${list(with_)}` : ''} → ${commandOutcome(c.expect) || 'it runs'}`;
   }
   if (c.kind === 'call') return (c.steps || []).map(callStep).join('; ');
   if (c.kind === 'http') return (c.steps || []).map(requestStep).join('; ');

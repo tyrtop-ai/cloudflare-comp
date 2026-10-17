@@ -44,9 +44,9 @@ const CHECK_TOOLS = [
     parameters: {type: 'object', properties: {serves: SERVES, path: text('The path of the file, as a declared contract places it.'), has: texts('Texts the file contains, each exactly as written.'), json: {type: 'boolean', description: 'True when the file must parse as json.'}}, required: ['serves', 'path']}},
   {name: 'judge_check', description: 'Declares a validation a reader answers from one file alone: a yes or no question. One question is one example.' + CHECK_RESULT,
     parameters: {type: 'object', properties: {serves: SERVES, path: text('The path of the file the reader reads.'), question: text('A question answered yes or no from the file alone.')}, required: ['serves', 'path', 'question']}},
-  {name: 'command_check', description: 'Declares a validation that runs a command line in a fresh box and observes its exit and output. Each run is one example.' + CHECK_RESULT,
+  {name: 'command_check', description: 'Declares a validation that runs a command in a fresh box and observes its exit and output. Each run is one example.' + CHECK_RESULT,
     parameters: {type: 'object', properties: {serves: SERVES,
-      run: text('The command line: a declared command contract or a program the box has, then its arguments. A command contract runs by its own file.'),
+      run: texts('The command as its argument list: a declared command contract or a program the box has, then each argument, each passed exactly as written; no shell reads it. A command contract runs by its own file.'),
       stdin: text('What the command reads on its standard input.'),
       files: {type: 'object', additionalProperties: {type: 'string'}, description: 'Input files the command finds beside it: each relative path mapped to its text.'},
       expect: {type: 'object', properties: {exit: {type: 'integer', description: 'Its exit code.'}, stdout: text('Its whole standard output, exactly.'), stdout_has: texts('Texts its standard output contains.'), stderr_has: texts('Texts its error output contains.'), stderr: {type: 'boolean', description: 'True when it writes to its error output.'}},
@@ -67,7 +67,7 @@ const CHECK_TOOLS = [
       click: {type: 'object', properties: {role: {type: 'string'}, name: {type: 'string'}, text: {type: 'string'}, label: {type: 'string'}}, description: 'What to click: the first shown element that matches every one given of: role, its ARIA role, with name its accessible name; name without role, its name attribute; text, its text; label, its label. Each matches exactly as written.'},
       expect_text: text('A text that appears.'), expect_no_text: text('A text that does not appear.'),
       expect_count: {type: 'object', properties: {role: {type: 'string'}, text: {type: 'string'}, n: {type: 'integer'}}, description: 'How many elements of a role, or holding a text, there are.'},
-      expect_element: {type: 'object', properties: {selector: {type: 'string'}, text: {type: 'string'}}, required: ['selector'], description: 'An element by a simple selector (a tag, then any of #id, .class, [attribute] and [attribute=value]), holding a text if given.'},
+      expect_element: {type: 'object', properties: {selector: {type: 'string'}, text: {type: 'string'}}, required: ['selector'], description: 'An element by a selector, which the page\'s locator reads as written (a CSS selector), holding a text if given.'},
       expect_no_element: {type: 'object', properties: {selector: {type: 'string'}, text: {type: 'string'}}, required: ['selector'], description: 'An element that is not there.'}}}}}, required: ['serves', 'serve', 'steps']}}
 ];
 export const CHECK_TOOL_KINDS = Object.freeze(Object.fromEntries(CHECK_TOOLS.map(t => [t.name, t.name.replace(/_check$/, '')])));
@@ -82,7 +82,7 @@ export const TOOLS = Object.freeze({
         inputs: {type: 'array', items: {type: 'object', properties: {name: {type: 'string'}, is: {type: 'string'}}, required: ['name']}, description: 'Its inputs, each with its name and what it is.'},
         outputs: {type: 'string', description: 'In one line, what a call returns, a command prints, a route answers or a file holds.'},
         effects: {type: 'string', description: 'What it changes, or none.'},
-        run: {type: 'object', properties: {static: {type: 'boolean'}, run: {type: 'string'}, ready: {type: 'string'}}, description: 'Only for a page, route or command: how it is started. static true serves its files as they are. run is a command line that starts with a command contract or a program the box has, and ready a path that answers once it is up; it serves on the port its environment gives. A contract that states no run is not started.'}
+        run: {type: 'object', properties: {static: {type: 'boolean'}, run: {type: 'array', items: {type: 'string'}}, ready: {type: 'string'}}, description: 'Only for a page, route or command: how it is started. static true serves its files as they are. run is the command as its argument list, a command contract or a program the box has, then each argument, each passed exactly as written with no shell, and ready a path that answers once it is up; it serves on the port its environment gives. A contract that states no run is not started.'}
       }, required: ['name', 'kind', 'does']}},
     ...CHECK_TOOLS,
     {name: 'piece', description: 'Declares one piece of the division: a task that can be made from its own words alone, and the declared contracts it delivers. The result says it is stored, or why it is not, such as how many pieces the level can hold now.',

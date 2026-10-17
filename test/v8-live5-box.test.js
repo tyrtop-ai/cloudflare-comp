@@ -18,7 +18,7 @@ const runner = await import('../container/build-runner.mjs');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const GOAL = 'A command-line tool that converts a temperature from Celsius to Fahrenheit, with a short usage guide.';
 // The level the room's manager states: a converter command and its usage guide, three examples each.
-const temp = (id, c, f) => ({id, serves: ['temp'], check: {kind: 'command', run: `temp ${c}`, expect: {exit: 0, stdout_has: [f]}}});
+const temp = (id, c, f) => ({id, serves: ['temp'], check: {kind: 'command', argv: ['temp', ...String(c).split(' ')], expect: {exit: 0, stdout_has: [f]}}});
 const judge = (id, question) => ({id, serves: ['USAGE.md'], check: {kind: 'judge', path: 'USAGE.md', question}});
 const LEVEL = {
   contracts: [

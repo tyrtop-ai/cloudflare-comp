@@ -74,13 +74,13 @@ function examplesOf(raw) {
 }
 const servesOf = raw => [...new Set((Array.isArray(raw) ? raw : []).filter(s => typeof s === 'string' && s.trim()).map(s => s.trim()))];
 // How a page, route or command runs, in the form src/validations.js runOf
-// reads it: {static: true}, {run, argv}, or, when something serves it,
-// {run, argv, port: true, ready}. A run nothing serves keeps no port.
+// reads it: {static: true}, {argv}, or, when something serves it,
+// {argv, port: true, ready}. A run nothing serves keeps no port.
 const runField = raw => {
   if (!plain(raw)) return null;
   if (raw.static === true) return {static: true};
-  if (!(typeof raw.run === 'string' && Array.isArray(raw.argv) && raw.argv.every(a => typeof a === 'string'))) return null;
-  const run = {run: raw.run, argv: raw.argv};
+  if (!(Array.isArray(raw.argv) && raw.argv.every(a => typeof a === 'string'))) return null;
+  const run = {argv: raw.argv};
   return raw.port === true ? {...run, port: true, ready: typeof raw.ready === 'string' ? raw.ready : '/'} : run;
 };
 // Inputs: [{name, is}] or names; params, the v7 spelling, an array or "a, b"

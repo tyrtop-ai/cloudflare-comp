@@ -34,13 +34,13 @@ test('requests to /tickets/1, /2 and /3 by validations serving PUT /tickets/:id 
   const route = {name: 'PUT /tickets/:id', kind: 'route', path: 'src/server.js'};
   const put = (i, serves) => ['http_check', {serves, serve: 'PUT /tickets/:id', steps: [{method: 'PUT', path: `/tickets/${i}`, body: {status: 'closed'}, expect: {status: 200}}]}];
   // A level that may not divide: done asks for no division.
-  const {s, results} = calls([['contract', {...route, does: 'closes a ticket', run: {run: 'node src/server.js'}}], put(1, ['PUT /tickets/1']), put(1, [route.name]), put(2, [route.name]), put(3, [route.name]), ['done', {}]], {divide: false});
+  const {s, results} = calls([['contract', {...route, does: 'closes a ticket', run: {run: ['node', 'src/server.js']}}], put(1, ['PUT /tickets/1']), put(1, [route.name]), put(2, [route.name]), put(3, [route.name]), ['done', {}]], {divide: false});
   assert.deepEqual(results[1], {error: 'serves names "PUT /tickets/1", which is not declared. Declared: PUT /tickets/:id'});
   assert.deepEqual(results.slice(2, 5).map(r => r.examples_so_far), [{[route.name]: 1}, {[route.name]: 2}, {[route.name]: 3}]);
   assert.deepEqual(results[5], {complete: true});
   const level = levelOf(s);
   assert.equal(contractExamples(level.contracts[0], level.validations).length, 3);
-  assert.deepEqual(level.contracts[0].run, {run: 'node src/server.js', argv: ['node', 'src/server.js'], port: true, ready: '/'}, 'a route listens on the port its box gives it');
+  assert.deepEqual(level.contracts[0].run, {argv: ['node', 'src/server.js'], port: true, ready: '/'}, 'a route listens on the port its box gives it');
 });
 
 test('a route or a command that states no run is stored without one: nothing infers it from its file, and a check that serves it is told none states how it runs', () => {
@@ -70,9 +70,11 @@ test('replay, CLI "Invalid Unit Tests": its answer as calls; the stored form\'s 
 });
 
 test('replay, issue tracker: its answers as calls, in order; each mistake is a result in the session (a run naming a command not declared yet, a route not declared, a text for a list, a check serving what states no run), and done lists what is still short', () => {
+  // The answers were made when a run was one text: each is replayed as its words, the argument list the functions now take.
+  const words = run => typeof run === 'string' ? run.split(/\s+/) : run;
   const replay = a => { const s = splitterState({maxPieces: FIXTURE.tracker.max_children}), r = {};
-    for (const c of a.contracts) r[`contract ${c.name}`] = splitterCall(s, 'contract', c).result;
-    for (const v of a.validations) { const c = checkCall(v); r[`validation ${v.id}`] = splitterCall(s, c.name, c.arguments).result; }
+    for (const c of a.contracts) r[`contract ${c.name}`] = splitterCall(s, 'contract', c.run?.run ? {...c, run: {...c.run, run: words(c.run.run)}} : c).result;
+    for (const v of a.validations) { const c = checkCall(v); r[`validation ${v.id}`] = splitterCall(s, c.name, {...c.arguments, ...(c.arguments.run ? {run: words(c.arguments.run)} : {})}).result; }
     for (const p of a.pieces) r[`piece ${p.label}`] = splitterCall(s, 'piece', p).result;
     r.done = splitterCall(s, 'done', {}).result;
     return r; };
