@@ -279,7 +279,7 @@ async function readmeOnBase(opts = {}) {
   return {...r, fetch};
 }
 
-test('README on a base repo: the splitter reads the base\'s files whole; a file a worker writes that its contracts do not place stays in its own folder, so the base ships as it was; the judge passes, and the export is the base plus the README', async () => {
+test('README on a base repo: the splitter sees every base file; a file a worker writes that its contracts do not place stays in its own folder, so the base ships as it was; the judge passes, and the export is the base plus the README', async () => {
   const {room, calls, fetch} = await readmeOnBase();
   assert.equal(room.get('status'), 'complete', trace(room));
   assert.ok(allPass(room));
@@ -294,9 +294,9 @@ test('README on a base repo: the splitter reads the base\'s files whole; a file 
   assert.deepEqual([meta.kind, meta.source, meta.ref, meta.resolved_sha, meta.files], ['repo', 'https://github.com/acme-example/widget', 'main', SHA, 3]);
   assert.match(events(room, 'base_loaded')[0].body, /^Starts from https:\/\/github\.com\/acme-example\/widget at main \(0123456789ab\): 3 file\(s\)/);
   assert.match(meta.digest, /^[0-9a-f]{64}$/);
-  // The splitter read every base file whole as existing_files, quoted and labelled beside the base note; so did the worker.
+  // The splitter saw every base file as existing_files, by path and size, labelled beside the base note, with nothing summarised or left out by the runtime; so did the worker.
   // (Owner 2026-10-16 05:39: "They have commands they can run, things they can see ... they have their world that exists.")
-  const whole = {label: BASE_LABEL, files: Object.keys(BASE_FILES).sort().map(path => ({path, content: BASE_FILES[path]}))};
+  const whole = {label: BASE_LABEL, files: Object.keys(BASE_FILES).sort().map(path => ({path, bytes: Buffer.byteLength(BASE_FILES[path])}))};
   assert.deepEqual(calls.split[0].existing_files, whole);
   assert.equal(calls.split[0].base_note, MESSAGES.base_note());
   assert.deepEqual(calls.leaf[0].world.existing_files, whole);
@@ -354,7 +354,7 @@ test('previous result: a new run in the same room starts from what the last one 
   assert.deepEqual(room.db().exec('SELECT path FROM base_files ORDER BY path').toArray().map(r => r.path).filter(p => !p.startsWith('components/')), previous.map(f => f.path).filter(p => !p.startsWith('components/')).sort());
   assert.equal(room.read('base', null).kind, 'room');
   assert.equal(room.read('base', null).passed, true);
-  assert.equal(second.calls.split[0].existing_files.files.find(f => f.path === 'README.md').content, GOOD_README);
+  assert.equal(second.calls.split[0].existing_files.files.find(f => f.path === 'README.md').bytes, Buffer.byteLength(GOOD_README));
   // The worker's contract names README.md, a base file the person granted: it read it quoted (base_files, never as its own) and replaced it.
   const view = second.calls.leaf[0];
   assert.deepEqual(view.world.base_files, [{path: 'README.md', label: BASE_LABEL, content: GOOD_README}]);
@@ -460,7 +460,7 @@ test('S8b review M1: base text reaches every model quoted and labelled; a level 
   // The level is admitted with both base files on it, marked; the pieces placing them wait, and the room waits for the person. Clef's p is a review beside each.
   assert.equal(room.snapshot().pause?.kind, 'base_confirm', trace(room));
   assert.deepEqual(room.snapshot().base_pending, [{path: 'src/shout.js', p: 0.1, named: false}, {path: 'bin/widget.js', p: 0.1, named: false}]);
-  assert.deepEqual(calls.split[0].existing_files, {label: BASE_LABEL, files: Object.keys(BASE_FILES).sort().map(path => ({path, content: BASE_FILES[path]}))});
+  assert.deepEqual(calls.split[0].existing_files, {label: BASE_LABEL, files: Object.keys(BASE_FILES).sort().map(path => ({path, bytes: Buffer.byteLength(BASE_FILES[path])}))});
   assert.equal(calls.split[0].base_note, MESSAGES.base_note());
   const m = room.roomManager(), [notesPart, shoutPart, helpPart] = kids(room, m);
   assert.deepEqual(room.promisedOf(helpPart.id).map(c => c.path), ['HELP.md', 'bin/widget.js'], 'nothing is taken off the piece');

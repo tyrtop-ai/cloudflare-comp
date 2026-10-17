@@ -204,11 +204,14 @@ export function narrowRefs(raw, held) {
   return {kept, dropped};
 }
 
-// The project a room starts from, as its agents read it: every base file
-// whole, quoted and labelled, and the files carried untouched by path.
-// files: [{path, content}]; passthrough: [{path, reason}].
+// The project a room starts from, as its agents see it: every file of it,
+// by path and size, with nothing left out or summarised by the runtime, and
+// the files carried untouched by path. A file's text is not inlined: a
+// whole repo does not fit a model's context window (reading a base file is
+// a function the splitter and the worker would need; see the report).
+// files: [{path, bytes}]; passthrough: [{path, reason}].
 export function existingFiles(files, passthrough = [], label) {
-  return {label, files: files.map(f => ({path: f.path, content: f.content})),
+  return {label, files: files.map(f => ({path: f.path, bytes: f.bytes})),
     ...(passthrough.length ? {carried_untouched: passthrough.map(p => ({path: p.path, reason: p.reason || 'carried untouched'}))} : {})};
 }
 

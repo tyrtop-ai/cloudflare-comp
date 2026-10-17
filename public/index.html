@@ -163,7 +163,7 @@
           <div class="bench-form">
             <label for="bench-url">Dataset URL <span class="faint">(a JSON lines file on raw.githubusercontent.com, or a datasets-server.huggingface.co rows URL)</span></label>
             <input id="bench-url" class="mono" spellcheck="false" autocomplete="off" placeholder="https://datasets-server.huggingface.co/rows?dataset=openai%2Fopenai_humaneval&amp;config=openai_humaneval&amp;split=test" />
-            <label for="bench-text">Or paste or upload JSON lines <span class="faint">(HumanEval, MBPP, MultiPL-E, or {"id", "prompt", "tests"})</span></label>
+            <label for="bench-text">Or paste or upload JSON lines <span class="faint">(HumanEval, MBPP, MultiPL-E in any language, or {"id", "language", "prompt", "tests"})</span></label>
             <textarea id="bench-text" class="mono bench-text" rows="3" spellcheck="false" placeholder='{"id": "t1", "language": "python", "prompt": "Write a function triple(n)…", "entry": "triple", "tests": "assert triple(2) == 6"}'></textarea>
             <input id="bench-file" type="file" accept=".jsonl,.json,.txt,application/json" aria-label="Upload a JSON lines file" />
             <div class="bench-row">

@@ -661,8 +661,8 @@ export class ControlRoom extends DurableObject {
   // Whether a row holds the existing project (the room gives the manager it
   // creates the base and its digest, base_digest), and the digest it reads.
   holdsBase(id) { return this.get(`base_digest:${id}`,null)!==null; }
-  // The project the room started from, as an agent that holds it reads it: every base file whole, and the files carried untouched by path.
-  existingFiles() { return existingFiles(query(this.db(),'SELECT path,content FROM base_files ORDER BY path'),query(this.db(),'SELECT path,reason FROM base_passthrough ORDER BY path'),BASE_LABEL); }
+  // The project the room started from, as an agent that holds it sees it: every base file by path and size, and the files carried untouched by path.
+  existingFiles() { return existingFiles(query(this.db(),'SELECT path,LENGTH(CAST(content AS BLOB)) AS bytes FROM base_files ORDER BY path'),query(this.db(),'SELECT path,reason FROM base_passthrough ORDER BY path'),BASE_LABEL); }
   heldDigest(id) { return this.holdsBase(id)?this.read(`base_digest:${id}`,null)??this.read('base',null)?.digest??null:null; }
   allRefs() { return query(this.db(),'SELECT ref FROM source_chunks ORDER BY CAST(SUBSTR(source,2) AS INTEGER),n').map(r=>r.ref); }
   assignRefs(child, parent, raw) {

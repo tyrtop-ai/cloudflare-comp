@@ -165,7 +165,7 @@ export function benchGrader({language, extensions = [], entry, tests, prompt = '
 // gives one). opts: format (forced), nonce (tests pass a fixed one).
 export function taskFromRow(row, index = 0, {format = null, nonce = null} = {}) {
   const f = format || detectFormat(row);
-  if (!f) return {skip: 'unrecognised row: expected HumanEval, MBPP, MultiPL-E or {id, prompt, tests} fields'};
+  if (!f) return {skip: 'unrecognised row: expected HumanEval, MBPP, MultiPL-E or {id, language, prompt, tests} fields'};
   const id = taskId(f, row, index);
   let language, prompt, tests, entry = null, callCheck = true, promptFixture = '';
   if (f === 'humaneval') {

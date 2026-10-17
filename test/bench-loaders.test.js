@@ -105,7 +105,7 @@ test('MultiPL-E rows: every language loads (owner: "Any code type"); JavaScript\
   assert.match(tasks[3].grader.unrunnable, /no toolchain row of the box runs rust files \(\.rs\)/);
 });
 
-test('generic {id, prompt, tests} rows: the entry from the row or the prompt, the language from the row or the prompt', () => {
+test('generic {id, language, prompt, tests} rows: the language from the row (a row naming none is skipped), the entry from the row or the prompt', () => {
   const {tasks, skipped} = loadTasks(GENERIC, {nonce: 'n0nce'});
   assert.deepEqual(tasks.map(t => [t.id, t.language, t.entry]), [['g-py', 'python', 'triple'], ['g-js', 'javascript', 'greet'], ['g-check', 'python', 'inc']]);
   for (const [i, t] of tasks.entries()) assertGrader(t, {language: t.language, entry: t.entry, prompt: GENERIC[i].prompt});
