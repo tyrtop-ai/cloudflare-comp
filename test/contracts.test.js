@@ -126,6 +126,7 @@ test('S2: name rules per kind: a function by its toolchain row (a Python reserve
   assert.equal(cmd('convert-units','bin/convert.py'),'');
   assert.equal(cmd('Convert','convert.py'),'"Convert" is not a command name: lowercase letters, digits, hyphens and underscores, starting with a letter');
   assert.equal(cmd('convert'),'command "convert" needs the path of the file that implements it');
+  for(const name of ['Convert','convert temp','-x'])assert.equal(nameError(N1({name,kind:'command',path:'c.py'}),{v8:true}),'',`v8: ${name} is named as written`);
   assert.equal(nameError({name:'readme',kind:'doc',path:'README.md',params:[]}),'doc "readme" must be named by its path README.md','a row normalize did not rename');
   // No path is the runtime's: a placed file may sit in any folder (the runtime's own files live outside the agents' world).
   for(const name of ['glue/x.md','memory/x.md','components/x.md','.recursive/x.md'])assert.equal(nameError(N1({name,kind:'doc'})),'',name);
