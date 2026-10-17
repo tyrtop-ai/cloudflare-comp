@@ -228,6 +228,18 @@ test('a package granted to a worker is listed up its line, and the compiler\'s b
 });
 
 // ------------------------------------------------------------ the holds, stale results, construction
+test('a level whose piece delivered no file: its validations run on the empty bundle as on any other, and what the compiler observed (the file is missing) goes down to the worker as a complaint; nothing escalates, and the room completes',async()=>{
+  const {room,drain}=v8Room({level:README_LEVEL,judge:readmeJudge,answers:{'README.md':[blocks([],'nothing yet'),wrote('README.md',GOOD_README)]}});
+  await room.start(README_GOAL,20,{pipeline:'v8'});
+  await drain();
+  assert.equal(room.get('status'),'complete',tail(room));
+  assert.equal(events(room,'escalated').length,0);
+  assert.deepEqual(room.roomHolds(),[]);
+  assert.match(events(room,'checks_reported')[0].body,/0 of 3 validation\(s\) pass/);
+  const sent=events(room,'complaint_routed').map(e=>e.body);
+  assert.ok(sent.length>0&&sent.every(b=>/README\.md is missing|missing/.test(b)),JSON.stringify(sent));
+});
+
 test('a Clef error while judging is infrastructure, as observed: nothing holds, the compiler runs the checks again at once (a turn of the budget), and the room completes',async()=>{
   let fail=1;
   const clef=input=>{if(input.questions.judge&&fail-->0)throw new Error('Clef 503 transient');return clefFor({judge:readmeJudge})(input);};
