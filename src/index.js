@@ -39,7 +39,7 @@ import { inheritServes, otherName, kindOf as contractKind, contractLine, gateLin
 import { branchDirectory, packageDirectory, packagePath, partsRoot, PARTS_ROOT } from './assembly.js';
 import { placeChecks, checkEntries, installedModule, checkUses, importClosure, textHash } from './piece.js';
 import { zipFiles } from './zip.js';
-import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, namedIn } from './room-inputs.js';
+import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narrowRefs, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, namedIn, existingFiles } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
 import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer, packageAnswer } from './broker.js';
 import { normalizePackages, installedPackages, heldByName, packageLanguage, stdlibRow, piecePackages, packageLine } from './packages.js';
@@ -661,6 +661,8 @@ export class ControlRoom extends DurableObject {
   // Whether a row holds the existing project (the room gives the manager it
   // creates the base and its digest, base_digest), and the digest it reads.
   holdsBase(id) { return this.get(`base_digest:${id}`,null)!==null; }
+  // The project the room started from, as an agent that holds it reads it: every base file whole, and the files carried untouched by path.
+  existingFiles() { return existingFiles(query(this.db(),'SELECT path,content FROM base_files ORDER BY path'),query(this.db(),'SELECT path,reason FROM base_passthrough ORDER BY path'),BASE_LABEL); }
   heldDigest(id) { return this.holdsBase(id)?this.read(`base_digest:${id}`,null)??this.read('base',null)?.digest??null:null; }
   allRefs() { return query(this.db(),'SELECT ref FROM source_chunks ORDER BY CAST(SUBSTR(source,2) AS INTEGER),n').map(r=>r.ref); }
   assignRefs(child, parent, raw) {
@@ -701,7 +703,7 @@ export class ControlRoom extends DurableObject {
       r.id,r.url,r.final_url,r.title,r.sha256,r.bytes,r.truncated?1:0,r.error,r.status,r.content_type,r.summary?JSON.stringify(r.summary):null,Date.now());
     for(const c of chunks)this.db().exec('INSERT INTO source_chunks(ref,source,n,text) VALUES (?,?,?,?) ON CONFLICT(ref) DO NOTHING',c.ref,c.source,c.n,c.text);
     this.set('sources_loaded','1');
-    if(rows.length)this.event('room','sources_read',clip(`The prompt's ${rows.length} link(s), in ${Date.now()-started} ms: ${rows.map(r=>r.error?`${r.id} not read (${r.error})`:`${r.id} ${r.title||r.url} (${r.bytes} bytes${r.truncated?', cut at the cap':''}, ${chunks.filter(c=>c.source===r.id).length} part(s))`).join('; ')}.`,1500));
+    if(rows.length)this.event('room','sources_read',clip(`The prompt's ${rows.length} link(s), in ${Date.now()-started} ms: ${rows.map(r=>r.error?`${r.id} not read (${r.error})`:`${r.id} ${r.title||r.url} (${r.bytes} bytes, ${chunks.filter(c=>c.source===r.id).length} part(s))`).join('; ')}.`,1500));
     return calls;
   }
   // v8 S6 review: what one reference is rendered from (useReferences): the
@@ -8575,7 +8577,7 @@ export class ControlRoom extends DurableObject {
       ...(calls.length?{contracts_you_may_call:calls.map(({serves:_,...c})=>c)}:{}),
       box:{programs:this.boxPrograms(),toolchains:rows.map(r=>({id:r.id,extensions:r.extensions||[]}))},
       ...(packages.length?{your_packages:packages.map(p=>({name:p.name,...(p.provides?{provides:p.provides}:{})}))}:{}),
-      ...(typeof digest==='string'&&digest?{base_note:MESSAGES.base_note(),existing_files:{label:BASE_LABEL,digest}}:{}),
+      ...(typeof digest==='string'&&digest?{base_note:MESSAGES.base_note(),existing_files:this.existingFiles()}:{}),
       ...this.sourceInputs(id,'summaries'),
       max_pieces:max,
       ...(feedback?.reason?{previous_answer_problems:[feedback.reason],...(feedback.rejected?.length?{rejected:feedback.rejected}:{})}:{})};
@@ -9102,7 +9104,7 @@ export class ControlRoom extends DurableObject {
     const complaints=this.heldComplaints(id,inbox).map(c=>c.text);
     const answers=this.read(`fn_answers:${id}`,[]).map(a=>a.text),digest=this.heldDigest(id),base=this.baseFilesFor(id);
     const world={...this.availableView(id,answers),...(answers.length?{answers}:{}),...this.sourceInputs(id,'chunks'),
-      ...(digest||base.length?{base_note:MESSAGES.base_note(),...(digest?{existing_files:{label:BASE_LABEL,digest}}:{}),...(base.length?{base_files:base}:{})}:{})};
+      ...(digest||base.length?{base_note:MESSAGES.base_note(),...(digest?{existing_files:this.existingFiles()}:{}),...(base.length?{base_files:base}:{})}:{})};
     return {prompt,files,complaints,world};
   }
   // The complaints a worker was handed and has not answered with done: those

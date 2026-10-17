@@ -65,7 +65,7 @@ export default {async fetch(req) {
   const url = new URL(req.url), p = url.pathname, stats = {fed: 0};
   if (p === '/gzip' || p === '/deflate') {
     const u = 'https://example.com/bomb';
-    const r = await fetchSource(u, u, {policy: fetchPolicy({allow: ['example.com']}),
+    const r = await fetchSource(u, u, {policy: fetchPolicy({allow: ['example.com'], maxBytes: 512 * 1024}),
       fetch: serve(p === '/gzip' ? gzipBomb : deflateBomb, {'content-type': 'text/plain', 'content-encoding': p.slice(1)}, stats)});
     return Response.json({bytes: r.bytes, truncated: r.truncated, error: r.error, fed: stats.fed});
   }
@@ -97,7 +97,7 @@ const status = (pid, key) => Number(new RegExp(`^${key}:\\s+(\\d+) kB`, 'm').exe
 // Reset the peak-RSS counter (Linux clear_refs 5); null when not possible.
 const resetPeak = pid => { try { writeFileSync(`/proc/${pid}/clear_refs`, '5'); return true; } catch { return false; } };
 
-test('workerd: gzip, deflate and tar.gz bombs stay bounded; pathological HTML stays fast', {skip: !existsSync(BIN) && 'workerd binary not installed', timeout: 180_000}, async t => {
+test('workerd: gzip and deflate bombs stay bounded under a caller\'s maxBytes; a tar.gz of files too large to store is streamed past, never read; pathological HTML stays fast', {skip: !existsSync(BIN) && 'workerd binary not installed', timeout: 180_000}, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'fetcher-workerd-'));
   let child = null;
   try {
@@ -149,9 +149,9 @@ const config :Workerd.Config = (
     const tar = await measure('/tar');
     t.diagnostic(`/tar: fed ${tar.body.fed} truncated ${tar.body.truncated} ${tar.ms} ms, peak growth ${tar.growth == null ? 'n/a' : (tar.growth / MB).toFixed(1) + ' MB'}`);
     assert.equal(tar.body.error, null);
-    assert.equal(tar.body.truncated, true, 'the 64 MB archive cap stops the read');
-    assert.deepEqual(tar.body.files, []);
-    assert.ok(tar.body.skipped.some(s => s.path === 'zeros.txt' && s.reason === 'too large; over the limit of files carried untouched'), 'too large to carry untouched (S8b review): skipped, never read');
+    assert.equal(tar.body.truncated, false, 'no archive size is set: the whole archive is read');
+    assert.deepEqual(tar.body.files, ['after.txt']);
+    assert.ok(tar.body.skipped.some(s => s.path === 'zeros.txt' && /^larger than one storage row holds/.test(s.reason)), 'larger than a storage row: skipped, never read');
     if (tar.growth != null) assert.ok(tar.growth < LIMIT, `/tar: workerd peak RSS grew ${(tar.growth / MB).toFixed(1)} MB`);
     for (const c of ['a', 'p', 'br', 'ws', 'uniq']) {
       const {ms} = await measure(`/html?case=${c}`);
@@ -159,15 +159,14 @@ const config :Workerd.Config = (
       assert.ok(ms < 2000, `htmlToText ${c} took ${ms} ms in workerd`);
     }
     // 536 KB of tiny 15-bit-code blocks: refused after the first chunk, so
-    // eight of them in one goal cost little (the room budget, charged with
-    // wire bytes, is the backstop when bodies arrive in larger chunks).
+    // eight of them in one goal cost little.
     const tiny = await measure('/tiny');
     t.diagnostic(`/tiny: ${JSON.stringify(tiny.body)} ${tiny.ms} ms`);
     assert.match(tiny.body.error, /too many blocks/);
     assert.ok(tiny.ms < 1000, `/tiny took ${tiny.ms} ms`);
     const goal = await measure('/tiny-goal');
     t.diagnostic(`/tiny-goal: ${goal.ms} ms, errors ${JSON.stringify([...new Set(goal.body.errors)])}`);
-    assert.ok(goal.body.errors.every(e => /too many blocks|budget is spent/.test(e)));
+    assert.ok(goal.body.errors.every(e => /too many blocks/.test(e)));
     assert.ok(goal.ms < 3000, `/tiny-goal took ${goal.ms} ms`);
   } finally {
     child?.kill('SIGKILL');

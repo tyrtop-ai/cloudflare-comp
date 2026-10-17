@@ -148,10 +148,17 @@ test('no credentials or secrets: injected fetch only, fixed headers, module sour
   }
 });
 
-test('a 10 MB page is truncated at the cap and the stream is not read to the end', async () => {
+test('a linked page is read whole: no size is set on it (owner: "I want to be able to point this thing at links")', async () => {
+  const whole = counted(10 * 1024 * 1024);
+  const f = fakeFetch({'https://example.com/big': () => new Response(whole.stream, {headers: {'content-type': 'text/plain'}})});
+  const w = await fetchSource('https://example.com/big', 'https://example.com/big', {fetch: f, policy: policy()});
+  assert.deepEqual([w.error, w.truncated, w.bytes, w.text.length], [null, false, 10 * 1024 * 1024, 10 * 1024 * 1024]);
+});
+
+test('a caller that sets maxBytes (a dataset): a 10 MB body is cut there and the stream is not read to the end', async () => {
   const big = counted(10 * 1024 * 1024);
   const fetch = fakeFetch({'https://example.com/big': () => new Response(big.stream, {headers: {'content-type': 'text/plain'}})});
-  const r = await fetchSource('https://example.com/big', 'https://example.com/big', {fetch, policy: policy()});
+  const r = await fetchSource('https://example.com/big', 'https://example.com/big', {fetch, policy: policy({maxBytes: 512 * 1024})});
   assert.equal(r.error, null);
   assert.equal(r.truncated, true);
   assert.equal(r.bytes, 512 * 1024);
@@ -171,10 +178,10 @@ test('a gzip bomb is decompressed as a stream and aborted at the decompressed ca
   assert.equal(r.bytes, 32 * 1024);
   assert.match(r.text, /^a+$/);
   assert.ok(body.stats.pulled <= 40 * 1024, `compressed bytes pulled: ${body.stats.pulled} of ${bomb.length}`);
-  // At the default 512 KB cap the 100 MB bomb is also stopped at the cap.
+  // At a 512 KB cap the 100 MB bomb is also stopped at the cap.
   const again = chunked(new Uint8Array(bomb), 1024);
   const f2 = fakeFetch({'https://example.com/bomb': () => new Response(again.stream, {headers: {'content-type': 'text/plain', 'content-encoding': 'gzip'}})});
-  const r2 = await fetchSource('https://example.com/bomb', 'https://example.com/bomb', {fetch: f2, policy: policy()});
+  const r2 = await fetchSource('https://example.com/bomb', 'https://example.com/bomb', {fetch: f2, policy: policy({maxBytes: 512 * 1024})});
   assert.equal(r2.bytes, 512 * 1024);
   assert.equal(r2.truncated, true);
 });
@@ -326,18 +333,16 @@ test('the source reader is a session whose one function is note: its arguments a
   assert.deepEqual(page.noted, {title: 'Widgets', says: 'How widgets are laid out.'});
 });
 
-test('the room byte budget is shared across all goal URLs', async () => {
-  const fetch = fakeFetch({'https://example.com/1': () => new Response(counted(400 * 1024).stream, {headers: {'content-type': 'text/plain'}}),
-    'https://example.com/2': () => new Response(counted(400 * 1024).stream, {headers: {'content-type': 'text/plain'}}),
-    'https://example.com/3': text('late')});
-  const out = await fetchGoalSources('https://example.com/1 https://example.com/2 https://example.com/3 http://example.com/4',
-    {fetch, policy: policy({roomBytes: 600 * 1024})});
-  assert.deepEqual(out.map(s => s.id), ['S1', 'S2', 'S3', 'S4']);
-  assert.equal(out[0].bytes, 400 * 1024);
-  assert.equal(out[1].bytes, 200 * 1024);
-  assert.equal(out[1].truncated, true);
-  assert.match(out[2].error, /budget is spent/);
-  assert.match(out[3].error, /only https/);
+test('every link the goal writes is fetched, each whole: no link count and no room byte budget', async () => {
+  const routes = {};
+  for (let i = 1; i <= 12; i++) routes[`https://example.com/${i}`] = () => new Response(counted(1024 * 1024).stream, {headers: {'content-type': 'text/plain'}});
+  const fetch = fakeFetch(routes);
+  const goal = Array.from({length: 12}, (_, i) => `https://example.com/${i + 1}`).join(' ') + ' http://example.com/13';
+  assert.equal(goalUrls(goal).length, 13);
+  const out = await fetchGoalSources(goal, {fetch, policy: policy()});
+  assert.deepEqual(out.map(s => s.id), Array.from({length: 13}, (_, i) => `S${i + 1}`));
+  for (const s of out.slice(0, 12)) assert.deepEqual([s.error, s.bytes, s.truncated], [null, 1024 * 1024, false]);
+  assert.match(out[12].error, /only https/);
 });
 
 // --- security review fixes (S8a review) ---------------------------------------------
@@ -425,15 +430,16 @@ test('deflate bombs and low-output gzip: capped early, and a bounded input retur
   const bomb = deflateSync(Buffer.alloc(100 * 1024 * 1024, 'b'), {level: 9});
   const body = chunked(new Uint8Array(bomb), 1024);
   const fetch = fakeFetch({'https://example.com/z': () => new Response(body.stream, {headers: {'content-type': 'text/plain', 'content-encoding': 'deflate'}})});
-  const r = await fetchSource('https://example.com/z', 'https://example.com/z', {fetch, policy: policy()});
+  const capped = policy({maxBytes: 512 * 1024});
+  const r = await fetchSource('https://example.com/z', 'https://example.com/z', {fetch, policy: capped});
   assert.equal(r.error, null);
   assert.equal(r.bytes, 512 * 1024);
   assert.equal(r.truncated, true);
   assert.ok(body.stats.pulled <= 4 * 1024, `compressed bytes pulled: ${body.stats.pulled}`);
-  // gzip bomb at the default cap: only a few KB of input are ever read.
+  // gzip bomb at the cap: only a few KB of input are ever read.
   const g = chunked(new Uint8Array(gzipSync(Buffer.alloc(100 * 1024 * 1024, 'a'), {level: 9})), 1024);
   const f2 = fakeFetch({'https://example.com/g': () => new Response(g.stream, {headers: {'content-type': 'text/plain'}})});
-  const r2 = await fetchSource('https://example.com/g', 'https://example.com/g', {fetch: f2, policy: policy()});
+  const r2 = await fetchSource('https://example.com/g', 'https://example.com/g', {fetch: f2, policy: capped});
   assert.equal(r2.bytes, 512 * 1024);
   assert.ok(g.stats.pulled <= 4 * 1024, `compressed bytes pulled: ${g.stats.pulled}`);
   // 700 KB of empty gzip members after real text: stops at the input cap
@@ -442,7 +448,7 @@ test('deflate bombs and low-output gzip: capped early, and a bounded input retur
   const many = Buffer.concat([gzipSync(Buffer.from('real text ')), ...Array(Math.ceil(700 * 1024 / empty.length)).fill(empty)]);
   const f3 = fakeFetch({'https://example.com/e': text(new Uint8Array(many))});
   const t0 = Date.now();
-  const r3 = await fetchSource('https://example.com/e', 'https://example.com/e', {fetch: f3, policy: policy({timeoutMs: 3000})});
+  const r3 = await fetchSource('https://example.com/e', 'https://example.com/e', {fetch: f3, policy: policy({timeoutMs: 3000, maxBytes: 512 * 1024})});
   assert.equal(r3.error, null);
   assert.equal(r3.text, 'real text ');
   assert.equal(r3.truncated, true);
@@ -450,7 +456,7 @@ test('deflate bombs and low-output gzip: capped early, and a bounded input retur
   // A body exactly at the cap is not truncated; one byte more is.
   for (const [n, cut] of [[512 * 1024, false], [512 * 1024 + 1, true]]) {
     const f = fakeFetch({'https://example.com/n': text(new Uint8Array(gzipSync(Buffer.alloc(n, 'c'))))});
-    assert.equal((await fetchSource('https://example.com/n', 'https://example.com/n', {fetch: f, policy: policy()})).truncated, cut, String(n));
+    assert.equal((await fetchSource('https://example.com/n', 'https://example.com/n', {fetch: f, policy: capped})).truncated, cut, String(n));
   }
   // Corrupt compressed data fails cleanly.
   const bad = new Uint8Array(gzipSync(Buffer.from('hello world, hello world')));
@@ -517,7 +523,7 @@ test('hidden subtrees fail closed: unclosed, mis-nested, tags inside comments, a
   assert.equal(htmlToText('<svg><rect/><text>x</text></svg>ok').text, 'ok');
 });
 
-test('inflater CPU: tiny-block streams fail fast, and wire bytes are charged to the room budget', async () => {
+test('inflater CPU: tiny-block streams fail fast, and say how many wire bytes they took', async () => {
   const {tinyBlocks} = await import('./helpers/deflate-craft.js');
   const complete = tinyBlocks(536 * 1024), incomplete = tinyBlocks(536 * 1024, {complete: false});
   for (const [name, bytes, why] of [['complete', complete, /too many blocks/], ['incomplete', incomplete, /incomplete code/]]) {
@@ -529,16 +535,6 @@ test('inflater CPU: tiny-block streams fail fast, and wire bytes are charged to 
     assert.ok(ms < 250 && (cpu.user + cpu.system) / 1000 < 250, `${name}: ${ms.toFixed(0)} ms`);
     assert.ok(r.wire_bytes > 0, name);
   }
-  // Eight such URLs in one goal: each is charged its wire bytes, so the
-  // 2 MB room budget runs out instead of every URL getting a full input cap.
-  const goal = Array.from({length: 8}, (_, i) => `https://example.com/p${i}`).join(' ');
-  const served = [];
-  const fetch = async url => { served.push(url); return new Response(new Uint8Array(complete), {headers: {'content-type': 'text/plain'}}); };
-  const out = await fetchGoalSources(goal, {fetch, policy: policy()});
-  assert.ok(served.length < 8, `fetched ${served.length} of 8`);
-  assert.ok(out.some(s => /budget is spent/.test(s.error)));
-  // Each body arrives as one chunk here, so the overshoot is at most one body.
-  assert.ok(out.reduce((a, s) => a + Math.max(s.bytes, s.wire_bytes), 0) <= 2 * 1024 * 1024 + complete.length);
 });
 
 test('the inflater never produces more than the reader asked for, and chunks are at most 64 KB', async () => {
