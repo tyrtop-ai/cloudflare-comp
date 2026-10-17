@@ -663,12 +663,12 @@ const shortModel=m=>String(m||'').split('/').pop();
 let benchRun='',benchData=null,benchList=[],benchCompare=null,benchFileName='',benchSlots=0;
 const benchOutcome=t=>t.outcome||(t.status==='running'?'running':'queued');
 // pass@1 is each task's first grading, over the scored tasks only: pass ÷
-// (pass + fail + timeout). Errors (the platform's) are left out. A run with
-// feedback until_done (the default) also shows the pass rate once the
-// grader's failures went back to the rooms, and the mean gradings it took.
-const SCORED_NOTE='pass@1 = first gradings passed ÷ scored tasks (pass + fail + timeout); errors (the platform\'s) are not scored';
+// (pass + fail). Errors (a grader or room that could not run) are left out.
+// Until done is the pass rate once the grader's failures went back to the
+// rooms, and the mean gradings it took.
+const SCORED_NOTE='pass@1 = first gradings passed ÷ scored tasks (pass + fail); errors (a grader or room that could not run, an observer\'s stop) are not scored';
 const benchRate=a=>pct(a?.pass_at_1);
-const UNTIL_DONE_NOTE='with feedback until_done: the grader\'s failures go back to each room as complaints until a grading passes';
+const UNTIL_DONE_NOTE='the grader\'s failures go back to each room as complaints until a grading passes or the room ends';
 const untilDoneNote=a=>a?.until_done?`<span title="${esc(UNTIL_DONE_NOTE)}">until done <b>${pct(a.until_done.pass_rate)}</b> <span class="faint">(${count(a.until_done.pass)} of ${count(a.until_done.scored)}; mean ${a.until_done.mean_rounds_to_done??'–'} gradings)</span></span>`:'';
 function benchRunsMarkup(runs,picked='') {
   if(!runs?.length)return '<p class="empty">No benchmark runs yet.</p>';
@@ -682,9 +682,8 @@ const roomLink=(room,deleted=false)=>deleted?'<span class="faint">room deleted</
 function benchResultsMarkup(run) {
   if(!run)return '';
   const a=run.aggregate||{},s=run.settings||{},d=run.dataset||{};
-  const summary=`<div class="bench-summary"><span title="${esc(SCORED_NOTE)}">pass@1 <b>${benchRate(a)}</b> <span class="faint">(${count(a.pass)} passed of ${count(a.scored)} scored: pass + fail + timeout; ${count(a.error)} errors not scored)</span></span>${untilDoneNote(a)}<span>mean time <b>${secs(a.mean_ms)}</b></span><span>tokens <b>${count(a.tokens)}</b></span><span>Container <b>${a.container_s??0} s</b></span>`+
-    `${a.timeout?`<span>timeouts <b>${a.timeout}</b></span>`:''}</div>`+
-    `<p class="helper">${esc(run.label||run.id)} · ${esc(run.status)} · managers ${esc(shortModel(s.model))} · workers ${esc(shortModel(s.worker_model))} · ${count(run.concurrency)} at once${run.concurrency_asked?` (asked ${count(run.concurrency_asked)}; ${count(run.executors)} Container slots)`:''}${run.feedback?` · feedback ${esc(run.feedback)}`:''} · keeps ${esc(run.keep_rooms||'failed')} rooms · budget ${count(run.budget)} turns · dataset ${esc(d.source||'')}${d.digest?` · ${esc(d.digest.slice(0,12))}`:''}${d.skipped?.length?` · ${d.skipped.length} rows skipped`:''}${d.partial?` · partial: ${esc(d.partial)}`:''}</p>`;
+  const summary=`<div class="bench-summary"><span title="${esc(SCORED_NOTE)}">pass@1 <b>${benchRate(a)}</b> <span class="faint">(${count(a.pass)} passed of ${count(a.scored)} scored: pass + fail; ${count(a.error)} errors not scored)</span></span>${untilDoneNote(a)}<span>mean time <b>${secs(a.mean_ms)}</b></span><span>tokens <b>${count(a.tokens)}</b></span><span>Container <b>${a.container_s??0} s</b></span></div>`+
+    `<p class="helper">${esc(run.label||run.id)} · ${esc(run.status)} · managers ${esc(shortModel(s.model))} · workers ${esc(shortModel(s.worker_model))} · ${count(run.concurrency)} at once${run.concurrency_asked?` (asked ${count(run.concurrency_asked)}; ${count(run.executors)} Container slots)`:''} · keeps ${esc(run.keep_rooms||'failed')} rooms · budget ${count(run.budget)} turns · dataset ${esc(d.source||'')}${d.digest?` · ${esc(d.digest.slice(0,12))}`:''}${d.skipped?.length?` · ${d.skipped.length} rows skipped`:''}${d.partial?` · partial: ${esc(d.partial)}`:''}</p>`;
   const row=t=>{const o=benchOutcome(t),first=t.once&&t.once!==o?` <span class="faint" title="its first grading (pass@1)">first ${esc(t.once)}</span>`:'',rounds=t.rounds>1?` <span class="faint">· ${count(t.rounds)} gradings</span>`:'';
     return `<tr><td class="mono">${esc(t.task_id)}</td><td><span class="req-chip ${esc(o)}"${t.detail?` title="${esc(t.detail)}"`:''}>${esc(o)}</span>${first}${rounds}</td><td class="num">${secs(t.wall_ms)}</td><td class="num">${count(t.tokens)}</td><td class="num">${t.container_ms?secs(t.container_ms):'–'}</td><td>${roomLink(t.room,t.room_deleted)}</td></tr>`;};
   return summary+`<table class="bench-table"><thead><tr><th>TASK</th><th>RESULT</th><th class="num">TIME</th><th class="num">TOKENS</th><th class="num">CONTAINER</th><th>ROOM</th></tr></thead><tbody>${(run.tasks||[]).map(row).join('')}</tbody></table>`;
@@ -732,7 +731,7 @@ async function benchDelete(id) {
 function benchRequest() {
   const url=$('bench-url')?.value.trim()||'',text=$('bench-text')?.value||'';
   return {dataset:url?{url}:{text,...(benchFileName?{name:benchFileName}:{})},limit:Number($('bench-limit')?.value)||20,concurrency:Number($('bench-concurrency')?.value)||2,
-    label:$('bench-label')?.value.trim()||'',budget:countSetting('budget'),keep_rooms:$('bench-keep')?.value||'failed',feedback:$('bench-feedback')?.value||'until_done',settings:settings()};
+    label:$('bench-label')?.value.trim()||'',budget:countSetting('budget'),keep_rooms:$('bench-keep')?.value||'failed',settings:settings()};
 }
 $('bench-start')?.addEventListener('click',async()=>{
   const body=benchRequest();

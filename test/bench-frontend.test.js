@@ -31,7 +31,7 @@ const reply = body => async () => new Response(JSON.stringify(body), {status: bo
 const RUN = {id: 'abcdef012345', label: 'Scout <workers>', status: 'running', concurrency: 2, budget: 60,
   settings: {model: '@cf/qwen/qwen3-30b-a3b-fp8', worker_model: '@cf/meta/llama-4-scout-17b-16e-instruct'},
   dataset: {source: 'https://raw.githubusercontent.com/toy/bench/main/he.jsonl', digest: '0123456789abcdef', skipped: [{id: 'x', reason: 'r'}]},
-  aggregate: {tasks: 3, finished: 2, pass: 1, fail: 1, scored: 2, pass_at_1: 0.5, mean_ms: 61500, tokens: 12345, container_s: 4.2, error: 0, timeout: 0},
+  aggregate: {tasks: 3, finished: 2, pass: 1, fail: 1, scored: 2, pass_at_1: 0.5, mean_ms: 61500, tokens: 12345, container_s: 4.2, error: 0},
   tasks: [
     {task_id: 'HumanEval/0', status: 'done', outcome: 'pass', wall_ms: 60000, tokens: 10000, container_ms: 3000, room: 'bench-abcdef012345-0-0'},
     {task_id: 'HumanEval/1', status: 'done', outcome: 'fail', detail: 'exit 1: AssertionError', wall_ms: 63000, tokens: 2345, container_ms: 1200, room: 'bench-abcdef012345-1-0'},
@@ -45,11 +45,10 @@ test('the Benchmarks panel: dataset URL, paste and upload, limit, rooms at once,
   assert.match(html, /<input id="bench-limit" class="mono" type="number"[^>]*min="1" max="500"[^>]*value="20"/);
   assert.match(html, /<input id="bench-concurrency" class="mono" type="number"[^>]*min="1" max="16"[^>]*value="2"/);
   assert.match(html, /<button class="primary" id="bench-start"/);
-  // Grading: until done is the default, first and selected; once is offered for a pass@1 comparable with published scores, and says nothing goes back.
-  const grading = /<select id="bench-feedback">([\s\S]*?)<\/select>/.exec(html)[1];
-  assert.deepEqual([...grading.matchAll(/<option value="([a-z_]+)"/g)].map(m => m[1]), ['until_done', 'once']);
-  assert.match(grading, /<option value="until_done" selected>Until done \(default\): a failed grading goes back to the room as a complaint/);
-  assert.match(grading, /<option value="once">Once \(pass@1\): the first grading is the result, and nothing goes back to the room/);
+  // Grading has one way: the grade goes back until done (owner 2026-10-16 05:54); no mode in which nothing goes back is offered.
+  assert.doesNotMatch(html, /id="bench-feedback"/);
+  assert.doesNotMatch(html, /nothing goes back to the room/);
+  assert.match(html, /until done, what the grader observed goes back to the room/);
   assert.match(html, /started from the task's prompt as the benchmark wrote it/);
   // The room settings come from the existing pickers: the panel adds no model picker of its own.
   const panel = html.slice(html.indexOf('id="bench-panel"'));
@@ -68,27 +67,27 @@ test('the runs list, one run\'s results with a link to each task\'s room, and a 
   assert.match(runs, /data-bench-resume="fedcba543210">Resume/);
   assert.match(runs, /data-bench-delete="abcdef012345"[^>]*>Delete<\/button>/);
   assert.match(runs, /<th class="num" title="pass@1 = first gradings passed ÷ scored tasks[^"]*">PASS@1\*<\/th>/);
-  // A run with feedback until_done shows pass@1 (each task's first grading) and the pass rate once the grader's failures went back, with the mean gradings.
-  const untilDone = {...RUN, feedback: 'until_done', aggregate: {...RUN.aggregate, feedback: 'until_done', until_done: {scored: 2, pass: 2, pass_rate: 1, mean_rounds_to_done: 1.5}},
+  // A run shows pass@1 (each task's first grading) and the pass rate once the grader's failures went back, with the mean gradings.
+  const untilDone = {...RUN, aggregate: {...RUN.aggregate, until_done: {scored: 2, pass: 2, pass_rate: 1, mean_rounds_to_done: 1.5}},
     tasks: [{...RUN.tasks[0]}, {...RUN.tasks[1], outcome: 'pass', once: 'fail', rounds: 2}]};
-  assert.match(context.benchRunsMarkup([untilDone]), /<td class="num">50\.0%<br\/><span class="faint" title="with feedback until_done: [^"]*">until done 100\.0%<\/span><\/td>/);
+  assert.match(context.benchRunsMarkup([untilDone]), /<td class="num">50\.0%<br\/><span class="faint" title="the grader&#39;s failures go back to each room as complaints until a grading passes or the room ends">until done 100\.0%<\/span><\/td>/);
   const shown = context.benchResultsMarkup(untilDone);
   assert.match(shown, /pass@1 <b>50\.0%<\/b>[\s\S]*until done <b>100\.0%<\/b> <span class="faint">\(2 of 2; mean 1\.5 gradings\)<\/span>/);
-  assert.match(shown, /· feedback until_done · keeps failed rooms/);
+  assert.match(shown, /· 2 at once · keeps failed rooms/);
   assert.match(shown, /<span class="req-chip pass"[^>]*>pass<\/span> <span class="faint" title="its first grading \(pass@1\)">first fail<\/span> <span class="faint">· 2 gradings<\/span>/);
   // A deleted room, a clamped concurrency and a partial dataset are said so.
   const later = context.benchResultsMarkup({...RUN, concurrency_asked: 8, executors: 4, keep_rooms: 'none', dataset: {...RUN.dataset, partial: 'rows from offset 100 could not be read'},
     tasks: [{...RUN.tasks[0], room_deleted: true}]});
-  assert.match(later, /2 at once \(asked 8; 4 Container slots\) · keeps none rooms/, 'a run stored without a grading choice names none');
-  assert.match(context.benchResultsMarkup({...RUN, feedback: 'once'}), /· 2 at once · feedback once · keeps failed rooms/);
+  assert.match(later, /2 at once \(asked 8; 4 Container slots\) · keeps none rooms/);
+  assert.doesNotMatch(context.benchResultsMarkup({...RUN, feedback: 'once'}), /feedback/, 'a run stored with the old grading choice shows none');
   assert.match(later, /partial: rows from offset 100 could not be read/);
   assert.match(later, /<td><span class="faint">room deleted<\/span><\/td>/);
   assert.match(runs, /<td class="num">– \/ –<\/td><td class="num">–<\/td>/);
   assert.equal(context.benchRunsMarkup([]), '<p class="empty">No benchmark runs yet.</p>');
   const results = context.benchResultsMarkup(RUN);
-  assert.match(results, /pass@1 <b>50\.0%<\/b> <span class="faint">\(1 passed of 2 scored: pass \+ fail \+ timeout; 0 errors not scored\)/);
-  assert.match(results, /title="pass@1 = first gradings passed ÷ scored tasks \(pass \+ fail \+ timeout\); errors \(the platform&#39;s\) are not scored"/);
-  assert.ok(!/until done/.test(results), 'a run graded once shows pass@1 alone');
+  assert.match(results, /pass@1 <b>50\.0%<\/b> <span class="faint">\(1 passed of 2 scored: pass \+ fail; 0 errors not scored\)/);
+  assert.match(results, /title="pass@1 = first gradings passed ÷ scored tasks \(pass \+ fail\); errors \(a grader or room that could not run, an observer&#39;s stop\) are not scored"/);
+  assert.ok(!/until done/.test(results), 'a run stored without the until-done aggregate shows pass@1 alone');
   assert.match(results, /workers llama-4-scout-17b-16e-instruct · 2 at once · keeps failed rooms · budget 60 turns · dataset https:\/\/raw\.githubusercontent\.com\/toy\/bench\/main\/he\.jsonl · 0123456789ab · 1 rows skipped/);
   assert.match(results, /<td class="mono">HumanEval\/0<\/td><td><span class="req-chip pass">pass<\/span><\/td><td class="num">60 s<\/td><td class="num">10,000<\/td><td class="num">3\.0 s<\/td><td><a href="\/\?room=bench-abcdef012345-0-0" target="_blank" rel="noopener" class="mono">open room<\/a><\/td>/);
   assert.match(results, /<span class="req-chip fail" title="exit 1: AssertionError">fail<\/span>/);
@@ -127,13 +126,11 @@ test('Run benchmark posts the dataset, the limits and the sidebar\'s room settin
   assert.equal(post.init.headers.Authorization, 'Bearer app-token');
   const body = JSON.parse(post.init.body);
   assert.deepEqual(body.dataset, {url: 'https://raw.githubusercontent.com/toy/bench/main/he.jsonl'});
-  assert.deepEqual([body.limit, body.concurrency, body.label, body.budget, body.keep_rooms, body.feedback], [5, 3, 'Scout workers', 100, 'failed', 'until_done']);
+  assert.deepEqual([body.limit, body.concurrency, body.label, body.budget, body.keep_rooms], [5, 3, 'Scout workers', 100, 'failed']);
+  assert.ok(!('feedback' in body));
   assert.equal(body.settings.worker_model, '@cf/meta/llama-4-scout-17b-16e-instruct');
   assert.equal(body.settings.model, '@cf/qwen/qwen3-30b-a3b-fp8');
   assert.equal(body.settings.max_depth, 10);
-  p.elements.get('bench-feedback').value = 'once';
-  await p.fire('bench-start');
-  assert.equal(JSON.parse(p.requests.filter(r => r.url === '/api/bench').at(-1).init.body).feedback, 'once');
   assert.match(p.requests[1].url, /^\/api\/bench\?room=room-abcdefgh$/, 'then the runs list');
   assert.match(p.elements.get('bench-results').innerHTML, /pass@1 <b>50\.0%<\/b>/);
   assert.match(p.elements.get('bench-runs').innerHTML, /class="picked"/);

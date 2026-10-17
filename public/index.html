@@ -177,11 +177,6 @@
               <option value="all">Keep every room</option>
               <option value="none">Delete every room once it is scored</option>
             </select>
-            <label for="bench-feedback">Grading</label>
-            <select id="bench-feedback">
-              <option value="until_done" selected>Until done (default): a failed grading goes back to the room as a complaint, and the room goes on until a grading passes or its turn budget is spent</option>
-              <option value="once">Once (pass@1): the first grading is the result, and nothing goes back to the room, for a number comparable with published pass@1</option>
-            </select>
             <p class="helper" id="bench-slots">Rooms at once is capped by the deployment's Container slots: each room builds on one executor of the run's pool.</p>
             <button class="primary" id="bench-start" title="Run the benchmark">Run benchmark <span>↗</span></button>
             <p class="helper">Each task gets its own room, started from the task's prompt as the benchmark wrote it. When a room completes, the run grades what it ships with the benchmark's tests, in a box of its own, wherever the room put the function. The tests stay in that box; until done, what the grader observed goes back to the room. The run goes on with this page closed. The turn budget is the one above; it bounds each room across all its rounds.</p>

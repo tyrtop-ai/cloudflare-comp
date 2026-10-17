@@ -101,8 +101,8 @@ def _run():
         for p in found:
             mod, e = load(p)
             if mod is not None: break
-            if e is not None: errors.append('%s: %s: %s' % (p, type(e).__name__, str(e)[:200]))
-        if mod is None: rep(no_module=('; '.join(errors))[:600]); _exit(1)
+            if e is not None: errors.append('%s: %s: %s' % (p, type(e).__name__, str(e)))
+        if mod is None: rep(no_module='; '.join(errors)); _exit(1)
         ns = {'__builtins__': dict(b0), '__name__': '__bench_tests__'}
         if job.get('prompt'):
             try: _exec(_compile(job['prompt'], 'prompt', 'exec'), ns)
@@ -121,7 +121,7 @@ def _run():
     except BaseException as e:
         try: _tb()
         except BaseException: pass
-        try: rep(fail='%s: %s' % (type(e).__name__, str(e)[:300]))
+        try: rep(fail='%s: %s' % (type(e).__name__, str(e)))
         except BaseException: pass
         _exit(1)
 _run()
@@ -211,17 +211,17 @@ function worker() {
           const m = {exports: {}};
           try { fn = new F('require', 'module', 'exports', fs.readFileSync(f, 'utf8') + '\n;return typeof ' + entry + ' === "function" ? ' + entry + ' : undefined;')(req0, m, m.exports) || null; } catch (e) {}
         }
-      } catch (e) { errors.push(f + ': ' + String(e && e.message).slice(0, 200)); }
+      } catch (e) { errors.push(f + ': ' + String(e && e.message)); }
       if (fn) break;
     }
-    if (!fn) { rep({no_module: errors.join('; ').slice(0, 600)}); exit(1); }
+    if (!fn) { rep({no_module: errors.join('; ')}); exit(1); }
     const run = new F('require', 'module', 'exports', 'candidate', ...(entry === 'candidate' ? [] : [entry]), job.tests);
     await run(testsRequire, {exports: {}}, {}, fn, fn);
     rep({done: true, asserts: count});
     exit(0);
   })().catch(e => {
     try { process.stderr.write(String(e && e.stack || e) + '\n'); } catch (x) {}
-    try { rep({fail: String(e && e.message || e).slice(0, 300)}); } catch (x) {}
+    try { rep({fail: String(e && e.message || e)}); } catch (x) {}
     exit(1);
   });
 }
@@ -254,6 +254,58 @@ function main() {
 main();
 `;
 
+// Any other language: the tests run after the solution, as the benchmark
+// runs them (MultiPL-E appends its tests to the program). The supervisor
+// reads the nonce file's descriptor and unlinks it, reads and deletes the
+// tests, and walks the bundle for the files the box runs (RUNS: the command
+// for each extension, from the toolchain rows) that name the entry (every
+// such file when the task gives none). For each in turn it writes, beside
+// it, the file's text with the tests after it, and runs that with the
+// file's command in a process that does not hold the nonce, its output on
+// stderr. It prints `BENCH-PASS <nonce>` once a run exits 0; exit 1 when
+// every run failed, 3 when no file is there to run. The tests and the
+// solution share one process here, so the pass is the process's exit 0:
+// the tests' own failures are what make it fail.
+const AFTER = String.raw`// Benchmark harness (supervisor), written by the runtime. See src/bench-harness.js:
+// the tests run after the solution, in a process without the nonce.
+'use strict';
+const fs = require('fs'), p = require('path'), cp = require('child_process'), crypto = require('crypto');
+const ENTRY = __ENTRY__, RUNS = __RUNS__, NONCE = __NONCE_FILE__, TESTS = __TESTS_FILE__;
+const verdict = (code, word, detail) => { process.stderr.write('\nBenchHarnessError: ' + word + (detail ? ': ' + detail : '') + '\n'); process.exit(code); };
+const take = f => { if (!fs.existsSync(f)) return ''; const t = fs.readFileSync(f, 'utf8'); fs.unlinkSync(f); return t; };
+function main() {
+  let nfd;
+  try { nfd = fs.openSync(NONCE, 'r'); fs.unlinkSync(NONCE); } catch (e) { verdict(6, 'protocol', 'the nonce file is missing'); }
+  const tests = take(TESTS);
+  const word = ENTRY ? new RegExp('(^|[^\\w$])' + ENTRY.replace(/\$/g, '\\$') + '(?![\\w$])') : null;
+  const found = [];
+  const walk = d => { for (const e of fs.readdirSync(d, {withFileTypes: true}).sort((a, b) => a.name < b.name ? -1 : 1)) {
+    const f = p.join(d, e.name);
+    if (e.isDirectory()) { if (!e.name.startsWith('.') && e.name !== 'node_modules') walk(f); }
+    else if (e.isFile() && Object.hasOwn(RUNS, p.extname(e.name).toLowerCase()) && (!word || word.test(fs.readFileSync(f, 'utf8')))) found.push(f);
+  } };
+  walk('.');
+  if (!found.length) verdict(3, 'no_module', 'no ' + Object.keys(RUNS).join(', ') + ' file' + (ENTRY ? ' names ' + ENTRY : ' is in the bundle'));
+  const tag = crypto.randomBytes(8).toString('hex'), failed = [];
+  for (const f of found) {
+    const ext = p.extname(f).toLowerCase(), target = p.join(p.dirname(f), 'bench_graded_' + tag + ext);
+    fs.writeFileSync(target, fs.readFileSync(f, 'utf8') + '\n' + tests);
+    const argv = RUNS[ext].map(x => x === '{path}' ? target : x);
+    process.stderr.write('--- ' + f + ' with the tests after it: ' + argv.join(' ') + '\n');
+    const r = cp.spawnSync(argv[0], argv.slice(1), {stdio: ['ignore', 2, 2]});
+    try { fs.unlinkSync(target); } catch (e) {}
+    if (r.status === 0 && !r.signal && !r.error) {
+      const nonce = fs.readFileSync(nfd, 'utf8').trim();
+      process.stdout.write('\n__PASS_MARK__ ' + nonce + '\n');
+      return;
+    }
+    failed.push(f + ': ' + (r.error ? argv[0] + ' could not start (' + r.error.message + ')' : 'exit ' + r.status + (r.signal ? ', ' + r.signal : '')));
+  }
+  verdict(1, 'failed', 'the tests failed after ' + failed.join('; '));
+}
+main();
+`;
+
 // files: the check's input-file names. passMark: the verdict word.
 export function pythonHarness({entry, callCheck = true, files, passMark}) {
   const py = v => JSON.stringify(v); // a JSON string is a valid Python str literal for these values
@@ -261,4 +313,8 @@ export function pythonHarness({entry, callCheck = true, files, passMark}) {
 }
 export function javascriptHarness({entry, files, passMark}) {
   return fill(JS, {ENTRY: JSON.stringify(entry), NONCE_FILE: JSON.stringify(files.nonce), TESTS_FILE: JSON.stringify(files.tests), PASS_MARK: passMark});
+}
+// runs: {'.rb': ['ruby', '{path}'], ...}. entry: a name, or null.
+export function testsAfterHarness({entry = null, runs, files, passMark}) {
+  return fill(AFTER, {ENTRY: JSON.stringify(entry || null), RUNS: JSON.stringify(runs), NONCE_FILE: JSON.stringify(files.nonce), TESTS_FILE: JSON.stringify(files.tests), PASS_MARK: passMark});
 }

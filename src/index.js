@@ -11,7 +11,6 @@ import { freshBox, compileBoxSpec, BOX_COLD_MS } from './box.js';
 import { BoxPrewarm, levelBoxSpec } from './box-prewarm.js';
 export { BenchRun } from './bench-run.js';
 import { benchRoute } from './bench-run.js';
-import { INFRA_ERROR } from './bench.js';
 import { clip, isId, isRowId, isPath, normalizeAction, normalizeAsk, canContact, addFirst, addLast, allFinished, canRead } from './protocol.js';
 import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfaces, ROOT_PROMISE, ASK_CLAUSE, GOAL_LIMIT, decide, generateFile, routeOwner, OWNER_BAR, OWNER_FLOOR, matchFunction, pickPiece, ownsNeed, DECISION_MODELS, linkComponents, LINKER_BELOW, writeRunnerTest, apiCoverage, ENTRY_CONTRACT, GOAL_START_REQUIREMENT, decideProblems, scopeUses, goalStartRequirement, stripStartRequirement, rootPromise, judgeRequirement, sourceModel, vetBaseChanges, pieceReach, PIECE_REACH_BAR, reviewLevel, chooseCall } from './model.js';
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
@@ -6979,14 +6978,10 @@ export class ControlRoom extends DurableObject {
     const t=query(db,"SELECT COUNT(*) AS calls,COALESCE(SUM(json_extract(attrs,'$.prompt_tokens')),0) AS prompt,COALESCE(SUM(json_extract(attrs,'$.completion_tokens')),0) AS completion FROM spans WHERE kind='model'")[0];
     const c=query(db,"SELECT COUNT(*) AS runs,COALESCE(SUM(end_ms-start_ms),0) AS ms FROM spans WHERE kind='container'")[0];
     const e=query(db,"SELECT MIN(CASE WHEN kind='start' THEN ts END) AS started,MAX(ts) AS last FROM events")[0];
-    // Why a paused room stopped: the observer, agents stalled by three
-    // failures (platform ones if their last error says so), or the budget.
-    const errors=query(db,"SELECT actor,body FROM events WHERE kind='error' ORDER BY id").map(r=>({actor:r.actor,infra:INFRA_ERROR.test(r.body||'')}));
-    const stalled=Object.entries(this.read('failures',{})).filter(([,n])=>n>=3).map(([id])=>id);
+    // Why a paused room stopped: the observer, or the hold it is in.
     const last=query(db,"SELECT kind FROM events WHERE actor='system' AND kind IN ('stopped','paused','complete','failed','error','start','resume') ORDER BY id DESC LIMIT 1")[0]?.kind;
     return {status,busy:!!this.busy,pause:this.read('paused_state',null),
       compile_passed:!!this.read('compile_passed',null),stopped:last==='stopped',turns:query(db,"SELECT COUNT(*) AS n FROM events WHERE kind='dispatch'")[0].n,
-      infra_errors:errors.filter(x=>x.infra).length,stalled_infra:stalled.length>0&&stalled.every(id=>errors.filter(x=>x.actor===id).at(-1)?.infra),
       validations:this.validationRows().map(v=>v.id),validation_status:this.read('validation_status',{}),
       started_at:e.started??null,last_event_at:e.last??null,
       tokens:{calls:t.calls,prompt:t.prompt,completion:t.completion,total:t.prompt+t.completion},container_ms:c.ms,container_runs:c.runs,
