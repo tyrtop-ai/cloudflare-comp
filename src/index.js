@@ -3740,12 +3740,15 @@ export class ControlRoom extends DurableObject {
   // that is text at a path the box holds joins the files after the
   // builder's (carried); the others are listed with why the box cannot hold
   // them (unsent). A piece's file at exactly the same path ships instead.
+  // A symbolic link is no file's text: it goes to the box as the link it is
+  // (links: path to target).
   addCarried(bundle) {
     const files=bundle.files,taken=new Set(files.keys()),decode=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true});
-    bundle.carried=new Set();bundle.unsent=[];
-    for(const r of query(this.db(),'SELECT path,bytes,sha256,reason FROM base_passthrough ORDER BY path')) {
+    bundle.carried=new Set();bundle.unsent=[];bundle.links=new Map();
+    for(const r of query(this.db(),'SELECT path,bytes,mode,sha256,reason FROM base_passthrough ORDER BY path')) {
       if(taken.has(r.path))continue;
       const data=new Uint8Array(r.bytes);
+      if(gitMode(r.mode)==='120000'&&!boxPathError(r.path)){bundle.links.set(r.path,new TextDecoder().decode(data));continue;}
       let text=null;
       try {text=decode.decode(data);} catch {}
       const why=text===null?'it is not UTF-8 text':boxPathError(r.path)?'its path is outside the box\'s folder':'';
@@ -4120,7 +4123,8 @@ export class ControlRoom extends DurableObject {
   // (the compiler runs the checks again): there is no fallback to a shared or
   // internet-on Container. v8 M3: a box opens only while the room has a slot
   // for it (boxSlot).
-  async runChecks(id, input, files, plan, toolchains) {
+  // links: the bundle's symbolic links (path to target), which the box writes as links.
+  async runChecks(id, input, files, plan, toolchains, links=new Map()) {
     if(!this.env.BOXES)return {infrastructure:'BOXES binding unavailable: the validations run only in a fresh box with the internet off.'};
     // v8 live 5: the prewarmed box when it was opened for exactly this compile's spec.
     const warm=await this.boxPrewarm()?.take(compileBoxSpec(plan))??null;
@@ -4129,10 +4133,10 @@ export class ControlRoom extends DurableObject {
       return {infrastructure:warm.error};
     }
     const release=warm?.release||await this.boxSlot();
-    try {return await this.runChecksBox(id,input,files,plan,toolchains,warm);}
+    try {return await this.runChecksBox(id,input,files,plan,toolchains,warm,links);}
     finally {release();}
   }
-  async runChecksBox(id, input, files, plan, toolchains, warm=null) {
+  async runChecksBox(id, input, files, plan, toolchains, warm=null, links=new Map()) {
     let snapshot;
     try {snapshot=validateBoxFiles(files);}
     catch(error) {
@@ -4146,7 +4150,7 @@ export class ControlRoom extends DurableObject {
     let box=null;
     try {
       box=warm?.box||freshBox(this.env.BOXES);
-      const {box:opened,...report}=await box.compile(spec,{fingerprint:key,files:Object.fromEntries(snapshot),mode:'checks',plan,toolchains,limits:checkLimitsOf(this.settings())})||{};
+      const {box:opened,...report}=await box.compile(spec,{fingerprint:key,files:Object.fromEntries(snapshot),mode:'checks',plan,toolchains,limits:checkLimitsOf(this.settings()),...(links.size?{links:Object.fromEntries(links)}:{})})||{};
       // v8 live 8: the prewarmed box's Container had stopped before this compile took it: the checks run in a fresh box.
       if(warm&&report.prewarm_closed) {
         this.span('container','checks',start,Date.now(),{node:id,files:snapshot.size,box:{prewarmed:true},error:'the prewarmed box had stopped'});
@@ -9253,7 +9257,7 @@ export class ControlRoom extends DurableObject {
     // Clef judges each document, in parallel with the box.
     const judging=this.judgeRuns(id,runs,files,spec.contracts);
     const boxStart=Date.now();
-    const [judged,run]=await Promise.all([judging,container?this.runChecks(id,input,box,plan,toolchains):null]);
+    const [judged,run]=await Promise.all([judging,container?this.runChecks(id,input,box,plan,toolchains,bundle.links):null]);
     if(container)this.span('piece','piece_box',boxStart,Date.now(),{manager:id,depth,checks:plan.checks.length,files:files.size,compiled:plan.syntax.reduce((n,s)=>n+s.files.length,0),...(run?.infrastructure?{infrastructure:true}:{passed:!!run?.report?.passed})},id);
     for(const [vid,x] of judged)results.set(vid,x);
     // What Clef gave no answer for, whether the piece runs it: not run, as a check the box could not run is.

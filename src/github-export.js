@@ -4,7 +4,7 @@
 // every error. Only https://github.com and https://api.github.com are contacted.
 import { MemoryFS } from './memory-fs.js';
 import { clip, isPath } from './protocol.js';
-import { fileBytes, executable } from './zip.js';
+import { fileBytes, executable, symbolicLink } from './zip.js';
 
 const API = 'https://api.github.com', WEB = 'https://github.com';
 export const GITHUB_REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -81,7 +81,8 @@ const enc = new TextEncoder(), LOCAL = new Set(['write the files', 'commit']);
 // replaced by exactly the app's files (whatever was there is dropped). At the
 // repository root ('') the app is laid over the base instead, and a base file
 // it would change is a conflict, unless replace (onto_base: the app's changes
-// to that very commit) lets it change it, keeping its mode.
+// to that very commit) lets it change it, keeping its mode. A symbolic link
+// (mode 120000) is written as git stores one: its target is the blob.
 async function exportTree({ git, fs, dir, cache, baseTree, at, files, replace = false }) {
   const top = new Map(), conflicts = [];
   for (const f of files) {
@@ -101,9 +102,9 @@ async function exportTree({ git, fs, dir, cache, baseTree, at, files, replace = 
         if (old && old.type !== 'tree') { conflicts.push(path); continue; }
         out.set(name, { mode: '040000', path: name, type: 'tree', oid: await write(v, old?.oid, path + '/') });
       } else {
-        const oid = await git.writeBlob({ fs, dir, blob: fileBytes(v) }), mode = executable(v) ? '100755' : '100644';
-        if (old && replace && ['100644', '100755'].includes(old.mode)) { out.set(name, { ...old, mode: executable(v) ? '100755' : old.mode, oid }); continue; }
-        if (old) { if (old.oid !== oid || !['100644', '100755'].includes(old.mode)) conflicts.push(path); continue; }
+        const oid = await git.writeBlob({ fs, dir, blob: fileBytes(v) }), mode = symbolicLink(v) ? '120000' : executable(v) ? '100755' : '100644';
+        if (old && replace && ['100644', '100755'].includes(old.mode) && mode !== '120000') { out.set(name, { ...old, mode: executable(v) ? '100755' : old.mode, oid }); continue; }
+        if (old) { if (old.oid !== oid || (old.mode === '120000') !== (mode === '120000') || !['100644', '100755', '120000'].includes(old.mode)) conflicts.push(path); continue; }
         out.set(name, { mode, path: name, type: 'blob', oid });
       }
     }

@@ -202,11 +202,12 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),build=null,runner=()=>
     if(system.startsWith('You are the RUNNER')){calls.runner.push(user);return {response:runner(user,calls.runner.length)};}
     throw new Error('unexpected model request: '+system.slice(0,80));
   }};
-  const builds=[];
+  // builds.links: the symbolic links each box was given (path to target), beside its files.
+  const builds=[];builds.links=[];
   // v8: a level's validations (mode 'checks') run in the real verifyChecks,
   // with the network kept (isolation []: the tests' sandbox may refuse namespaces).
-  const exec=executor||{build:async({fingerprint,files,options,mode,plan,toolchains,limits})=>{builds.push(files);
-    return mode==='checks'?verifyChecks({mode,fingerprint,snapshot_hash:await snapshotHash(files),files,plan,toolchains,limits},{isolation:[]}):verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files,options});}};
+  const exec=executor||{build:async({fingerprint,files,options,mode,plan,toolchains,limits,links})=>{builds.push(files);builds.links.push(links||{});
+    return mode==='checks'?verifyChecks({mode,fingerprint,snapshot_hash:await snapshotHash(files),files,plan,toolchains,limits,...(links?{links}:{})},{isolation:[]}):verifyBuild({fingerprint,snapshot_hash:await snapshotHash(files),files,options});}};
   const pending=[],store=given||new Store(),sql=new Sql(),ctx={storage:{sql},waitUntil:p=>pending.push(p)};
   // Capability boxes S1: a v8 compile opens a fresh Box (the real class over
   // a fake Container) whose runner request goes to the same executor.

@@ -14,9 +14,11 @@ const UTF8 = 0x0800, VERSION = 10, MADE_BY = (3 << 8) | 20; // made on Unix, so 
 const DOS_TIME = 0, DOS_DATE = (1 << 5) | 1;                // 1980-01-01 00:00:00, the earliest DOS date
 const FILE_MODE = (0o100644 << 16) >>> 0;                   // regular file, rw-r--r--
 const EXEC_MODE = (0o100755 << 16) >>> 0;                   // v8 S8b: an executable base file keeps its bit
+const LINK_MODE = (0o120777 << 16) >>> 0;                   // a symbolic link: its target is its content
 // v8 S8b review: a file of an app is text (content), bytes (content as a
 // Uint8Array, or content_base64, as /api/app carries a file the room did not
-// build) and a git mode ('100755' for an executable file).
+// build) and a git mode ('100755' for an executable file, '120000' for a
+// symbolic link, whose content is its target).
 const utf8 = new TextEncoder();
 export function toBase64(bytes) {
   let s = '';
@@ -30,6 +32,7 @@ export function fromBase64(text) {
 }
 export const fileBytes = f => typeof f.content_base64 === 'string' ? fromBase64(f.content_base64) : typeof f.content === 'string' ? utf8.encode(f.content) : f.content;
 export const executable = f => f?.mode === '100755';
+export const symbolicLink = f => f?.mode === '120000';
 // A little-endian record: [offset, value, width 2 or 4].
 const record = (size, fields) => {
   const v = new DataView(new ArrayBuffer(size));
@@ -52,7 +55,7 @@ export function zipFiles(files) {
     locals.push(record(30, [[0, 0x04034b50, 4], [4, VERSION], [6, UTF8], [8, 0], [10, DOS_TIME], [12, DOS_DATE],
       [14, crc, 4], [18, n, 4], [22, n, 4], [26, name.length], [28, 0]]), name, data);
     central.push(record(46, [[0, 0x02014b50, 4], [4, MADE_BY], [6, VERSION], [8, UTF8], [10, 0], [12, DOS_TIME], [14, DOS_DATE],
-      [16, crc, 4], [20, n, 4], [24, n, 4], [28, name.length], [30, 0], [32, 0], [34, 0], [36, 0], [38, executable(f) ? EXEC_MODE : FILE_MODE, 4], [42, offset, 4]]), name);
+      [16, crc, 4], [20, n, 4], [24, n, 4], [28, name.length], [30, 0], [32, 0], [34, 0], [36, 0], [38, symbolicLink(f) ? LINK_MODE : executable(f) ? EXEC_MODE : FILE_MODE, 4], [42, offset, 4]]), name);
     offset += 30 + name.length + n;
     if (offset > 0xffffffff) throw new Error('ZIP: an archive over 4 GiB needs ZIP64');
   }

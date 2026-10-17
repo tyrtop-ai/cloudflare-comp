@@ -9,7 +9,7 @@
 // reads the Worker's bindings: `fetch` is passed in, and no request carries a
 // credential (src/fetcher.js, src/base.js).
 import {fetchGoalSources, fetchPolicy, chunkText, quoteSource, sanitizeText, sourceSummaries, goalUrls, SOURCE_CLAUSE} from './fetcher.js';
-import {fetchGithubRepo, parseRepoUrl, REPO_LIMITS, byteLength} from './base.js';
+import {fetchGithubRepo, parseRepoUrl, REPO_LIMITS, byteLength, LINK_MODE} from './base.js';
 import {boxPathError} from '../container/build-path.mjs';
 import {fromBase64} from './zip.js';
 
@@ -36,8 +36,10 @@ const clip = (v, n = 300) => String(v ?? '').slice(0, n);
 const ROOM_ID = /^[a-zA-Z0-9-]{8,64}$/;
 const SHORT_REPO = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
 const utf8 = new TextEncoder();
-export const modeOf = m => typeof m === 'number' ? (m & 0o111 ? 0o755 : 0o644) : m === '100755' ? 0o755 : 0o644;
-export const gitMode = m => (Number(m) & 0o111) ? '100755' : '100644';
+// A file's mode as stored (0o644, 0o755, or LINK_MODE for a symbolic link), from a tar or stored mode or a git one; and as git writes it.
+const isLink = m => m === '120000' || (typeof m === 'number' && (m & 0o170000) === LINK_MODE);
+export const modeOf = m => isLink(m) ? LINK_MODE : typeof m === 'number' ? (m & 0o111 ? 0o755 : 0o644) : m === '100755' ? 0o755 : 0o644;
+export const gitMode = m => isLink(Number(m)) ? '120000' : (Number(m) & 0o111) ? '100755' : '100644';
 export async function sha256Bytes(bytes) {
   return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(b => b.toString(16).padStart(2, '0')).join('');
 }

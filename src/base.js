@@ -24,6 +24,8 @@ const NAME = /^[A-Za-z0-9_.-]{1,100}$/;
 const clip = (v, n = 300) => String(v ?? '').slice(0, n);
 const utf8 = new TextEncoder();
 export const byteLength = s => utf8.encode(String(s)).length;
+// A symbolic link's mode, as git stores it (120000): its target is its content.
+export const LINK_MODE = 0o120000;
 
 // https://github.com/<owner>/<name>[.git][/] → {owner, name}, else null.
 export function parseRepoUrl(repo) {
@@ -101,7 +103,8 @@ function paxRecords(bytes) {
   return out;
 }
 
-// Calls onEntry({path, type, size, mode, read, skip}) for every member; the
+// Calls onEntry({path, type, size, mode, link, read, skip}) for every member
+// (link: a link's target, as the header or pax linkpath holds it); the
 // callback calls read() (bytes) or skip(). Global pax `comment` is the
 // commit sha that git archive records. Pax and GNU long-name headers apply
 // to the next real entry only. A bad header checksum, or input that ends
@@ -114,7 +117,7 @@ function checksumOk(h) {
   return parseInt(field(h, 148, 8).trim() || 'x', 8) === sum;
 }
 async function readTar(src, onEntry, meta = {sha: null}) {
-  let pax = {}, longName = null;
+  let pax = {}, longName = null, longLink = null;
   for (;;) {
     const h = await src.take(512);
     if (!h) throw ended();
@@ -130,16 +133,18 @@ async function readTar(src, onEntry, meta = {sha: null}) {
       if (!data) throw ended();
       const body = data.subarray(0, size);
       if (type === 'L') longName = field(body, 0, size);
+      else if (type === 'K') longLink = field(body, 0, size);
       else if (type === 'x') pax = paxRecords(body);
       else if (type === 'g') { const g = paxRecords(body); if (/^[0-9a-f]{40}$/.test(g.comment || '')) meta.sha = g.comment; }
       continue;
     }
     const ustar = field(h, 257, 5) === 'ustar', prefix = ustar ? field(h, 345, 155) : '';
     const path = pax.path || longName || (prefix ? `${prefix}/${field(h, 0, 100)}` : field(h, 0, 100));
-    pax = {}; longName = null;
+    const link = pax.linkpath || longLink || field(h, 157, 100);
+    pax = {}; longName = null; longLink = null;
     let used = false;
     const mode = (parseInt(field(h, 100, 8).trim() || '644', 8) || 0o644) & 0o7777;
-    await onEntry({path, type, size, mode,
+    await onEntry({path, type, size, mode, link,
       read: async () => { used = true; const d = await src.take(padded); if (!d) throw ended(); return d.subarray(0, size); },
       skip: async () => { used = true; if (!await src.skip(padded)) throw ended(); }});
     if (!used && !await src.skip(padded)) throw ended();
@@ -221,7 +226,8 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
       const segs = path.split('/');
       const gitAt = segs.indexOf('.git');
       if (gitAt >= 0) { const d = segs.slice(0, gitAt + 1).join('/') + '/'; if (!recorded.has(d)) { recorded.add(d); skip(d, '.git dropped'); } return; }
-      if (entry.type === '1' || entry.type === '2') return skip(path, 'link');
+      // A symbolic link is the project's as git holds it (mode 120000, its target the blob): carried with its target.
+      if (entry.type === '2') return out.passthrough.push({path, bytes: utf8.encode(entry.link), mode: LINK_MODE, reason: `a symbolic link to ${JSON.stringify(entry.link)}`});
       if (entry.type !== '0' && entry.type !== '\0' && entry.type !== '7') return skip(path, 'not a regular file');
       if (entry.size > L.maxFileBytes) return skip(path, `larger than one storage row holds (${L.maxFileBytes} bytes)`);
       const prior = sizes.get(path) ?? null;

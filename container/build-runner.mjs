@@ -1,5 +1,5 @@
 // Runs only inside the isolated Cloudflare build container.
-import {readFile,mkdir,writeFile,rm,mkdtemp,readdir,stat,cp,realpath,chmod} from 'node:fs/promises';
+import {readFile,mkdir,writeFile,rm,mkdtemp,readdir,stat,cp,realpath,chmod,symlink} from 'node:fs/promises';
 import {createHash,randomBytes} from 'node:crypto';
 import {tmpdir,hostname as osHostname} from 'node:os';
 import path from 'node:path';
@@ -717,8 +717,13 @@ function validateCheckPlan(raw) {
 // An install's env value: {$NAME} is NAME's value before it, and a list
 // one of them makes ends with no empty entry ('' is the current folder).
 const listed=(value,env)=>value.includes('{$')?value.replace(/\{\$(\w+)\}/g,(_,n)=>env[n]||'').split(':').filter(Boolean).join(':'):value;
-async function writeTree(dir,files) {
+// links: the bundle's symbolic links (path to target), each written as the link it is, after the files.
+async function writeTree(dir,files,links={}) {
   for(const [name,content] of Object.entries(files)){const target=path.join(dir,name);await mkdir(path.dirname(target),{recursive:true});await writeFile(target,content,'utf8');}
+  for(const [name,to] of Object.entries(links&&typeof links==='object'?links:{})){
+    if(typeof to!=='string'||boxPathError(name))throw Error('Unsafe file path '+name);
+    const at=path.join(dir,name);await mkdir(path.dirname(at),{recursive:true});await symlink(to,at);
+  }
 }
 
 // options: isolation (the network prefix, e.g. [] to keep the network),
@@ -747,7 +752,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
   const fresh=async label=>{
     const root=await realpath(await mkdtemp(path.join(scratch,label+'-')));
     const box={root,dir:path.join(root,'bundle'),tmp:path.join(root,'tmp')};
-    await mkdir(box.tmp);await mkdir(path.join(root,'pycache'));await writeTree(box.dir,files);
+    await mkdir(box.tmp);await mkdir(path.join(root,'pycache'));await writeTree(box.dir,files,request.links);
     box.env={...env,TMPDIR:box.tmp,TMP:box.tmp,TEMP:box.tmp,PYTHONPYCACHEPREFIX:path.join(root,'pycache')};
     box.dispose=()=>rm(root,{recursive:true,force:true});
     return box;
