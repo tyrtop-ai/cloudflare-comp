@@ -72,12 +72,6 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: Don't restrict what the code under test may do to its packages. If checks must not affect one another, give each check its own box or its own copy of the installed tree, rather than a read-only tree shared by all.
 - Status: The owner answered on 2026-10-17 (group 1: "the compilers are designed to have a seperate box so that the code runs can be verified... I'm not going to design for some 1% scenario"); this session's permission check still refused the edit in Auto mode, so it waits for the owner to switch the session to Accept edits. Earlier: not done: this session's permission check refused leaving the installed package tree writable for the code under test as a security weakening, so it waits for the owner's decision (a per-check copy would need each row's absolute paths rewritten).
 
-### R8-edges/chrono-1: A link written in a follow-up prompt (a change or a queued prompt) is never read: sources are fetched once, from the start prompt only
-- drift, `src/index.js:691`
-- Owner (2026-10-15 05:16 / 2026-10-15 05:21): 2. I want to be able to point this thing at links and benchmarks, like AI benchmarks || oh, and prompt adjustments. I want to be able to queue prompts instead of sending and forgetting
-- Required: Read the links of every prompt the room takes, follow-up changes and queued prompts included, the same way the start prompt's links are read, so that every prompt can point the room at links.
-- Status: in progress (owner, 2026-10-17: "see 2"): a follow-up prompt's links are being made readable. The owner answered on 2026-10-17 (group 3: "see 2"); this session's permission check still refused the edit in Auto mode, so it waits for the owner to switch the session to Accept edits. Earlier: not done: this session's permission check refused fetching the links of a follow-up or queued prompt as a security weakening, so it waits for the owner's decision (a ready patch is in the scratchpad: r8-edges-chrono1-refused.patch).
-
 ### R9-compiler/code-2: The box installs a granted npm package with --ignore-scripts, so a JavaScript or TypeScript package that needs its install script does not work in the check's box
 - extra, `src/toolchains.js:55`
 - Owner (2026-10-15 15:52): i mean the runtime should just make it architecturally impossible for the agents to do something. e.g. only exposing what they have access to so that the agents only know what they exist. otherwise for testing, they should just get their own little testing box instead of limiting what they can do
@@ -151,6 +145,12 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
 - Required: Let the box run and call code in whatever language the work is written in, rather than refusing contracts outside a fixed list. Drop the test that pins the refusal of those languages.
 - Fixed in: 32f6a3e, e4e09c5 (owner, 2026-10-17: "It needs the ability to create C#. OR at least have the splitter install the ability for C#"): a row the image lacks carries its own toolchain install, which the box runs in its install stage (network on) when a level uses that row. C# (Mono) has syntax, command, HTTP and call checks (a C# call adapter with the same protocol); JSX/TSX (esbuild) has syntax, command and HTTP checks. Left out: Kotlin and Swift, whose toolchains have files over the box's 64 MiB file-size cap (R6-compiler/chrono-1, waiting on the owner), and Swift has no Debian package; a JSX/TSX function contract is refused because no call adapter exists.
+
+### R8-edges/chrono-1: A link written in a follow-up prompt (a change or a queued prompt) is never read: sources are fetched once, from the start prompt only
+- drift, `src/index.js:691`
+- Owner (2026-10-15 05:16 / 2026-10-15 05:21): 2. I want to be able to point this thing at links and benchmarks, like AI benchmarks || oh, and prompt adjustments. I want to be able to queue prompts instead of sending and forgetting
+- Required: Read the links of every prompt the room takes, follow-up changes and queued prompts included, the same way the start prompt's links are read, so that every prompt can point the room at links.
+- Fixed in: 09f3cab (owner, 2026-10-17: "see 2"): the links of every prompt the room takes are read (the start prompt, a change, a queued prompt); a link an earlier prompt had stays its source, new ones are the next S<n>, the readers' turns count against the run that takes the prompt up, and the change carries its links' chunks to the row it is routed to.
 
 ### R8-edges/chrono-3: A linked page behind more than 3 redirects is refused: an invented hop count, pinned by a test
 - extra, `src/fetcher.js:22`
