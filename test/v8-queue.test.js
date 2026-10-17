@@ -214,7 +214,7 @@ test('queue: add, edit, reorder and remove change only queued prompts; a stale r
   const {room, drain} = docRoom();
   // Before a run: prompts wait for one.
   const a = (await room.addPrompt('first follow-up prompt')).prompt, b = (await room.addPrompt('second follow-up prompt')).prompt, c = (await room.addPrompt('third follow-up prompt')).prompt;
-  assert.equal((await room.addPrompt('short')).error, 'A prompt must have at least 8 characters');
+  assert.equal((await room.addPrompt('   ')).error, 'An empty prompt has nothing to apply');
   assert.deepEqual(states(room).map(x => x[0]), ['first follow-up prompt', 'second follow-up prompt', 'third follow-up prompt']);
   assert.equal(room.editPrompt(b.id, {text: 'second prompt, edited', version: 0}).prompt.text, 'second prompt, edited');
   assert.equal(room.editPrompt(b.id, {text: 'an edit from a stale read', version: 0}).status, 409);
@@ -341,7 +341,8 @@ test('routes: /api/amend and /api/prompts reach the room with their bodies',asyn
 test('helpers: the effective goal, prompt texts and reorders',()=>{
   assert.equal(effectiveGoal('Build it.',['add a README','also kelvin']),'Build it.\n\nChange 1: add a README\n\nChange 2: also kelvin');
   assert.equal(promptText('  padded prompt  ').text,'padded prompt');
-  assert.ok(promptText('x').error);
+  assert.equal(promptText('x').text,'x','a prompt is taken however short');
+  assert.ok(promptText('  ').error,'an empty one has nothing to apply');
   assert.equal(reorderError(['a','b'],['b','a']),'');
   assert.ok(reorderError(['a','b'],['a']));
   assert.ok(reorderError(['a','b'],['a','a']));
@@ -358,6 +359,19 @@ test('review: a prompt queued before a v7 Start is skipped, saying why',async()=
   assert.match(p.outcome.error,/v7 pipeline/);
 });
 
+
+// R5-room/chrono-1, chrono-2: the dashboard gets every prompt (no row window), so the whole queue can be seen and reordered; a short prompt is queued as written.
+test('the dashboard gets the whole queue, however long, and a reorder of all of it applies; a short prompt is queued',async()=>{
+  const {room}=docRoom();
+  const ids=[];
+  for(let i=0;i<70;i++)ids.push((await room.addPrompt(`p${i}`)).prompt.id);
+  assert.equal((await room.addPrompt('fix it')).prompt.text,'fix it');
+  ids.push(room.promptRows("text='fix it'")[0].id);
+  assert.deepEqual(room.promptsHead().prompts.map(p=>p.id),ids);
+  assert.deepEqual(room.snapshot().prompts.map(p=>p.id),ids);
+  const back=[...ids].reverse();
+  assert.deepEqual(room.reorderPrompts(back).prompts.map(p=>p.id),back);
+});
 
 test('review: the queue takes every prompt as the person writes it (no count, prompt length or goal length refuses one); an edit carries its version; a budget that is no budget is a 400',async()=>{
   const {room,drain}=docRoom();
