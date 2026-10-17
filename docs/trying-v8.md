@@ -58,7 +58,7 @@ In the **Benchmarks** panel:
 - **Grading:** a failed grade goes back into the room as a complaint, like anything else, and the room works on it until the task passes or its budget is spent.
 - Use the same model pickers and turn budget as for the rooms above.
 
-Press **Run benchmark**. It keeps going with the page closed. A task room is an ordinary room whose prompt is the task's prompt: for most HumanEval tasks Clef's pre-grade should keep the level whole, so one worker writes the function. A task's outcome is what the room and the grader observed: graded (passed or failed), or a failure when the room failed, held or ran out of turns. A task that was stopped, whose room stopped with an error, or whose grader could not run is counted apart from the scored ones.
+Press **Run benchmark**. It keeps going with the page closed. A task room is an ordinary room whose prompt is the task's prompt: for most HumanEval tasks Clef's pre-grade should keep the level whole, so one worker writes the function. A task's outcome is what the room and the grader observed: graded (passed or failed), or a failure when the room failed, held or ran out of turns. A task that was stopped, or whose room stopped with an error, is counted apart from the scored ones. A grading that could not run is no grading: the room is graded again until one observes it.
 
 ## 5. What to send back
 
