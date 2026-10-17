@@ -4,12 +4,12 @@ Owner, 2026-10-16: "throw out the fucking card writer. You're too attached to th
 
 ## Roles (binding)
 
-- **manager:** the router. It owns its children's interfaces (contracts) and the validations it holds, as a file in its repo. It never writes deliverable code.
-- **worker:** writes code. It is the only role that does.
+- **manager:** the router. It owns its children's interfaces (contracts) and the validations it holds, as a file in its repo. It never writes code (owner, 2026-10-16 05:16: "the manager NEVER writes code"). It writes files, such as that one (owner, 2026-10-16 05:17: "managers have to write files").
+- **worker:** writes code. It is the only agent that does (owner, 2026-10-16 05:21: "worker - writes code. only agent that writes code").
 - **splitter:** splits its manager's assignment into smaller pieces, and builds that level's validations as contracts.
 - **builder:** writes the glue between the workers' interfaces, and may rename interface names.
 - **compiler:** makes sure the joined code works: the box, the syntax step, the validations.
-- **No prompt handler.** Owner: "why do we need a prompt handler anymore? we have a dedicated splitter". The room creates the top manager's row; the room is the boundary with the person and the end of every line. Queued prompts and amendments go straight to the top manager as changes on its row.
+- **No prompt handler.** Owner: "why do we need a prompt handler anymore? we have a dedicated splitter?" The room creates the top manager's row; the room is the boundary with the person and the end of every line. Queued prompts and amendments go straight to the top manager as changes on its row.
 
 ## Flow (the same at every level)
 
@@ -19,7 +19,7 @@ Owner, 2026-10-16: "throw out the fucking card writer. You're too attached to th
    - `contracts`: what this level delivers. At the top these are the deliverables. Below the top, they are the manager's own contracts (given by its parent's splitter), possibly refined: a path or names chosen, examples added.
    - `validations`: runnable checks (the existing check kinds: call/command/http/browser/file) for this level's contracts, each with `serves`. A contract of kind command/route/page carries how it runs (argv, port or static), the way `card.run` did.
    - `pieces`: `{label, task, contracts: [the names it delivers]}`. They are empty only when the pre-grade hands the level down whole (step 2). Otherwise the splitter always proposes a division, and only Clef's review decides whether it is valid (owner: "the idea is that manager always attempts to flip, and then clef is supposed to decide if that was a valide split"; "literally every manager tries to split, model can retry twice with different split parameter").
-4. **Clef validates each division in one call, and never deletes.** Over the original assignment with its contracts and the pieces as written, it asks only `split_valid` (is this a valid division, without going too small) and `split_size` (owner, 2026-10-15: "here's the original model / here's the pieces / is this valid? (without going too small)"; "why is clef doubting requirements for the code"). There is no review when the level has no pieces. Retry parameters depend on the objection.
+4. **Clef validates each division in one call, and never deletes.** Over the original assignment with its contracts and the pieces as written, it asks only `split_valid` (is this a valid division, without going too small) and `split_size` (owner, 2026-10-16 05:12: "here's the original model / here's the pieces / is this valid? (without going too small)"; owner, 2026-10-15 20:28: "why is clef doubting requirements for the code"). There is no review when the level has no pieces. Retry parameters depend on the objection.
 5. **The splitter writes through typed functions.** Each function's result says what it stored, or exactly why it can't (its own argument checks). The runtime never repairs, reinterprets or matches what the splitter wrote, and there are no path rules or blocklists (owner, 2026-10-16: "The splitter should be given interfaces and then write via those interfaces. That's it").
 6. **The manager admits the result.** It writes its contracts file (its children's contracts with their validations; the DO row indexes the file by commit).
    - **The proposal splits:** each piece becomes a `manager-<hex16>`, with its contracts on its row.
