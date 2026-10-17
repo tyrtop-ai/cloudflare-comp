@@ -678,7 +678,7 @@ test('v8 S8b review: the Sources panel marks an unverified previous result and c
 
 // v8 S9: the Prompts panel beside the goal box.
 test('v8 S9: the Prompts panel lists each prompt with its state; only queued ones can be edited, moved, skipped or removed',()=>{
-  assert.match(html,/<option value="v8">v8 \(experimental\) · levels, validations, any language<\/option>/);
+  assert.match(html,/<option value="v8">v8 \(experimental\) · levels, validations, the box's languages<\/option>/);
   assert.ok(html.indexOf('id="goal"')<html.indexOf('id="prompts-box"')&&html.indexOf('id="prompts-box"')<html.indexOf('id="start-from"'),'beside the goal box');
   const prompts=[{id:'a',text:'add a <README>',status:'done',kind:'queued',goal_rev:2,outcome:{passed:true}},{id:'b',text:'also support kelvin',status:'running',kind:'adjust',goal_rev:3,outcome:{}},
     {id:'c',text:'queued one',status:'queued',kind:'queued',outcome:{}},{id:'d',text:'queued two',status:'queued',kind:'queued',outcome:{}},{id:'e',text:'skipped one',status:'skipped',kind:'queued',outcome:{}}];

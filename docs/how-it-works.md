@@ -14,7 +14,7 @@ This is an entry for Cloudflare's "build the next GitHub" competition, which ask
 
 > **Status:** this is v7.15.14. Every live run up to run8 used v7.13.x or earlier; run9 to run23 used v7.15. Run16, on v7.15.8, is the first live run in which the composed system produced a correct, verified application: complete in 3.9 minutes, in one round, with the runner's test passing. See [Status](#status) and the changelogs for [v7.15](../CHANGELOG-v7.15.md), [v7.14](../CHANGELOG-v7.14.md) and [v7.13](../CHANGELOG-v7.13.md).
 >
-> **v8** is a second pipeline, chosen per room. It has no Root: every manager is the same Clef router, every manager's splitter declares its level's contracts and validations through functions and Clef reviews the split, only workers write code, in any language the box has installed, and each level's compiler runs the validations in a fresh box. It is tested offline with scripted models and has had live runs. v7 is still the default. See [v8 (experimental)](#v8-experimental).
+> **v8** is a second pipeline, chosen per room. It has no Root: every manager is the same Clef router, every manager's splitter declares its level's contracts and validations through functions and Clef reviews the split, only workers write code (the box runs a fixed set of languages, the ones its image installs; the owner's "Any code type" is waiting on the owner), and each level's compiler runs the validations in a fresh box. It is tested offline with scripted models and has had live runs. v7 is still the default. See [v8 (experimental)](#v8-experimental).
 
 ## The idea
 
@@ -325,7 +325,7 @@ Linking is the one place where independent work meets, which makes it the natura
 
 ## v8 (experimental)
 
-Everything above describes v7, and v7 builds one kind of thing: a JavaScript module graph whose entry exports `start()`, tested by a script a model writes after the code exists. v8 builds what the prompt asks for, in whatever language the work is written in, and checks it against validations its splitters write before any code exists.
+Everything above describes v7, and v7 builds one kind of thing: a JavaScript module graph whose entry exports `start()`, tested by a script a model writes after the code exists. v8 builds what the prompt asks for, in the languages the box runs, and checks it against validations its splitters write before any code exists. The box runs a fixed set of languages, the ones its image installs (JavaScript, TypeScript, Python, shell, Go, Rust, C, C++, Java, Ruby and PHP). A contract in a language of that set whose tool the box lacks is refused when the splitter declares it, and so is a function contract in a file the box has no call adapter for. The owner's "Any code type" is not met yet and is waiting on the owner.
 
 v8 keeps the recursive idea: a tree of small agents, decomposition and recomposition one level at a time, each agent in its own repository. Its rules are the owner's, recorded in [owner/rulings.md](owner/rulings.md) (the owner's own words are in [owner/prompts.md](owner/prompts.md)):
 
@@ -372,7 +372,7 @@ v8 is a room setting: **Pipeline** in the dashboard, or `settings.pipeline: "v8"
    - When nothing split, one `worker-<hex16>` gets the manager's whole assignment and contracts.
    - Each validation is held by the lowest manager whose subtree delivers everything it serves.
 
-   The level file is the design artifact. The builder places files by it, and every change to the level (an admitted extension or rebuild, whose contracts replace the file's entries of the same name; a new validation of a contract it lists joining that contract's serves, from its own level or one above; an archive) is a new commit of it. The manager routes without reading it.
+   The level file is the design artifact. The builder places files by it, and every change to the level (an admitted extension or rebuild, whose contracts replace the file's entries of the same name; a new validation of a contract it lists joining that contract's serves, from its own level or one above; an archive) is a new commit of it. The manager routes on its level file's children: their labels and the contracts each delivers, the interfaces it owns. It does not read the piece prompts its splitter wrote; the builder and the workers read those.
 6. **A worker gets its prompt, and nothing about the structure.** Its session's message holds:
    - its prompt: its task, each thing to deliver under its name and path with every example rendered from the validations that serve it, and each contract it may call as declared (its name, kind, path, what it does, its inputs, outputs and effects), from which it writes its own reference;
    - the paths of its own files;
@@ -453,7 +453,7 @@ A finished room can take more work without starting over. The **Prompts** panel 
 ### Benchmark mode
 
 The **Benchmarks** panel and `POST /api/bench` run a dataset of coding tasks, one v8 room per task:
-- **Datasets.** HumanEval, MBPP, MultiPL-E (in whatever language a task is written), or plain `{id, prompt, tests}` JSON lines, either pasted or fetched from any host `FETCH_ALLOW` allows (a JSON lines file, or Hugging Face's datasets server).
+- **Datasets.** HumanEval, MBPP, MultiPL-E (a task in a language the box runs; the owner's "Any code type" is waiting on the owner), or plain `{id, prompt, tests}` JSON lines, either pasted or fetched from any host `FETCH_ALLOW` allows (a JSON lines file, or Hugging Face's datasets server).
 - **A task room is an ordinary room.** Its prompt is the task's own prompt (for HumanEval, the signature and the docstring). Its splitters write that level's validations from it like any other, with three different examples per function, and the room works against its own validations. There are no hidden tests inside a room.
 - **The grader is outside the room, and its grade goes back until done.** When a task room completes, the `BenchRun` grades the bundle it ships, in a fresh box of its own, with the benchmark's tests. A failed grade goes back into the room, verbatim, as a complaint to the manager the room created, like anything else; the room works on it, and the run grades again each time the room completes, until the task passes or the room's turn budget is spent.
 - **Scheduling.** A `BenchRun` Durable Object drives the rooms on alarms, so a run continues with the page closed. At most **Rooms at once** run together, capped by `BENCH_EXECUTORS`. Each compile of a task room runs in its own fresh box, so no two tasks share one. Rooms that passed are deleted by default; the others are kept so you can look at them.

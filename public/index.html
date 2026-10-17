@@ -95,7 +95,7 @@
           <label for="pipeline">Pipeline (fixed when a room starts)</label>
           <select id="pipeline">
             <option value="v7">v7 · runtime start() contract and runner test (default)</option>
-            <option value="v8">v8 (experimental) · levels, validations, any language</option>
+            <option value="v8">v8 (experimental) · levels, validations, the box's languages</option>
           </select>
           <div class="range-control"><label for="split-threshold">Minimum YES probability <output id="split-threshold-value" for="split-threshold">70%</output></label>
             <input id="split-threshold" type="range" min="20" max="80" step="5" value="70" /></div>
@@ -161,7 +161,7 @@
           <div class="bench-form">
             <label for="bench-url">Dataset URL <span class="faint">(a JSON lines file, or a datasets-server.huggingface.co rows URL, on any host FETCH_ALLOW allows)</span></label>
             <input id="bench-url" class="mono" spellcheck="false" autocomplete="off" placeholder="https://datasets-server.huggingface.co/rows?dataset=openai%2Fopenai_humaneval&amp;config=openai_humaneval&amp;split=test" />
-            <label for="bench-text">Or paste or upload JSON lines <span class="faint">(HumanEval, MBPP, MultiPL-E in any language, or {"id", "language", "prompt", "tests"})</span></label>
+            <label for="bench-text">Or paste or upload JSON lines <span class="faint">(HumanEval, MBPP, MultiPL-E in a language the box runs, or {"id", "language", "prompt", "tests"})</span></label>
             <textarea id="bench-text" class="mono bench-text" rows="3" spellcheck="false" placeholder='{"id": "t1", "language": "python", "prompt": "Write a function triple(n)…", "entry": "triple", "tests": "assert triple(2) == 6"}'></textarea>
             <input id="bench-file" type="file" accept=".jsonl,.json,.txt,application/json" aria-label="Upload a JSON lines file" />
             <div class="bench-row">
@@ -175,7 +175,7 @@
               <option value="all">Keep every room</option>
               <option value="none">Delete every room once it is scored</option>
             </select>
-            <p class="helper" id="bench-slots">Rooms at once is capped by the deployment's Container slots: each room builds on one executor of the run's pool.</p>
+            <p class="helper" id="bench-slots">Rooms at once is capped by the deployment's BENCH_EXECUTORS setting. Each compile of a task room runs in its own fresh box.</p>
             <button class="primary" id="bench-start" title="Run the benchmark">Run benchmark <span>↗</span></button>
             <p class="helper">Each task gets its own room, started from the task's prompt as the benchmark wrote it. When a room completes, the run grades what it ships with the benchmark's tests, in a box of its own, wherever the room put the function. The tests stay in that box; until done, what the grader observed goes back to the room. The run goes on with this page closed. The turn budget is the one above; it bounds each room across all its rounds.</p>
           </div>
