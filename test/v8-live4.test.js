@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { liveRoom, events, rowId } from './helpers/room.js';
 import { installedPackages, installedLine, stdlibHints, heldForNeed, heldByName, packageLanguage, languageAnswer, missingModule, piecePackages } from '../src/packages.js';
 import { catalogue } from '../src/broker.js';
-import { MESSAGES, BROKER_LABEL } from '../src/prompts.js';
+import { MESSAGES } from '../src/prompts.js';
 import { TOOLCHAINS } from '../src/toolchains.js';
 const TOP = await rowId('v714-test', 1, 'manager');
 const BACKEND = await rowId(TOP, 1, 'manager');
@@ -137,7 +137,7 @@ test('2: the room\'s manager is created with the installed set; a v7 room\'s row
   assert.deepEqual(v7.room.catalogue('root'), []);
 });
 
-test('2: an ask by a package\'s name goes up its line: a row that holds it grants it; a name no row holds is the language\'s, or a contract ask', async () => {
+test('2: a package name a split gives or a run could not find (packageAsk) goes up its line: a row that holds it grants it; a name no row holds is the language\'s, or none; a worker\'s ask by such a name goes to its manager', async () => {
   const {room} = liveRoom({});
   room.save('settings', {...room.settings(), pipeline: 'v8'});
   const pytest = {name: 'pytest', language: 'python', provides: 'tests'}, requests = {name: 'requests', language: 'python', provides: 'HTTP client'};
@@ -164,10 +164,10 @@ test('2: an ask by a package\'s name goes up its line: a row that holds it grant
   assert.ok(!room.packagesOf(SERVER).some(p => p.name === 'socket'));
   // A name no row holds and no language answers: no package answer, so the ask goes on as a contract ask.
   assert.equal(room.packageAsk(SERVER, {name: 'matplotlib', need: 'draw charts'}), null);
-  assert.equal(room.askKind(SERVER, 'matplotlib', 'draw charts').kind, 'contract');
-  // A worker's control-block ask is answered as a labelled broker answer, never dropped.
+  // A worker's ask by a package's name is its manager's (its grant), never the runtime's.
   room.db().exec("UPDATE agents SET phase='implement' WHERE id=?", SERVER);
-  assert.equal(room.askKind(SERVER, 'flask', 'the web framework').kind, 'package');
-  assert.equal(room.brokerAnswer(SERVER, {key: 'fn flask', name: 'flask', question: 'the web framework'}), true);
-  assert.equal(room.read(`fn_answers:${SERVER}`, []).at(-1).text.label, BROKER_LABEL.package);
+  for (const name of ['matplotlib', 'flask']) {
+    assert.equal(room.askKind(SERVER, name).kind, 'contract');
+    assert.equal(room.brokerAnswer(SERVER, {key: `fn ${name}`, name, question: 'the web framework'}), false);
+  }
 });

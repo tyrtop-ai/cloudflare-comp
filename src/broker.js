@@ -1,18 +1,19 @@
 // Capability boxes S5 (design/next/capability-boxes.md §5): the broker's
-// pure parts. The broker is the one path from an agent to anything outside
-// its own part: another part's contract, a chunk of a page the goal links
-// to, a file of the project the run starts from. An agent reads its
-// catalogue (the view's `available`), the only names it is shown, and asks
-// by name in its control block. The room classifies each name, answers it
-// from what the room holds, and the answer reaches the agent in
-// answered_requests, labelled with where it comes from. A name outside the
-// catalogue hears the one wording for absence, which names only what the
-// catalogue holds.
+// pure parts. The broker is what a v8 worker's ask function returns for a
+// name its own world holds: a chunk of a page the goal links to, or a file
+// of the project the run starts from. A worker reads its catalogue (the
+// view's `available`), the names it is shown, and calls ask with one. The
+// room classifies the name and answers it from what the room holds, in the
+// ask's result and among the worker's answers from then on, labelled with
+// where it comes from. A name outside the catalogue hears the one wording
+// for absence, which names only what the catalogue holds; anything else
+// goes to the asker's manager.
 //
 // The room (src/index.js) holds the state and the methods; this file holds
 // the shapes, the classification and the answer shaping. No kind here runs
-// code or reaches the network: url, run and package come with their boxes
-// (§5.5), and until then the catalogue never lists them.
+// code or reaches the network: url and run come with their boxes (§5.5),
+// and until then the catalogue never lists them. A package it lists is one
+// the worker's row holds.
 import {MESSAGES, BROKER_LABEL} from './prompts.js';
 import {sanitizeText} from './fetcher.js';
 
@@ -117,5 +118,5 @@ export function noneText(name, cat = []) {
 export const packageAnswer = ({id, name, text}) => shapeAnswer({id, name, kind: 'package', label: BROKER_LABEL.package, value: text});
 export const noneAnswer = ({id, name, catalogue: cat = []}) =>
   shapeAnswer({id, name, kind: 'none', status: 'none', label: BROKER_LABEL.none, value: noneText(name, cat)});
-// An answer as answered_requests carries it: {name, label, value, next?, facts?}.
+// An answer as the worker's answers carry it: {name, label, value, next?, facts?}.
 export const viewAnswer = a => ({name: a.name, label: a.label, value: a.value, ...(a.next ? {next: a.next} : {}), ...(a.facts ? {facts: a.facts} : {})});

@@ -6363,26 +6363,20 @@ export class ControlRoom extends DurableObject {
     const items=this.allNodes().flatMap(n=>parse(n.interfaces,[]));
     return new Set(items.flatMap(c=>[c?.name,c?.path]).filter(x=>typeof x==='string'&&x));
   }
-  // What one ask is (broker.js classify): a contract goes on to today's
-  // routing (askManager); a chunk, an existing file, or a name outside the
-  // catalogue is answered here. v8 live 4 review (H2): an ask is a package's
-  // by its name alone, when its line or its language answers that name
-  // (resolvePackage); its need's words never divert it.
-  askKind(id, name, need='') {
+  // What one ask is (broker.js classify): a chunk or an existing file its
+  // world holds, or a name outside its catalogue, is answered here; anything
+  // else (a contract, a package, a need with no name) goes to its manager.
+  askKind(id, name) {
     if(!this.v8())return {kind:'contract',name:name||''};
-    const contracts=this.contractNames();
-    if(name&&!contracts.has(name)&&!this.basePaths().has(name)&&this.resolvePackage(id,{name,need}))return {kind:'package',name};
-    return classifyAsk(name||'',{catalogue:this.catalogue(id),base:this.basePaths(),contracts});
+    return classifyAsk(name||'',{catalogue:this.catalogue(id),base:this.basePaths(),contracts:this.contractNames()});
   }
-  // Answers one ask that needs no other part, with no manager hop (§5.3): a
-  // [route:broker] message wakes the writer, whose next turn reads the answer
-  // in answered_requests. false: a contract, for askManager.
-  // message false: the answer is the ask function's result, so no message wakes the asker.
-  brokerAnswer(id, ask, {message=true}={}) {
+  // Answers one ask that its own world answers, with no manager hop (§5.3):
+  // the answer is the ask function's result, and is recorded among its
+  // answers. false: one for its manager (and every ask under v7).
+  brokerAnswer(id, ask) {
     if(!this.v8())return false;
-    const cat=this.catalogue(id),c=this.askKind(id,ask.name,ask.question);
+    const cat=this.catalogue(id),c=this.askKind(id,ask.name);
     if(c.kind==='contract')return false;
-    if(c.kind==='package')return !!this.answerPackageAsk(id,{name:ask.name||'',need:ask.question||'',key:ask.key,wake:message});
     const req=brokerRequest({from:id,kind:c.kind,name:c.name,need:ask.question});
     let answer=null;
     if(c.kind==='source') {
@@ -6393,7 +6387,6 @@ export class ControlRoom extends DurableObject {
       if(row)answer=baseAnswer({id:req.id,path:row.path,content:row.content,own:this.designOf(id).contracts.some(x=>x?.path===row.path)});
     }
     answer||=noneAnswer({id:req.id,name:ask.name||c.name,catalogue:cat});
-    if(message)this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:broker',id,'[route:broker] '+JSON.stringify({id:req.id,key:ask.key,kind:answer.kind,status:answer.status}));
     this.recordAnswer(id,{key:ask.key,kind:'broker',text:viewAnswer(answer)});
     this.event(id,'broker_answer',clip(answer.status==='answered'?`${answer.name}: ${answer.kind}, ${answer.value.length} characters, labelled "${answer.label}".`:`${answer.name}: no catalogue entry; answered with the names available.`,400));
     return true;
@@ -6408,8 +6401,9 @@ export class ControlRoom extends DurableObject {
   // it, and a third party's name by the standard library modules that
   // provide what it stands for (stdlib_provides). Under packages 'allowed',
   // a third party's name is the person's to allow and is not redirected,
-  // as before live 4. null: no row and no language answers it, so a
-  // control-block ask goes on to the contract path. failure: a run that
+  // as before live 4. null: no row and no language answers it. Its callers
+  // are a split's package names and a run's missing module (a worker's ask
+  // goes to its manager, whose grant gives a package). failure: a run that
   // could not find the module (missing_module), so a row holding it by name
   // does not answer. {how: 'yours'|'granted'|'language', at, line, hits,
   // names, need}.
@@ -6452,9 +6446,9 @@ export class ControlRoom extends DurableObject {
     }
     return {how:'language',names:r.names,text:r.stdlib?MESSAGES.package_stdlib({name}):MESSAGES.package_language({need:r.need,names:r.names.join(', '),many})};
   }
-  // A worker's package ask (its control block's, a split's name its
-  // parent's row does not list, or a run's missing module): answered like a
-  // broker answer, labelled, in answered_requests, with a message that wakes it.
+  // A package name a split gives that its parent's row does not list, or a
+  // run's missing module: answered like a broker answer, labelled, among the
+  // worker's answers, with a message that wakes it.
   answerPackageAsk(id, {name='', need='', key='', wake=true, failure=false}={}) {
     const a=this.packageAsk(id,{name,need,failure});
     if(!a)return null;
@@ -6465,8 +6459,9 @@ export class ControlRoom extends DurableObject {
     this.event(id,'package_answer',clip(`${answer.name}: ${a.how==='yours'?'in its own packages':a.how==='granted'?`granted ${a.names.join(', ')}`:`its language provides ${a.names.join(', ')}`}.`,400));
     return a;
   }
-  // The answers a worker got to its function requests, one per topic;
-  // later turns read them as answered_requests (v7 keeps the newest 8).
+  // The answers a worker got to its asks, one per topic: a v8 worker's view
+  // carries every one, whole, as its answers; a v7 turn reads the newest 8
+  // as answered_requests.
   recordAnswer(worker, answer) {
     const key=`fn_answers:${worker}`,all=[...this.read(key,[]).filter(a=>a.key!==answer.key),answer];
     this.save(key,this.v8()?all:all.slice(-8));
@@ -8936,6 +8931,9 @@ export class ControlRoom extends DurableObject {
     if(item.kind==='ask') {
       const line=view.children.find(c=>this.within(item.worker,c.id)),seen=new Set();
       for(const c of view.children)if(c!==line)for(const k of c.contracts)if(!seen.has(k.name)){const j=seen.size;seen.add(k.name);out.push({fn:'answer',contract:k,key:`answer_${j}`,question:clefText('answer',{j}),call:`answer(${k.name})`});}
+      // Each package its row holds that the asker's does not: grant gives it down the asker's line.
+      const held=new Set(this.packagesOf(item.worker).map(p=>p.name));
+      this.packageView(m).filter(p=>!held.has(p.name)).forEach((p,j)=>out.push({fn:'grant',package:p,key:`grant_${j}`,question:clefText('grant',{j}),call:`grant(${p.name})`}));
       out.push({fn:'extend',key:'extend',question:CLEF.extend_ask,call:'extend(need)'},{fn:'ask_parent',key:'ask_parent',question:CLEF.ask_parent,call:'ask_parent(need)'});
       return out;
     }
@@ -8956,12 +8954,13 @@ export class ControlRoom extends DurableObject {
     if(!options.length)return null;
     const lines=cs=>cs.map(contractLine),named=n=>{const c=view.contracts.find(x=>x.name===n);return c?contractLine(c):n;};
     const wrote=c=>[...new Set((item.parties||[]).filter(x=>x.owner&&this.within(x.owner,c.id)).map(x=>x.owner_path||x.path).filter(Boolean))];
-    const offered=options.filter(o=>o.fn==='answer');
+    const offered=options.filter(o=>o.fn==='answer'),granted=options.filter(o=>o.fn==='grant');
     const state={item:item.kind==='ask'?{kind:'ask',need:item.need,expected_name:item.name||''}:{kind:item.kind,text:item.text,
         ...(item.kind==='complaint'?{concerns:{contracts:(item.serves||[]).map(named),files:[...new Set((item.parties||[]).map(x=>x.owner_path||x.path).filter(Boolean))]}}:{})},
       assignment:view.assignment,my_contracts:lines(view.mine),
       children:view.children.map((c,i)=>({slot:i,label:c.label,task:c.task,contracts:lines(c.contracts),...(item.kind==='complaint'?{wrote:wrote(c)}:{})})),
       ...(offered.length?{contracts_offered:offered.map((o,j)=>({slot:j,contract:contractLine(o.contract)}))}:{}),
+      ...(granted.length?{packages_offered:granted.map((o,j)=>({slot:j,package:packageLine(o.package)}))}:{}),
       options:options.map(o=>o.call)};
     const what=item.kind==='ask'?`the ask for ${item.name||`"${clip(item.need,120)}"`}`:`the ${item.kind}`;
     let ps=[null];
@@ -9047,9 +9046,9 @@ export class ControlRoom extends DurableObject {
   }
   // ---------- asks ----------
   // An ask a worker sent (workerAsk), held by manager m: m's choice answers
-  // it with a contract its children deliver, extends its level with what
-  // gives it (its splitter; finishLevel answers the asker), or asks its own
-  // parent the same. At the room (the parent of the manager it created), an
+  // it with a contract its children deliver, grants it a package m's row
+  // holds, extends its level with what gives it (its splitter; finishLevel
+  // answers the asker), or asks its own parent the same. At the room (the parent of the manager it created), an
   // ask no manager up to it holds archives the asker with its subtree, and
   // its manager's splitter rebuilds what it delivered (rebuildOrphans).
   async routeAsk(m, ask) {
@@ -9060,6 +9059,7 @@ export class ControlRoom extends DurableObject {
     const pick=await this.managerChoice(m,{kind:'ask',worker:ask.worker,need:ask.need,name:ask.name||''},held);
     if(!pick)return;
     if(pick.fn==='answer')return this.answerAsk(ask,pick.contract);
+    if(pick.fn==='grant')return this.grantPackage(m,ask,pick.package);
     if(pick.fn==='extend') {
       this.save(`level_job:${m}`,{kind:'extend',key:ask.key,text:ask.need,label:clip(ask.name||ask.need,60),own:[],ask});
       this.event(m,'level_extend',clip(`"${this.node(m)?.label||m}" hands ${want} to its splitter, which extends the level.`,500),ask.worker);
@@ -9091,12 +9091,28 @@ export class ControlRoom extends DurableObject {
         await this.amendEntry(x,e=>({calls:[...new Set([...e.calls,c.name])]}));
       }
     }
-    const value=text||MESSAGES.provided({contract:contractLine(c),reference:this.referenceLine(c.name,c,n.id)});
-    this.db().exec('DELETE FROM route_workers WHERE worker=? AND topic=?',n.id,ask.key);
-    this.recordAnswer(n.id,{key:ask.key,kind:'provided',text:value});
-    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:route',n.id,'[route:provided] '+JSON.stringify({id:ask.request_id||crypto.randomUUID(),key:ask.key,value}));
-    this.event(n.id,'ask_answered',clip(`${c.name}: ${value}`,500));
-    if(!query(this.db(),'SELECT request_id FROM route_workers WHERE worker=?',n.id).length)this.wake(n.id);
+    this.answerAsker(n.id,ask,text||MESSAGES.provided({contract:contractLine(c),reference:this.referenceLine(c.name,c,n.id)}),c.name);
+  }
+  // The package p that manager m's row holds, granted to the asker: it is
+  // added to the packages of every row between m and the asker, so a piece's
+  // packages stay a part of its parent's, and the asker hears it.
+  async grantPackage(m, ask, p) {
+    const n=this.node(ask.worker);
+    if(!n||!p)return;
+    for(let x=n.id;x&&x!==m;x=this.agentAbove(x)) {
+      const own=normalizePackages(parse(this.node(x)?.packages,[]));
+      if(!own.some(q=>q.name===p.name))this.db().exec('UPDATE agents SET packages=? WHERE id=?',JSON.stringify(normalizePackages([...own,p])),x);
+    }
+    this.event(m,'package_granted',clip(`"${this.node(m)?.label||m}" granted ${p.name} to "${n.label}".`,400),n.id);
+    this.answerAsker(n.id,ask,MESSAGES.package_granted({need:ask.need,names:packageLine(p),many:false}),p.name);
+  }
+  // The asker hears the answer to its ask: in its answers from now on, and in a message that wakes it once nothing it asked is open.
+  answerAsker(id, ask, value, what) {
+    this.db().exec('DELETE FROM route_workers WHERE worker=? AND topic=?',id,ask.key);
+    this.recordAnswer(id,{key:ask.key,kind:'provided',text:value});
+    this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:route',id,'[route:provided] '+JSON.stringify({id:ask.request_id||crypto.randomUUID(),key:ask.key,value}));
+    this.event(id,'ask_answered',clip(`${what}: ${value}`,500));
+    if(!query(this.db(),'SELECT request_id FROM route_workers WHERE worker=?',id).length)this.wake(id);
   }
   // ---------- archive, and the rebuild ----------
   // An agent archived with its subtree: its row and its files stay as they
@@ -9261,18 +9277,25 @@ export class ControlRoom extends DurableObject {
   }
   // A worker's ask (its ask function), by what it needs and the name it
   // expects: one asked and answered before is answered with that answer;
-  // one in flight says so; what its world holds by name (the broker), or a
-  // name it delivers itself, is answered at once; anything else goes to its
-  // manager, whose choice answers it later (the answer starts its next turn).
+  // one in flight says so; what its world holds by name (the broker), a
+  // name it delivers itself, or a package its own row holds, is answered at
+  // once; anything else goes to its manager, whose choice answers it later
+  // (the answer starts its next turn).
   async workerAsk(id, {need, name=''}) {
     const key=requestKey({need,name}),answers=this.read(`fn_answers:${id}`,[]),known=answers.find(a=>a.key===key);
     if(known)return {answered:known.text,says:MESSAGES.answered_before()};
     if(query(this.db(),'SELECT request_id FROM route_workers WHERE worker=? AND topic=?',id,key).length)return {sent:true,says:MESSAGES.ask_pending()};
     const a={key,question:need,...(name?{name}:{})};
-    if(this.brokerAnswer(id,a,{message:false}))return {answered:this.read(`fn_answers:${id}`,[]).find(x=>x.key===key)?.text??null};
+    if(this.brokerAnswer(id,a))return {answered:this.read(`fn_answers:${id}`,[]).find(x=>x.key===key)?.text??null};
     const own=name?this.designOf(id).contracts.find(f=>f.name===name):null;
     if(own) {
       const text=MESSAGES.own_contract({contract:contractLine(own)});
+      this.recordAnswer(id,{key,kind:'provided',text});
+      return {answered:text};
+    }
+    const held=name?this.packagesOf(id).find(p=>p.name===name):null;
+    if(held) {
+      const text=MESSAGES.package_yours({need,names:packageLine(held),many:false});
       this.recordAnswer(id,{key,kind:'provided',text});
       return {answered:text};
     }

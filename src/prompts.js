@@ -144,6 +144,7 @@ export const CLEF = Object.freeze({
   internal: 'Does validation {i} test something a user of the result meets, rather than an internal detail of the code such as a class name, an import or the first line of a script? Answer NO if it looks only at such a detail.',
   // A manager's choice: each function it may call on an ask, a complaint or a change is one option, and the highest is called.
   answer: 'Does contract {j} give what the request needs, so the requester can use it instead of making its own? Answer NO if it does something else or only part of it. Judge by what it does, not by its name.',
+  grant: 'Does package {j} give what the request needs, so the requester can use it instead of making its own? Answer NO if it does something else or only part of it.',
   route_complaint: 'Does child {i}\'s responsibility, as its contracts and the files it wrote show, cover what this complaint is about?',
   route_change: 'Does this change concern what child {i} delivers, as its contracts show? Answer NO if it leaves everything child {i} delivers as it is.',
   extend_ask: 'Is producing what the request needs part of the assigned work, though no contract of the children gives it?',
