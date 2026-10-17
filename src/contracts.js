@@ -45,6 +45,8 @@ const FILLER = /^(?:one line|what it does|optional hint|argument|what it returns
 // Review: the filler is read past a final stop ("What it returns."). v7
 // clips each text to n; a v8 contract keeps it whole (no n).
 const text = (v, n) => typeof v === 'string' && !FILLER.test(v.trim().replace(/[.\s]+$/, '')) ? v.trim().slice(0, n) : '';
+// A v8 contract's text: as written, or '' when it is not a text.
+const kept = v => typeof v === 'string' ? v : '';
 const stop = s => s.replace(/[.\s]+$/, '');
 const plain = v => v && typeof v === 'object' && !Array.isArray(v);
 
@@ -81,10 +83,12 @@ const runField = raw => {
   const run = {run: raw.run, argv: raw.argv};
   return raw.port === true ? {...run, port: true, ready: typeof raw.ready === 'string' ? raw.ready : '/'} : run;
 };
-// Inputs: [{name, is}] or names; params, the v7 spelling, an array or "a, b".
+// Inputs: [{name, is}] or names; params, the v7 spelling, an array or "a, b"
+// (each name of that text without the spaces around it). Each name and what
+// it is, as written.
 function inputsOf(o) {
-  const list = Array.isArray(o.inputs) && o.inputs.length ? o.inputs : Array.isArray(o.params) ? o.params : typeof o.params === 'string' ? o.params.split(',') : [];
-  return list.map(x => plain(x) ? {name: text(x.name), is: text(x.is ?? x.does ?? x.description)} : {name: text(x), is: ''}).filter(x => x.name);
+  const list = Array.isArray(o.inputs) && o.inputs.length ? o.inputs : Array.isArray(o.params) ? o.params : typeof o.params === 'string' ? o.params.split(',').map(x => x.trim()) : [];
+  return list.map(x => plain(x) ? {name: kept(x.name), is: kept(x.is ?? x.does ?? x.description)} : {name: kept(x), is: ''}).filter(x => x.name);
 }
 
 // v7's promise item, exactly as ef7eebf read it: an object, or a string such
@@ -109,33 +113,31 @@ function promiseItem(o) {
 // A path-named kind's name: a path with an extension or a directory, and
 // no prose ("README.md: how to run" is README.md, whose does is the rest).
 const pathLike = s => isPath(s) && (/\.[A-Za-z0-9]+$/.test(s) || s.includes('/'));
-// One v8 contract (§2.1). A function keeps v7's fields (params, returns,
-// operation), so v7 readers see the same promise; inputs stays beside params
-// only when an input says what it is.
+// One v8 contract (§2.1): each text stored as written. A function keeps
+// v7's field names (params, returns, operation), so v7 readers see the same
+// promise; inputs stays beside params only when an input says what it is.
 function contractItem(o, keepServes) {
   const kind = typeof o.kind === 'string' && KINDS.has(o.kind.trim().toLowerCase()) ? o.kind.trim().toLowerCase() : 'function';
-  let name = o.name.trim().replace(/^`+|`+$/g, ''), inputs = inputsOf(o), does = text(o.does);
-  let out = stop(text([o.returns, o.outputs].find(v => text(v)) ?? ''));
+  let name = o.name.trim().replace(/^`+|`+$/g, ''), inputs = inputsOf(o), does = kept(o.does);
+  const out = [o.returns, o.outputs].map(kept).find(Boolean) ?? '';
   let path = typeof o.path === 'string' && isPath(o.path.trim()) ? o.path.trim() : '';
   if (kind === 'function') {
-    out = out.replace(/^\W*(?:it |this |the (?:function|method|call) )?returns?\s+/i, '');
-    if (out && noValue(out)) out = 'nothing';
     const call = /^([^(]*)\(([^)]*)\)?[\s;.]*$/.exec(name) || /^([A-Za-z_$][\w$]*)`?\s*(?:\(([^)]*)\)`?)?(?:\s*:|\s+-+|\s+[–—])\s*([\s\S]*)$/.exec(name);
-    if (call) { name = call[1].trim(); if (!inputs.length) inputs = inputsOf({params: (call[2] || '').split(',')}); if (!does) does = text(call[3]); }
+    if (call) { name = call[1].trim(); if (!inputs.length) inputs = inputsOf({params: call[2] || ''}); if (!does) does = kept(call[3]); }
   } else {
     if (PATH_NAMED.has(kind)) {
       const tail = /^(\S+?):\s+(.+)$/.exec(name);
-      if (tail && pathLike(tail[1])) { name = tail[1]; if (!does) does = text(tail[2]); }
+      if (tail && pathLike(tail[1])) { name = tail[1]; if (!does) does = tail[2]; }
       // Named by its path: a valid path given renames it; a path-like name gives the path.
       if (path) name = path;
       else if (pathLike(name)) path = name;
     }
   }
   if (!name) return null;
-  const operation = kind === 'function' ? text(o.operation) : '';
-  const effects = stop(text(o.effects)), examples = examplesOf(o.examples), serves = keepServes ? servesOf(o.serves) : [], run = runField(o.run);
+  const operation = kind === 'function' ? kept(o.operation) : '';
+  const effects = kept(o.effects), examples = examplesOf(o.examples), serves = keepServes ? servesOf(o.serves) : [], run = runField(o.run);
   return {
-    name, ...(kind === 'function' ? {} : {kind}), does: stop(does), params: inputs.map(x => x.name),
+    name, ...(kind === 'function' ? {} : {kind}), does, params: inputs.map(x => x.name),
     ...(operation ? {operation} : {}),
     ...(out ? kind === 'function' ? {returns: out} : {outputs: out} : {}),
     ...(inputs.some(x => x.is) ? {inputs} : {}),

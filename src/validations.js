@@ -28,7 +28,6 @@ const plain = v => v && typeof v === 'object' && !Array.isArray(v);
 const json = v => { try { const s = JSON.stringify(v); return s !== undefined ? {ok: true, v: JSON.parse(s)} : {ok: false}; } catch { return {ok: false}; } };
 const SAVE = /^[A-Za-z_]\w*$/;
 const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
-const cleanPath = p => String(p ?? '').trim().replace(/^[`'"]+|[`'"]+$/g, '').replace(/\\/g, '/').replace(/^(?:\.\/)+/, '');
 
 // ------------------------------------------------------------ commands
 // The argv of a command line: words split by spaces; '...' and "..." quote
@@ -337,77 +336,32 @@ export function renderExample(check) {
   if (c.kind === 'browser') return browserExample(c.steps);
   return '';
 }
-// Whether one step of a call or http check exercises the contract itself:
-// a call of the function; a request to the server it serves, or for a route
-// the request it names.
-// A route's path as a pattern: each :name, {name} or <name> segment stands for any one segment.
-export function routeMatches(route, method, path) {
-  const [m, at] = String(route).trim().split(/\s+/);
-  if (!at || String(method || 'GET').toUpperCase() !== String(m).toUpperCase()) return false;
-  const want = at.split('/'), got = String(path || '').split(/[?#]/)[0].split('/');
-  return want.length === got.length && want.every((w, i) => w === got[i] || /^(?::\w+|\{\w+\}|<\w+>)$/.test(w) && got[i] !== '');
-}
-function stepExercises(c, s, contract) {
-  const name = contract?.name;
-  if (c.kind === 'call') return s?.call === name;
-  if (c.serve === name) return true;
-  if (kindOf(contract || {}) === 'route') return !!s?.path && routeMatches(name, s.method, s.path);
-  return false;
-}
-// Whether a check exercises the contract itself, by its own name, path,
-// command, route or page: a call of the function, a command that runs the
-// command (or its file), an http or browser check that serves it (or, for a
-// route, requests it; for a page, opens it), a file or judge check of its
-// path. A check that serves a contract only through another one (loud's
-// call, which serves shout) exercises that other one.
-export function exercises(check, contract) {
-  const c = check || {}, name = contract?.name, path = contract?.path, kind = kindOf(contract || {});
-  if (!name) return false;
-  if (c.kind === 'call') return (c.steps || []).some(s => stepExercises(c, s, contract));
-  if (c.kind === 'command') { const argv = Array.isArray(c.argv) ? c.argv : commandArgv(c.run).argv || []; return argv[0] === name || !!path && argv.some(a => cleanPath(a) === path); }
-  if (c.kind === 'file' || c.kind === 'judge') return !!path && c.path === path;
-  if (c.kind === 'http') return (c.steps || []).some(s => stepExercises(c, s, contract));
-  if (c.kind === 'browser') return c.serve === name || kind === 'page' && !!path && (c.steps || []).some(s => typeof s?.goto === 'string' && s.goto.split(/[?#]/)[0] === `/${path}`);
-  return false;
-}
-// The examples one check gives a contract it exercises: one per step that
-// exercises it. Each call of a call check and each request of an http check
-// is one, after the steps that run before it in the same process (the
-// state it starts from); a command check, a browser scenario and a judge
-// question is one; each text a file check looks for is one.
-export function checkExamples(check, contract) {
+// The examples one check gives: one per step. Each call of a call check and
+// each request of an http check is one, after the steps that run before it
+// in the same process (the state it starts from); a command check, a
+// browser scenario and a judge question is one; each text a file check
+// looks for is one.
+export function checkExamples(check) {
   const c = check || {};
-  if (!exercises(c, contract)) return [];
   if (c.kind === 'call' || c.kind === 'http') {
     const steps = c.steps || [], show = c.kind === 'call' ? callStep : requestStep;
-    return steps.map((s, i) => stepExercises(c, s, contract) ? steps.slice(0, i + 1).map(show).join('; ') : '').filter(Boolean);
+    return steps.map((_, i) => steps.slice(0, i + 1).map(show).join('; '));
   }
   if (c.kind === 'file' && c.has?.length) return c.has.map(t => fileItem(c, t));
   const one = renderExample(c);
   return one ? [one] : [];
 }
-// A contract's examples: the distinct examples of the validations that
-// serve it and exercise it itself, in order, every one of them. Three is the
-// least a splitter writes (the reader counts it); a worker reads them all,
-// since its compiler checks them all.
+// A contract's examples: the distinct examples of every validation that
+// serves it (the splitter's serves, or the ids the contract carries), in
+// order, every one of them. Three is the least a splitter writes (the reader
+// counts it); a worker reads them all, since its compiler checks them all.
 export function contractExamples(contract, validations) {
   const out = [];
   for (const v of validations || []) {
     if (!(v?.serves || []).includes(contract?.name) && !(contract?.serves || []).includes(v?.id)) continue;
-    for (const e of checkExamples(v.check, contract)) if (!out.includes(e)) out.push(e);
+    for (const e of checkExamples(v.check)) if (!out.includes(e)) out.push(e);
   }
   return out;
-}
-
-// How a contract is exercised itself, in words a splitter reads.
-export function exerciseWords(c) {
-  const kind = kindOf(c);
-  if (kind === 'function') return `calls of ${c.name}, each call one example`;
-  if (kind === 'command') return `command checks that run ${c.name}${c.path && c.path !== c.name ? ` or ${c.path}` : ''}, each one example${c.run?.port ? `, or http requests to it and browser checks that serve it, each request and scenario one example` : ''}`;
-  if (kind === 'route') return `http requests to ${c.name}, each request one example`;
-  if (kind === 'page') return `browser checks that serve or open ${c.name}, each scenario one example`;
-  const runs = c.path && toolchainOf(c.path)?.run_file ? `, or command checks that run ${c.path}, each one example` : '';
-  return c.path ? `file or judge checks of ${c.path}, each text it holds and each question one example${runs}` : `checks of ${c.name}`;
 }
 
 // A file check that looks for texts inside a file of a code row: Clef is

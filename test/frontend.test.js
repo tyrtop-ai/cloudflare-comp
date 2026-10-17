@@ -62,12 +62,12 @@ test('v7.13: the split threshold control defaults to 70%',()=>{
   assert.equal(elements.get('split-threshold').value,70,'a room snapshot without a threshold shows the 0.7 default');
 });
 
-// v8: every manager's splitter proposes a split, on the worker model, and Clef
+// v8: every manager's splitter proposes a split, on the manager model, and Clef
 // decides whether it is valid; no root and no test writer. A v7 room keeps v7's.
 test('the model hint follows the pipeline: in v8 every manager\'s splitter proposes a split and Clef decides whether it is valid',()=>{
   assert.match(renderWithPage(true,{settings:{pipeline:'v7'}}).get('model-hint').textContent,/^Clef scores YES\/NO; the manager model proposes the split when YES/);
   const page=renderWithPage(true,{settings:{pipeline:'v8'}}),hint=()=>page.get('model-hint').textContent;
-  assert.match(hint(),/^Every manager's splitter proposes a split, on the worker model, and Clef decides whether it is valid; Clef also makes each manager's routing choices\. The worker model writes the code\. No model writes tests/);
+  assert.match(hint(),/^Every manager's splitter proposes a split, on the manager model, and Clef decides whether it is valid; Clef also makes each manager's routing choices\. The worker model writes the code\. No model writes tests/);
   assert.doesNotMatch(hint(),/\broot\b|YES\/NO|writes the test\b/i);
   page.get('pipeline').value='v7';fire(page.get('pipeline'),'change');
   assert.match(hint(),/^Clef scores YES\/NO/,'the hint follows the Pipeline select');

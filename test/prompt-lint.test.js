@@ -146,6 +146,8 @@ test('Clef questions are filled by key, and run data never enters a system promp
   assert.equal(clefText('scope', {i: 3}), CLEF.scope.replace('{i}', '3'));
   assert.equal(clefText('answer', {j: 1}), CLEF.answer.replace('{j}', '1'));
   for (const role of ROLES) assert.doesNotMatch(systemPrompt(role), /\$\{|\{i\}|\{j\}|\{contract\}/);
-  assert.equal(RETRY.too_small(9), 'Your previous answer, listed in rejected, had 9 pieces, and some were too small to be worth a task of their own. Divide the assignment into larger pieces this time, at least 2, each delivering whole contracts.');
+  // A retry says only what the review judged, and asks for another division: no rule of how to divide.
+  assert.equal(RETRY.too_small(9), 'Your previous division, listed in rejected, had 9 pieces, and the review judged some too small to be worth a task of their own. Divide the assignment into larger pieces this time.');
+  assert.equal(RETRY.different, 'Your previous division, listed in rejected, was judged by the review not to be a valid division of the assignment. Divide it differently this time.');
   assert.equal(MESSAGES.unchanged({path: 'a/b'}), 'unchanged: a/b is already exactly this text.');
 });

@@ -11,7 +11,7 @@ import {readFileSync} from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
 import {toolkit, liveRoom, events, again, clefFor, splitFor, leafOf, at, tail, statusOf, exported, call, CONTRACTS, VALIDATIONS, PARTS, FILES, GOAL, skip} from './helpers/toolkit.js';
 import {Sql, Store, ControlRoom, levelCalls, checkCall} from './helpers/room.js';
-import {contractExamples, exercises} from '../src/validations.js';
+import {contractExamples} from '../src/validations.js';
 import {splitterState, splitterCall, levelOf} from '../src/splitter.js';
 // A level stated through the splitter's functions (each call's result, then the level): every call must store.
 const stated = (level, world = {}) => { const s = splitterState(world), results = levelCalls(level).filter(c => c.name !== 'done').map(c => splitterCall(s, c.name, c.arguments).result);
@@ -161,33 +161,18 @@ test('F7 (v8 live 6): Clef reads the original and the pieces as written; a divis
 });
 
 // ------------------------------------------------------------------ F8
-test('F8: a contract\'s examples come only from validations that exercise it itself; one that serves it through another contract counts for that one', () => {
-  const shout = CONTRACTS[0], loud = CONTRACTS[1], l3 = VALIDATIONS.find(v => v.id === 'l3');
-  assert.equal(exercises(l3.check, loud), true);
-  assert.equal(exercises(l3.check, shout), false, 'loud("Yo") serves shout through loud');
-  assert.equal(exercises({kind: 'file', path: 'NOTES.md', has: ['x']}, CONTRACTS[4]), true);
-  assert.equal(exercises({kind: 'command', run: 'python3 convert.py 1 C', argv: ['python3', 'convert.py', '1', 'C']}, {name: 'convert', kind: 'command', path: 'convert.py'}), true);
-  assert.equal(exercises({kind: 'command', run: 'convert 1 C', argv: ['convert', '1', 'C']}, {name: 'convert', kind: 'command', path: 'convert.py'}), true);
-  assert.equal(exercises({kind: 'http', serve: 'server', steps: [{method: 'GET', path: '/tickets'}]}, {name: 'GET /tickets', kind: 'route'}), true);
-  assert.equal(exercises({kind: 'browser', serve: 'index.html', steps: [{goto: '/new.html'}]}, {name: 'new.html', kind: 'page', path: 'new.html'}), true);
-  assert.equal(exercises({kind: 'browser', serve: 'index.html', steps: [{goto: '/'}]}, {name: 'new.html', kind: 'page', path: 'new.html'}), false);
-  const two = VALIDATIONS.filter(v => v.id !== 's3');
-  assert.deepEqual(contractExamples(shout, two.filter(v => v.serves.includes('shout'))), ['shout("hi") → "HI!"', 'shout("a") → "A!"']);
-  assert.deepEqual(stated({contracts: CONTRACTS, validations: two, pieces: PARTS.map(({kids: _, ...p}) => p)}).done, {complete: false, missing: ['shout has 2 different examples of 3: calls of shout, each call one example.']});
+// The owner (2026-10-16 05:49): "The example sohuld be built from the validation." Every validation the
+// splitter declares as serving a contract gives it its examples; the runtime matches no name, path or route.
+test('F8: a contract\'s examples come from every validation declared as serving it, as declared: loud("Yo"), declared as serving shout, is one of shout\'s', () => {
+  const shout = CONTRACTS[0], two = VALIDATIONS.filter(v => v.id !== 's3');
+  assert.deepEqual(contractExamples(shout, two.filter(v => v.serves.includes('shout'))), ['shout("hi") → "HI!"', 'shout("a") → "A!"', 'loud("Yo") → "YO!YO!"']);
+  assert.deepEqual(stated({contracts: CONTRACTS, validations: two.filter(v => v.id !== 'l3'), pieces: PARTS.map(({kids: _, ...p}) => p)}).done, {complete: false, missing: ['shout has 2 different examples of 3 from the validations that serve it.', 'loud has 2 different examples of 3 from the validations that serve it.']});
+  assert.deepEqual(stated({contracts: CONTRACTS, validations: two, pieces: PARTS.map(({kids: _, ...p}) => p)}).done, {complete: true});
 });
-test('F8: the worker of shout reads only shout\'s own examples, never a sibling\'s call', {skip}, async () => {
-  const two = VALIDATIONS.filter(v => v.id !== 's3'), s3 = VALIDATIONS.find(v => v.id === 's3'), heard = [];
-  // One session: done says shout is short, and the splitter adds the third call of shout.
-  const split = (user, _n, _system, {round, results, tools}) => {
-    if (user.contracts_you_deliver) return splitFor()(user);
-    if (round === 1) return levelCalls(splitFor({validations: two})(user), {user, tools});
-    heard.push(results);
-    return [checkCall(s3), {name: 'done', arguments: {}}];
-  };
-  const r = await toolkit({split});
+test('F8: the worker of shout reads the examples of every validation declared as serving shout', {skip}, async () => {
+  const r = await toolkit({split: splitFor({validations: VALIDATIONS})});
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
-  assert.deepEqual(heard[0].at(-1).result, {complete: false, missing: ['shout has 2 different examples of 3: calls of shout, each call one example.']});
-  for (const u of workerRequests(r.calls, 'shout')) assert.deepEqual(u.prompt.deliver[0].examples, ['shout("hi") → "HI!"', 'shout("a") → "A!"', 'shout("Yo") → "YO!"']);
+  for (const u of workerRequests(r.calls, 'shout')) assert.deepEqual(u.prompt.deliver[0].examples, ['shout("hi") → "HI!"', 'shout("a") → "A!"', 'shout("Yo") → "YO!"', 'loud("Yo") → "YO!YO!"']);
 });
 
 // ------------------------------------------------------------------ F9

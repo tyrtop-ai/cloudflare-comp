@@ -517,12 +517,12 @@ const applySnapshotSettings=s=>{
   updateModelHint();
 };
 // What the models do in the room's pipeline. v8: every manager's splitter
-// proposes a split, on the worker model, and Clef decides whether it is valid;
+// proposes a split, on the manager model, and Clef decides whether it is valid;
 // there is no root and no test writer.
 const updateModelHint=()=>{
   const small=[$('model').value,$('worker-model').value,$('compiler-model').value].some(v=>String(v).includes('1b-instruct'));
   $('model-hint').textContent=$('pipeline')?.value==='v8' ?
-    `${small?'Experimental 1B models: expect weaker code and function calls. ':''}Every manager's splitter proposes a split, on the worker model, and Clef decides whether it is valid; Clef also makes each manager's routing choices. The worker model writes the code. No model writes tests: the splitters' validations are the checks. All models run on Cloudflare Workers AI.` :
+    `${small?'Experimental 1B models: expect weaker code and function calls. ':''}Every manager's splitter proposes a split, on the manager model, and Clef decides whether it is valid; Clef also makes each manager's routing choices. The worker model writes the code. No model writes tests: the splitters' validations are the checks. All models run on Cloudflare Workers AI.` :
     small ? 'Experimental 1B implementers: expect weaker code and JSON reliability. Clef decides YES/NO; Llama guesses and codes.' :
     'Clef scores YES/NO; the manager model proposes the split when YES, the worker model writes the code and the compiler model writes the test. All models run on Cloudflare Workers AI.';
 };

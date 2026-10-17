@@ -162,8 +162,8 @@ export const clefText = (key, vars = {}) => CLEF[key].replace(/\{(\w+)\}/g, (m, 
 // (previous_answer_problems), never in the system text.
 export const RETRY = Object.freeze({
   // A splitter's new session after Clef's review objected to its division.
-  too_small: count => `Your previous answer, listed in rejected, had ${count} pieces, and some were too small to be worth a task of their own. Divide the assignment into larger pieces this time, at least 2, each delivering whole contracts.`,
-  different: 'Your previous division, listed in rejected, was not one whose pieces could be made at the same time. Divide the assignment another way, along its contracts, so that each piece delivers contracts of its own and together the pieces deliver all of them.'
+  too_small: count => `Your previous division, listed in rejected, had ${count} pieces, and the review judged some too small to be worth a task of their own. Divide the assignment into larger pieces this time.`,
+  different: 'Your previous division, listed in rejected, was judged by the review not to be a valid division of the assignment. Divide it differently this time.'
 });
 
 // The texts the room itself composes for a v8 agent, as data. Each is a

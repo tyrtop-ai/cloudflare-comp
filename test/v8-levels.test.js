@@ -7,7 +7,7 @@
 // build runner behind fake boxes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {levelRoom, usualClef, rows, deliver, callCheck, events, fileBlocks, lintRequests, rowId} from './helpers/levels.js';
+import {levelRoom, again, usualClef, rows, deliver, callCheck, events, fileBlocks, lintRequests, rowId} from './helpers/levels.js';
 import {levelCalls, checkCall} from './helpers/room.js';
 
 const TRACKER = 'Build a small issue tracker: a library to create tickets and read one back by its id, and a `report` command that files a ticket and prints it as one line.';
@@ -140,7 +140,7 @@ test('a contract with fewer than three distinct examples: done says what is miss
   // The two identical validations render one example between them; done reports the count, in the session.
   assert.deepEqual(heard[0][1], {name: 'command_check', result: {id: 'v1', examples: ['convert 100 C → it exits 0 and its output contains "212"'], examples_so_far: {convert: 1}}});
   assert.deepEqual(heard[0][2].result.examples_so_far, {convert: 1});
-  assert.deepEqual(heard[0].at(-1), {name: 'done', result: {complete: false, missing: ['convert has 1 different example of 3: command checks that run convert or convert.js, each one example.']}});
+  assert.deepEqual(heard[0].at(-1), {name: 'done', result: {complete: false, missing: ['convert has 1 different example of 3 from the validations that serve it.']}});
   assert.deepEqual(room.splitterRows().map(r => r.outcome), ['done']);
   const record = JSON.parse(room.db().exec('SELECT output FROM splitters').toArray()[0].output);
   assert.deepEqual(record.calls.map(c => c.name), ['contract', 'command_check', 'command_check', 'done', 'command_check', 'command_check', 'done'], 'the splitter row keeps every call with its result');
@@ -162,6 +162,28 @@ test('a splitter session its context window ends goes on next turn in a new sess
   assert.deepEqual(room.roomHolds(), []);
   assert.deepEqual(room.splitterRows().map(r => r.outcome), ['context', 'done']);
   assert.equal(room.allNodes().filter(n => n.role === 'worker').length, 1);
+});
+
+// The owner approved (2026-10-17 00:25, 00:53, 00:55): each call of a splitter counts against the room's turn budget.
+test('each model call of a splitter session counts against the room\'s turn budget: once it is spent the session ends, nothing is held, and Continue goes on from what it declared', async () => {
+  // Session 1 declares the contract, then calls level until the budget is spent; session 2 is handed what it declared and adds the rest.
+  const split = (user, n, system, {round, tools}) => {
+    const all = levelCalls(CLI_LEVEL, {user, tools});
+    if (n === 1) return round === 1 ? all.filter(c => c.name === 'contract') : [{name: 'level', arguments: {}}];
+    return round === 1 ? all.filter(c => c.name !== 'contract' && c.name !== 'done') : [{name: 'done', arguments: {}}];
+  };
+  const r = await levelRoom({prompt: CLI, split, leaf: () => deliver({'convert.js': CONVERT_JS}), clef: caught(), budget: 6});
+  const {room, calls} = r;
+  assert.notEqual(room.get('status'), 'complete');
+  const first = calls.splitRounds.filter(x => x.session === 1).length;
+  assert.ok(first >= 1 && first <= 6, `the first session ran ${first} rounds within a budget of 6`);
+  assert.equal(room.get('budget_left'), '0', 'its calls spent the budget');
+  assert.deepEqual(room.splitterRows().map(x => x.outcome), ['budget']);
+  assert.deepEqual(room.roomHolds(), [], 'nothing is held');
+  await again(r, 60);
+  assert.equal(room.get('status'), 'complete', trail(room));
+  assert.deepEqual(calls.split[1].declared_so_far.contracts.map(c => c.name), ['convert'], 'the second is handed what the first declared');
+  assert.deepEqual(room.splitterRows().map(x => x.outcome), ['budget', 'done']);
 });
 
 test('a complaint reaches the worker responsible exactly as the compiler observed it, and its fix completes the room', async () => {

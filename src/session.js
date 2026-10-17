@@ -12,7 +12,9 @@
 // protocol's own shapes, read as such.
 //
 // What bounds a session: the model's context (MODEL_SETTINGS[model].context,
-// 32,768 tokens for the Qwen3 30B-A3B model), the platform's own limit.
+// 32,768 tokens for the Qwen3 30B-A3B model), the platform's own limit, and
+// the room's turn budget when the caller counts each model call against it
+// (spend).
 import { traced, modelRequest } from './model.js';
 
 const model = env => env.MODEL_NAME || '@cf/qwen/qwen3.8-27b';
@@ -49,13 +51,17 @@ export const noCall = names => `No function was called. The functions are: ${nam
 // Each model call is traced (env.TRACE) as a 'model' span with the role, the
 // call name, the round and the token counts. Returns {ended, end, reason,
 // rounds, transcript}: reason is 'ended' (a handler ended it), 'context'
-// (the context window is full) or 'mock'.
+// (the context window is full), 'budget' (spend said no) or 'mock'.
+// spend(), when given, is asked before every model call after the first (the
+// first is the turn the session runs in): true counts that call against the
+// room's turn budget, false means the budget is spent.
 // transcript: [{name, arguments, result}] per call, in order.
-export async function session(env, {system, user, tools, handle, role = '', call = 'session', maxTokens = 4096, noThink = false, mock = null}) {
+export async function session(env, {system, user, tools, handle, role = '', call = 'session', maxTokens = 4096, noThink = false, mock = null, spend = null}) {
   const selected = model(env), names = tools.map(t => t.name), known = new Set(names), transcript = [];
   const messages = [{role: 'system', content: system}, {role: 'user', content: String(user)}];
   const toolText = JSON.stringify(tools).length;
   for (let round = 1; ; round++) {
+    if (round > 1 && spend && !spend()) return {ended: false, reason: 'budget', rounds: round - 1, transcript};
     let output;
     if (env.MOCK_AI === 'true') {
       const calls = mock ? await mock(round, messages) : [];
