@@ -70,10 +70,11 @@ test('the model hint follows the pipeline: in v8 every manager\'s splitter propo
   assert.match(hint(),/^Every manager's splitter proposes a split, on the manager model, and Clef decides whether it is valid; Clef also makes each manager's routing choices\. The worker model writes the code\. No model writes tests/);
   assert.doesNotMatch(hint(),/\broot\b|YES\/NO|writes the test\b/i);
   // The pickers' labels follow the pipeline too: in v8 Clef makes every manager's choice,
-  // the manager model runs the splitters and builders, and the compiler model reads the linked pages.
+  // the manager model runs the splitters and builders, and the compiler model runs the compiler agents and reads the linked pages.
   const label=id=>page.get(id).textContent;
   assert.equal(label('model-label'),'Manager model (the splitters and the builders)');
-  assert.equal(label('compiler-model-label'),'Compiler model (reads the linked pages)');
+  assert.equal(label('compiler-model-label'),'Compiler model (the compiler agents, the linked pages\' readers)');
+  assert.doesNotMatch(label('split-model-label'),/document checks|base-change/,'Clef judges no document and reviews no base change');
   assert.match(label('split-model-label'),/^Clef model \(every manager's choice/);
   assert.doesNotMatch(label('model-label')+label('compiler-model-label'),/decisions|runner's test/);
   page.get('pipeline').value='v7';fire(page.get('pipeline'),'change');
@@ -674,7 +675,7 @@ test('v8 S8b review: the Sources panel marks an unverified previous result and c
 
 // v8 S9: the Prompts panel beside the goal box.
 test('v8 S9: the Prompts panel lists each prompt with its state; only queued ones can be edited, moved, skipped or removed',()=>{
-  assert.match(html,/<option value="v8">v8 \(experimental\) · levels, validations, the box's languages<\/option>/);
+  assert.match(html,/<option value="v8">v8 \(experimental\) · levels, validations, a compiler agent<\/option>/);
   assert.ok(html.indexOf('id="goal"')<html.indexOf('id="prompts-box"')&&html.indexOf('id="prompts-box"')<html.indexOf('id="start-from"'),'beside the goal box');
   const prompts=[{id:'a',text:'add a <README>',status:'done',kind:'queued',goal_rev:2,outcome:{passed:true}},{id:'b',text:'also support kelvin',status:'running',kind:'adjust',goal_rev:3,outcome:{}},
     {id:'c',text:'queued one',status:'queued',kind:'queued',outcome:{}},{id:'d',text:'queued two',status:'queued',kind:'queued',outcome:{}},{id:'e',text:'skipped one',status:'skipped',kind:'queued',outcome:{}}];
