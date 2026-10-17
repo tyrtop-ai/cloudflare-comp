@@ -1,16 +1,17 @@
-// Capability boxes S1 (Level A): a v8 compile runs in a fresh, single-use
-// Box with the internet off, and fails closed. Offline: the real Box class
-// over a fake Container (test/helpers/boxes.js), the real build runner in
-// Node behind it. The live counterpart is test/live/isolation-a.mjs.
+// Capability boxes: each v8 agent session that runs commands (a compiler's,
+// a worker's) has a fresh, single-use Box of its own, with the internet on,
+// opened on its first command and closed at the session's end. Offline: the
+// real Box class over a fake Container (test/helpers/boxes.js) whose
+// session commands run for real in a folder of its own.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {liveRoom, events, fileBlocks, verifyChecks, snapshotHash} from './helpers/room.js';
+import {liveRoom, events, fileBlocks} from './helpers/room.js';
 import {fakeBoxes, FakeContainer, FAKE_IMAGES, POISON_ENV} from './helpers/boxes.js';
 import {taskFromRow, roomOutcome} from '../src/bench.js';
 import {MULTIPLE_JS} from './helpers/bench-fixtures.js';
 // After the helpers registered the cloudflare:workers loader.
-const {Box, boxSpec, boxStartOptions, boxExecOptions, freshBox, compileBoxSpec, BOX_PATH, boxTimes, boxBuildCommand, boxName, BOX_COLD_MS} = await import('../src/box.js');
+const {Box, boxSpec, boxStartOptions, boxExecOptions, freshBox, sessionBoxSpec, BOX_PATH, boxTimes, boxName, BOX_COLD_MS, BOX_WORK, BOX_ROOT, BOX_WRITER} = await import('../src/box.js');
 // The verification's time a room sends (its check_seconds setting); every box time derives from it.
 const T = 200_000;
 
@@ -40,7 +41,7 @@ const watchExecutors = env => {
   env.BUILD_EXECUTORS = {getByName: () => { seen.gets++; return {build: async () => { seen.builds++; throw new Error('the shared executor was used'); }, warm: async () => { seen.gets++; return {}; }}; }};
   return seen;
 };
-const boxSpans = room => room.spans().filter(s => s.kind === 'container' && s.name === 'checks');
+const boxSpans = room => room.spans().filter(s => s.kind === 'container' && s.name === 'compiler');
 
 // ------------------------------------------------------------ the invariant helpers
 test('boxStartOptions: image reference, instance and enableInternet only; the internet is off unless exactly true', () => {
@@ -58,13 +59,13 @@ test('boxStartOptions: image reference, instance and enableInternet only; the in
   assert.throws(() => boxSpec({image: 'check', intercept: [{host: 'app.internal', peer: 'room'}]}), /known peer/);
 });
 
-test('boxExecOptions: pipes and a fixed PATH, nothing else; compileBoxSpec is internet off, browser image only for browser checks', () => {
+test('boxExecOptions: pipes and a fixed PATH, nothing else; a session\'s box has the internet on, the browser image only for browser checks', () => {
   assert.deepEqual(boxExecOptions(), {stdout: 'pipe', stderr: 'pipe', env: {PATH: BOX_PATH}});
   assert.deepEqual(boxExecOptions({stdin: true, user: '10001:10001'}), {stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', env: {PATH: BOX_PATH}, user: '10001:10001'});
   assert.equal(boxExecOptions({user: 'root; rm'}).user, undefined);
-  assert.deepEqual(compileBoxSpec({checks: [{kind: 'command'}]}), {image: 'check', instance: 'standard-1', internet: false});
-  assert.deepEqual(compileBoxSpec({checks: [{kind: 'http'}, {kind: 'browser'}]}), {image: 'browser', instance: 'standard-1', internet: false});
-  assert.deepEqual(compileBoxSpec(null), {image: 'check', instance: 'standard-1', internet: false});
+  assert.deepEqual(sessionBoxSpec([{check: {kind: 'command'}}]), {image: 'check', instance: 'standard-1', internet: true});
+  assert.deepEqual(sessionBoxSpec([{check: {kind: 'http'}}, {check: {kind: 'browser'}}]), {image: 'browser', instance: 'standard-1', internet: true});
+  assert.deepEqual(sessionBoxSpec(null), {image: 'check', instance: 'standard-1', internet: true});
 });
 
 test('the Box class never reads env, and every start and exec in src/box.js goes through the two helpers', () => {
@@ -80,7 +81,7 @@ test('the Box class never reads env, and every start and exec in src/box.js goes
 
 // ------------------------------------------------------------ the Box class
 test('a Box is single-use: open starts it once with the internet off; a second open, or a Container already running, is refused', async () => {
-  const ns = fakeBoxes({run: async () => ({})});
+  const ns = fakeBoxes();
   const box = freshBox(ns), [{container, storage}] = ns.boxes;
   const opened = await box.open({image: 'check'}, T);
   assert.deepEqual([opened.fresh, opened.internet, opened.image, opened.instance], [true, false, 'check', 'standard-1']);
@@ -88,9 +89,9 @@ test('a Box is single-use: open starts it once with the internet off; a second o
   assert.equal(opened.cold, false, 'a box ready at once is warm');
   assert.deepEqual(container.options, {image: FAKE_IMAGES.check, instance: 'standard-1', enableInternet: false});
   assert.ok(storage.alarm >= Date.now() + boxTimes(T).life - 5000, 'the backstop alarm is set, from the verification\'s time');
-  assert.deepEqual(boxTimes(T), {ready: T, exec: 2 * T, life: 3 * T});
+  assert.deepEqual(boxTimes(T), {ready: T, run: T, life: 3 * T});
   for (const bad of [undefined, null, '', 0, -1, 'x']) assert.throws(() => boxTimes(bad), e => e.code === 'bad_request', `no time of its own: ${bad}`);
-  await assert.rejects(freshBox(fakeBoxes({run: async () => ({})})).open({image: 'check'}), e => e.code === 'bad_request', 'a box is opened only with the verification\'s time');
+  await assert.rejects(freshBox(fakeBoxes()).open({image: 'check'}), e => e.code === 'bad_request', 'a box is opened only with the verification\'s time');
   await assert.rejects(box.open({image: 'check'}, T), e => e.code === 'used');
   await box.close();
   assert.equal(container.running, false);
@@ -106,7 +107,7 @@ test('a Box is single-use: open starts it once with the internet off; a second o
 // v8 live 2: the first box after a deploy waited 9.7 to 14.7 s for its image; one over 5 s is recorded cold.
 test('a box whose ready_ms is over 5 s is recorded cold', async () => {
   assert.equal(BOX_COLD_MS, 5000);
-  const ns = fakeBoxes({run: async () => ({})}), box = freshBox(ns), now = Date.now;
+  const ns = fakeBoxes(), box = freshBox(ns), now = Date.now;
   let t = now();
   Date.now = () => (t += 2600);
   try {
@@ -116,68 +117,70 @@ test('a box whose ready_ms is over 5 s is recorded cold', async () => {
   } finally { Date.now = now; await box.close(); }
 });
 
-test('Box.compile runs the build runner once in its own box and destroys it, also when the runner fails; the alarm is the backstop', async () => {
-  const requests = [];
-  const ns = fakeBoxes({run: async req => { requests.push(req); return {fingerprint: req.fingerprint, snapshot_hash: req.snapshot_hash, mode: 'checks', passed: true, checks: []}; }});
-  const box = freshBox(ns);
-  const r = await box.compile(compileBoxSpec({checks: []}), {fingerprint: 'f1', files: {'a.js': '1;\n'}, mode: 'checks', plan: {checks: []}, toolchains: [], limits: {total_ms: T}, secret: 'never'});
-  assert.deepEqual([r.passed, r.box.fresh, r.box.internet], [true, true, false]);
-  assert.deepEqual(Object.keys(requests[0]).sort(), ['files', 'fingerprint', 'limits', 'mode', 'options', 'plan', 'snapshot_hash', 'toolchains'], 'the request BuildExecutor sends, nothing more');
-  const {container} = ns.boxes[0];
-  assert.deepEqual(container.log.filter(l => l[0] === 'exec').map(l => [l[1].join(' '), JSON.stringify(l[2].env)]), [['true', JSON.stringify({PATH: BOX_PATH})], [boxBuildCommand(await boxName(ns.boxes[0].id)).join(' '), JSON.stringify({PATH: BOX_PATH})]]);
-  assert.match(r.box.name, /^box-[0-9a-f]{16}$/);
-  assert.equal(r.box.name, await boxName('unique-1'), 'named after its Durable Object id');
-  assert.equal(container.destroyed, 1);
+test('a session\'s box: write puts files and links in its folder as the box\'s root, run runs one command there with no shell, each re-arming the backstop; a path outside the folder is refused; the alarm destroys a box nobody closed', async () => {
+  const ns = fakeBoxes(), box = freshBox(ns), [{container, storage}] = ns.boxes;
+  await box.open({image: 'check', internet: true}, T);
+  assert.equal(container.options.enableInternet, true);
+  assert.deepEqual(await box.write({'a.txt': 'one\n', 'sub/b.txt': 'two\n'}, {'c.txt': 'a.txt'}), {written: 3});
+  const writer = container.log.filter(l => l[0] === 'exec').at(-1);
+  assert.deepEqual([writer[1], writer[2]], [['env', '-C', BOX_WORK, ...BOX_WRITER], {stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', env: {PATH: BOX_PATH}, user: BOX_ROOT}]);
+  storage.alarm = 0;
+  const r = await box.run(['sh', '-c', 'cat a.txt sub/b.txt c.txt; echo err >&2; exit 3'], {cwd: BOX_WORK, user: BOX_ROOT, ms: T});
+  assert.deepEqual([r.code, r.stdout, r.stderr, r.timed_out], [3, 'one\ntwo\none\n', 'err\n', false]);
+  assert.ok(storage.alarm >= Date.now() + boxTimes(T).life - 5000, 'each command re-arms the backstop');
+  assert.deepEqual((await box.run(['cat'], {cwd: BOX_WORK, stdin: 'piped'})).stdout, 'piped');
+  const slow = await box.run(['sleep', '5'], {cwd: BOX_WORK, ms: 50});
+  assert.deepEqual([slow.code, slow.timed_out], [null, true]);
+  await assert.rejects(box.write({'../x': 'no'}), e => e.code === 'bad_path');
+  await assert.rejects(box.write({'/etc/x': 'no'}), e => e.code === 'bad_path');
+  await box.close();
   assert.equal(container.running, false);
-  // The runner fails: the box is destroyed all the same.
-  const bad = fakeBoxes({run: async () => { throw new Error('Container is not running'); }});
-  await assert.rejects(freshBox(bad).compile({image: 'check'}, {fingerprint: 'f', files: {'a.js': '1;\n'}, limits: {total_ms: T}}), /Container is not running/);
-  assert.equal(bad.boxes[0].container.destroyed, 1);
-  // A forged attestation is refused.
-  const forged = fakeBoxes({run: async () => ({fingerprint: 'other', snapshot_hash: 'x', mode: 'checks', checks: []})});
-  await assert.rejects(freshBox(forged).compile({image: 'check'}, {fingerprint: 'f', files: {'a.js': '1;\n'}, limits: {total_ms: T}}), /attestation/);
-  // The alarm destroys a box its caller never closed.
-  const left = fakeBoxes({run: async () => ({})}), lone = freshBox(left);
+  await assert.rejects(box.run(['true']), e => e.code === 'closed');
+  assert.match(String(await box.name()), /^box-[0-9a-f]{16}$/);
+  assert.equal(await box.name(), await boxName('unique-1'), 'named after its Durable Object id');
+  const left = fakeBoxes(), lone = freshBox(left);
   await lone.open({image: 'check'}, T);
   await lone.alarm();
   assert.equal(left.boxes[0].container.running, false);
 });
 
-// ------------------------------------------------------------ the room: a fresh box per compile
-test('v8 runChecks: every compile opens its own fresh box (a new unique id), internet off, and the span records it', async () => {
-  const {room, drain, boxes, env, builds} = tempRoom([WRONG, RIGHT]);
+// ------------------------------------------------------------ the room: a fresh box per session
+test('every compiler session opens its own fresh box (a new unique id) with the internet on, holding the bundle, closed at the session\'s end; the span records it, and the shared executor is never used', async () => {
+  const {room, drain, boxes, env, calls} = tempRoom([WRONG, RIGHT]);
   const seen = watchExecutors(env);
   await room.start(TEMP_GOAL, 20, {pipeline: 'v8'});
   await drain();
   assert.equal(room.get('status'), 'complete', events(room).slice(-8).map(e => `${e.kind}: ${e.body.slice(0, 160)}`).join('\n'));
   const compiles = events(room, 'checks_started').length;
   assert.ok(compiles >= 2, 'the wrong answer was compiled, then the right one');
-  assert.equal(boxes.boxes.length, compiles, 'one box per compile');
+  assert.equal(calls.compile.length, compiles, 'one compiler session per compile');
+  assert.equal(boxes.boxes.length, compiles, 'one box per session');
   assert.equal(boxes.uniqueIds, compiles, 'each from newUniqueId');
-  assert.equal(new Set(boxes.boxes.map(b => b.id)).size, compiles);
   for (const {container} of boxes.boxes) {
     assert.equal(container.starts, 1, 'started once');
-    assert.equal(container.options.enableInternet, false);
+    assert.equal(container.options.enableInternet, true);
     assert.equal(container.options.image, FAKE_IMAGES.check);
-    assert.equal(container.running, false, 'destroyed after its compile');
+    assert.equal(container.running, false, 'destroyed at the session\'s end');
+    const wrote = container.log.find(l => l[0] === 'exec' && l[1].includes(BOX_WRITER[2]));
+    assert.ok(wrote, 'the bundle was written into it');
   }
-  assert.equal(builds.length, compiles, 'the runner ran once per box');
   assert.deepEqual(seen, {gets: 0, builds: 0}, 'the shared executor was neither warmed nor used');
   const spans = boxSpans(room);
   assert.equal(spans.length, compiles);
   for (const s of spans) {
     assert.equal(s.attrs.box.fresh, true);
-    assert.equal(s.attrs.box.internet, false);
+    assert.equal(s.attrs.box.internet, true);
     assert.ok(Number.isFinite(s.attrs.box.start_ms));
     assert.equal(s.attrs.box.cold, false);
+    assert.ok(s.attrs.commands >= 1);
   }
   // A v8 room never runs the v7 executor path either.
-  assert.match((await room.containerRun('root', 'compile:x', new Map([['a.js', '1;\n']]))).infrastructure, /fresh box with the internet off/);
+  assert.match((await room.containerRun('root', 'compile:x', new Map([['a.js', '1;\n']]))).infrastructure, /agents' own boxes/);
   assert.deepEqual(seen, {gets: 0, builds: 0});
 });
 
 test('no reuse across rooms: two rooms on one namespace, compiling at once, get disjoint boxes', async () => {
-  const ns = fakeBoxes({run: req => verifyChecks({...req}, {isolation: []})});
+  const ns = fakeBoxes();
   const a = tempRoom([RIGHT], {boxes: ns, room_id: 'room-a-0001'}), b = tempRoom([RIGHT], {boxes: ns, room_id: 'room-b-0002'});
   await Promise.all([a.room.start(TEMP_GOAL, 10, {pipeline: 'v8'}), b.room.start(TEMP_GOAL, 10, {pipeline: 'v8'})]);
   await Promise.all([a.drain(), b.drain()]);
@@ -185,11 +188,11 @@ test('no reuse across rooms: two rooms on one namespace, compiling at once, get 
   assert.equal(b.room.get('status'), 'complete');
   assert.equal(ns.boxes.length, 2);
   assert.notEqual(ns.boxes[0].box, ns.boxes[1].box);
-  assert.ok(ns.boxes.every(x => x.container.starts === 1 && x.container.options.enableInternet === false));
+  assert.ok(ns.boxes.every(x => x.container.starts === 1 && x.container.options.enableInternet === true));
 });
 
 test('no reuse across bench tasks: each task room compiles in its own box; a room takes no pooled executor', async () => {
-  const ns = fakeBoxes({run: req => verifyChecks({...req, snapshot_hash: req.snapshot_hash}, {isolation: []})});
+  const ns = fakeBoxes();
   const task = taskFromRow(MULTIPLE_JS[0]);
   const sol = 'function add_two(a, b) { return a + b; }\nmodule.exports = { add_two };\n';
   const call = (id, a, b, sum) => ({id, serves: ['add_two'], check: {kind: 'call', steps: [{call: 'add_two', args: [a, b], expect: sum}]}});
@@ -206,91 +209,57 @@ test('no reuse across bench tasks: each task room compiles in its own box; a roo
     assert.ok(!r.room.get('executor_key'), 'no pooled executor');
   }
   assert.equal(ns.boxes.length, 2, 'one box per task compile');
-  assert.ok(ns.boxes.every(x => x.container.starts === 1 && x.container.destroyed === 1 && x.container.options.enableInternet === false));
+  assert.ok(ns.boxes.every(x => x.container.starts === 1 && x.container.destroyed === 1));
   // The bench run starts its rooms without an executor.
   assert.doesNotMatch(readFileSync(new URL('../src/bench-run.js', import.meta.url), 'utf8'), /executor:\s*poolExecutor|bench-pool-/);
 });
 
-// ------------------------------------------------------------ fail closed
-// A check that could not run is nobody's work: the compiler runs it again, a
-// turn of the room's budget each time, until it observes it or the budget
-// ends; nothing holds (owner, 2026-10-16 05:54: "it should go back until
-// done, just like anything else").
+// ------------------------------------------------------------ a box that cannot open
+// The session's command reads why the box did not open: the compiler gives no
+// result, and the room runs it again, a turn of its budget each time, until
+// it gives one or the budget ends; nothing holds and nothing is routed
+// (owner, 2026-10-16 05:54: "it should go back until done, just like anything else").
 const blockedText = room => room.snapshot().build_infrastructure || '';
 const assertBlocked = (room, label) => {
   assert.equal(room.get('status'), 'paused', label);
   assert.deepEqual(room.roomHolds(), [], `${label}: nothing holds`);
   assert.equal(room.get('budget_left'), '0', `${label}: the room's budget ended the run`);
-  assert.ok(events(room, 'build_infrastructure').length >= 2, `${label}: the compiler ran the checks again`);
+  assert.ok(events(room, 'build_infrastructure').length >= 2, `${label}: the compiler ran again`);
+  assert.equal(room.problems("kind='run'").length, 0, `${label}: nothing is routed`);
 };
-test('fail closed: the platform refusing enableInternet:false is infrastructure: the compiler runs the checks again until the budget ends, and never falls back to the shared executor', async () => {
-  const ns = fakeBoxes({run: () => { throw new Error('the runner must not run'); }, refuse: o => o.enableInternet === false ? 'enableInternet:false is not supported for this application' : null});
-  const {room, drain, env, ctx} = tempRoom([RIGHT], {boxes: ns});
-  const seen = watchExecutors(env);
-  const alarms = []; ctx.storage.setAlarm = at => { alarms.push(at); };
-  await room.start(TEMP_GOAL, 10, {pipeline: 'v8'});
-  await drain();
-  assertBlocked(room, 'refused');
-  assert.match(blockedText(room), /enableInternet:false is not supported/);
-  assert.equal(alarms.length, 0, 'no retry schedule');
-  assert.equal(room.problems('1=1').length, 0, 'nothing is routed');
-  assert.deepEqual(seen, {gets: 0, builds: 0});
-  assert.ok(ns.boxes.length >= 2, 'a fresh box each run');
-  assert.ok(ns.boxes.every(b => b.container.starts === 0 && b.container.log.every(l => l[0] === 'start')), 'nothing was exec\'d');
-  assert.equal(room.read('validation_status', {}).V1.passed, null);
-  assert.equal(boxSpans(room)[0].attrs.error.includes('enableInternet'), true);
-  // Continue runs them again.
-  await room.resume(3);
-  await drain();
-  assert.ok(ns.boxes.length >= 3);
-});
-
-test('fail closed: no BOXES binding, an image that is not deployed, or a box that does not confirm internet off, is infrastructure, run again until the budget ends', async () => {
-  // No binding.
-  {
-    const {room, drain, env} = tempRoom();
-    delete env.BOXES;
-    const seen = watchExecutors(env);
-    await room.start(TEMP_GOAL, 10, {pipeline: 'v8'});
-    await drain();
-    assertBlocked(room, 'no binding');
-    assert.match(blockedText(room), /BOXES binding unavailable/);
-    assert.deepEqual(seen, {gets: 0, builds: 0});
-  }
-  // The check image is not deployed.
-  {
-    const ns = fakeBoxes({run: () => { throw new Error('no'); }, images: {fetch: 'img/fetch'}});
-    const {room, drain} = tempRoom([RIGHT], {boxes: ns});
-    await room.start(TEMP_GOAL, 10, {pipeline: 'v8'});
-    await drain();
-    assertBlocked(room, 'no image');
-    assert.match(blockedText(room), /box image "check" is not deployed/);
-    assert.equal(ns.boxes[0].container.starts, 0);
-  }
-  // A box (a stub that misbehaves) answering with the internet on, or not fresh, is not believed.
-  for (const box of [{fresh: true, internet: true}, {fresh: false, internet: false}, undefined]) {
-    let closed = 0;
-    const ns = {newUniqueId: () => ({id: 'x'}), get: () => ({open: async () => ({fresh: true, internet: false, image: 'check'}), compile: async (_spec, req) => ({fingerprint: req.fingerprint, mode: 'checks', passed: true, checks: [], ...(box ? {box} : {})}), close: async () => { closed++; }})};
-    const {room, drain} = tempRoom([RIGHT], {boxes: ns});
-    await room.start(TEMP_GOAL, 10, {pipeline: 'v8'});
-    await drain();
-    assertBlocked(room, JSON.stringify(box));
-    assert.match(blockedText(room), /did not confirm a fresh start with the internet off/);
-    assert.notEqual(room.get('status'), 'complete');
+const openErrors = calls => calls.compileRounds.flatMap(r => r.results).filter(r => r.name === 'run').map(r => r.result?.error || '');
+test('a box that cannot open: the compiler\'s command says why, it gives no result, and the room runs it again until the budget ends; Continue goes on; the shared executor is never used', async () => {
+  for (const [label, opts, why] of [
+    ['refused', {boxes: fakeBoxes({refuse: () => 'no capacity'})}, /no capacity/],
+    ['no image', {boxes: fakeBoxes({images: {fetch: 'img/fetch'}})}, /box image "check" is not deployed/],
+    ['no binding', {}, /BOXES binding unavailable/]]) {
+    const r = tempRoom([RIGHT], opts);
+    if (label === 'no binding') delete r.env.BOXES;
+    const seen = watchExecutors(r.env);
+    const alarms = []; r.ctx.storage.setAlarm = at => { alarms.push(at); };
+    await r.room.start(TEMP_GOAL, 10, {pipeline: 'v8'});
+    await r.drain();
+    assertBlocked(r.room, label);
+    assert.ok(openErrors(r.calls).every(e => /^The box did not open: /.test(e) && why.test(e)), label);
+    assert.match(blockedText(r.room), /no result: the compiler gave none/, label);
+    assert.equal(r.room.read('validation_status', {}).V1.passed, null, label);
+    assert.equal(alarms.length, 0, `${label}: no retry schedule`);
+    assert.deepEqual(seen, {gets: 0, builds: 0}, label);
+    if (opts.boxes) assert.ok(opts.boxes.boxes.every(b => b.container.starts === 0), `${label}: nothing ran`);
   }
 });
 
-test('a box that cannot start once is infrastructure: the compiler runs the checks again at once, in a NEW box, and passes', async () => {
+test('a box that cannot start once: the compiler gives no result that session, runs again in a NEW box, and the room completes', async () => {
   let refuse = 1;
-  const ns = fakeBoxes({run: req => verifyChecks({...req}, {isolation: []}), refuse: () => refuse-- > 0 ? 'no capacity' : null});
+  const ns = fakeBoxes({refuse: () => refuse-- > 0 ? 'no capacity' : null});
   const {room, drain, ctx} = tempRoom([RIGHT], {boxes: ns});
   const alarms = []; ctx.storage.setAlarm = at => { alarms.push(at); };
   await room.start(TEMP_GOAL, 10, {pipeline: 'v8'});
   await drain();
   assert.equal(room.get('status'), 'complete');
   assert.equal(alarms.length, 0);
-  assert.equal(ns.boxes.length, 2);
-  assert.deepEqual(ns.boxes.map(b => b.container.starts), [0, 1]);
+  assert.equal(ns.boxes[0].container.starts, 0, 'the refused box ran nothing');
+  assert.ok(ns.boxes.slice(1).every(b => b.container.starts === 1));
 });
 
 // ------------------------------------------------------------ the S0 probe route
@@ -314,7 +283,7 @@ test('the S0 probe: off unless BOX_PROBE=1, POST only, and its report is scrubbe
 
 test('the S0 probe coordinator opens a fresh box per question and closes every one', async () => {
   const {BoxProbe} = await import('../src/box-probe.js');
-  const ns = fakeBoxes({run: async () => ({})});
+  const ns = fakeBoxes();
   const probe = new BoxProbe({storage: {}}, {BOXES: ns});
   const report = await probe.run({only: ['start', 'fanout'], samples: 2});
   assert.equal(report.items.start['check/standard-1'].ready_ms.n, 2);

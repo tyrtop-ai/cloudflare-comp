@@ -1,43 +1,28 @@
 # Capability boxes (S0/S1): the `check` and `browser` images of the Box
 # Container application (wrangler.jsonc, scheduling_policy durable_object).
 # One Dockerfile, two images: BOX_BROWSER=1 adds Playwright's Chromium
-# headless shell. Otherwise the same layout as ./Dockerfile, so today's
-# build runner (/opt/build-runner.mjs) runs unchanged inside a box (Level A),
-# with its in-runner isolation (util-linux: prlimit, unshare, nsenter).
-# iputils-ping is here for the S0 probe's ICMP question only.
-# v8 live 5: the runner runs under /opt/box/hostname.py, which gives it the
-# box's own short host name (box-<16 hex>) in a user namespace of its own:
-# the platform's name has a label over 63 characters, on which Python's
-# socket.getfqdn (http.server) fails. See box/hostname.py.
+# headless shell. An agent's session (src/box-session.js) writes its files
+# into /work and runs its commands there, as the box's root, with the
+# internet on: it installs whatever else it needs. iputils-ping is here for
+# the S0 probe's ICMP question only; /opt/box/hostname.py runs a command
+# under the box's own short host name (box-<16 hex>), which the probe
+# reports: the platform's name has a label over 63 characters, on which
+# Python's socket.getfqdn (http.server) fails.
 FROM node:lts-bookworm-slim
 ARG BOX_BROWSER=0
-# Owner 2026-10-15 05:16 ("Any code type") and 22:12 ("why are packages not
-# allowed now?"): the languages beyond Node and Python that the compile rows
-# read (src/toolchains.js COMPILE_ROWS: Go, Rust, C, C++, Java, Ruby, PHP),
-# each with what compiles and runs it (rustc, gcc and g++ build a file a
-# check runs), and the package managers the rows install packages with: pip
-# for Python, gem (with ruby) for Ruby, npm with the Node base (JavaScript
-# and TypeScript), go for Go's modules, cargo for Rust's crates, maven for
-# Java's artifacts, composer (with unzip, which it unpacks with) for PHP's,
-# and the base's own apt-get and dpkg-deb for C's, C++'s and shell's (the
-# system's packages, unpacked into the check's tree as the box's user).
-# Channels only, no versions pinned: the inventory records what each box had.
-# Owner 2026-10-17 ("It needs the ability to create C#"): a language the
-# image lacks (C#, JSX/TSX) is not installed here: its row's toolchain
-# (src/toolchains.js) is installed by the box's install stage when a level
-# uses it, as packages are.
+# What the image has from the start, so a session that needs one of these
+# does not wait for its install (owner 2026-10-15 05:16, "Any code type").
+# Channels only, no versions pinned.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pytest python3-pip ca-certificates iputils-ping \
     golang-go gcc g++ libc6-dev default-jdk-headless ruby php-cli rustc cargo rustfmt maven composer unzip \
  && rm -rf /var/lib/apt/lists/*
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright NODE_PATH=/usr/local/lib/node_modules
 RUN if [ "$BOX_BROWSER" = "1" ]; then npm install -g playwright && playwright install --with-deps --only-shell chromium \
  && rm -rf /root/.npm /root/.cache /var/lib/apt/lists/*; fi \
- && mkdir -p /opt/toolchain /ms-playwright && python3 -c "import sys;print('\n'.join(sorted(sys.stdlib_module_names)))" > /opt/toolchain/python-stdlib.txt
+ && mkdir -p /ms-playwright
 RUN command -v timeout && command -v unshare && command -v nsenter && command -v prlimit && useradd --create-home --uid 10001 builder
-COPY build-runner.mjs build-path.mjs stack-frames.mjs /opt/
-COPY adapters/ /opt/adapters/
 COPY box/probe.mjs box/hostname.py /opt/box/
-RUN chmod 0444 /opt/build-runner.mjs /opt/build-path.mjs /opt/stack-frames.mjs /opt/box/probe.mjs /opt/box/hostname.py && chmod -R a+rX /opt/adapters /opt/box /opt/toolchain /ms-playwright \
+RUN chmod 0444 /opt/box/probe.mjs /opt/box/hostname.py && chmod -R a+rX /opt/box /ms-playwright \
  && mkdir -p /work && chown builder:builder /work
 USER builder
 WORKDIR /work
