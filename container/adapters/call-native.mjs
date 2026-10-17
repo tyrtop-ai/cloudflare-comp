@@ -17,8 +17,8 @@
 // stdin: {"module":"<bundle path>","steps":[{call,args,save?}]} (JSON lines).
 // stdout: as call.py's, and {"nonce","step","ok":false,"unsupported":true,
 // "error"} for a step this adapter cannot make (a parameter type the
-// language gives no way to build from JSON, for instance): the runtime's
-// limit, never the file's failure.
+// language gives no way to build from JSON, for instance), in the
+// compiler's words: what the check observed, as a failed step is.
 //
 // A function is the name the file defines it by, called with the step's
 // arguments, each built from its JSON as the function's parameter type
