@@ -356,3 +356,20 @@ Owner, binding: the runtime only exposes functions to the models; it never parse
 - **The splitter states its level through `contract`, `validation`, `piece`, `level` and `done`** (`src/splitter.js`). Each stores what it was given, exactly, or says exactly why not. `done` returns what the owner's rules still need (three different examples for every function, command and route contract; each contract delivered by at most one piece) and the session goes on, or it hands the level to Clef's review. `piece` is offered only when the level may divide.
 - **Gone:** `readLevel` and its lenient reading (name resolution and aliases, twins, inferred kinds, runs inferred from a file, route patterns in `serves`, step splitting, throws-in-expect, markup read as elements, whole URLs read as paths), `looseCheck`, `inferKind`, the JSON parse and retry of the old `splitLevel`, the defect retry loop (`split_defects`, `RETRY.rules`, `previous_answer`), and the reader's notes. A check is read only as written.
 - **Kept:** Clef's pre-grade (split_floor) and Clef's review with up to three attempts; a review's objection starts a new splitter session with that objection, as before. A session that ends without `done` escalates `split_failed` to the row's parent.
+
+## Live 9: one typed function per check kind
+
+The first live runs on function calling worked end to end: each splitter declared its level through its functions and done. Most of their calls were refused, though, because `validation` took the check as an untyped object:
+- the issue tracker had 174 of 193 calls refused, the temperature CLI 30 of 50, the to-do page 14 of 28;
+- the splitters wrapped checks in their kind (`{"call": {"steps": …}}`) or left the kind out;
+- they gave lists as single texts;
+- they put a command's expectations (`stdout_has`) into a call's `expect`. Those were stored as values a function returns, and the workers chased them every round.
+
+- **One function per check kind.** `validation` is replaced by `file_check`, `judge_check`, `command_check`, `call_check`, `http_check` and `browser_check`. Each takes `serves` and its own fields, fully typed, so the platform shows the model every field's shape. Each description says how its check runs.
+- **A call check that reaches no function says why, truly.** The old observation was "no file defines addTask". It is now one of:
+  - `<path>, the file of <name>, is missing`;
+  - `<path> does not export <name>: a call reaches a function by the name its file exports`;
+  - `<path> defines no <name> a call reaches`;
+  - `no file gives <name> to a call`.
+
+  The to-do page's worker had a `script.js` that defines `addTask` without exporting it. It was told no file defined it, and it answered, correctly, that the function exists.
