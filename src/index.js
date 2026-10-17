@@ -119,6 +119,8 @@ const isRuntimeNode = n => !!n && RUNTIME_ROLES.has(roleOf(n));
 // One route topic per ask: each ask a worker makes is its own, by what it asks and its request id.
 const askKey = (ask, request_id) => `${requestKey(ask)} (${request_id.slice(0, 8)})`;
 const taskKey = t => {let h=0;for(const c of String(t??''))h=(h*31+c.charCodeAt(0))|0;return (h>>>0).toString(36);};
+// A contract with the validation ids joins ({name: [ids]}) gives its name added to its serves.
+const joined = (c, joins) => joins[c?.name] ? {...c, serves: [...new Set([...(c.serves || []), ...joins[c.name]])]} : c;
 const isBuilderNode = n => roleOf(n) === 'builder';
 const isCompilerNode = n => roleOf(n) === 'compiler';
 // What the compiler's pipeline writes: the loader, the package and the
@@ -126,9 +128,6 @@ const isCompilerNode = n => roleOf(n) === 'compiler';
 const RUNTIME_GLUE = ['glue/index.js','package.json','glue/smoke.js'];
 // v7.15.5 review: new runner tests a run writes after its first, as start()'s methods change.
 const RUNNER_REWRITES = 2;
-// v8 M3 review (M1): a builder joins its children's work at most this many
-// times in one turn while that work keeps changing under it; then it joins on its next turn.
-const ASSEMBLE_TRIES = 6;
 // v8 M3 review (M4): the Worker's own syntax step for a row whose native
 // parser runs here (a row's native field names it; the box's syntax command
 // is the row's syntax field). v8 M3 review 2, v8 ship-verified (M2): in each
@@ -3935,8 +3934,6 @@ export class ControlRoom extends DurableObject {
     this.db().exec('UPDATE agents SET summary=? WHERE id=?',clip(out.end.summary,1100),id);
     this.event(id,'report',clip(out.end.summary,1100),m);
     const stored=await this.assemblePiece(id);
-    // The children's work kept changing while it was stored: it joins again on its next turn.
-    if(!stored){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);this.wake(id);return;}
     this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
     this.event(id,'piece_linked',`Stored the piece of ${this.node(m)?.label||m}: ${stored.files.size} file(s), ${Object.keys(this.builtWork(id)?.renamed||{}).length} renamed, ${stored.glue.size} of the builder's own.`);
     this.wake(m);
@@ -3952,11 +3949,12 @@ export class ControlRoom extends DurableObject {
   // (M1): compare and store. The piece's input and its owned digest are read
   // before the join, and the piece is stored, with those, only when both
   // read the same once it is joined and digested; when a child's work
-  // changed meanwhile it is joined again. null when the children kept
-  // changing (ASSEMBLE_TRIES joins).
+  // changed meanwhile it is joined again, until the two read the same: no
+  // count of joins ends it (a child's change is its turn, which the room's
+  // budget bounds).
   async assemblePiece(bid) {
     const m=this.node(bid).parent,start=Date.now();
-    for(let tries=0;tries<ASSEMBLE_TRIES;tries++) {
+    for(let tries=0;;tries++) {
       const input=this.pieceInput(m),owned=this.ownedDigest(m);
       const piece=await this.joinPiece(m,bid);
       const digest=await snapshotHash(piece.files);
@@ -3965,8 +3963,6 @@ export class ControlRoom extends DurableObject {
       this.span('piece','piece_link',start,Date.now(),{manager:m,builder:bid,depth:this.depthOf(m),files:piece.raw.size,glue:piece.glue.size,renamed:Object.keys(this.builtWork(bid)?.renamed||{}).length,...(tries?{joins:tries+1}:{})},m);
       return piece;
     }
-    this.event(bid,'piece_moving',`The work of ${this.node(m)?.label||m}'s children changed each time it was joined (${ASSEMBLE_TRIES} times); the builder joins it again on its next turn.`);
-    return null;
   }
   // One synchronous write: the piece's files and its record, for the input and owned digest it was joined from.
   storePiece(bid, piece, {input, owned, digest}) {
@@ -5478,8 +5474,8 @@ export class ControlRoom extends DurableObject {
   }
   // v8 live 4: each piece's packages, as its contracts are given: the names
   // the splitter gave it that this node's row lists; the others become the
-  // piece's asks once it exists (spawn); a piece given none gets this node's
-  // packages of its languages (src/packages.js piecePackages).
+  // piece's asks once it exists (spawn); a piece given none has none
+  // (src/packages.js piecePackages).
   planPackages(id, spawn) {
     const held=this.packagesOf(id),notes=[];
     const out=spawn.map(c=>{
@@ -8512,9 +8508,10 @@ export class ControlRoom extends DurableObject {
     const mine=name=>contracts.find(c=>c.name===name);
     // A rebuild hands down what the rows it replaces were handed: their uses, packages and refs.
     const handed=job?.kind==='rebuild'?{uses:job.uses||[],packages:job.packages||[],refs:job.refs||[]}:null,refs=handed?handed.refs:this.sourceRefs(id);
-    // A level handed down whole goes to its worker whole: every contract it holds, so every validation of it serves what the worker delivers and reaches it as examples.
+    // A level handed down whole goes to its worker whole: every contract it holds, so every validation of it serves what the worker delivers and reaches it as examples, and every package its row lists.
+    const whole=[...new Set([...this.packagesOf(id).map(p=>p.name),...(handed?.packages||[])])];
     const worker={label:job?.label||given.label,task:job?.text||given.prompt,interfaces:contracts,uses:handed?handed.uses:job?[]:given.calls,role:'worker',
-      ...(refs.length?{refs}:{}),...(handed?.packages.length?{packages:handed.packages}:{}),...(typeof this.heldDigest(id)==='string'?{base_digest:this.heldDigest(id)}:{})};
+      ...(refs.length?{refs}:{}),...(whole.length?{packages:whole}:{}),...(typeof this.heldDigest(id)==='string'?{base_digest:this.heldDigest(id)}:{})};
     const pieceUses=p=>[...new Set([...(p.uses||[]),...(handed?.uses||[])])].filter(x=>!p.contracts.includes(x));
     const specs=this.planPackages(id,pieces.length?pieces.map(p=>({label:p.label,task:p.task,interfaces:p.contracts.map(mine).filter(Boolean),...(pieceUses(p).length?{uses:pieceUses(p)}:{}),role:'manager',...(p.refs?{refs:p.refs}:handed?.refs.length?{refs:handed.refs}:{}),...(p.packages||handed?.packages.length?{packages:[...new Set([...(p.packages||[]),...(handed?.packages||[])])]}:{})})):[worker]);
     const key=`level:${id}:${this.levelBatches(id).length}`,batch=this.reserveSpawn(id,specs,key);
@@ -8525,10 +8522,12 @@ export class ControlRoom extends DurableObject {
     const made=await this.batchIds(id,batch),added=normalizeInterfaces(contracts,this.contractOpts());
     const entry=(s,i)=>({id:made[i],role:roleOf(s)||'manager',label:s.label,prompt:s.task,delivers:(s.interfaces||[]).map(c=>c.name),calls:s.uses||[]});
     const entries=specs.map(entry),written=level.validations.map(v=>({id:ids.get(v.id),serves:v.serves,check:v.check,...(v.says?{says:v.says}:{})}));
+    // A validation of a contract the level already has serves it too: the contract carries its id wherever it is delivered (serveBelow), so its worker gets the examples.
+    const joins=Object.fromEntries([...new Set(written.flatMap(v=>v.serves))].filter(name=>!added.some(c=>c.name===name)).map(name=>[name,written.filter(v=>v.serves.includes(name)).map(v=>v.id)]));
     // A commit that fails leaves the level as it was: its reservations are released (a restart's are, by the next admission).
     let landed=false;
     const release=e=>{if(!landed){this.db().exec('DELETE FROM spawn_batches WHERE batch_key=?',key);this.reserveValidations(id,0);}throw e;};
-    await this.updateLevel(id,cur=>({format:LEVELS_FORMAT,manager:id,contracts:[...(cur?.contracts||[]).filter(c=>!added.some(x=>x.name===c.name)),...added],children:[...(cur?.children||[]),...entries],
+    await this.updateLevel(id,cur=>({format:LEVELS_FORMAT,manager:id,contracts:[...(cur?.contracts||[]).filter(c=>!added.some(x=>x.name===c.name)).map(c=>joined(c,joins)),...added],children:[...(cur?.children||[]),...entries],
       validations:[...(cur?.validations||[]),...written],archived:cur?.archived||[]}),()=>{
       landed=true;
       for(const v of written)
@@ -8537,7 +8536,7 @@ export class ControlRoom extends DurableObject {
       // The manager's own contracts take the level's refined form (by name); a level that stated its own contracts holds them all.
       if(!job)this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(stated?contracts:own.map(c=>mine(c.name)||c)),id);
       this.save(`split_feedback:${id}`,null);
-      this.save(`level_job:${id}`,{...(job||{kind:'split'}),admitted:{contracts}});
+      this.save(`level_job:${id}`,{...(job||{kind:'split'}),admitted:{contracts,joins}});
       // The first level a room admits says which box its first compile needs.
       if(!this.get('prewarmed'))this.prewarmLevel(this.specOf(this.validationRows()));
       this.event(id,pieces.length?'split_admitted':'hand_down',clip(pieces.length?`Admitted ${pieces.length} pieces: ${pieces.map(p=>`"${p.label}" (${p.contracts.join(', ')})`).join('; ')}; ${level.validations.length} validation(s).`:`${why||'The level goes to one worker.'} ${level.validations.length} validation(s) of its own.`,1200));
@@ -8551,11 +8550,25 @@ export class ControlRoom extends DurableObject {
   async finishLevel(id) {
     const job=this.read(`level_job:${id}`,null);
     if(!job?.admitted)return;
-    const {contracts}=job.admitted;
+    const {contracts,joins={}}=job.admitted;
+    await this.serveBelow(id,joins);
     await this.baseContracts(id,[{interfaces:contracts}]);
     await this.spawnLevel(id);
     this.save(`level_job:${id}`,null);
     this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
+  }
+  // A level's new validations of contracts it already had (joins: {name:
+  // [ids]}): every live row below it that delivers one, and every level file
+  // there that lists one, has the ids in its serves; safe to run again.
+  async serveBelow(id, joins) {
+    if(!Object.keys(joins).length)return;
+    for(const r of this.subtree(id)) {
+      const n=this.node(r);
+      if(!n||['archived','retired'].includes(n.status))continue;
+      const mine=parse(n.interfaces,[]);
+      if(mine.some(c=>joins[c?.name]))this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(mine.map(c=>joined(c,joins))),r);
+      if(r!==id&&this.levelIndex(r))await this.updateLevel(r,cur=>cur&&cur.contracts.some(c=>joins[c.name])?{...cur,contracts:cur.contracts.map(c=>joined(c,joins))}:null);
+    }
   }
   // The batches a manager's levels reserved (level:<id>:<n>), in order, and the ids a batch's children have.
   levelBatches(id) { return query(this.db(),'SELECT batch_key,parent,start_index,specs FROM spawn_batches WHERE parent=? AND batch_key LIKE ? ORDER BY start_index',id,`level:${id}:%`); }

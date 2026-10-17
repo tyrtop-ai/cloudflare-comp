@@ -88,6 +88,29 @@ test('a builder stores its piece only for the inputs it joined: work written whi
   assert.equal(await shipped(r.room, 'shout.py'), NEWER);
 });
 
+// R7-worker/record-1: no count of joins (it was six) ends the compare and store, and a finished builder is never sent to a new session for it.
+test('a builder whose children\'s work changes under it on join after join keeps joining until it reads the same, and stores its finished work: no count of joins sends it to another session', {skip}, async () => {
+  const CHANGES = 9, version = k => `# shouts ${k}\ndef shout(s):\n    return str(s).upper() + "!"\n`;
+  const r = await room();
+  const join = r.room.joinPiece.bind(r.room);
+  let wrote = 0, sessions = null;
+  r.room.joinPiece = async (m, bid) => {
+    const piece = await join(m, bid);
+    if (bid && r.room.node(m)?.label === 'Shouter' && r.room.builderOf(m)?.status !== 'done' && wrote < CHANGES && r.room.node(bid).summary) {
+      sessions ??= events(r.room, 'session').filter(e => e.actor === bid).length;
+      wrote++; await r.room.putFile(r.room.children(m).find(c => c.role === 'worker').id, 'shout.py', version(wrote));
+    }
+    return piece;
+  };
+  await r.run();
+  assert.equal(r.room.get('status'), 'complete', tail(r.room));
+  assert.equal(wrote, CHANGES);
+  const m = at(r.room).Shouter, b = r.room.builderOf(m);
+  assert.equal(events(r.room, 'session').filter(e => e.actor === b.id).length, sessions, 'no new builder session after it called done');
+  assert.ok(!events(r.room, 'piece_moving').some(e => e.actor === b.id));
+  assert.equal(r.room.db().exec("SELECT content FROM piece_files WHERE builder=? AND path='shout.py'", b.id).toArray()[0].content, version(CHANGES), 'stored as it read once the joins read the same');
+});
+
 test('passedOn: a pass holds for the exact bundle it ran on and the validation as it reads now, at the row that ran it; a failure leaves that row none', {skip}, async () => {
   const r = await toolkit();
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
@@ -166,8 +189,9 @@ test('the base\'s files the box cannot hold (a binary) ship, with no hold, and t
   assert.equal(app.files.find(f => f.path === 'logo.bin').content_base64, bytes);
 });
 
-test('packages across pieces: each piece holds its parent\'s packages of its languages; a name a split gives that no row holds is the piece\'s ask; a worker\'s ask for a package its row holds is answered from its row, and one for a package it lacks goes to its manager, whose choice grants it (new, as any manager may) down the line', {skip}, async () => {
-  const split = user => { const a = splitFor()(user); return {...a, pieces: a.pieces.map(p => p.label === 'Shouter' ? {...p, packages: ['pytest', 'numpy']} : p)}; };
+test('packages across pieces: each piece holds the packages its splitter named that its parent\'s row lists, nothing more; a name a split gives that no row holds is the piece\'s ask; a worker\'s ask for a package its row holds is answered from its row, and one for a package it lacks goes to its manager, whose choice grants it (new, as any manager may) down the line', {skip}, async () => {
+  // Each splitter names pytest for its code pieces (and numpy for Shouter); Notes is named none.
+  const split = user => { const a = splitFor()(user); return {...a, pieces: a.pieces.map(p => p.label === 'Shouter' ? {...p, packages: ['pytest', 'numpy']} : p.label === 'Notes' ? p : {...p, packages: ['pytest']})}; };
   const asks = {loud: [{need: 'run tests', name: 'pytest'}], 'NOTES.md': [{need: 'run tests', name: 'pytest'}]};
   // Louder's ask is answered from its row within its session, so it goes on to done; Notes' ask goes to its manager, so it waits for the answer.
   // (R4-room/chrono-3: a worker's wait is its own call, and nothing wakes it but a message.)

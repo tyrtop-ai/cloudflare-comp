@@ -172,6 +172,24 @@ test('a change whose extension cannot be stated: its splitter goes on, each call
   assert.equal(r.room.promptRows().at(-1).status, 'done', 'the change\'s prompt is this run\'s');
 });
 
+// R7-splitter/record-1: owner 2026-10-16 05:49 ("The example sohuld be built from the validation").
+test('an extension\'s validation of a contract the level already has joins that contract\'s serves on every row and level file that carries it, so the worker delivering it gets its example', {skip}, async () => {
+  const base = splitFor(), SHOUT4 = call('s4', ['shout'], 'shout', 'Ok', 'OK!');
+  const split = user => user.contracts_you_have ? {contracts: [REVERSE], validations: [...REVERSED, SHOUT4], pieces: REVERSE_PIECES} : base(user);
+  const r = await toolkit({split, leaf: leafOf({answers: {reverse: REVERSE_PY}}), clef: clefFor(undefined, {'^route_to_': 0.1, '^split_size$': (_k, state) => /reverses a word/.test(state.assignment || '') ? 0.2 : 0.9})});
+  assert.equal(r.room.get('status'), 'complete', tail(r.room));
+  await r.room.amend('Also add a function that reverses a word, and check shout on Ok.');
+  await r.drain();
+  assert.equal(r.room.get('status'), 'complete', tail(r.room));
+  const m = at(r.room), v = r.room.validationRows().find(x => x.check.steps?.[0]?.args?.[0] === 'Ok');
+  assert.ok(v, 'the new validation is a row');
+  const shouter = r.room.children(m.Shouter).find(c => c.role === 'worker' && c.status !== 'archived').id;
+  for (const id of [m.Root, m['Loud part'], m.Shouter]) assert.ok(r.room.levelDesign(id).contracts.find(c => c.name === 'shout').serves.includes(v.id), `the level file of ${id} lists it on shout`);
+  for (const id of [m['Loud part'], m.Shouter, shouter]) assert.ok(JSON.parse(r.room.node(id).interfaces).find(c => c.name === 'shout').serves.includes(v.id), `the row ${id} serves it`);
+  const shout = r.room.workerView(shouter).prompt.deliver.find(c => c.name === 'shout');
+  assert.ok(JSON.stringify(shout.examples).includes('Ok'), 'the worker delivering shout gets the example built from it');
+});
+
 test('an ask no child\'s contract gives is never met by growing a level: no splitter extends one, each manager up to the room calls ask_parent, the asker is archived, and its rebuild delivers what it did; the room completes', {skip}, async () => {
   let asked = false;
   const leaf = leafOf({control: user => {
