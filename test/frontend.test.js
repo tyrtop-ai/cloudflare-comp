@@ -535,10 +535,10 @@ test('v8 S3: the Pipeline toggle follows the room and is sent with the settings'
 test('v8: the Levels panel lists each validation with its result, its check, what it serves, where it is held and Clef\'s marks; then the splitter steps',()=>{
   // A check that could not run (passed null) reads as untested; one from before the files changed is stale.
   const elements=renderWithPage(true,{settings:{pipeline:'v8'},...LEVELS,validation_status:{V2:{passed:false,detail:'exit 1'},V3:{passed:null,detail:'not run: the box did not start'},V1:{passed:true,stale:true}},
-    pause:{kind:'checks_failed',text:'The complaints left the files as they were.'},status:'paused'});
+    pause:{kind:'checks_failed',text:'No part of the level delivered a file to check.'},status:'paused'});
   const panel=elements.get('levels').innerHTML;
   assert.ok(panel.indexOf('VALIDATIONS')<panel.indexOf('SPLITTER STEPS'));
-  assert.match(panel,/<span class="event-type">checks_failed<\/span> The complaints left the files as they were\./);
+  assert.match(panel,/<span class="event-type">checks_failed<\/span> No part of the level delivered a file to check\./);
   assert.match(panel,/<span class="req-chip stale">stale<\/span> <b class="mono">V1<\/b> judge USAGE\.md: Does it show how to run it\? <span class="faint">· serves USAGE\.md · held by root\.2<\/span><\/li>/);
   assert.match(panel,/<span class="req-chip fail" title="exit 1">fail<\/span> <b class="mono">V2<\/b> command hello &lt;Ada&gt;/,'escaped');
   // Clef's marks below the bar are shown beside the validation; nothing it doubts is removed.

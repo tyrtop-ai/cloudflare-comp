@@ -274,7 +274,7 @@ test('roomOutcome: a completed room is graded; otherwise its status and hold dec
   assert.equal(roomOutcome({...base, status: 'running'}), null);
   assert.equal(roomOutcome({...base, status: 'paused', busy: true}), null);
   assert.equal(roomOutcome(base).outcome, 'complete');
-  assert.equal(roomOutcome({...base, status: 'paused', pause: {kind: 'checks_exhausted', text: 'x'}}).outcome, 'fail');
+  assert.equal(roomOutcome({...base, status: 'paused', pause: {kind: 'checks_failed', text: 'x'}}).outcome, 'fail');
   assert.equal(roomOutcome({...base, status: 'paused', pause: {kind: 'split_failed', text: 'x'}}).outcome, 'fail');
   assert.equal(roomOutcome({...base, status: 'paused', pause: {kind: 'checks_blocked', text: 'x'}}).outcome, 'error');
   assert.equal(roomOutcome({...base, status: 'paused', pause: null}).outcome, 'fail');

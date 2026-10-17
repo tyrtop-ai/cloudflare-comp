@@ -62,7 +62,7 @@ const query = (db, sql, ...args) => db.exec(sql, ...args).toArray();
 export const JUDGE_RETRY_MS = [500, 2000], CHECK_RETRY_MS = [30_000, 120_000, 600_000];
 // v8 S9: the queue's next prompt is applied by the alarm this long after the room finished;
 // a room held at one of these ended where only the user can go on (the queue's failure).
-export const PROMPT_ALARM_MS = 1000, FAIL_HOLDS = ['checks_exhausted', 'checks_failed', 'split_failed'];
+export const PROMPT_ALARM_MS = 1000, FAIL_HOLDS = ['checks_failed', 'split_failed'];
 // What a v8 room made before levels says to Continue, a change and a queued prompt.
 export const EARLIER_ROOM = 'This room was made by an earlier version, before level files, and does not run under this one. Its result can still be exported: start a new room, from this room\'s result if you like.';
 // U10: an anchored requirement's key: its id and a hash of what it says.
@@ -306,9 +306,6 @@ export const splitterRecord = out => JSON.stringify({reason: out.reason, rounds:
 // v8: a Clef mark below this reads as a doubt about a validation: shown
 // beside it, and first in a hold's text; the validation is never removed.
 export const VALIDATION_DOUBT_BAR = 0.5;
-// v8: the reports a level's compiler sends down before the level escalates,
-// and the rebuilds its splitter makes of what no live child delivers.
-export const MAX_LEVEL_ROUNDS = 6, MAX_REBUILDS = 3;
 // v8: the turns a run may take in a row that call no model (managers,
 // builders, compilers: none spends the budget), per live row and in all
 // beyond that; past it the room holds (turns_without_model) with the rows
@@ -759,8 +756,8 @@ export class ControlRoom extends DurableObject {
     return langs.length?all.filter(p=>!p.language||langs.includes(p.language)):all;
   }
   // v8: a room held at a stop only Continue moves on: what an agent sent up
-  // its line reached the room (escalate: checks_failed, checks_exhausted,
-  // split_failed, ...), the checks could not run (checks_blocked), or Clef
+  // its line reached the room (escalate: checks_failed, split_failed,
+  // ...), the checks could not run (checks_blocked), or Clef
   // could not answer (clef_blocked). The room records every hold that
   // reached it (room_holds), one per row it names (extra.agent: the row it
   // came from, which Continue wakes), and Continue answers them all; the
@@ -4186,16 +4183,9 @@ export class ControlRoom extends DurableObject {
     }
     return out;
   }
-  // The validation table in a sentence, for a hold's or an escalation's text (the dashboard's; no worker reads it).
-  checksSummary(head, list=this.validationRows()) {
-    const status=this.read('validation_status',{});
-    const pass=list.filter(v=>status[v.id]?.passed===true),fail=list.filter(v=>status[v.id]?.passed===false),untested=list.length-pass.length-fail.length;
-    return clip(`${head} ${pass.length} of ${list.length} validation${list.length===1?'':'s'} pass${fail.length?`; failing: ${fail.map(v=>`${v.id} (${clip(checkSummary(v.check),80)}): ${clip(status[v.id].detail,160)}`).join('; ')}`:''}${untested?`; ${untested} untested`:''}.`,1050);
-  }
   // The room holds at the validations: the agent that ran them waits on the
   // hold (the hold names it), and the run ends paused with the validation
-  // table (Continue runs them again). When repairs ran out, the failing
-  // validations Clef marked doubtful come first; the person decides about them.
+  // table (Continue runs them again).
   holdChecks(id, kind, head, again='Continue runs the checks again.') {
     this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
     this.holdRoom(kind,`${head} ${again}`,{agent:id});
@@ -4204,7 +4194,7 @@ export class ControlRoom extends DurableObject {
   // What a hold for failing validations tells the person first: those that
   // keep failing which Clef doubted, with its marks (they stay; the person decides).
   doubtNote(kind) {
-    if(!['checks_exhausted','checks_failed'].includes(kind))return '';
+    if(kind!=='checks_failed')return '';
     const status=this.read('validation_status',{}),marks=v=>Object.entries(v.notes||{}).filter(([,p])=>typeof p==='number'&&p<VALIDATION_DOUBT_BAR);
     const doubted=this.validationRows().filter(v=>marks(v).length&&status[v.id]?.passed===false);
     return doubted.length?`These validations keep failing and Clef doubted them: ${doubted.map(v=>`${v.id} (${marks(v).map(([k,p])=>`${k} p=${p.toFixed(3)}`).join(', ')})`).join('; ')}. Change them with a follow-up prompt, or Continue. `:'';
@@ -8491,7 +8481,7 @@ export class ControlRoom extends DurableObject {
     const held=this.v8()?this.roomHolds().filter(h=>h.kind!=='base_confirm'&&h.agent).map(h=>h.agent):[];
     if(this.v8())this.saveHolds(this.roomHolds().filter(h=>h.kind==='base_confirm'&&this.read('base_pending',[]).length));else this.save('paused_state',null);
     for(const id of held)if(this.node(id))this.wake(id);
-    this.db().exec("DELETE FROM meta WHERE key LIKE 'level_rounds:%' OR key LIKE 'rebuilds:%' OR key LIKE 'escalated:%' OR key LIKE 'compile_reported:%' OR key LIKE 'compile_blocked:%' OR key LIKE 'compile_infrastructure:%' OR key LIKE 'checks_retries:%'");
+    this.db().exec("DELETE FROM meta WHERE key LIKE 'escalated:%' OR key LIKE 'compile_reported:%' OR key LIKE 'compile_blocked:%' OR key LIKE 'compile_infrastructure:%' OR key LIKE 'checks_retries:%'");
     for(const n of this.allNodes().filter(x=>x.status==='failed'&&!isRuntimeNode(x))) {
       this.set(`failure_reason:${n.id}`,'');
       const worker=!this.manager(n.id),files=worker&&deliveredFiles(this.files(n.id)).length>0;
@@ -8872,8 +8862,7 @@ export class ControlRoom extends DurableObject {
   // wait for the next Continue; otherwise Continue answers every hold that
   // reached the room: checks_untested accepts the files that ship unchecked,
   // and each other hold (the validations, a split, an escalation, Clef) gives
-  // the row it names a fresh set of repair rounds, rebuilds and split
-  // attempts, and wakes it. The alarm's retry (autoResume) answers only the
+  // the row it names a fresh set of split attempts, and wakes it. The alarm's retry (autoResume) answers only the
   // checks_blocked holds.
   continueHold({grants=null}={}) {
     const all=this.roomHolds();
@@ -8887,9 +8876,9 @@ export class ControlRoom extends DurableObject {
       if(files){this.set('unchecked_accepted',files);this.save('unchecked_pending','');this.event('room','unchecked_accepted',clip(`The person accepted the project with the files that ship unchecked, as the hold listed them: ${accept.text||''}`,900));}
     }
     const rows=[...new Set(list.map(h=>h.agent||this.roomManager()||'').filter(Boolean))];
-    if(this.autoResume)for(const id of rows)this.db().exec("DELETE FROM meta WHERE key IN (?,?,?,?)",`compile_reported:${id}`,`level_rounds:${id}`,`rebuilds:${id}`,`escalated:${id}`);
+    if(this.autoResume)for(const id of rows)this.db().exec("DELETE FROM meta WHERE key IN (?,?)",`compile_reported:${id}`,`escalated:${id}`);
     else {
-      this.db().exec("DELETE FROM meta WHERE key LIKE 'compile_reported:%' OR key LIKE 'level_rounds:%' OR key LIKE 'rebuilds:%' OR key LIKE 'escalated:%' OR key LIKE 'checks_retries:%'");
+      this.db().exec("DELETE FROM meta WHERE key LIKE 'compile_reported:%' OR key LIKE 'escalated:%' OR key LIKE 'checks_retries:%'");
       this.save('checks_retry',null);
       this.revivePrompt();
     }
@@ -8898,7 +8887,7 @@ export class ControlRoom extends DurableObject {
       if(!agent)continue;
       if(hold.kind==='split_failed')this.save(`split_attempts:${agent.id}`,this.splitAttempts(agent.id).filter(a=>a.attempt===0));
       if(['waiting','ready'].includes(agent.status)) {
-        this.event('room','hold_continue',`Continue: "${agent.label}" goes on after ${hold.kind}, with a fresh set of repair rounds.`,agent.id);
+        this.event('room','hold_continue',`Continue: "${agent.label}" goes on after ${hold.kind}.`,agent.id);
         this.wake(agent.id);
       }
     }
@@ -9204,9 +9193,9 @@ export class ControlRoom extends DurableObject {
   }
   // The contracts of m's level that no live child delivers (an archived
   // child's, or one a complaint named): m's splitter rebuilds them, a new
-  // piece and worker with the same contracts and validations. True when a
-  // rebuild is under way; past MAX_REBUILDS, m escalates once and waits
-  // (false: nothing is under way, and nothing queues it again).
+  // piece and worker with the same contracts and validations, as often as
+  // they are orphaned (the room's budget bounds it). True when a rebuild is
+  // under way.
   async rebuildOrphans(m) {
     if(!this.levelIndex(m))return false;
     // What its level file says each child delivers.
@@ -9215,21 +9204,16 @@ export class ControlRoom extends DurableObject {
     const orphans=[...new Map([...gone.flatMap(delivers),...this.levelContracts(m).filter(c=>named.has(c.name))].filter(c=>!carried(c.name)).map(c=>[c.name,c])).values()];
     this.set(`orphans:${m}`,'[]');
     if(!orphans.length)return false;
-    const n=Number(this.get(`rebuilds:${m}`,'0'));
-    if(n>=MAX_REBUILDS) {
-      if(!this.escalatedRow(m))this.escalate(m,'split_failed',clip(`"${this.node(m)?.label||m}" rebuilt ${orphans.map(c=>c.name).join(', ')} ${MAX_REBUILDS} times, and no live child delivers ${orphans.length>1?'them':'it'}.`,900));
-      // The orphans stay named for the rebuild Continue allows.
-      this.set(`orphans:${m}`,JSON.stringify(orphans.map(c=>c.name)));
-      return false;
-    }
-    this.set(`rebuilds:${m}`,String(n+1));
-    const tasks=gone.filter(k=>delivers(k).some(f=>orphans.some(o=>o.name===f.name)));
+    // The rows it replaces: for each orphan, the last archived child that delivered it (an earlier one was replaced already).
+    const last=new Map();
+    for(const k of gone)for(const f of delivers(k))if(orphans.some(o=>o.name===f.name))last.set(f.name,k);
+    const tasks=[...new Set(last.values())];
     // What the rows it replaces were handed (the names their entries call, their packages and refs) is handed to what rebuilds them.
     const from=tasks.length?tasks:[this.node(m)],names=new Set(orphans.map(c=>c.name));
     const uses=[...new Set(from.flatMap(k=>this.designOf(k.id).calls))].filter(x=>!names.has(x));
     const packages=[...new Set(from.flatMap(k=>this.packagesOf(k.id).map(p=>p.name)))],refs=[...new Set(from.flatMap(k=>this.sourceRefs(k.id)))];
-    this.save(`level_job:${m}`,{kind:'rebuild',key:`${n+1}`,text:tasks.map(k=>this.designOf(k.id).prompt).join('\n\n')||this.designOf(m).prompt,label:tasks[0]?.label||this.node(m).label,own:orphans,uses,packages,refs});
-    this.event(m,'level_rebuild',clip(`No live child of "${this.node(m)?.label||m}" delivers ${orphans.map(c=>c.name).join(', ')}; its splitter rebuilds ${orphans.length>1?'them':'it'} (rebuild ${n+1} of ${MAX_REBUILDS}).`,600));
+    this.save(`level_job:${m}`,{kind:'rebuild',key:crypto.randomUUID(),text:tasks.map(k=>this.designOf(k.id).prompt).join('\n\n')||this.designOf(m).prompt,label:tasks[0]?.label||this.node(m).label,own:orphans,uses,packages,refs});
+    this.event(m,'level_rebuild',clip(`No live child of "${this.node(m)?.label||m}" delivers ${orphans.map(c=>c.name).join(', ')}; its splitter rebuilds ${orphans.length>1?'them':'it'}.`,600));
     return true;
   }
   // ---------- changes ----------
@@ -9485,8 +9469,6 @@ export class ControlRoom extends DurableObject {
     if(!runs.length&&!fresh.size&&!linkIssues.length&&!asks)return finish({ran:0});
     const input=`${digest}:${all.map(v=>v.id).join(',')}`;
     if(this.read(`compile_blocked:${id}`,null)?.input===input){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
-    // Unchanged since its complaints went down: the workers answered and left the files as they were.
-    if(this.read(`compile_reported:${id}`,null)?.input===input)return this.escalate(id,'checks_failed',clip(`The complaints the compiler of "${this.node(id)?.label||id}" sent down left its files as they were. ${this.checksSummary('Its validations:',all)}`,1100));
     if(!files.size)return this.escalate(id,'checks_failed',`No part of "${this.node(id)?.label||id}" delivered a file to check.`);
     if(runs.length)this.event(id,'checks_started',`Running ${runs.length} validation(s) on ${files.size} file(s) (snapshot ${digest.slice(0,14)}).`);
     else this.event(id,'piece_compiling',`Compiling ${fresh.size} of the ${files.size} file(s) of ${this.node(id)?.label||id}'s piece (snapshot ${digest.slice(0,14)}); no validation is due here.`);
@@ -9575,10 +9557,6 @@ export class ControlRoom extends DurableObject {
       this.event(id,'build_infrastructure',clip(why,950));
       return this.holdChecks(id,'checks_blocked',`The checks could not all run: ${clip(why,300)}.`,await this.scheduleCheckRetry(id));
     }
-    // Repair rounds: each report of this level is one; past the bound, the level escalates.
-    const rounds=Number(this.get(`level_rounds:${id}`,'0'))+1;
-    this.set(`level_rounds:${id}`,String(rounds));
-    if(rounds>MAX_LEVEL_ROUNDS)return this.escalate(id,'checks_exhausted',clip(`Repair rounds ran out at "${this.node(id)?.label||id}" (${MAX_LEVEL_ROUNDS}). ${this.checksSummary('Its validations:',all)}`,1100));
     const wave=crypto.randomUUID();
     this.db().exec("UPDATE problems SET status='closed',outcome='superseded',updated=? WHERE source=? AND status!='closed'",Date.now(),id);
     this.save(`compile_reported:${id}`,{input,wave,ts:Date.now()});

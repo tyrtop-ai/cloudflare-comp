@@ -150,16 +150,23 @@ const DOC_LEVEL = {contracts: [GUIDE], validations: [has('a', '80'), has('b', 'm
 const GUIDE_MD = '# Green tea\n\nHeat water to 80 degrees and steep for 2 minutes.\n';
 const CUPS = 'also say how many cups it makes';
 const DROP = 'drop the water temperature from the guide';
-// The worker writes the guide; with the cups change it adds a line; once told to drop the temperature it keeps it dropped.
+const NOTES = {name: 'NOTES.md', kind: 'doc', path: 'NOTES.md', does: 'brewing notes'};
+const NOTES_MD = '# Notes\n\nUse fresh leaves.\n';
+// The worker writes the guide; with the cups change it adds a line. A change about dropping the
+// temperature concerns no child: the manager extends its level, and its splitter cannot state an
+// extension the first time it is asked for it (it calls no function), so that run fails at
+// split_failed; asked again, it states brewing notes, which a worker of their own writes.
 function docRoom() {
-  let dropped = false;
-  const leaf = user => {
-    if (user.complaints.includes(DROP)) dropped = true;
-    if (user.complaints.includes(CUPS)) dropped = false;
-    const cups = user.complaints.includes(CUPS) || user.files.some(f => /cups/.test(f.content));
-    return deliver({'GUIDE.md': (dropped ? GUIDE_MD.replace('80 degrees', 'hot') : GUIDE_MD) + (cups ? '\nMakes 2 cups.\n' : '')});
+  const first = new Map();
+  const split = (user, n) => {
+    if (!user.contracts_you_have) return DOC_LEVEL;
+    if (!first.has(user.assignment)) first.set(user.assignment, n);
+    return first.get(user.assignment) === n ? 'not json at all' : {contracts: [NOTES], validations: [], pieces: []};
   };
-  return queueRoom({split: () => DOC_LEVEL, leaf, clef: usualClef({'^should_split$': 0.05})});
+  const leaf = user => user.prompt.deliver.some(c => c.path === 'NOTES.md') ? deliver({'NOTES.md': NOTES_MD})
+    : deliver({'GUIDE.md': GUIDE_MD + (user.complaints.includes(CUPS) ? '\nMakes 2 cups.\n' : '')});
+  const drop = state => state.item?.kind === 'change' && /drop/.test(state.item.text);
+  return queueRoom({split, leaf, clef: usualClef({'^should_split$': 0.05, '^route_to_\\d+$': (k, state) => drop(state) ? 0.1 : choiceP(k, state), '^extend$': (k, state) => drop(state) ? 0.9 : choiceP(k, state)})});
 }
 
 test('queue on failure: a prompt whose run fails holds the queue under stop, and Go on applies the next; under continue the next applies at once', async () => {
@@ -174,7 +181,7 @@ test('queue on failure: a prompt whose run fails holds the queue under stop, and
     await fire();
     const s = room.snapshot();
     assert.equal(s.prompts[0].status, 'failed', tail(room));
-    assert.match(s.prompts[0].outcome.error, /left its files as they were/);
+    assert.match(s.prompts[0].outcome.error, /could not state its level/);
     if (policy === 'stop') {
       assert.equal(s.prompts[1].status, 'queued');
       assert.match(s.queue_stopped, /the queue waits/);

@@ -196,7 +196,7 @@ test('a file that does not compile holds the run though every validation passes 
 // ------------------------------------------------------------------ the bundle that ships
 test('reach: a validation that passed in its piece fails on the bundle that ships (shout reads NOTES.md, which another piece places); the run does not complete', {skip}, async () => {
   const reads = 'import os\n\n\ndef shout(s):\n    return str(s).upper() + ("?" if os.path.exists("NOTES.md") else "!")\n';
-  const {room} = await toolkit({leaf: leafOf({answers: {shout: reads}})});
+  const {room} = await toolkit({leaf: leafOf({answers: {shout: reads}}), budget: 30});
   const m = at(room), top = await room.bundleFiles(m.Root), digest = await snapshotHash(top.files);
   assert.notEqual(room.get('status'), 'complete', tail(room));
   assert.equal(room.runFinished(), false);
@@ -208,7 +208,9 @@ test('reach: a validation that passed in its piece fails on the bundle that ship
   assert.equal(room.passedOn(s1, digest), false);
   const [shipped] = await runOn(room, [s1], top);
   assert.equal(shipped.passed, false);
-  assert.ok(['checks_failed', 'checks_exhausted'].includes(room.snapshot().pause?.kind), tail(room));
+  // Its complaint goes back round after round, and the run ends where the room's budget does, with nothing held.
+  assert.deepEqual(room.roomHolds(), [], tail(room));
+  assert.equal(room.get('budget_left'), '0');
 });
 
 // ------------------------------------------------------------------ the property

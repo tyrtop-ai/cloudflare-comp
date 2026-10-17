@@ -186,21 +186,21 @@ test('static to-do page: the browser validations run against the served page and
   assert.deepEqual(lintRequests(room,calls),[]);
 });
 
-// ------------------------------------------------------------ rounds exhausted: the room holds with the validation table
-test('rounds exhausted: validations that keep failing hold the room with the validation table, never fail it; the hold is applied once; Continue gives fresh rounds',async()=>{
+// ------------------------------------------------------------ repairs go on: no round cap, the budget is the bound
+test('repairs go on: validations that keep failing go back to the worker every round, with no round cap and no hold, until the room\'s turn budget ends; Continue goes on, and the room completes once the worker meets them',async()=>{
   let n=0,fixed=false;
   const writer=()=>fixed?wrote('README.md',GOOD_README):wrote('README.md',`# Project ${++n}\n\nSee the source.\n`);
   const {room,calls,drain}=v8Room({level:README_LEVEL,judge:readmeJudge,answers:{'README.md':[writer]}});
-  await room.start(README_GOAL,60,{pipeline:'v8'});
+  await room.start(README_GOAL,12,{pipeline:'v8'});
   await drain();
   assert.equal(room.get('status'),'paused',tail(room));
   assert.notEqual(theWorker(room).status,'failed');
-  const pause=room.snapshot().pause;
-  assert.equal(pause.kind,'checks_exhausted');
-  assert.match(pause.text,/Repair rounds ran out at "[^"]+" \(\d+\)\. Its validations: 0 of 3 validations pass; failing: V1 \(file README\.md contains "## Install"\): README\.md does not contain "## Install"/);
-  assert.equal(events(room,'paused').filter(e=>/checks_exhausted/.test(e.body)).length,1,'held once');
-  assert.ok(n>=3,`the worker repaired ${n} times before the rounds ran out`);
-  // Continue: a fresh set of rounds, and a worker that now meets the validations.
+  assert.deepEqual(room.roomHolds(),[],'nothing holds: the budget ended the run');
+  assert.equal(room.get('budget_left'),'0');
+  assert.match(events(room,'paused').at(-1).body,/Inference budget ended/);
+  assert.ok(n>6,`the worker was given the complaints ${n} times, past the six rounds the room used to stop at`);
+  assert.ok(events(room,'complaint_routed').length>=n-1,'every round sent its complaints down');
+  // Continue: the repairs go on, and a worker that now meets the validations completes the room.
   fixed=true;
   assert.equal((await room.resume(20)).status,'running');
   await drain();

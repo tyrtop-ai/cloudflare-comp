@@ -232,16 +232,17 @@ test('live 5: a file check matches modulo whitespace runs on both sides; a run i
 });
 
 // ------------------------------------------------------------ a doubted validation that keeps failing
-test('live 5: a validation Clef doubted that keeps failing holds the room for the person with Clef\'s marks; Continue keeps it, and nothing is deleted', async () => {
+test('live 5: a validation Clef doubted that keeps failing stays with its marks: the repairs go on until the room\'s budget ends, with no hold; Continue keeps it, and nothing is deleted', async () => {
   const plain = deliver({'GUIDE.md': FILES['GUIDE.md'].replace('80 degrees', 'hot')});
   let kept = false;
   const leaf = () => kept ? deliver({'GUIDE.md': FILES['GUIDE.md']}) : plain;
   const level = {contracts: [GUIDE], validations: VALIDATIONS.slice(0, 3), pieces: []};
   const clef = input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? 0.05 : k === 'exercises_0' ? 0.143 : 0.9}]))});
-  const r = await levelRoom({prompt: 'Write a short guide to brewing green tea.', split: () => level, leaf, clef}), {room} = r;
-  const hold = room.snapshot().pause;
-  assert.ok(['checks_failed', 'checks_exhausted'].includes(hold?.kind), tail(room));
-  assert.match(hold.text, /^These validations keep failing and Clef doubted them: V1 \(exercises p=0\.143\)\. Change them with a follow-up prompt, or Continue\. /);
+  const r = await levelRoom({prompt: 'Write a short guide to brewing green tea.', split: () => level, leaf, clef, budget: 8}), {room} = r;
+  assert.equal(room.get('status'), 'paused', tail(room));
+  assert.deepEqual(room.roomHolds(), [], 'nothing holds: the budget ended the run');
+  assert.ok(events(room, 'complaint_routed').length >= 3, 'its complaint went back to the worker round after round');
+  assert.match(events(room, 'validations_doubtful')[0].body, /^Clef doubts v1 \(exercises p=0\.143\); each is kept, marked\.$/i);
   assert.equal(room.validationRows().length, 3, 'never deleted');
   // Continue keeps it: the repairs go on, and here the worker meets it.
   kept = true;
