@@ -24,6 +24,12 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: The broker quotes an existing file or a linked page as it is. It drops the text heuristics and injection labels, which protect against something the function architecture already rules out.
 - Status: not done: this session's permission check refused the edit as a security weakening, so it waits for the owner's decision; the patch is saved at scratchpad audit/r2-worker-code-4.patch
 
+### R2-compiler/record-6: Only JavaScript, Python, TypeScript and shell exist in the box; other code types cannot run
+- drift, `src/toolchains.js:9`
+- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous || 05:17: "there shouldn't be any version pinning or code type pinning or specific prompt pinning."
+- Required: The box runs whatever code type the work is written in, with no fixed set of languages pinned by the runtime.
+- Status: reopened by the round 7 recheck (1 of 3 closed): The box still runs a fixed set of code types. Dockerfile.box installs Node, Python, Go, Rust, C/C++, Java, Ruby and PHP, and nothing else. CALL_EXTENSIONS (src/toolchains.js:246) is built only from the rows that have a call_adapter, and the TypeScript row covers only .ts/.mts/.cts (toolchains.js:177 | The fix (f041aa3, 039cc00) does not remove the pinned set of languages. It refuses the languages outside it when they are declared. src/toolchains.js:9-102 and :176-242 are still a fixed list of rows (JavaScript, Python, text, TypeScript, shell, Go, Rust, C, C++, Java, Ruby, PHP). CALL_EXTENSIONS (t
+
 ### R2-edges/chrono-1: Base files wait behind a person's grant (base_confirm hold), vetted by Clef and a text heuristic
 - extra, `src/room-inputs.js:259`
 - Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists. || 2026-10-15 15:52 (answering Claude's 'no editing repo files you didn't confirm'): "i mean the runtime should just make it architecturall …
@@ -41,6 +47,12 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Owner (2026-10-15 15:55): The benchmark's tampering scan. - wtf? that's inferrior || 2026-10-15 15:52: "otherwise for testing, they should just get their own little testing box instead of limiting what they can do" || 2026-10-16 05:39: "text heuristics - I don't understand what this is for. Like architecturally, this is protecting from someting that shouldn't happen."
 - Required: Drop the anti-tamper machinery (nonce, token pipe, unlinking, assertion counting). Get isolation the way the owner described, from the test running in its own box apart from the solution, and simply run the benchmark's tests.
 - Status: not done: this session's permission check refused the edit as a security weakening, so it waits for the owner's decision
+
+### R3-compiler/chrono-6: The box still pins a fixed set of code types; .jsx, .tsx, .kt, .cs, .swift and others are listed as code nothing compiles
+- unfixed, `src/toolchains.js:192`
+- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous || 05:17: "there shouldn't be any version pinning or code type pinning or specific prompt pinning."
+- Required: The box runs whatever code type the work is written in, with no runtime-pinned list of languages.
+- Status: reopened by the round 7 recheck (1 of 3 closed): Same claimed fix and same result as R2-compiler/record-6. The fix moved the language limit from the compiler (an infrastructure 'not run') to the splitter's contract() refusal (splitter.js:89, validations.js:28 uncallable), and the list is still fixed. .jsx/.tsx (React GUIs, which the owner complain | Same code as R2-compiler/record-6. The fixed rows in src/toolchains.js:176-242 remain. .jsx, .tsx, .kt, .cs and .swift are no row's extensions, so nothing compiles them. A function contract in one of them is refused at declaration (splitter.js:89 via validations.js:28 uncallable), and the refusal te
 
 ### R3-compiler/code-4: Call adapters run an anti-forgery protocol (nonce file, captured globals, supervisor/worker split) against the code they test
 - extra, `container/adapters/call.mjs:32`
@@ -66,6 +78,12 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: No path rule should refuse a worker's write. Anything a repository cannot hold should be outside the worker's world by construction, not a refusal text. Until then, the changelog, docs and test title must not claim there is no path rule.
 - Status: partly fixed (1c65a31: base_note no longer tells agents which existing files they may change). Still open: write_file refuses .git/ and over-long paths (unheldPath), because the artifact store, the export and the box cannot hold them; making any path holdable is shared with v7. For the owner.
 
+### R4-compiler/chrono-1: Call checks work only for JavaScript and Python: a function in any other language gets a false 'defines no X a call reaches' complaint
+- drift, `src/checks.js:38`
+- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
+- Required: A function contract the box accepts in any language can be called by a check: the box runs the call in that language. The compiler does not report a defined function as missing because the runtime lacks an adapter for it.
+- Status: reopened by the round 7 recheck (1 of 3 closed): The required outcome is: 'The compiler does not report a defined function as missing because the runtime lacks an adapter for it.' It is still possible. (1) call-native.mjs:241 and :293-294 test each step's name against a fixed per-language regex (Rust /^[A-Za-z_]\w*(::[A-Za-z_]\w*)*$/ at :111, C /^ | The false 'defines no X' complaint is gone for files with no adapter: they are now refused at declaration. But commit 039cc00 changed container/build-runner.mjs:974-975 so that `rec.unsupported`, the adapter's own inability to build an argument from JSON, is now `fail(...)`, a worker complaint, wher
+
 ### R4-compiler/chrono-2: The runtime guesses which module a call check loads by scanning every bundle file for the function name, instead of using the served contract's path
 - extra, `src/checks.js:32`
 - Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
@@ -84,11 +102,23 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: Store and quote the linked page as it reads, dropping the anti-injection hiding rules and the envelope escaping. Isolation comes from the architecture (functions, not parsed messages), not from text heuristics.
 - Status: the fetcher's injection heuristics on linked pages: the same security question as R2-worker/code-4, waiting on the owner
 
+### R5-compiler/chrono-2: Function contracts in Go, Rust, Java, C, C++ or shell can never be called by a check; the compiler retries them as infrastructure for ever
+- unfixed, `src/checks.js:110`
+- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
+- Required: Any language the box accepts must be callable by a check: the box runs the call in that language, so a function contract in Go, Rust, Java, C or C++ is checked like a JavaScript one.
+- Status: reopened by the round 7 recheck (1 of 3 closed): Go, Rust, Java, C, C++ and shell now have a call adapter (src/toolchains.js:189, 202, 209, 221, 225, 229; container/adapters/call-native.mjs). They are still not 'checked like a JavaScript one'. A step whose parameter type the adapter cannot build from JSON (a C struct pointer, for example) becomes  | Go, Rust, Java, C, C++ and shell now have call adapters (toolchains.js:189-229), and nothing reruns as infrastructure for ever. But they are not 'checked like a JavaScript one'. Every adapter refuses parameter types it cannot build from JSON: call-cpp.hpp:119, call-go.go:118, call-rust.rs:231, CallW
+
 ### R5-edges/code-1: A base repo's glue/ and .recursive/ files, and names with format characters or not in NFC, are dropped before any agent sees them
 - unfixed, `src/room-inputs.js:99`
 - Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
 - Required: Keep every file of the repo the room starts from in the agents' world as it is. No directory-name list, character heuristic or length rule decides which of the project's files exist.
 - Status: waiting on the owner: the glue/ and .recursive/ drop is gone (9de17da); a repo path sanitizeText would change (format or invisible characters, not NFC, an envelope) is still skipped as 'unsafe path'. That is the fetcher's injection heuristic applied to file names, which waits on the owner with R2-worker/code-4. reopened by the round 6 recheck (0 of 3 closed): keepBaseFiles no longer drops glue/ or .recursive/ by name (src/room-inputs.js:87-99). But fetchGithubRepo still skips every repo path that sanitizeText would change: `if (!safePath(path) || sanitizeText(path) !== path) return skip(..., 'unsafe path')
+
+### R6-worker/chrono-3: The broker clips what a worker sees of a linked page: the title to 120 characters and the source URL in an answer's label to 500
+- extra, `src/broker.js:57`
+- Owner (2026-10-16 19:41): how is this possible - this is the place where i WANT worker context? (also 2026-10-17 00:25: "it wasn't the question. I don't understand the need")
+- Required: Give the worker the page's title and source as they are, with no character clip chosen by the runtime.
+- Status: reopened by the round 7 recheck (1 of 3 closed): The broker's own clips are gone (70a29de): broker.js catalogue uses sanitizeText(s.title) and sourceAnswer uses sanitizeText(url), with no slice. But the worker still gets the page title and URL cut by the runtime. workerView puts this.sourceInputs(id,'chunks') into the worker's world (src/index.js: | 70a29de only took the slices out of broker.js (catalogue :57, sourceAnswer :98). The worker still gets clipped titles and URLs in two ways. (1) Its view's world includes this.sourceInputs(id,'chunks') (index.js:9004). That goes through chunksFor (room-inputs.js:242) to quoteSource (fetcher.js:619-62
 
 ### R6-compiler/chrono-1: Every check, run and install in the box runs under prlimit caps the owner never asked for (processes, a 64 MiB file size limit, 1 GiB data)
 - extra, `container/build-runner.mjs:445`
@@ -96,199 +126,105 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: Drop the per-check resource limits. The checks get their own single-use box, and that box is the isolation. Nothing inside it limits what the code under test may do.
 - Status: not done: this session's permission check refused removing the box's prlimit caps (processes, file size, data) as a security weakening, so it waits for the owner's decision.
 
+### R6-compiler/chrono-3: The box adds assertions the splitter never wrote: exit codes inferred from stdout_has/stderr_has, HTTP 5xx and page 4xx fail a check that states no status
+- drift, `container/build-runner.mjs:844`
+- Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
+- Required: Run each check exactly as the splitter wrote it, asserting only the expectations it declares. Whatever is asserted must be in the validation, and so in the example the worker is shown.
+- Status: reopened by the round 7 recheck (0 of 3 closed): The fix is only partial. Inside the runs' network namespace a run counts as ready on any HTTP answer (http-check.mjs pollReady). Without a namespace, waitReady still requires a status below 500: build-runner.mjs:886 has `if(r.status<500)return {ready:true}`, and the comment at 873 says 'Ready: below | The command and HTTP parts are fixed. runCommand asserts an exit only when e.exit is set (build-runner.mjs:841-844). http-check's runHttpSteps has no implicit 5xx failure (http-check.mjs:99-104). browser goto no longer fails on a status (browser-check.mjs:196-201). The ledger also says 'a run ready  | Command checks are fixed: build-runner.mjs:840-846 asserts an exit only when e.exit is set, and validations.js:141-142 stores exit 0 in the validation itself, so the example shows it. The http client has no 5xx rule (http-check.mjs:99), and pollReady accepts any status (deed89e). But the runner's ow
+
 ### R6-compiler/code-3: The box refuses a command check's input file at a path the bundle also holds, and the refusal goes to a worker as its failure
 - extra, `container/build-runner.mjs:830`
 - Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
 - Required: Drop the fixture path refusal. Write the check's input files as the splitter declared them into the check's fresh copy, so the check runs as written. Make no path rule that sends a complaint to a worker about something it did not write.
 - Status: not done: this session's permission check refused letting a check's input file replace a bundle file in the check's own copy (dropping the path refusal) as a security weakening, so it waits for the owner's decision.
 
+### R7-room/record-1: A person's follow-up change reaches a worker as a '[complaint]' carrying the room's goal text verbatim, outside its prompt, and a test pins it
+- drift, `src/index.js:8980`
+- Owner (2026-10-16 05:44): the workers shouldn't know about their siblings. or about the overall project goal. it should be literally getting handed (here is your prompt, okay have fun now) after something decided it shouldnt' split
+- Required: Don't hand the room's goal change to a worker as a complaint. A worker gets only its prompt, its files and the complaints about what its files did, so a change that concerns a worker must reach it as part of the prompt it is handed, not as goal text labelled as an observation.
+- Status: to be fixed (round 7 fixer)
+
+### R7-room/record-2: An answered ask makes the runtime rewrite level-file entries: the asker's and every intermediate manager's assignment gain the answered name as a call
+- drift, `src/index.js:8886`
+- Owner (2026-10-16 05:39): Managers rewrite their children's assignments at runtime. - this is why managers are clef. Clef is built to walk the tree and route questions. The builder can know what the original design is from the splitter, sure, but the manager doesn't need to know that, that's why we use an artifact for that.
+- Required: A manager answers the ask (the asker hears the contract) and routes. It does not rewrite its children's assignments in the splitter's design artifact, so the level file keeps the original design the splitter wrote.
+- Status: to be fixed (round 7 fixer)
+
+### R7-splitter/code-1: Admitting a level gives every piece all its parent's packages for a guessed language, whatever packages the splitter named for it
+- extra, `src/packages.js:83`
+- Owner (2026-10-15 22:11; 2026-10-16 20:38): packages should be listed in the durable object upon creation, same way as interfaces. That way it can have the same hierarchy as interfaces || e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
+- Required: Give a piece the packages the splitter named for it through piece(), nothing more, the same way it gets only the contracts named for it. Drop the language-guess inheritance.
+- Status: to be fixed (round 7 fixer)
+
+### R7-splitter/record-1: A validation a job writes for a contract the level already has never joins that contract's serves, so its examples reach no worker though the level's compiler checks it
+- drift, `src/index.js:8510`
+- Owner (2026-10-16 05:49 / 05:50): the worker doesn't get validations. The example sohuld be built from the validation. || there must 3 different examples for each contract
+- Required: Every contract that a validation serves must carry that validation's id, including contracts the level already had, so the worker who delivers the contract gets its examples, rendered from the validation.
+- Status: to be fixed (round 7 fixer)
+
+### R7-worker/record-1: The builder's compare-and-store gives up after an invented six joins, then re-runs the whole builder session on the room's budget
+- extra, `src/index.js:131`
+- Owner (2026-10-17 00:25): it wasn't the question. I don't understand the need (answering Claude's 'The 100-call cap was my own invention. I'd drop it and count each call against the room's turn budget'); also 2026-10-15 23:16: "no? there should be no stopgaps? ever?"
+- Required: Drop the runtime-picked count. Keep joining and comparing until the children's work reads the same, and store the builder's finished work. No invented number should decide that a model turn is spent again.
+- Status: to be fixed (round 7 fixer)
+
+### R7-compiler/chrono-1: Without a network namespace, a run is ready only when its ready path answers below 500: an assertion no validation states
+- unfixed, `container/build-runner.mjs:886`
+- Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
+- Required: Treat any answer on the ready path as ready in both branches, as pollReady already does, so that a check asserts only what its validation states.
+- Status: to be fixed (round 7 fixer)
+
+### R7-compiler/chrono-2: Function contracts are still refused in every language outside the box's fixed call-adapter list (.jsx, .tsx, .kt, .cs, .swift), and a test pins it
+- unfixed, `src/toolchains.js:246`
+- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
+- Required: Let the box run and call code in whatever language the work is written in, rather than refusing contracts outside a fixed list. Drop the test that pins the refusal of those languages.
+- Status: to be fixed (round 7 fixer)
+
+### R7-compiler/chrono-3: The browser check blocks every request a page makes to anything but the served origins (proxy to 127.0.0.1:1, host-resolver rules, route abort), inside the single-use box
+- extra, `container/adapters/browser-check.mjs:264`
+- Owner (2026-10-15 15:52): i mean the runtime should just make it architecturally impossible for the agents to do something. e.g. only exposing what they have access to so that the agents only know what they exist. otherwise for testing, they should just get their own little testing box instead of limiting what they can do
+- Required: Drop the browser's own request blocking. Let the page run in the check's box as the box is, with the box as the isolation.
+- Status: to be fixed (round 7 fixer)
+
+### R7-compiler/code-1: Call adapter's own limits (a parameter type it cannot build from JSON) go to a worker as a complaint
+- drift, `container/build-runner.mjs:975`
+- Owner (2026-10-16 19:44): 1 & 2 are not issues with the worker. How woulda complaint conflict with the prompt 3 & 4 are issues with the runtime / routing
+- Required: An adapter's inability to call a defined function is the runtime's issue, not a worker's complaint. Fix it in the runtime (the adapter calls the function in its language) rather than sending it to the worker as its failure.
+- Status: to be fixed (round 7 fixer)
+
+### R7-compiler/code-2: Native call adapter decides by an ASCII name regex that a defined function does not exist
+- extra, `container/adapters/call-native.mjs:294`
+- Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
+- Required: Call the function by the name the contract declares, as its language reads it, with no runtime name pattern deciding that it is missing. Only the compiler's own answer says whether the file defines it.
+- Status: to be fixed (round 7 fixer)
+
+### R7-edges/chrono-1: A linked page's title is still cut to 200 characters, and its URL to 500, before any splitter or worker sees it: the R6-worker/chrono-3 fix only removed the broker's copy of the clip
+- unfixed, `src/fetcher.js:620`
+- Owner (2026-10-16 19:41; 2026-10-17 00:25): how is this possible - this is the place where i WANT worker context? || it wasn't the question. I don't understand the need
+- Required: Store and quote a linked page's title and URL as they are, with no character clip chosen by the runtime, in fetchSource, loadSources, quoteSource and sourceSummaries, so the worker and the splitter get them whole.
+- Status: to be fixed (round 7 fixer)
+
+### R7-edges/chrono-2: The benchmark loader refuses dataset links the owner's allowlist covers: it narrows FETCH_ALLOW to two hard-coded hosts
+- extra, `src/bench.js:35`
+- Owner (2026-10-15 05:16): 2. I want to be able to point this thing at links and benchmarks, like AI benchmarks
+- Required: Fetch a benchmark from any link the owner's own allowlist covers, as the goal's links are fetched, with no runtime-picked subset of hosts.
+- Status: to be fixed (round 7 fixer)
+
+### R7-edges/chrono-3: Bench cuts each task id to 80 characters, then silently skips any later row whose cut id matches an earlier one
+- extra, `src/bench.js:135`
+- Owner (2026-10-15 05:16; 2026-10-17 00:25): 2. I want to be able to point this thing at links and benchmarks, like AI benchmarks || it wasn't the question. I don't understand the need
+- Required: Use each row's id as written, with no runtime length cap, so a benchmark's tasks are every row it holds, and list every skipped row.
+- Status: to be fixed (round 7 fixer)
+
+### R7-records/chrono-1: how-it-works and INSTALL still say a call step whose parameter type cannot be built from JSON is infrastructure (rerun, never a complaint), the behaviour 039cc00 removed
+- record, `docs/how-it-works.md:411`
+- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
+- Required: Rewrite how-it-works.md:411 and INSTALL-CLOUDFLARE.md:335 to say what the box does: a step the call adapter cannot build from JSON is what the check observed, a failed step that goes back as a complaint. Remove it from the list of checks that could not run.
+- Status: to be fixed (round 7 fixer)
+
 ## Fixed, awaiting recheck
 
-### R2-compiler/record-6: Only JavaScript, Python, TypeScript and shell exist in the box; other code types cannot run
-- drift, `src/toolchains.js:9`
-- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous || 05:17: "there shouldn't be any version pinning or code type pinning or specific prompt pinning."
-- Required: The box runs whatever code type the work is written in, with no fixed set of languages pinned by the runtime.
-- Fixed in: f041aa3 + 039cc00: a function contract or call check in a language the box has no call adapter for (.jsx, .tsx, .kt, .cs, .swift) is refused at declaration with the reason and the extensions the box calls (the splitter's box view lists them); a call step the adapter cannot build from JSON is an observed failure, a complaint, not infrastructure, so nothing reruns unchanged every turn.
-
-### R3-compiler/chrono-6: The box still pins a fixed set of code types; .jsx, .tsx, .kt, .cs, .swift and others are listed as code nothing compiles
-- unfixed, `src/toolchains.js:192`
-- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous || 05:17: "there shouldn't be any version pinning or code type pinning or specific prompt pinning."
-- Required: The box runs whatever code type the work is written in, with no runtime-pinned list of languages.
-- Fixed in: f041aa3 + 039cc00: a function contract or call check in a language the box has no call adapter for (.jsx, .tsx, .kt, .cs, .swift) is refused at declaration with the reason and the extensions the box calls (the splitter's box view lists them); a call step the adapter cannot build from JSON is an observed failure, a complaint, not infrastructure, so nothing reruns unchanged every turn.
-
-### R4-compiler/chrono-1: Call checks work only for JavaScript and Python: a function in any other language gets a false 'defines no X a call reaches' complaint
-- drift, `src/checks.js:38`
-- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
-- Required: A function contract the box accepts in any language can be called by a check: the box runs the call in that language. The compiler does not report a defined function as missing because the runtime lacks an adapter for it.
-- Fixed in: f041aa3 + 039cc00: a function contract or call check in a language the box has no call adapter for (.jsx, .tsx, .kt, .cs, .swift) is refused at declaration with the reason and the extensions the box calls (the splitter's box view lists them); a call step the adapter cannot build from JSON is an observed failure, a complaint, not infrastructure, so nothing reruns unchanged every turn.
-
-### R5-splitter/chrono-1: A splitter session's held offer of agent slots puts a sibling's hand-down into the split_capacity hold for the person
-- unfixed, `src/index.js:8476`
-- Owner (2026-10-16 19:53): why, I keep commenting that this shouldn't happen, and the runtime keeps introducing failure cases
-- Required: No division or hand-down inside the person's agent and depth limits may end in a split_capacity hold. Remove the failure case the runtime's own slot reservation creates, rather than turning it into a hold for the person.
-- Fixed in: 35d1921: under v8 an archived row takes no agent slot; a manager owing a rebuild or extension (a pending level_job, or a contract no live child delivers) is owed its worker, so a rebuild never ends in split_capacity. (with 337d537's live bound and take at done).
-
-### R5-splitter/record-2: Three copies of the same call count as three different examples, because each step's example repeats the steps before it
-- drift, `src/validations.js:347`
-- Owner (2026-10-16 05:50): there must 3 different examples for each contract
-- Required: Count a contract's examples by what differs between them, so three repetitions of one call or request are one example, and done() reports the contract as short until it has three different examples.
-- Fixed in: 53d58e9: an example's key is its step without its save, and a $name reference is replaced by the key of the step that saved it, so copies under different save names count once. (with 6faacb3's keyedExamples).
-
-### R5-compiler/chrono-2: Function contracts in Go, Rust, Java, C, C++ or shell can never be called by a check; the compiler retries them as infrastructure for ever
-- unfixed, `src/checks.js:110`
-- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
-- Required: Any language the box accepts must be callable by a check: the box runs the call in that language, so a function contract in Go, Rust, Java, C or C++ is checked like a JavaScript one.
-- Fixed in: f041aa3 + 039cc00: a function contract or call check in a language the box has no call adapter for (.jsx, .tsx, .kt, .cs, .swift) is refused at declaration with the reason and the extensions the box calls (the splitter's box view lists them); a call step the adapter cannot build from JSON is an observed failure, a complaint, not infrastructure, so nothing reruns unchanged every turn.
-
-### R5-edges/chrono-2: An existing repo must download within an invented 30-second deadline, or the run cannot start from it
-- extra, `src/base.js:18`
-- Owner (2026-10-17 00:25 / 2026-10-16 05:39): it wasn't the question. I don't understand the need (answering Claude's 'The 100-call cap was my own invention') || (05:39) They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
-- Required: Read the repo whole, with no runtime-picked deadline deciding whether the agents get their starting project. The read is bounded only by what the owner sets.
-- Fixed in: 237f806 (the linked-page half) with 9de17da (the repo half): no read deadline on a repo, a dataset or a linked page.
-
-### R6-room/code-1: continueHold's comment says Continue gives the held row a fresh set of split attempts, which nothing does
-- record, `src/index.js:8577`
-- Owner (2026-10-16 05:12): literally every manager tries to split, model can retry twice with different split parameter
-- Required: Make the comment say what Continue does: it clears the holds and wakes the rows they name. Don't describe a reset of split attempts, since the owner gave a split two retries.
-- Fixed in: b966153: continueHold's comment says Continue clears the holds and wakes the rows they name.
-
-### R6-room/record-2: Start keeps only the first 64 existing-file paths the person grants; the rest are silently dropped and wait at base_confirm
-- extra, `src/index.js:7831`
-- Owner (2026-10-17 00:25; 2026-10-15 23:16): it wasn't the question. I don't understand the need || (2026-10-15 23:16) no? there should be no stopgaps? ever?
-- Required: Take every path the person grants at Start, with no count cap the owner never set.
-- Fixed in: d85056c: start() and /api/continue keep every path the person grants (no slice(0,64)).
-
-### R6-splitter/chrono-1: A rebuild or extend job's hand-down still ends in a split_capacity hold, because archived rows keep their agent slots and a pending job is owed none
-- unfixed, `src/index.js:8503`
-- Owner (2026-10-16 19:53; 2026-10-16 05:39): why, I keep commenting that this shouldn't happen, and the runtime keeps introducing failure cases || If clef is able to walk up the inference tree to root and not find the scope to root, then kill that agent. But now we have compensating controls to rebuild code that is missing (right?)
-- Required: The rebuild the owner relies on as a compensating control must not end in a hold. An archived row should not keep a slot the rebuild needs, and a manager's pending job should be owed its worker the way an unlevelled manager's hand-down is.
-- Fixed in: 35d1921: under v8 an archived row takes no agent slot; a manager owing a rebuild or extension (a pending level_job, or a contract no live child delivers) is owed its worker, so a rebuild never ends in split_capacity.
-
-### R6-splitter/chrono-2: contract() still runs v7's JS-shaped signature parser on every function name, so Store::create and similar names in other languages are refused without a reason
-- unfixed, `src/contracts.js:125`
-- Owner (2026-10-15 05:16; 2026-10-16 20:38; 2026-10-16 20:40): 1. more code that just js. Any code type. should be adrogenous || e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
-- Required: Store a function contract's name as the splitter wrote it, judged only by its own language's rule. Drop the v7 signature parsing from the v8 contract path, and when a name cannot be stored, say exactly why.
-- Fixed in: 53d58e9: contractItem stores a v8 function name as written (no v7 signature parsing); Store::create and Vec::new stay whole.
-
-### R6-splitter/chrono-3: A non-top level handed down to one worker keeps validations for contracts the worker is never given, so it gets no examples for checks it is compiled against
-- drift, `src/index.js:8496`
-- Owner (2026-10-16 05:49; 2026-10-16 05:16): the worker doesn't get validations. The example sohuld be built from the validation. || even if the problem doesn't split, it's still handing it down to a worker
-- Required: A level handed down whole goes to the worker whole: the worker gets every contract the admitted level holds, with each example rendered from the validations that serve it, so that every validation its files are checked by reaches it as examples.
-- Fixed in: 35d1921: a level handed down to one worker gives it every contract the level holds, each with its examples.
-
-### R6-splitter/code-1: done() counts other contracts' calls and requests as a contract's three different examples, so a route or function with one example of itself completes the level
-- unfixed, `src/validations.js:363`
-- Owner (2026-10-16 05:50): there must 3 different examples for each contract
-- Required: Give a contract a count of three only from different examples that exercise that contract: steps that call or request it, checks that run it. done() should report it as short until then. The steps before it can stay as the state each example starts from.
-- Fixed in: 53d58e9: ownExamples counts only examples that exercise the contract (a call of the function, a request of the route, a run of the command).
-
-### R6-splitter/record-1: Clef's piece_reach answers are kept only for the last 200 check/digest keys (slice(-200)), so older answers are dropped and Clef is asked again on the room's budget
-- extra, `src/index.js:4067`
-- Owner (2026-10-17 00:25): it wasn't the question. I don't understand the need
-- Required: Keep every piece_reach answer per check key and piece digest, with no count picked by the runtime.
-- Fixed in: 35d1921: pieceScope keeps every piece_reach answer (no slice(-200)).
-
-### R6-splitter/record-3: Three copies of one call or request still count as three different examples when each step saves under a different name
-- unfixed, `src/validations.js:318`
-- Owner (2026-10-16 05:50): there must 3 different examples for each contract
-- Required: Count a contract's examples by what differs in the call or request itself (its function or method and path, its inputs and what it observes), so that repeating one call under another save name does not count as a new example.
-- Fixed in: 53d58e9: an example's key is its step without its save, and a $name reference is replaced by the key of the step that saved it, so copies under different save names count once.
-
-### R6-worker/chrono-1: A v8 worker that calls wait with nothing outstanding is never woken; the room pauses and Continue cannot restart it
-- drift, `src/index.js:9041`
-- Owner (2026-10-16 19:53): why, I keep commenting that this shouldn't happen, and the runtime keeps introducing failure cases (also 2026-10-16 05:30: "the room should be able to tell when its done by observing the final compiler. That's it")
-- Required: The runtime must not create this dead end. A worker's turn must not be able to end in a state that nothing will wake, so the room never stalls short of what its final compiler observes. Fix it through the functions the worker is given, not with a runtime nudge.
-- Fixed in: 7f4329c: wait is offered only while something the worker asked for is unanswered (workerTools reads outstanding() each round), so a wait with nothing to wait for cannot happen.
-
-### R6-worker/chrono-2: The builder's rename accepts only JavaScript-style names and uses JavaScript identifier boundaries, so it cannot rename names in other languages and can corrupt them
-- extra, `src/builder.js:28`
-- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous (also 2026-10-16 05:21: "builder - writes glue between the interfaces created by the worker. can edit interface names")
-- Required: Let the builder rename an interface name in whatever language the file is written, as that language delimits its names. Drop the runtime's fixed JavaScript character set from both the refusal and the boundary.
-- Fixed in: 7f4329c: the builder's rename has no name regex; it is given name_characters, the characters its language allows in a name, and matches whole names by them.
-
-### R6-worker/chrono-3: The broker clips what a worker sees of a linked page: the title to 120 characters and the source URL in an answer's label to 500
-- extra, `src/broker.js:57`
-- Owner (2026-10-16 19:41): how is this possible - this is the place where i WANT worker context? (also 2026-10-17 00:25: "it wasn't the question. I don't understand the need")
-- Required: Give the worker the page's title and source as they are, with no character clip chosen by the runtime.
-- Fixed in: 70a29de: the broker gives a linked page's title and URL whole (no 120 and 500 character slices).
-
-### R6-worker/record-2: The worker's ask text says anything available by name is answered at once, but a name it may call goes to its manager
-- record, `src/prompts.js:113`
-- Owner (2026-10-16 20:43): i mean, think about it. worker asks it manager (clef) where does it this go, clef walks up the tree to find it, which is a function
-- Required: Make the ask text say what happens: only what the worker's own world holds (its own contracts, its packages, the files and page parts given to it) is answered at once. Every other ask, including one for a name it may call, goes to its manager.
-- Fixed in: 7f4329c: the ask text says what is answered at once (what it delivers, its packages, the files and page parts given to it) and that any other ask, a callable name included, is sent and answered next turn.
-
-### R6-compiler/chrono-2: Box start-up retries on an invented schedule (250-1500 ms, 5 tries), chosen by a regex over the error text
-- extra, `src/build-executor.js:22`
-- Owner (2026-10-16 05:39): text heuristics - I don't understand what this is for. Like architecturally, this is protecting from someting that shouldn't happen.
-- Required: Remove the error-text regex and the invented retry schedule from the box's start. A box that does not start is what was observed, handled like any other box failure, with no runtime-chosen count or wording decides whether it is tried again.
-- Fixed in: d9f40a9: Box.boot runs its readiness command once; a box that does not start is the open's failure (no error-text regex, no retry schedule on the v8 path; v7's BuildExecutor keeps its own).
-
-### R6-compiler/chrono-3: The box adds assertions the splitter never wrote: exit codes inferred from stdout_has/stderr_has, HTTP 5xx and page 4xx fail a check that states no status
-- drift, `container/build-runner.mjs:844`
-- Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
-- Required: Run each check exactly as the splitter wrote it, asserting only the expectations it declares. Whatever is asserted must be in the validation, and so in the example the worker is shown.
-- Fixed in: fd88db3 + the next commit: a check asserts only what its validation states (no exit inferred from stdout/stderr expectations, no implicit HTTP 5xx or page 4xx failure, a run ready once its ready path answers at all).
-
-### R6-edges/chrono-1: Linked pages still fail on an invented 10-second whole-fetch deadline (folded into R5-edges/chrono-2, not fixed)
-- unfixed, `src/fetcher.js:22`
-- Owner (2026-10-17 00:25): it wasn't the question. I don't understand the need
-- Required: Remove the runtime-picked deadline from fetchSource, so a linked page is read whole, as the repo and the dataset now are. Its reading is bounded only by what the owner sets.
-- Fixed in: 237f806: fetcher.js LIMITS has no timeoutMs; a linked page is read whole with no deadline (the deadline helper and its race/signal plumbing are gone).
-
-### R6-edges/chrono-2: bench.js comment still says an unrunnable grader settles the task as an error, never scored; the code now grades it again on every tick
-- record, `src/bench.js:143`
-- Owner (2026-10-16 05:54): why does it not go back? it should go back until done, just like anything else?
-- Required: Rewrite the comment to say what the code does: a grading that could not run observes nothing and is tried again, so the result goes back until done, as the owner ruled. It does not settle the task as an error.
-- Fixed in: 0275ffe: benchGrader's comment says an unrunnable grader observes nothing and the task is graded again.
-
-### R6-edges/code-2: Bench skips any task whose entry function name is longer than 64 characters or is not a JS/Python-style identifier, whatever the task's language
-- extra, `src/bench.js:194`
-- Owner (2026-10-15 05:16 / 05:17): 1. more code that just js. Any code type. should be adrogenous 2. I want to be able to point this thing at links and benchmarks, like AI benchmarks || there shouldn't be any version pinning or code type pinning or specific prompt pinning.
-- Required: Load the benchmark's rows as written. Use the entry name the row gives, in its own language, with no runtime length cap or JS/Python identifier pattern deciding which tasks exist.
-- Fixed in: 0275ffe: taskFromRow uses a row's entry as written, with no length or name-shape rule; the harnesses match it as plain text.
-
-### R6-records/chrono-1: INSTALL still says every goal needs at least 8 characters; a v8 goal is taken however short
-- record, `INSTALL-CLOUDFLARE.md:269`
-- Owner (2026-10-14 20:50): I put this goal in - getting an error about character limit:
-- Required: Say that a v8 goal has no length limit (only an empty one is refused), and that the 8–4000 character range applies only to a v7 goal.
-- Fixed in: 68df913: INSTALL says a v8 goal has no length limit (only an empty one is refused); a v7 goal keeps 8–4000.
-
-### R6-records/chrono-2: how-it-works says the worker is given 'how to refer to' each name it may call; the runtime no longer renders references
-- record, `docs/how-it-works.md:377`
-- Owner (2026-10-16 20:08): in general though - the runtime shouldn't be enforcing any sort of process or doing any of the agents work for them.
-- Required: Say the worker gets each contract it may call as declared (name, kind, path, what it does, its inputs and outputs) and writes its own reference. Drop 'with how to refer to each' and fix the test comment the same way.
-- Fixed in: 68df913: how-it-works says the worker gets each callable contract as declared and writes its own reference.
-
-### R6-records/chrono-3: trying-v8 says an unused prewarmed box stops after a fixed 4 minutes; its life now derives from the person's Verification time
-- record, `docs/trying-v8.md:92`
-- Owner (2026-10-17 00:25): it wasn't the question. I don't understand the need
-- Required: Say that a prewarmed box no compile takes is stopped at the end of its life, which derives from the room's Verification time (three times it), or when the run ends. Name no fixed minutes.
-- Fixed in: 68df913: trying-v8 says a prewarmed box lives three times the room's Verification time.
-
-### R6-records/chrono-4: The link readers are model agents but never appear in the graph, though the owner asked for every agent to be visible
-- drift, `public/app.js:55`
-- Owner (2026-10-16 18:36): the every agent should be visible in the tree...e.g. splitter manager worker etc
-- Required: Show each link reader in the graph as an agent like the splitters and compilers, so every agent that runs in the room is visible in the tree.
-- Fixed in: f63f18b: each link reader is recorded (source_readers) and drawn as an agent in the graph, a square under the room's manager.
-
-### R6-records/code-4: Benchmark dashboard note says a grader that could not run makes an unscored error, and a test pins that text
-- record, `public/app.js:664`
-- Owner (2026-10-16 05:54): why does it not go back? it should go back until done, just like anything else?
-- Required: Drop 'a grader ... that could not run' from the note and its test. Say that a grading that could not run is graded again until it observes, and that only a room that could not run, or a stop, is counted apart.
-- Fixed in: b966153: the bench note says a grading that could not run is graded again; the test pins the new text.
-
-### R6-records/code-5: Agent traffic keeps only the last 300 events, so older traffic cannot be scrolled to
-- extra, `public/app.js:434`
-- Owner (2026-10-13 03:16): change agent traffic so most recent events are at the top and you scroll to see the last events
-- Required: Give the traffic panel the room's whole event history, newest at the top, so the person can scroll down through every event, with no runtime row cap.
-- Fixed in: b966153: a v8 snapshot and delta carry every event and file (no 300/240 window); v7 keeps its window.
-
-### R6-records/record-4: The answer a worker gets to an ask tells it 'Use it rather than writing your own'
-- drift, `src/prompts.js:192`
-- Owner (2026-10-15 15:57): in general I never want to tell an agent what they can't do. I want it to just simply be archiecturally the only path for them
-- Required: The answer gives the contract as it exists in the worker's world (its line) and adds no instruction about what the worker must not write. Update the tests that pin the old sentence.
-- Fixed in: 7f4329c: MESSAGES.provided is the contract line alone.
+(none)
 
 ## Disputed
 
@@ -1028,6 +964,12 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: Rewrite the comments to say that any manager on the asker's line may grant the name new, and stop presenting it as the top manager's function.
 - Closed: round 6 recheck (6 of 6): test/v8-live4.test.js:5-12 now says an ask for a package goes up the asker's line and that any manager on that line may grant it, from its row or new as asked ('every manager has the same functions'). grep of test/ finds no 'granted from the top' wording. The only remaining 'top manager' strings are v7 problems-unit tests.
 
+### R5-splitter/chrono-1: A splitter session's held offer of agent slots puts a sibling's hand-down into the split_capacity hold for the person
+- unfixed, `src/index.js:8476`
+- Owner (2026-10-16 19:53): why, I keep commenting that this shouldn't happen, and the runtime keeps introducing failure cases
+- Required: No division or hand-down inside the person's agent and depth limits may end in a split_capacity hold. Remove the failure case the runtime's own slot reservation creates, rather than turning it into a hold for the person.
+- Closed: round 7 recheck (4 of 4): index.js:1542-1566: piecesRoom(id) subtracts owedSlots(id), which counts one slot for each other live manager with no level, and split_taken for a manager whose splitter's done took a division. takePieces can therefore never take a sibling's hand-down slot. reserveSpawn (1759) runs prod+reserved+owedSlots(parent)+managers+pieces against max_agents. Worked through, a sibling's one-worker hand-down 
+
 ### R5-splitter/chrono-2: The splitter's recorded session keeps only its last 200 calls (SPLIT_CALLS_KEPT)
 - extra, `src/index.js:299`
 - Owner (2026-10-17 00:25): it wasn't the question. I don't understand the need
@@ -1045,6 +987,12 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Owner (2026-10-16 05:39): text heuristics - I don't understand what this is for. Like architecturally, this is protecting from someting that shouldn't happen. || e command denylist, shell-character an - okay, I asked already, but there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture.
 - Required: Drop PROTECTED_NAMES and the 64-character caps from the splitter's name checks. contract() stores any name its language accepts, and refuses only for the reasons its interface states.
 - Closed: round 6 recheck (3 of 3): The v8 splitter's name check is ownNameError, which does not touch PROTECTED_NAMES; identifierError's PROTECTED_NAMES check (contracts.js:271) is reached only through v7's nameError for functions. ownNameError strips the {0,63} bound (contracts.js:283). Verified by running contract(): 'fetch' and 'console' in a.js are stored, an 80-character JS name is stored, and a 63-character command name is st
+
+### R5-splitter/record-2: Three copies of the same call count as three different examples, because each step's example repeats the steps before it
+- drift, `src/validations.js:347`
+- Owner (2026-10-16 05:50): there must 3 different examples for each contract
+- Required: Count a contract's examples by what differs between them, so three repetitions of one call or request are one example, and done() reports the contract as short until it has three different examples.
+- Closed: round 7 recheck (3 of 3): keyedExamples (src/validations.js:367-382) keys each call or http step on the step without its save, and replaces a $name reference with the key of the step that saved it (readsSaved, 347-357). So three copies of one call under different save names give one key. distinct (408) and ownExamples (422-425) count by key, and missingOf (splitter.js:178-183) reports a contract as short until it has three
 
 ### R5-worker/chrono-1: A piece's 'uses' is cut to 8 names and run through a name parser before it becomes the worker's list of names it may call
 - extra, `src/interfaces.js:403`
@@ -1099,6 +1047,12 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Owner (2026-10-16 20:38 / 2026-10-16 20:40): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it || (20:40) every model should work that way, where the runtime should only be interfaces exposed to the models. not parsing the models output, but functions exposed to the models. for every model. For every i …
 - Required: piece() should check refs against the refs the level holds and, as the owner approved for the splitter's functions, say exactly why one cannot be stored. What the splitter declares should then be given as declared, with no runtime narrowing or prefix expansion at admission.
 - Closed: round 6 recheck (3 of 3): piece() refuses a ref its level does not hold and lists the refs it does hold (src/splitter.js:147-149). assignRefs stores the declared refs as they are (src/index.js:671-675), called at index.js:1718. narrowRefs is gone (grep finds nothing).
+
+### R5-edges/chrono-2: An existing repo must download within an invented 30-second deadline, or the run cannot start from it
+- extra, `src/base.js:18`
+- Owner (2026-10-17 00:25 / 2026-10-16 05:39): it wasn't the question. I don't understand the need (answering Claude's 'The 100-call cap was my own invention') || (05:39) They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
+- Required: Read the repo whole, with no runtime-picked deadline deciding whether the agents get their starting project. The read is bounded only by what the owner sets.
+- Closed: round 7 recheck (3 of 3): src/base.js:11-19 REPO_LIMITS has no time field (maxFileBytes is Cloudflare's 2 MB row limit, maxSkipped only shortens the list of skipped files). fetchGithubRepo (base.js:155-248) has no timer, race or AbortSignal, and the comment at :155 says the repo is read whole with no deadline. loadBase (room-inputs.js:123-148) and start() (index.js:7837) call it directly, with no wrapper that adds a deadli
 
 ### R5-edges/chrono-3: A benchmark task whose grader could not run is settled as 'error' and never graded again
 - drift, `src/bench-run.js:185`
@@ -1160,6 +1114,138 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: Give each quote its own date heading from prompts.md: 2026-10-16 05:12 for the split-review quote, 2026-10-15 20:28 for 'why is clef doubting requirements for the code'.
 - Closed: round 6 recheck (3 of 3): rulings.md:22 dates the split-review quote 'owner, 2026-10-16 05:12' and 'why is clef doubting requirements for the code' 'owner, 2026-10-15 20:28'. Both dates match the prompts.md headings.
 
+### R6-room/code-1: continueHold's comment says Continue gives the held row a fresh set of split attempts, which nothing does
+- record, `src/index.js:8577`
+- Owner (2026-10-16 05:12): literally every manager tries to split, model can retry twice with different split parameter
+- Required: Make the comment say what Continue does: it clears the holds and wakes the rows they name. Don't describe a reset of split attempts, since the owner gave a split two retries.
+- Closed: round 7 recheck (3 of 3): src/index.js:8593-8599: continueHold's comment now says Continue answers a pending grant first, otherwise clears every hold that reached the room and wakes the row each one names, forgets which compile reports and escalations were sent, and reruns a prompt the hold failed. The fresh-split-attempts claim is gone. The code at 8600-8616 does exactly that. split_attempts:<id> is still written only by 
+
+### R6-room/record-2: Start keeps only the first 64 existing-file paths the person grants; the rest are silently dropped and wait at base_confirm
+- extra, `src/index.js:7831`
+- Owner (2026-10-17 00:25; 2026-10-15 23:16): it wasn't the question. I don't understand the need || (2026-10-15 23:16) no? there should be no stopgaps? ever?
+- Required: Take every path the person grants at Start, with no count cap the owner never set.
+- Closed: round 7 recheck (5 of 5): src/index.js:7850: start() saves base_approved as [...new Set(grants.filter(p=>typeof p==='string'&&isPath(p)))] with no .slice(0,64). /api/continue (9381) passes every string grant to resume, then continueHold, then confirmBase (5518-5525) with no count cap. Every granted path is kept. The grant gate itself is still the open R2-edges/chrono-1.
+
+### R6-splitter/chrono-1: A rebuild or extend job's hand-down still ends in a split_capacity hold, because archived rows keep their agent slots and a pending job is owed none
+- unfixed, `src/index.js:8503`
+- Owner (2026-10-16 19:53; 2026-10-16 05:39): why, I keep commenting that this shouldn't happen, and the runtime keeps introducing failure cases || If clef is able to walk up the inference tree to root and not find the scope to root, then kill that agent. But now we have compensating controls to rebuild code that is missing (right?)
+- Required: The rebuild the owner relies on as a compensating control must not end in a hold. An archived row should not keep a slot the rebuild needs, and a manager's pending job should be owed its worker the way an unlevelled manager's hand-down is.
+- Closed: round 7 recheck (4 of 4): index.js:1524: productionNodeCount leaves out archived rows under v8. reservedSpawnSlots (1510) and owedSlots (1557) skip batches of archived parents. owesWorker (1564) owes a levelled manager a worker while a level_job is pending or while orphansOf finds a contract no live child delivers. A rebuild's hand-down in admitLevel (8520) therefore uses the slot the archived row freed and that was counte
+
+### R6-splitter/chrono-2: contract() still runs v7's JS-shaped signature parser on every function name, so Store::create and similar names in other languages are refused without a reason
+- unfixed, `src/contracts.js:125`
+- Owner (2026-10-15 05:16; 2026-10-16 20:38; 2026-10-16 20:40): 1. more code that just js. Any code type. should be adrogenous || e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
+- Required: Store a function contract's name as the splitter wrote it, judged only by its own language's rule. Drop the v7 signature parsing from the v8 contract path, and when a name cannot be stored, say exactly why.
+- Closed: round 7 recheck (3 of 3): contract() (src/splitter.js:84) checks a function name only with ownNameError (src/contracts.js:276-283). It uses the identifier rule of the row the path's extension names, and only the JavaScript and Python rows have one (toolchains.js:34,69). A Rust, Go or C++ path, or a function with no path, is stored as written. normalizeContract with v8:true goes to contractItem (121-143), which keeps name =
+
+### R6-splitter/chrono-3: A non-top level handed down to one worker keeps validations for contracts the worker is never given, so it gets no examples for checks it is compiled against
+- drift, `src/index.js:8496`
+- Owner (2026-10-16 05:49; 2026-10-16 05:16): the worker doesn't get validations. The example sohuld be built from the validation. || even if the problem doesn't split, it's still handing it down to a worker
+- Required: A level handed down whole goes to the worker whole: the worker gets every contract the admitted level holds, with each example rendered from the validations that serve it, so that every validation its files are checked by reaches it as examples.
+- Closed: round 7 recheck (4 of 4): index.js:8515-8517: the one worker a level is handed down to gets interfaces:contracts, meaning every contract of the admitted level. Each contract's serves includes the ids of the level's validations that serve it (8510). workerView (8999) renders each contract's examples from the validations it serves, so every validation of the level reaches the worker as examples.
+
+### R6-splitter/code-1: done() counts other contracts' calls and requests as a contract's three different examples, so a route or function with one example of itself completes the level
+- unfixed, `src/validations.js:363`
+- Owner (2026-10-16 05:50): there must 3 different examples for each contract
+- Required: Give a contract a count of three only from different examples that exercise that contract: steps that call or request it, checks that run it. done() should report it as short until then. The steps before it can stay as the state each example starts from.
+- Closed: round 7 recheck (3 of 3): missingOf (src/splitter.js:180-183) counts examplesOf, which is ownExamples (src/validations.js:422-425). For a function, command or route, ownExamples keeps only keyed examples whose 'of' exercises that contract (exercises, 395-405): a call of the function, a request whose method and path match the route, or a run of the command by its name, its own argv or the serve. Steps that call other contra
+
+### R6-splitter/record-1: Clef's piece_reach answers are kept only for the last 200 check/digest keys (slice(-200)), so older answers are dropped and Clef is asked again on the room's budget
+- extra, `src/index.js:4067`
+- Owner (2026-10-17 00:25): it wasn't the question. I don't understand the need
+- Required: Keep every piece_reach answer per check key and piece digest, with no count picked by the runtime.
+- Closed: round 7 recheck (3 of 3): pieceScope (src/index.js:4077-4086) reads piece_reach:<id> and saves {...kept,...fresh}, with no slice and no count bound, so every answer per check key and digest is kept.
+
+### R6-splitter/record-3: Three copies of one call or request still count as three different examples when each step saves under a different name
+- unfixed, `src/validations.js:318`
+- Owner (2026-10-16 05:50): there must 3 different examples for each contract
+- Required: Count a contract's examples by what differs in the call or request itself (its function or method and path, its inputs and what it observes), so that repeating one call under another save name does not count as a new example.
+- Closed: round 7 recheck (3 of 3): Same code as R5-splitter/record-2. The call/http key drops save, and readsSaved swaps a saved-name reference for the saving step's key (src/validations.js:347-375). Repeating one call or request under another save name gives the same key and counts once.
+
+### R6-worker/chrono-1: A v8 worker that calls wait with nothing outstanding is never woken; the room pauses and Continue cannot restart it
+- drift, `src/index.js:9041`
+- Owner (2026-10-16 19:53): why, I keep commenting that this shouldn't happen, and the runtime keeps introducing failure cases (also 2026-10-16 05:30: "the room should be able to tell when its done by observing the final compiler. That's it")
+- Required: The runtime must not create this dead end. A worker's turn must not be able to end in a state that nothing will wake, so the room never stalls short of what its final compiler observes. Fix it through the functions the worker is given, not with a runtime nudge.
+- Closed: round 7 recheck (3 of 3): src/worker.js:37 workerTools leaves wait out unless w.outstanding(). src/index.js:9036 gives outstanding:()=>this.openAsks(id).length>0. session.js:62-65 and :90-91 work out the offered functions every round and at each call, and refuse a call to a function not offered, so a worker cannot call wait with nothing open. If an answer lands while the session is still running, the end of levelWorkerTurn
+
+### R6-worker/chrono-2: The builder's rename accepts only JavaScript-style names and uses JavaScript identifier boundaries, so it cannot rename names in other languages and can corrupt them
+- extra, `src/builder.js:28`
+- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous (also 2026-10-16 05:21: "builder - writes glue between the interfaces created by the worker. can edit interface names")
+- Required: Let the builder rename an interface name in whatever language the file is written, as that language delimits its names. Drop the runtime's fixed JavaScript character set from both the refusal and the boundary.
+- Closed: round 7 recheck (3 of 3): src/builder.js:144-147 wholeName builds its boundary from \p{L}\p{N}\p{M} plus the name_characters the builder passes (rename at :196-206). No JS identifier regex is left on from/to: :202 only requires non-empty text. TOOLS.builder.rename (prompts.js) asks for name_characters 'that the file's language allows inside a name'. Live via pieceBuilderTurn → builderSession (index.js:3922).
+
+### R6-worker/record-2: The worker's ask text says anything available by name is answered at once, but a name it may call goes to its manager
+- record, `src/prompts.js:113`
+- Owner (2026-10-16 20:43): i mean, think about it. worker asks it manager (clef) where does it this go, clef walks up the tree to find it, which is a function
+- Required: Make the ask text say what happens: only what the worker's own world holds (its own contracts, its packages, the files and page parts given to it) is answered at once. Every other ask, including one for a name it may call, goes to its manager.
+- Closed: round 7 recheck (3 of 3): TOOLS.worker.ask (src/prompts.js:113) now says: what you deliver, your packages, and the existing files and linked-page parts given to you are answered at once; any other ask, a callable name included, is sent and answered next turn. This matches workerAsk (src/index.js:9078-9094): brokerAnswer handles source/base, then the asker's own contract (own_contract), then a package its row holds. Everyth
+
+### R6-compiler/chrono-2: Box start-up retries on an invented schedule (250-1500 ms, 5 tries), chosen by a regex over the error text
+- extra, `src/build-executor.js:22`
+- Owner (2026-10-16 05:39): text heuristics - I don't understand what this is for. Like architecturally, this is protecting from someting that shouldn't happen.
+- Required: Remove the error-text regex and the invented retry schedule from the box's start. A box that does not start is what was observed, handled like any other box failure, with no runtime-chosen count or wording decides whether it is tried again.
+- Closed: round 7 recheck (3 of 3): Box.boot (src/box.js:181-186) runs its readiness command ['true'] once and throws BoxError('not_ready') on a non-zero exit. The v8 path has no error-text regex and no retry schedule. The retry loop that remains (build-executor.js:27-36, execAfterStartup) is used only by v7's BuildExecutor.build. index.js:2569 prewarmContainer and 2583 containerRun both return early under this.v8(), so v8 never rea
+
+### R6-edges/chrono-1: Linked pages still fail on an invented 10-second whole-fetch deadline (folded into R5-edges/chrono-2, not fixed)
+- unfixed, `src/fetcher.js:22`
+- Owner (2026-10-17 00:25): it wasn't the question. I don't understand the need
+- Required: Remove the runtime-picked deadline from fetchSource, so a linked page is read whole, as the repo and the dataset now are. Its reading is bounded only by what the owner sets.
+- Closed: round 7 recheck (3 of 3): fetcher.js:21-23 LIMITS holds only maxHops. fetchSource (fetcher.js:569-602) and guardedFetch (287-305) have no timeoutMs, race or signal, and maxBytes defaults to Infinity. room-inputs.js loadSources (158-177) and index.js loadSources (691-716) call fetchGoalSources directly with the plain fetcher (index.js:611). A grep for setTimeout/timeout/deadline/AbortSignal/Promise.race finds nothing in fet
+
+### R6-edges/chrono-2: bench.js comment still says an unrunnable grader settles the task as an error, never scored; the code now grades it again on every tick
+- record, `src/bench.js:143`
+- Owner (2026-10-16 05:54): why does it not go back? it should go back until done, just like anything else?
+- Required: Rewrite the comment to say what the code does: a grading that could not run observes nothing and is tried again, so the result goes back until done, as the owner ruled. It does not settle the task as an error.
+- Closed: round 7 recheck (3 of 3): bench.js:138-145 now says that for a language no row runs, the grader says so ({unrunnable}), the grading observes nothing, the task stays running and is graded again until done. That matches bench-run.js:179-183: graded() records the costs and returns on an 'error' grade, leaving the task running for the next tick. gradeOutcome's comment (bench.js:326-328) agrees. No comment still says such a tas
+
+### R6-edges/code-2: Bench skips any task whose entry function name is longer than 64 characters or is not a JS/Python-style identifier, whatever the task's language
+- extra, `src/bench.js:194`
+- Owner (2026-10-15 05:16 / 05:17): 1. more code that just js. Any code type. should be adrogenous 2. I want to be able to point this thing at links and benchmarks, like AI benchmarks || there shouldn't be any version pinning or code type pinning or specific prompt pinning.
+- Required: Load the benchmark's rows as written. Use the entry name the row gives, in its own language, with no runtime length cap or JS/Python identifier pattern deciding which tasks exist.
+- Closed: round 7 recheck (3 of 3): taskFromRow (bench.js:165-200) takes row.entry_point/row.entry as written (:172, :192), trimmed, with no length cap and no identifier regex. The only skip about the entry is for a Python or JavaScript row that has none (:195). The harnesses regex-escape the entry (bench-harness.js:72, :197, :280). The JS and other-language walks use [\w$] boundaries, which only affect which files count as naming t
+
+### R6-records/chrono-1: INSTALL still says every goal needs at least 8 characters; a v8 goal is taken however short
+- record, `INSTALL-CLOUDFLARE.md:269`
+- Owner (2026-10-14 20:50): I put this goal in - getting an error about character limit:
+- Required: Say that a v8 goal has no length limit (only an empty one is refused), and that the 8–4000 character range applies only to a v7 goal.
+- Closed: round 7 recheck (3 of 3): INSTALL-CLOUDFLARE.md:269 now says 'A v8 goal has no length limit: only an empty one is refused. A v7 goal must have 8–4000 characters.' That matches the v8 Start path.
+
+### R6-records/chrono-2: how-it-works says the worker is given 'how to refer to' each name it may call; the runtime no longer renders references
+- record, `docs/how-it-works.md:377`
+- Owner (2026-10-16 20:08): in general though - the runtime shouldn't be enforcing any sort of process or doing any of the agents work for them.
+- Required: Say the worker gets each contract it may call as declared (name, kind, path, what it does, its inputs and outputs) and writes its own reference. Drop 'with how to refer to each' and fix the test comment the same way.
+- Closed: round 7 recheck (3 of 3): how-it-works.md:377 now says the worker gets 'each contract it may call as declared (its name, kind, path, what it does, its inputs, outputs and effects), from which it writes its own reference'. Grepping test/ and docs/ (outside the ledger) finds no remaining 'how to refer to'. workerView (src/index.js ~8995) gives call: callable.map(declared).
+
+### R6-records/chrono-3: trying-v8 says an unused prewarmed box stops after a fixed 4 minutes; its life now derives from the person's Verification time
+- record, `docs/trying-v8.md:92`
+- Owner (2026-10-17 00:25): it wasn't the question. I don't understand the need
+- Required: Say that a prewarmed box no compile takes is stopped at the end of its life, which derives from the room's Verification time (three times it), or when the run ends. Name no fixed minutes.
+- Closed: round 7 recheck (3 of 3): trying-v8.md:92 says an untaken prewarmed box 'is stopped at the end of its life, which is three times the room's Verification time, or when the run ends'. The code agrees: boxTimes in src/box.js:44 returns life: 3*t, and box-prewarm.js:62/84 uses that life. No fixed minutes are named.
+
+### R6-records/chrono-4: The link readers are model agents but never appear in the graph, though the owner asked for every agent to be visible
+- drift, `public/app.js:55`
+- Owner (2026-10-16 18:36): the every agent should be visible in the tree...e.g. splitter manager worker etc
+- Required: Show each link reader in the graph as an agent like the splitters and compilers, so every agent that runs in the room is visible in the tree.
+- Closed: round 7 recheck (3 of 3): The room records each link reader (src/index.js:701-707, source_readers) and snapshots it as readers (index.js:1202). public/app.js:65-68 draws each reader as a 'reader' node (a square, SQUARE set at :35) under the room's manager, and the legend in index.html lists 'link reader'.
+
+### R6-records/code-4: Benchmark dashboard note says a grader that could not run makes an unscored error, and a test pins that text
+- record, `public/app.js:664`
+- Owner (2026-10-16 05:54): why does it not go back? it should go back until done, just like anything else?
+- Required: Drop 'a grader ... that could not run' from the note and its test. Say that a grading that could not run is graded again until it observes, and that only a room that could not run, or a stop, is counted apart.
+- Closed: round 7 recheck (3 of 3): public/app.js:678 SCORED_NOTE now ends 'a grading that could not run is graded again until it observes', and only 'a room that could not run, an observer's stop' are counted apart. test/bench-frontend.test.js:90 pins the new text. 'a grader that could not run' as an unscored error is gone.
+
+### R6-records/code-5: Agent traffic keeps only the last 300 events, so older traffic cannot be scrolled to
+- extra, `public/app.js:434`
+- Owner (2026-10-13 03:16): change agent traffic so most recent events are at the top and you scroll to see the last events
+- Required: Give the traffic panel the room's whole event history, newest at the top, so the person can scroll down through every event, with no runtime row cap.
+- Closed: round 7 recheck (3 of 3): In a v8 room the snapshot query has no LIMIT (src/index.js:1164, 1168), and neither does the delta (1300). events_truncated is set only for v7 (1306). mergeDelta (public/app.js:445-450) keeps every event and file for v8. The traffic list renders the whole list newest first (app.js:417-420). The 300/240 window stays for v7 only.
+
+### R6-records/record-4: The answer a worker gets to an ask tells it 'Use it rather than writing your own'
+- drift, `src/prompts.js:192`
+- Owner (2026-10-15 15:57): in general I never want to tell an agent what they can't do. I want it to just simply be archiecturally the only path for them
+- Required: The answer gives the contract as it exists in the worker's world (its line) and adds no instruction about what the worker must not write. Update the tests that pin the old sentence.
+- Closed: round 7 recheck (5 of 5): MESSAGES.provided (src/prompts.js:193) is now `${contract}.`, the contract line alone, sent by answerAsk (src/index.js:8889). A grep for 'rather than writing your own' / 'Use it rather' across src, test, docs, README and CHANGELOG-v8.md finds it only in the ledger files.
+
 ## Rejected by quorum
 
 - R1-record-14: CHANGELOG-v8.md never records the owner's 2026-10-16 rulings, so its last word is that workers get the goal and shared principles (`CHANGELOG-v8.md`). chrono: CHANGELOG-v8.md:59, :61 and :67 describe what the S6 and B1 slices did at the time, and that history is accurate. The code already honours the owner: there is no PRINCIPLES, no goal in workerView and no tamper scan. A missing changelog entry does not say something the owner didn't, and no ow
@@ -1171,6 +1257,7 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - R6-room/chrono-1: A complaint about the builder's glue can only be routed to a worker: the builder is never a route_to option and never hears what the compiler observed (`src/index.js`). room/chrono: The code matches the description. joinPiece deletes the origin of glue files (index.js:3822), the builder is never offered as route_to, and builderView carries no complaint. But the fix does not follow from the owner's words. At 2026-10-16 05:39 the owner said 'literally, only workers w
 - R6-room/record-1: An ask is archived when no contract or package is offered for it, not when it is out of scope everywhere up to the room (`src/index.js`). room/chrono: The ledger has repeatedly closed findings by accepting this model: an ask is answered with a contract the children deliver or passed up with ask_parent, and one held nowhere up to the room archives the asker (R2-room/chrono-1, R4-room/record-2, R3-compiler/code-1 closure). The owner als
 - R6-compiler/record-2: Box concurrency throttled to 4 per room by default, with a hard ceiling of 64 that silently falls back to 4 (`src/index.js`). compiler/chrono: index.js:4023 boxCap uses 4 unless BOX_CONCURRENCY is an integer from 1 to 64, so any other value silently becomes 4. boxSlot makes every compile wait for a slot. No prompt asks for a per-room box cap or sets its value, and the owner has asked for speed (05:16) and rejected invented
+- R7-splitter/chrono-1: A call check may only call functions of one file, so no call check can validate functions that two pieces deliver together (`src/validations.js`). splitter/chrono: The code is cited correctly: validations.js:165-167 refuses a call check whose functions are in different files. But no owner words require a call check to span files. The interface the owner accepted at 2026-10-16 20:40 says a call returns 'exactly why' it can't store something and
 
 ## Rounds
 
@@ -1180,3 +1267,4 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Round 4 (2026-10-17, six teams of three, snapshot 9658fd3): 63 findings, 36 confirmed, 26 folded, 1 rejected; rechecks closed 37 of 51 and reopened 14.
 - Round 5 (2026-10-17, six teams of three, snapshot 1c10f2f): 52 findings, 31 confirmed, 20 folded, 1 rejected; rechecks closed 32 of 43 and reopened 11.
 - Round 6 (2026-10-17, six teams of three, snapshot ebc1dac): 46 findings, 26 confirmed, 17 folded, 3 rejected; rechecks closed 33 of 41 and reopened 8.
+- Round 7 (2026-10-17, six teams of three, snapshot 1554ac3): 28 findings, 14 confirmed, 13 folded, 1 rejected; rechecks closed 25 of 31 and reopened 6.
