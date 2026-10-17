@@ -1,6 +1,6 @@
 // v8: a manager's splitter works through functions. Its session
 // (src/session.js) offers contract, validation, piece (when the level may
-// divide), level and done; each call stores what it was given, exactly, or
+// divide), drop_validation (when it holds validations it may take out), level and done; each call stores what it was given, exactly, or
 // says exactly why it cannot, and nothing else reads what the model writes.
 // done ends the session once the level lacks nothing (missingOf): with
 // piece offered, that includes a division of two or more pieces. The level
@@ -34,15 +34,18 @@ const nameList = (v, what) => Array.isArray(v) && v.every(x => typeof x === 'str
 // readBase(path), given to a level that holds the project the work starts
 // from: one file of it, whole (the room's readBaseFile), as read_file shows it.
 // refs: the outline refs of the linked pages this level holds, the only refs
-// a piece may be given.
-export function splitterState({own = [], held = [], have = [], calls = [], rows = TOOLCHAINS, base = [], maxPieces = 7, room = null, take = null, divide = true, carry = null, programs = [], readBase = null, refs = []} = {}) {
+// a piece may be given. droppable: the ids of the held validations that
+// serve only the contracts this level delivers, which drop_validation takes
+// out (a rebuild, which rewrites what they are known by).
+export function splitterState({own = [], held = [], have = [], calls = [], rows = TOOLCHAINS, base = [], maxPieces = 7, room = null, take = null, divide = true, carry = null, programs = [], readBase = null, refs = [], droppable = []} = {}) {
+  const dropped = [...(carry?.dropped || [])];
   const installed = (Array.isArray(rows) ? rows : TOOLCHAINS).filter(r => r && typeof r.id === 'string');
-  return {own, held, have: have.filter(c => c?.name && !own.some(o => o.name === c.name)), calls, rows: installed, ids: new Set(installed.map(r => r.id)),
+  return {own, held: held.filter(h => !dropped.includes(h.id)), droppable: droppable.filter(id => !dropped.includes(id)), dropped, have: have.filter(c => c?.name && !own.some(o => o.name === c.name)), calls, rows: installed, ids: new Set(installed.map(r => r.id)),
     executables: new Set([...installed.flatMap(r => r.executables || []), ...programs]), base: new Set(base instanceof Set ? [...base] : Array.isArray(base) ? base : []),
     room: typeof room === 'function' ? room : () => maxPieces, take: typeof take === 'function' ? take : () => true, divide, readBase: typeof readBase === 'function' ? readBase : null, refs: [...(refs || [])], contracts: [...(carry?.contracts || [])], validations: [...(carry?.validations || [])], pieces: [...(carry?.pieces || [])], done: false};
 }
-// The functions offered: piece and drop_piece only when the level may divide, read_file only when it holds the project the work starts from.
-export const splitterTools = (divide, reads = false) => TOOLS.splitter.filter(t => (divide || !PIECE_TOOLS.has(t.name)) && (reads || t.name !== 'read_file'));
+// The functions offered: piece and drop_piece only when the level may divide, read_file only when it holds the project the work starts from, drop_validation only when it holds validations it may take out.
+export const splitterTools = (divide, reads = false, drops = false) => TOOLS.splitter.filter(t => (divide || !PIECE_TOOLS.has(t.name)) && (reads || t.name !== 'read_file') && (drops || t.name !== 'drop_validation'));
 const PIECE_TOOLS = new Set(['piece', 'drop_piece']);
 // What the room can create now (room()), as piece and done say it.
 const roomNow = n => `this level can hold at most ${n} piece${n === 1 ? '' : 's'} now`;
@@ -160,10 +163,22 @@ function dropPiece(s, a) {
   s.pieces.splice(i, 1);
   return {dropped: a.label, pieces: s.pieces.length};
 }
+// drop_validation: one of the held validations it may take out, by its
+// id, taken out of what its contracts are known by; a validation stated
+// anew in its place says what they hold now.
+function dropValidation(s, a) {
+  const unknown = Object.keys(a || {}).filter(k => k !== 'id');
+  if (unknown.length) return {error: `drop_validation has no field ${unknown.map(k => `"${k.slice(0, 40)}"`).join(', ')}; its fields are id`};
+  if (!s.droppable.includes(a.id)) return {error: `no validation of validations_you_have has the id ${JSON.stringify(String(a.id ?? '')).slice(0, 80)}. Ids: ${listed(s.droppable)}`};
+  s.droppable = s.droppable.filter(id => id !== a.id);
+  s.held = s.held.filter(h => h.id !== a.id);
+  s.dropped.push(a.id);
+  return {dropped: a.id};
+}
 // Everything declared so far.
 export function levelView(s) {
   return {contracts: levelContracts(s).map(({serves: _, ...c}) => c), ...(s.have.length ? {contracts_you_have: s.have.map(c => c.name)} : {}),
-    validations: s.validations.map(v => ({id: v.id, serves: v.serves, check: v.check})), pieces: s.pieces};
+    validations: s.validations.map(v => ({id: v.id, serves: v.serves, check: v.check})), ...(s.dropped.length ? {dropped_validations: [...s.dropped]} : {}), pieces: s.pieces};
 }
 // What the level still lacks: [] when nothing. Every contract that is
 // called or run (function, command, route) has three different examples
@@ -191,7 +206,7 @@ export function levelOf(s) {
   const servedBy = new Set(s.validations.map(v => v.check.serve).filter(Boolean));
   const contracts = levelContracts(s).map(c => c.run && !c.run.static && (kindOf(c) === 'route' || servedBy.has(c.name)) ? {...c, run: servedRun(c.run)} : c);
   const pieces = s.pieces.map(p => ({...p}));
-  return {contracts, validations: s.validations.map(v => ({...v})), pieces};
+  return {contracts, validations: s.validations.map(v => ({...v})), pieces, ...(s.dropped.length ? {dropped: [...s.dropped]} : {})};
 }
 // read_file: one file of the project the work starts from, whole, or that it has no file at the path.
 function readBase(s, a) {
@@ -206,6 +221,7 @@ export function splitterCall(s, name, args) {
   if (CHECK_TOOL_KINDS[name]) return {result: checkCall(s, CHECK_TOOL_KINDS[name], args)};
   if (name === 'piece' && s.divide) return {result: piece(s, args)};
   if (name === 'drop_piece' && s.divide) return {result: dropPiece(s, args)};
+  if (name === 'drop_validation' && s.droppable.length + s.dropped.length) return {result: dropValidation(s, args)};
   if (name === 'level') return {result: levelView(s)};
   if (name === 'read_file' && s.readBase) return {result: readBase(s, args)};
   if (name === 'done') {
@@ -226,7 +242,7 @@ export function splitterCall(s, name, args) {
 // without done. Each answer may take what the model's context window leaves
 // (maxTokens Infinity: modelRequest's room).
 export async function splitLevel(env, request, world = {}, {spend = null} = {}) {
-  const s = splitterState(world), tools = splitterTools(s.divide, !!s.readBase);
+  const s = splitterState(world), tools = splitterTools(s.divide, !!s.readBase, s.droppable.length + s.dropped.length > 0);
   const out = await session(env, {system: systemPrompt('splitter'), user: JSON.stringify(request), tools, role: 'splitter', call: 'splitLevel', maxTokens: Infinity,
     handle: (name, args) => splitterCall(s, name, args), spend});
   return {level: out.ended ? out.end : null, state: s, ended: out.ended, reason: out.reason, rounds: out.rounds, transcript: out.transcript};

@@ -8477,9 +8477,14 @@ export class ControlRoom extends DurableObject {
     // The bound it is told is what the room can create when the session starts; piece and done read it as it stands then (room), and done takes the division (takePieces). Nothing is held while the session runs.
     this.releasePieces(id);
     const room=()=>divide?Math.min(this.maxChildren(),this.piecesRoom(id)):0,max=room();
+    const carried=this.read(`split_carry:${id}`,null),carry=carried&&carried.key===`${kind}:${job?.key||''}`&&carried.attempt===attempt?carried:null;
+    // A job's level (a rebuild) rewrites what its contracts are known by: a validation it holds that serves only the contracts it delivers it may take out with drop_validation, by its id; one an earlier session of the job took out is gone.
+    const shown=held.filter(v=>!(carry?.dropped||[]).includes(v.id)),mine=v=>kind!=='split'&&v.serves.every(n=>own.some(c=>c.name===n)),droppable=shown.filter(mine).map(v=>v.id);
     const request={assignment,
       ...(own.length?{contracts_you_deliver:own.map(({serves:_,...c})=>c)}:{}),
-      ...(held.length?{validations_you_have:held.map(v=>({serves:v.serves,check:v.check}))}:{}),
+      ...(shown.length?{validations_you_have:shown.map(v=>({...(mine(v)?{id:v.id}:{}),serves:v.serves,check:v.check}))}:{}),
+      // What was observed when its contracts ran, each a complaint the files delivering them answered unchanged (rebuildOrphans).
+      ...(job?.complaints?.length?{complaints:job.complaints}:{}),
       ...(have.length?{contracts_you_have:have.map(({serves:_,...c})=>c)}:{}),
       ...(calls.length?{contracts_you_may_call:calls.map(({serves:_,...c})=>c)}:{}),
       box:{programs:this.boxPrograms(),toolchains:rows.map(r=>({id:r.id,extensions:r.extensions||[]})),calls_functions_in:CALL_EXTENSIONS},
@@ -8488,13 +8493,12 @@ export class ControlRoom extends DurableObject {
       ...this.sourceInputs(id,'summaries'),
       max_pieces:max,
       ...(feedback?.reason?{previous_answer_problems:[feedback.reason],...(feedback.rejected?.length?{rejected:feedback.rejected}:{})}:{})};
-    const carried=this.read(`split_carry:${id}`,null),carry=carried&&carried.key===`${kind}:${job?.key||''}`&&carried.attempt===attempt?carried:null;
-    if(carry)request.declared_so_far={contracts:carry.contracts.map(({serves:_,...c})=>c),validations:carry.validations.map(v=>({id:v.id,serves:v.serves,check:v.check})),pieces:carry.pieces};
-    const out=await splitLevel(this.inferenceEnv('splitter'),request,{own,held,have,calls,rows,base:[...this.basePaths()],room,take:k=>this.takePieces(id,k),divide,carry,programs:this.boxPrograms(),refs:this.sourceRefs(id),...(typeof digest==='string'&&digest?{readBase:p=>this.readBaseFile(p)}:{})},{spend:()=>this.spendCall?this.spendCall():true});
+    if(carry)request.declared_so_far={contracts:carry.contracts.map(({serves:_,...c})=>c),validations:carry.validations.map(v=>({id:v.id,serves:v.serves,check:v.check})),pieces:carry.pieces,...(carry.dropped?.length?{dropped_validations:carry.dropped}:{})};
+    const out=await splitLevel(this.inferenceEnv('splitter'),request,{own,held,have,calls,rows,base:[...this.basePaths()],room,take:k=>this.takePieces(id,k),divide,carry,droppable,programs:this.boxPrograms(),refs:this.sourceRefs(id),...(typeof digest==='string'&&digest?{readBase:p=>this.readBaseFile(p)}:{})},{spend:()=>this.spendCall?this.spendCall():true});
     this.db().exec('UPDATE splitters SET ended_at=?,outcome=?,output=? WHERE id=?',Date.now(),out.level?'done':out.reason,splitterRecord(out),sid);
     const l=out.level;
     this.event(id,'splitter',clip(l?`${sid} declared ${l.contracts.length} contract(s), ${l.validations.length} validation(s), ${l.pieces.length} piece(s) in ${out.rounds} round(s) and ${out.transcript.length} call(s).`:`${sid}'s session ended without done (${out.reason}) after ${out.rounds} round(s) and ${out.transcript.length} call(s).`,600));
-    return {sid,level:l,reason:out.reason,rounds:out.rounds,carry:{contracts:out.state.contracts,validations:out.state.validations,pieces:out.state.pieces}};
+    return {sid,level:l,reason:out.reason,rounds:out.rounds,carry:{contracts:out.state.contracts,validations:out.state.validations,pieces:out.state.pieces,dropped:out.state.dropped}};
   }
   splitterRows() { return query(this.db(),'SELECT id,manager,kind,attempt,spawned_at,ended_at,outcome FROM splitters ORDER BY spawned_at,id'); }
   // The manager admits a level: its validations (each a row, V<n>, held where
@@ -8520,7 +8524,10 @@ export class ControlRoom extends DurableObject {
     if(unlisted.length)this.placeChecks();
     // From here to the reservation nothing waits: the validations' ids and the children's sequence are taken together.
     const first=this.reserveValidations(id,level.validations.length),ids=new Map(level.validations.map((v,i)=>[v.id,`V${first+i}`]));
-    const contracts=level.contracts.map(c=>({...c,serves:[...new Set([...(c.serves||[]),...level.validations.filter(v=>v.serves.includes(c.name)).map(v=>ids.get(v.id))])]}));
+    // The validations its splitter took out (drop_validation) leave the level file that holds them, and no contract is served by them.
+    const dropped=new Set(level.dropped||[]),unserved=c=>dropped.size?{...c,serves:(c.serves||[]).filter(v=>!dropped.has(v))}:c;
+    const droppedAt=[...new Set(this.validationRows().filter(v=>dropped.has(v.id)).map(v=>v.level))].filter(l=>l!==id);
+    const contracts=level.contracts.map(c=>({...c,serves:[...new Set([...unserved(c).serves||[],...level.validations.filter(v=>v.serves.includes(c.name)).map(v=>ids.get(v.id))])]}));
     const pieces=(level.pieces||[]).length>=2?level.pieces:[],stated=!job&&!own.length;
     const mine=name=>contracts.find(c=>c.name===name);
     // A rebuild hands its level's worker what the rows it replaces were handed: their uses and refs. A piece gets what the splitter named for it through piece(), as its contracts.
@@ -8543,9 +8550,10 @@ export class ControlRoom extends DurableObject {
     // A commit that fails leaves the level as it was: its reservations are released (a restart's are, by the next admission).
     let landed=false;
     const release=e=>{if(!landed){this.db().exec('DELETE FROM spawn_batches WHERE batch_key=?',key);this.reserveValidations(id,0);}throw e;};
-    await this.updateLevel(id,cur=>({format:LEVELS_FORMAT,manager:id,contracts:[...(cur?.contracts||[]).filter(c=>!added.some(x=>x.name===c.name)).map(c=>joined(c,joins)),...added],children:[...(cur?.children||[]),...entries],
-      validations:[...(cur?.validations||[]),...written],archived:cur?.archived||[]}),()=>{
+    await this.updateLevel(id,cur=>({format:LEVELS_FORMAT,manager:id,contracts:[...(cur?.contracts||[]).filter(c=>!added.some(x=>x.name===c.name)).map(c=>joined(unserved(c),joins)),...added],children:[...(cur?.children||[]),...entries],
+      validations:[...(cur?.validations||[]).filter(v=>!dropped.has(v.id)),...written],archived:cur?.archived||[]}),()=>{
       landed=true;
+      for(const v of dropped)this.db().exec('DELETE FROM validations WHERE id=?',v);
       for(const v of written)
         this.db().exec('INSERT INTO validations(id,level,serves,spec,says,created) VALUES (?,?,?,?,?,?)',v.id,id,JSON.stringify(v.serves),JSON.stringify(v.check),v.says||'',Date.now());
       this.reserveValidations(id,0);
@@ -8555,8 +8563,9 @@ export class ControlRoom extends DurableObject {
       this.save(`level_job:${id}`,{...(job||{kind:'split'}),admitted:{contracts,joins}});
       // The first level a room admits says which box its first compile needs.
       if(!this.get('prewarmed'))this.prewarmLevel(this.specOf(this.validationRows()));
-      this.event(id,pieces.length?'split_admitted':'hand_down',clip(pieces.length?`Admitted ${pieces.length} pieces: ${pieces.map(p=>`"${p.label}" (${p.contracts.join(', ')})`).join('; ')}; ${level.validations.length} validation(s).`:`${why||'The level goes to one worker.'} ${level.validations.length} validation(s) of its own.`,1200));
+      this.event(id,pieces.length?'split_admitted':'hand_down',clip(`${pieces.length?`Admitted ${pieces.length} pieces: ${pieces.map(p=>`"${p.label}" (${p.contracts.join(', ')})`).join('; ')}; ${level.validations.length} validation(s).`:`${why||'The level goes to one worker.'} ${level.validations.length} validation(s) of its own.`}${dropped.size?` Its splitter took out ${[...dropped].join(', ')}.`:''}`,1200));
     }).catch(release);
+    for(const l of droppedAt)await this.updateLevel(l,cur=>cur?{...cur,contracts:cur.contracts.map(unserved),validations:cur.validations.filter(v=>!dropped.has(v.id))}:null);
     await this.finishLevel(id);
   }
   // What an admitted level still owes, each step safe to run again, so the
@@ -8798,14 +8807,11 @@ export class ControlRoom extends DurableObject {
     if(!options.length)return null;
     const lines=cs=>cs.map(contractLine),named=n=>{const c=view.contracts.find(x=>x.name===n);return c?contractLine(c):n;};
     const wrote=c=>[...new Set((item.parties||[]).filter(x=>x.owner&&this.within(x.owner,c.id)).map(x=>x.owner_path||x.path).filter(Boolean))];
-    // A complaint handed to a worker of child c in an earlier compile of these same files (the same input): its answer changed nothing.
-    const before=item.kind==='complaint'&&held?.input?query(this.db(),"SELECT assignee,detail,flags FROM problems WHERE source=? AND source_input=? AND assignee!=''",held.source,held.input).filter(r=>parse(r.flags,{}).wave!==held.flags?.wave):[];
-    const unchanged=c=>[...new Set(before.filter(r=>this.within(r.assignee,c.id)).map(r=>r.detail))];
     const offered=options.filter(o=>o.fn==='answer'),granted=options.filter(o=>o.fn==='grant');
     const state={item:item.kind==='ask'?{kind:'ask',need:item.need,expected_name:item.name||''}:{kind:item.kind,text:item.text,
         ...(item.kind==='complaint'?{concerns:{contracts:(item.serves||[]).map(named),files:[...new Set((item.parties||[]).map(x=>x.owner_path||x.path).filter(Boolean))],...(item.packages?.length?{packages:item.packages}:{})}}:{})},
       assignment:view.assignment,my_contracts:lines(view.mine),
-      children:view.children.map((c,i)=>({slot:i,label:c.label,contracts:lines(c.contracts),...(item.packages?.length?{packages:this.packagesOf(c.id).map(p=>p.name).filter(n=>item.packages.includes(n))}:{}),...(item.kind==='complaint'?{wrote:wrote(c),...(unchanged(c).length?{handed_before_and_unchanged:unchanged(c)}:{})}:{})})),
+      children:view.children.map((c,i)=>({slot:i,label:c.label,contracts:lines(c.contracts),...(item.packages?.length?{packages:this.packagesOf(c.id).map(p=>p.name).filter(n=>item.packages.includes(n))}:{}),...(item.kind==='complaint'?{wrote:wrote(c)}:{})})),
       ...(offered.length?{contracts_offered:offered.map((o,j)=>({slot:j,contract:contractLine(o.contract)}))}:{}),
       ...(granted.length?{packages_offered:granted.map((o,j)=>({slot:j,package:o.fresh&&!this.installSeen(o.package)?`${o.package.name} (a ${o.fresh} package, not yet installed: the box installs it)`:this.seenLine(o.package)}))}:{}),
       options:options.map(o=>o.call)};
@@ -8844,8 +8850,8 @@ export class ControlRoom extends DurableObject {
   deliverComplaint(from, child, item, flags={}) {
     const source=flags.source||from;
     if(this.isWorker(child)) {
-      // The worker's record of it (its files the complaint names come first in its request); the complaint itself is the message.
-      const pid=this.insertProblem({holder:from,kind:item.kind,stage:'complaint',source,input:flags.input||'',parties:item.parties||[],detail:item.detail,facts:item.facts||{},flags});
+      // The worker's record of it (its files the complaint names come first in its request), with the digest of its files as they are when it is handed the complaint (unchangedComplaints); the complaint itself is the message.
+      const pid=this.insertProblem({holder:from,kind:item.kind,stage:'complaint',source,input:flags.input||'',parties:item.parties||[],detail:item.detail,facts:item.facts||{},flags:{...flags,files:this.ownedDigest(child.id)}});
       this.db().exec("UPDATE problems SET status='assigned',assignee=? WHERE id=?",child.id,pid);
       this.db().exec('INSERT INTO messages(sender,recipient,body,delivered) VALUES (?,?,?,0)','runtime:complaint',child.id,`[complaint] ${item.detail}`);
       this.event(from,'complaint_routed',clip(`To "${child.label}": ${item.detail}`,900),child.id);
@@ -8932,7 +8938,8 @@ export class ControlRoom extends DurableObject {
   // An agent archived with its subtree: its row and its files stay as they
   // are, and nothing it holds moves; the builder leaves it out of its join.
   // Its manager's level file lists it among the archived, as its entry stood.
-  async archive(id, why) {
+  // extra: what its entry keeps besides why (restate: the complaints its delivery did not change for).
+  async archive(id, why, extra={}) {
     const n=this.node(id);
     if(!n)return;
     for(const x of this.subtree(id)) {
@@ -8944,7 +8951,7 @@ export class ControlRoom extends DurableObject {
     this.event(id,'archived',clip(`"${n.label}" is archived with its subtree: ${why}. Its files stay as they are; its manager rebuilds what it delivered.`,700),n.parent||'');
     if(n.parent&&this.levelIndex(n.parent))await this.updateLevel(n.parent,level=>{
       const entry=level?.children.find(c=>c.id===id);
-      return entry?{...level,children:level.children.filter(c=>c!==entry),archived:[...level.archived,{...entry,why:clip(why,600)}]}:null;
+      return entry?{...level,children:level.children.filter(c=>c!==entry),archived:[...level.archived,{...entry,why:clip(why,600),...extra}]}:null;
     });
     this.placeChecks();
     if(n.parent)this.wake(n.parent);
@@ -8973,9 +8980,31 @@ export class ControlRoom extends DurableObject {
     const from=tasks.length?tasks:[this.node(m)],names=new Set(orphans.map(c=>c.name));
     const uses=[...new Set(from.flatMap(k=>this.assignmentOf(k.id).calls))].filter(x=>!names.has(x));
     const refs=[...new Set(from.flatMap(k=>this.sourceRefs(k.id)))];
-    this.save(`level_job:${m}`,{kind:'rebuild',key:crypto.randomUUID(),text:tasks.map(k=>this.assignmentOf(k.id).prompt).join('\n\n')||this.assignmentOf(m).prompt,label:tasks[0]?.label||this.node(m).label,own:orphans,uses,refs});
+    // What its level file keeps of the rows it replaces: each complaint their delivery did not change for (restate), which its splitter reads.
+    const archived=this.levelDesign(m)?.archived||[],complaints=tasks.flatMap(k=>archived.filter(e=>e.id===k.id).flatMap(e=>e.complaints||[]));
+    this.save(`level_job:${m}`,{kind:'rebuild',key:crypto.randomUUID(),text:tasks.map(k=>this.assignmentOf(k.id).prompt).join('\n\n')||this.assignmentOf(m).prompt,label:tasks[0]?.label||this.node(m).label,own:orphans,uses,refs,...(complaints.length?{complaints}:{})});
     this.event(m,'level_rebuild',clip(`No live child of "${this.node(m)?.label||m}" delivers ${orphans.map(c=>c.name).join(', ')}; its splitter rebuilds ${orphans.length>1?'them':'it'}.`,600));
     return true;
+  }
+  // A worker that answers a complaint with done, its files byte for byte as
+  // they were when it was handed the complaint, holds a problem statement
+  // that does not say what was observed (owner, 2026-10-17: "problem
+  // statement failure, not worker or routing failure"). Its statement is
+  // its entry in its level: its prompt, its contracts and the validations
+  // its examples are rendered from. It is archived, its entry keeping the
+  // complaints, and its level's splitter rebuilds its contracts
+  // (rebuildOrphans), reading what was observed and that the delivery did
+  // not change; a validation that serves only those contracts it may take
+  // out and state anew (drop_validation).
+  async restate(id, complaints) {
+    const n=this.node(id);
+    this.event(id,'complaint_unchanged',clip(`Its files are unchanged since it was handed ${complaints.length>1?`${complaints.length} complaints`:'a complaint'}; its level's splitter rebuilds its contracts: ${complaints.join(' | ')}`,900),n.parent||'');
+    await this.archive(id,`its delivery did not change in answer to ${complaints.length>1?'complaints':'a complaint'}: ${complaints.join(' | ')}`,{complaints:complaints.map(observed=>({observed,delivered_files:'unchanged since it was observed'}))});
+  }
+  // The complaints worker id holds whose record has the digest of its files as they are now: those it changed nothing for.
+  unchangedComplaints(id) {
+    const now=this.ownedDigest(id);
+    return [...new Set(query(this.db(),"SELECT detail,flags FROM problems WHERE assignee=? AND status='assigned' AND stage='complaint'",id).filter(r=>parse(r.flags,{}).files===now).map(r=>r.detail))];
   }
   // ---------- changes ----------
   // A change on m's row: before m's split it is part of m's assignment; after
@@ -9076,10 +9105,14 @@ export class ControlRoom extends DurableObject {
         const node=this.node(id);
         if(!node||['archived','failed','retired'].includes(node.status))return;
         const open=query(this.db(),'SELECT topic FROM route_workers WHERE worker=?',id).map(r=>r.topic);
+        // A done with its files as they were when it was handed a complaint: its problem statement is rewritten (restate).
+        const unanswered=end?.done?this.unchangedComplaints(id):[];
         // A session its context window ended goes on in a new session next turn, with its files as it wrote them; the room's turn budget bounds it.
         if(!end) {
           this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
           this.save('queue',addLast(this.read('queue',[]),id));
+        } else if(unanswered.length) {
+          await this.restate(id,unanswered);
         } else if(end.done) {
           this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
           this.event(id,'done','Delivered its files.');

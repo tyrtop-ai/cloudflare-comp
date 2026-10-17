@@ -1,6 +1,6 @@
 // src/splitter.js: the splitter states its level through functions:
 // contract, one function per check kind (file_check, judge_check,
-// command_check, call_check, http_check, browser_check), piece, level and
+// command_check, call_check, http_check, browser_check), piece, drop_piece, drop_validation, level and
 // done. Each call stores exactly what
 // it was given, or says exactly why it cannot; done ends the session once
 // the level lacks nothing, or says what it still lacks. No name is
@@ -21,8 +21,8 @@ const CHECKS = ['file_check', 'judge_check', 'command_check', 'call_check', 'htt
 // Calls in order; the results.
 const calls = (s, list) => list.map(([fn, args = {}]) => splitterCall(s, fn, args).result);
 
-test('the splitter\'s functions are contract, the six check functions, piece, drop_piece, level, read_file and done, each with an object schema; piece and drop_piece are offered only when the level may divide, read_file only when it holds the files the work starts from', () => {
-  assert.deepEqual(TOOLS.splitter.map(t => t.name), ['contract', ...CHECKS, 'piece', 'drop_piece', 'level', 'read_file', 'done']);
+test('the splitter\'s functions are contract, the six check functions, piece, drop_piece, drop_validation, level, read_file and done, each with an object schema; piece and drop_piece are offered only when the level may divide, drop_validation only when it holds validations it may take out, read_file only when it holds the files the work starts from', () => {
+  assert.deepEqual(TOOLS.splitter.map(t => t.name), ['contract', ...CHECKS, 'piece', 'drop_piece', 'drop_validation', 'level', 'read_file', 'done']);
   for (const t of TOOLS.splitter) {
     assert.equal(t.parameters.type, 'object', t.name);
     assert.ok(typeof t.description === 'string' && t.description.length > 20, t.name);
@@ -33,6 +33,7 @@ test('the splitter\'s functions are contract, the six check functions, piece, dr
   assert.deepEqual(splitterTools(true).map(t => t.name), ['contract', ...CHECKS, 'piece', 'drop_piece', 'level', 'done']);
   assert.deepEqual(splitterTools(false).map(t => t.name), ['contract', ...CHECKS, 'level', 'done']);
   assert.deepEqual(splitterTools(true, true).map(t => t.name), ['contract', ...CHECKS, 'piece', 'drop_piece', 'level', 'read_file', 'done'], 'read_file only for a level that holds the files the work starts from');
+  assert.deepEqual(splitterTools(false, false, true).map(t => t.name), ['contract', ...CHECKS, 'drop_validation', 'level', 'done'], 'drop_validation only for a level that holds validations it may take out');
   assert.deepEqual(splitterCall(splitterState({divide: false}), 'piece', {label: 'A', task: 'x', contracts: []}).result, {error: 'There is no function "piece".'});
   // read_file shows a file the work starts from as the room serves it (its readBaseFile), or why not.
   const reads = splitterState({readBase: p => p === 'src/a.js' ? {path: p, label: 'base', content: 'a\n'} : {error: `no ${p}`}});
@@ -329,4 +330,27 @@ test('a command check may run any program the box has: the rows\' executables an
   const none = splitterState();
   splitterCall(none, 'contract', {name: 'x.md', kind: 'doc', path: 'x.md', does: 'notes'});
   assert.match(splitterCall(none, 'command_check', {serves: ['x.md'], run: ['ruby', 'x.rb'], expect: {exit: 0}}).result.error, /neither a command contract declared so far nor a program the box has/);
+});
+
+// Owner, 2026-10-17: a worker that answers a complaint with its files unchanged shows its problem statement was wrong or incomplete, and
+// a wrong expected value is part of that statement: a rebuild's splitter takes a validation it holds out by its id and states one anew.
+test('drop_validation takes a held validation it may take out, by its id, out of what its contracts are known by: the examples count without it, the level it returns names it, and a session that goes on from what it declared keeps it out', () => {
+  const held = [1, 2, 3].map(i => ({id: `V${i}`, serves: ['to_f'], check: {kind: 'call', steps: [{call: 'to_f', args: [i], expect: i === 3 ? 0 : i * 1.8 + 32}]}}));
+  const own = {...TO_F, serves: ['V1', 'V2', 'V3']}, s = splitterState({own: [own], held, droppable: ['V1', 'V2', 'V3'], divide: false});
+  assert.deepEqual(missingOf(s), []);
+  assert.deepEqual(splitterCall(s, 'drop_validation', {id: 'V9'}).result, {error: 'no validation of validations_you_have has the id "V9". Ids: V1, V2, V3'});
+  assert.deepEqual(splitterCall(s, 'drop_validation', {id: 'V3', why: 'x'}).result, {error: 'drop_validation has no field "why"; its fields are id'});
+  assert.deepEqual(splitterCall(s, 'drop_validation', {id: 'V3'}).result, {dropped: 'V3'});
+  assert.deepEqual(missingOf(s), ['to_f has 2 different examples of 3 from the validations that serve it: steps that call it.']);
+  assert.deepEqual(levelView(s).dropped_validations, ['V3']);
+  assert.ok(splitterCall(s, callOf(3, 37.4)[0], callOf(3, 37.4)[1]).result.id);
+  assert.deepEqual(missingOf(s), []);
+  const level = splitterCall(s, 'done', {}).end;
+  assert.deepEqual(level.dropped, ['V3']);
+  // A session that goes on from what an earlier one declared holds it out too.
+  const t = splitterState({own: [own], held, droppable: ['V1', 'V2', 'V3'], divide: false, carry: {contracts: [], validations: [], pieces: [], dropped: ['V3']}});
+  assert.deepEqual(t.held.map(h => h.id), ['V1', 'V2']);
+  assert.deepEqual(t.droppable, ['V1', 'V2']);
+  // With nothing it may take out, there is no such function.
+  assert.deepEqual(splitterCall(splitterState({own: [own], held}), 'drop_validation', {id: 'V1'}).result, {error: 'There is no function "drop_validation".'});
 });
