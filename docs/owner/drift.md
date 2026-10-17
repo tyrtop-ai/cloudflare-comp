@@ -6,90 +6,6 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 
 ## Open
 
-### R1-chrono-3: Runtime writes glue and renames; builder is no agent
-- drift, `src/glue.js:259`
-- Owner (2026-10-16 05:21): builder - writes glue between the interfaces created by the worker. can edit interface names || 2026-10-16 20:08: "the runtime shouldn't be enforcing any sort of process or doing any of the agents work for them."
-- Required: The builder, as an agent working through functions, writes the glue between the workers' interfaces and renames interface names. The runtime writes no glue and makes no renames on the builder's behalf.
-- Status: being fixed (round 1 fixer: builder)
-
-### R1-chrono-4: done re-adds 'each contract delivered by at most one piece'
-- drift, `src/splitter.js:144`
-- Owner (2026-10-16 16:14): > Open question: rules 7, 8 and 10–13. Should “one file, one owner” and “every contract delivered by exactly one piece” stay hard rules, or become something Clef judges in its split review? ... you added those yourself.
-- Required: Drop the at-most-one-piece rule from done, and stop calling it the owner's in the tool text, the changelog and the test. done's only rule is three different examples for each contract that is called or run. Whether the division is sound is Clef's call.
-- Status: being fixed (round 1 fixer: splitter)
-
-### R1-chrono-5: Byte-identical answer to a complaint still holds the room
-- drift, `src/index.js:9432`
-- Owner (2026-10-16 20:06): > Unchanged files: when a worker sends a file back byte-identical, the room drops it silently and then escalates. That’s what stopped both to-do runs. this should be impossiblefor the worker to do || 2026-10-16 19:44: "3 & 4 are issues with the runtime / routing"
-- Required: Answering a complaint with unchanged files must not be possible for the worker. When it does happen, the cause is in the runtime or the routing, and is fixed there instead of escalating a hold.
-- Status: being fixed (round 1 fixer: limits)
-
-### R1-chrono-6: Full splitter context still holds split_failed; approved changes not made
-- drift, `src/index.js:8719`
-- Owner (2026-10-17 00:55): why didn't you just..do them? || 2026-10-17 00:53: "are you doing those?" || 2026-10-17 00:25 (on Claude's proposal that a full context start a fresh splitter session continuing from level(), and that each call count against the room's turn budget): "it wasn't the question. I don't understand the need" || 2026-10-16 23:20 (on 'The room now holds with split_failed'): "what?"
-- Required: Make both changes the owner asked about. A full context starts a fresh splitter session with the same functions that carries on from level() until done, so nothing is held or handed down. Each call counts against the room's turn budget.
-- Status: Claude's dispute rejected by the round 2 quorum (7 of 8): the owner's "are you doing those?" follows Claude's "Want me to make both changes?", and Claude built the same continuation for the worker (91b31ec). To be fixed.
-
-### R1-chrono-7: Bench grade does not go back until done by default
-- drift, `src/bench-run.js:45`
-- Owner (2026-10-16 05:54): > When the room finishes, the benchmark run grades the shipped bundle once, in the harness’s own box. > That grade never goes back into the room: no complaint, no event, no example. why does it not go back? it should go back until done, just like anything else?
-- Required: The grader's failure goes back to the room as a complaint until the room is done, like anything else, with no invented round cap.
-- Status: being fixed (round 1 fixer: bench)
-
-### R1-chrono-9: Path rules still refuse and lecture workers and splitters
-- drift, `src/index.js:9274`
-- Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists. || 2026-10-15 15:57: "in general I never want to tell an agent what they can't do. I want it to just simply be archiecturally the only path …
-- Required: No path rule refuses what an agent writes or tells it what it can't do. An agent's world is its own repo and what exists, and the runtime's own folders stay outside that world by construction.
-- Status: being fixed (round 1 fixer: paths)
-
-### R1-chrono-10: Runtime enforces worker process: drops files, caps asks, overrides done
-- drift, `src/index.js:9352`
-- Owner (2026-10-16 20:08): in general though - the runtime shouldn't be enforcing any sort of process or doing any of the agents work for them. like the runtime should only be exposing functions that make other agents visible or show what the workers can do. That's it.
-- Required: The runtime only exposes functions and does what they're called with. It doesn't drop the worker's files, cap or filter its asks, or override its done.
-- Status: being fixed (round 1 fixer: limits)
-
-### R1-chrono-11: Split bar rises with depth: managers judged differently
-- drift, `src/index.js:858`
-- Owner (2026-10-15 22:22): yeah, I want all of the managers to be exactly the same. || 2026-10-16 05:30: "the top manager shouldn't even know it's a top manager."
-- Required: Every manager's split is judged the same way, and nothing depends on its depth.
-- Status: being fixed (round 1 fixer: limits)
-
-### R1-chrono-12: Worker context clipped: complaint, complaint count, own files
-- extra, `src/checks.js:216`
-- Owner (2026-10-16 19:41): how is this possible - this is the place where i WANT worker context? || 2026-10-16 05:39: "A manager hands the problem to the worker with the complaint, and the worker fixes it."
-- Required: The worker gets every complaint whole and its own files whole, with no runtime clip on worker context.
-- Status: being fixed (round 1 fixer: limits)
-
-### R1-chrono-13: Invented repair-round and rebuild caps hold the room
-- extra, `src/index.js:323`
-- Owner (2026-10-16 05:54): it should go back until done, just like anything else? || 2026-10-16 05:39: "But now we have compensating controls to rebuild code that is missing (right?)"
-- Required: Repairs and rebuilds go on until done, bounded only by the budget the owner sets.
-- Status: being fixed (round 1 fixer: limits)
-
-### R1-chrono-14: Invented size caps on a splitter's level
-- extra, `src/validations.js:22`
-- Owner (2026-10-17 00:25): > The 100-call cap was my own invention. ... it wasn't the question. I don't understand the need
-- Required: Remove the caps the owner never asked for. A level's size is bounded only by what the owner set.
-- Status: being fixed (round 1 fixer: limits)
-
-### R1-chrono-15: What Clef grades is clipped, not the original
-- extra, `src/model.js:175`
-- Owner (2026-10-16 05:12): the model should be closer to here's the original model here's the pieces is this valid? (without going too small) || 2026-10-16 05:06: "what prompt are you giving clef and what are you giving clef to grade, exactly?"
-- Required: Clef grades the original assignment and the pieces as written, unclipped.
-- Status: being fixed (round 1 fixer: limits)
-
-### R1-chrono-18: Bench room goal wraps the task prompt with runtime pins
-- drift, `src/bench.js:166`
-- Owner (2026-10-15 05:17): there shouldn't be any version pinning or code type pinning or specific prompt pinning. tbh that's not prompting should work.
-- Required: A bench room's prompt is the task's own prompt, with no runtime-added language, path or library pins.
-- Status: being fixed (round 1 fixer: bench)
-
-### R1-record-1: The splitter's role text tells it to propose no pieces, so the splitter rather than Clef decides that a level does not split
-- drift, `src/prompts.js:16`
-- Owner (2026-10-16 05:09): the idea is that manager always attempts to flip, and then clef is supposed to decide if that was a valide split
-- Required: Once the pre-grade lets the level divide, the splitter proposes a division, and only Clef's review decides whether it is valid, with up to two retries. Drop "or none" and "the fewest" from ROLE.splitter, and stop admitting a 0/1-piece answer as a hand-down that bypasses Clef.
-- Status: being fixed (round 1 fixer: splitter)
-
 ### R2-room/chrono-1: Managers can 'extend' their level on an ask, a growth path that preempts the walk-to-the-room archive
 - drift, `src/index.js:9023`
 - Owner (2026-10-16 05:39): dScope (54 lines), routeFunction, the “uses” planning, carriersOf, the “nobody up to Root covers it, so write it yourself” rule, and the end-of-line growth rule. - actually this fights against another rule that I had. If clef is able to walk up the inference tree to root and not find the scope to root, then kill that agent. But now we have compensating controls to rebuild code that is missing (rig …
@@ -284,6 +200,78 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 
 ## Fixed, awaiting recheck
 
+### R1-chrono-3: Runtime writes glue and renames; builder is no agent
+- drift, `src/glue.js:259`
+- Owner (2026-10-16 05:21): builder - writes glue between the interfaces created by the worker. can edit interface names || 2026-10-16 20:08: "the runtime shouldn't be enforcing any sort of process or doing any of the agents work for them."
+- Required: The builder, as an agent working through functions, writes the glue between the workers' interfaces and renames interface names. The runtime writes no glue and makes no renames on the builder's behalf.
+- Fixed in: 91e0c19, 2db6ba5 (the builder is an agent of functions; src/glue.js deleted); merged by 3311438
+
+### R1-chrono-4: done re-adds 'each contract delivered by at most one piece'
+- drift, `src/splitter.js:144`
+- Owner (2026-10-16 16:14): > Open question: rules 7, 8 and 10–13. Should “one file, one owner” and “every contract delivered by exactly one piece” stay hard rules, or become something Clef judges in its split review? ... you added those yourself.
+- Required: Drop the at-most-one-piece rule from done, and stop calling it the owner's in the tool text, the changelog and the test. done's only rule is three different examples for each contract that is called or run. Whether the division is sound is Clef's call.
+- Fixed in: 87364cd; merged by 3311438
+
+### R1-chrono-5: Byte-identical answer to a complaint still holds the room
+- drift, `src/index.js:9432`
+- Owner (2026-10-16 20:06): > Unchanged files: when a worker sends a file back byte-identical, the room drops it silently and then escalates. That’s what stopped both to-do runs. this should be impossiblefor the worker to do || 2026-10-16 19:44: "3 & 4 are issues with the runtime / routing"
+- Required: Answering a complaint with unchanged files must not be possible for the worker. When it does happen, the cause is in the runtime or the routing, and is fixed there instead of escalating a hold.
+- Fixed in: 075cd9e; merged by 3311438
+
+### R1-chrono-6: Full splitter context still holds split_failed; approved changes not made
+- drift, `src/index.js:8719`
+- Owner (2026-10-17 00:55): why didn't you just..do them? || 2026-10-17 00:53: "are you doing those?" || 2026-10-17 00:25 (on Claude's proposal that a full context start a fresh splitter session continuing from level(), and that each call count against the room's turn budget): "it wasn't the question. I don't understand the need" || 2026-10-16 23:20 (on 'The room now holds with split_failed'): "what?"
+- Required: Make both changes the owner asked about. A full context starts a fresh splitter session with the same functions that carries on from level() until done, so nothing is held or handed down. Each call counts against the room's turn budget.
+- Fixed in: 3af683b (a splitter session its context window ends goes on next turn, handed what it declared); merged by 3311438
+
+### R1-chrono-7: Bench grade does not go back until done by default
+- drift, `src/bench-run.js:45`
+- Owner (2026-10-16 05:54): > When the room finishes, the benchmark run grades the shipped bundle once, in the harness’s own box. > That grade never goes back into the room: no complaint, no event, no example. why does it not go back? it should go back until done, just like anything else?
+- Required: The grader's failure goes back to the room as a complaint until the room is done, like anything else, with no invented round cap.
+- Fixed in: bb5f225; merged by 3311438
+
+### R1-chrono-9: Path rules still refuse and lecture workers and splitters
+- drift, `src/index.js:9274`
+- Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists. || 2026-10-15 15:57: "in general I never want to tell an agent what they can't do. I want it to just simply be archiecturally the only path …
+- Required: No path rule refuses what an agent writes or tells it what it can't do. An agent's world is its own repo and what exists, and the runtime's own folders stay outside that world by construction.
+- Fixed in: d68a644; merged by 3311438
+
+### R1-chrono-10: Runtime enforces worker process: drops files, caps asks, overrides done
+- drift, `src/index.js:9352`
+- Owner (2026-10-16 20:08): in general though - the runtime shouldn't be enforcing any sort of process or doing any of the agents work for them. like the runtime should only be exposing functions that make other agents visible or show what the workers can do. That's it.
+- Required: The runtime only exposes functions and does what they're called with. It doesn't drop the worker's files, cap or filter its asks, or override its done.
+- Fixed in: 3a8a7b9 (answers and needs whole; the ask cap and filters run on v7 only); merged by 3311438
+
+### R1-chrono-11: Split bar rises with depth: managers judged differently
+- drift, `src/index.js:858`
+- Owner (2026-10-15 22:22): yeah, I want all of the managers to be exactly the same. || 2026-10-16 05:30: "the top manager shouldn't even know it's a top manager."
+- Required: Every manager's split is judged the same way, and nothing depends on its depth.
+- Fixed in: 6d54046; merged by 3311438
+
+### R1-chrono-12: Worker context clipped: complaint, complaint count, own files
+- extra, `src/checks.js:216`
+- Owner (2026-10-16 19:41): how is this possible - this is the place where i WANT worker context? || 2026-10-16 05:39: "A manager hands the problem to the worker with the complaint, and the worker fixes it."
+- Required: The worker gets every complaint whole and its own files whole, with no runtime clip on worker context.
+- Fixed in: 3a8a7b9; merged by 3311438
+
+### R1-chrono-13: Invented repair-round and rebuild caps hold the room
+- extra, `src/index.js:323`
+- Owner (2026-10-16 05:54): it should go back until done, just like anything else? || 2026-10-16 05:39: "But now we have compensating controls to rebuild code that is missing (right?)"
+- Required: Repairs and rebuilds go on until done, bounded only by the budget the owner sets.
+- Fixed in: 075cd9e; merged by 3311438
+
+### R1-chrono-14: Invented size caps on a splitter's level
+- extra, `src/validations.js:22`
+- Owner (2026-10-17 00:25): > The 100-call cap was my own invention. ... it wasn't the question. I don't understand the need
+- Required: Remove the caps the owner never asked for. A level's size is bounded only by what the owner set.
+- Fixed in: 5d7f5fb; merged by 3311438
+
+### R1-chrono-15: What Clef grades is clipped, not the original
+- extra, `src/model.js:175`
+- Owner (2026-10-16 05:12): the model should be closer to here's the original model here's the pieces is this valid? (without going too small) || 2026-10-16 05:06: "what prompt are you giving clef and what are you giving clef to grade, exactly?"
+- Required: Clef grades the original assignment and the pieces as written, unclipped.
+- Fixed in: e5f6777; merged by 3311438
+
 ### R1-chrono-16: v8 docs still describe the card writer, Root and hidden tests
 - record, `docs/how-it-works.md:340`
 - Owner (2026-10-16 05:27): throw out the fucking card writer. You're too attached to that thing and it needs to be gone. || 2026-10-16 05:16: "no - the manager NEVER writes code." || 2026-10-16 05:54: "it should go back until done, just like anything else?"
@@ -296,11 +284,23 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: The text says what the owner described: every manager attempts a split, and Clef decides whether it is valid.
 - Fixed in: 5e052c7, a91ad8e, 52c4848, 1fabd68 (docs and dashboard fixer, merged in 7da91d5)
 
+### R1-chrono-18: Bench room goal wraps the task prompt with runtime pins
+- drift, `src/bench.js:166`
+- Owner (2026-10-15 05:17): there shouldn't be any version pinning or code type pinning or specific prompt pinning. tbh that's not prompting should work.
+- Required: A bench room's prompt is the task's own prompt, with no runtime-added language, path or library pins.
+- Fixed in: f9951c8; merged by 3311438
+
 ### R1-chrono-19: Builder linking animation removed from the tree
 - drift, `public/styles.css:135`
 - Owner (2026-10-13 03:15): in the tree - give the builder linking node a tiny scrolling animation left to right
 - Required: A builder node that is linking shows a tiny left-to-right scrolling animation in the graph.
 - Fixed in: 5e052c7, a91ad8e, 52c4848, 1fabd68 (docs and dashboard fixer, merged in 7da91d5)
+
+### R1-record-1: The splitter's role text tells it to propose no pieces, so the splitter rather than Clef decides that a level does not split
+- drift, `src/prompts.js:16`
+- Owner (2026-10-16 05:09): the idea is that manager always attempts to flip, and then clef is supposed to decide if that was a valide split
+- Required: Once the pre-grade lets the level divide, the splitter proposes a division, and only Clef's review decides whether it is valid, with up to two retries. Drop "or none" and "the fewest" from ROLE.splitter, and stop admitting a 0/1-piece answer as a hand-down that bypasses Clef.
+- Fixed in: cc5890e; merged by 3311438
 
 ### R1-record-11: rulings.md still keeps lenient repair and safety rules 'waiting on per-check boxes'
 - record, `docs/owner/rulings.md:25`
