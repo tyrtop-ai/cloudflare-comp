@@ -14,6 +14,7 @@ import {liveRoom} from './helpers/room.js';
 import {workerWorld, workerCall, workerTools} from '../src/worker.js';
 import {MESSAGES, TOOLS, CLEF, clefText} from '../src/prompts.js';
 import {packagePath} from '../src/assembly.js';
+import {checkProblems} from '../src/checks.js';
 
 const trail = room => events(room).slice(-16).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 220)}`).join('\n');
 
@@ -385,36 +386,36 @@ test('the join leaves no file out and chooses no file over another: two pieces w
   assert.match(events(room, 'bundle_conflict')[0].body, /^Two files are placed at the same path, so each delivered copy stands in its writer's own folder: index\.html/);
 });
 
-test('the join keeps the builder\'s own file: a delivered file placed later at its path stands in its writer\'s own folder, and the builder\'s file stays at its path, in the bundle and in its world', async () => {
+test('the join keeps the worker\'s delivery at its contract\'s path: a builder\'s own file there stands in the builder\'s own folder, in the bundle and in its world, and a complaint about the contract\'s file reaches the worker', async () => {
   const {room, top, a, wa} = await tree(recorded().clef);
-  const bid = 'builder-00000000000000aa';
+  const bid = 'builder-00000000000000aa', atB = packagePath('Builder', 'index.html', bid);
   room.save(`built:${bid}`, {renamed: {}, glue: {'index.html': '<p>glue</p>\n', 'wire.js': 'w\n'}});
   await room.putFile(wa.id, 'index.html', '<p>A</p>\n');
-  const piece = await room.joinPiece(top.id, bid), atA = packagePath('Page', 'index.html', wa.id);
-  assert.equal(piece.files.get('index.html'), '<p>glue</p>\n', 'the builder\'s own file stands at its path');
-  assert.equal(piece.files.get(atA), '<p>A</p>\n', 'the delivered copy stands in its writer\'s own folder');
-  assert.equal(piece.by.get(atA), a.id);
-  assert.deepEqual([...piece.glue.keys()].sort(), ['index.html', 'wire.js'], 'no file of the builder\'s is left out');
-  // A delivered file with the same text is one file with it.
-  await room.putFile(wa.id, 'index.html', '<p>glue</p>\n');
-  const same = await room.joinPiece(top.id, bid);
-  assert.equal(same.files.get('index.html'), '<p>glue</p>\n');
-  assert.equal(same.files.has(atA), false);
-  assert.ok(same.glue.has('index.html'));
+  const piece = await room.joinPiece(top.id, bid);
+  assert.equal(piece.files.get('index.html'), '<p>A</p>\n', 'the worker\'s delivery is the file at its contract\'s path');
+  assert.ok(piece.placed.has('index.html'));
+  assert.deepEqual([piece.by.get('index.html'), piece.origin.get('index.html')], [a.id, {owner: wa.id, owner_path: 'index.html'}]);
+  assert.equal(piece.files.get(atB), '<p>glue</p>\n', 'the builder\'s file stands in its own folder');
+  assert.deepEqual([...piece.glue.keys()].sort(), [atB, 'wire.js'].sort(), 'no file of the builder\'s is left out');
+  assert.deepEqual([...piece.ownAt], [['index.html', atB]]);
+  assert.match(events(room, 'bundle_conflict').at(-1).body, /builder's file stands in its own folder: index\.html/);
+  // A failing check's frame at the contract's path names the worker that delivered it.
+  const [problem] = checkProblems({validations: [{id: 'v1', check: {kind: 'file'}}]}, new Map([['v1', {id: 'v1', passed: false, detail: 'no title', frames: [{path: 'index.html', line: 1}]}]]), [], {origin: p => piece.origin.get(p) || null});
+  assert.ok(problem.parties.some(x => x.path === 'index.html' && x.owner === wa.id), 'the complaint reaches the worker');
 });
 
-test('the builder\'s own file is the file the piece holds at its path, a delivered file there included, which its world still shows; at an existing file\'s path the existing file stays (only the person grants a change to one), and the builder\'s file stays in its world', async () => {
+test('a delivered file at a builder\'s own file\'s path stays the delivered one, unplaced files too; at an existing file\'s path the existing file stays (only the person grants a change to one), and the builder\'s file stays in its world', async () => {
   const {room, top, a, wa} = await tree(recorded().clef);
-  const bid = 'builder-00000000000000ab', atN = packagePath('Page', 'notes.txt', wa.id);
+  const bid = 'builder-00000000000000ab', atN = packagePath('Page', 'notes.txt', wa.id), atB = packagePath('Builder', atN, bid);
   room.set(`base_digest:${top.id}`, 'd1');
   room.db().exec('INSERT INTO base_files(path,content,sha256) VALUES (?,?,?)', 'README.md', '# Base\n', 'h');
   await room.putFile(wa.id, 'notes.txt', 'the worker\'s notes\n');
   room.save(`built:${bid}`, {renamed: {}, glue: {[atN]: 'the builder\'s notes\n', 'README.md': '# mine\n'}});
   const piece = await room.joinPiece(top.id, bid);
-  assert.equal(piece.files.get(atN), 'the builder\'s notes\n', 'the builder wrote it there: its file stands');
-  assert.ok(piece.glue.has(atN) && !piece.by.has(atN) && !piece.origin.has(atN), 'the builder\'s, nobody else\'s');
-  assert.equal(piece.delivered.get(atN), 'the worker\'s notes\n', 'its world shows the delivered file too');
-  assert.equal(piece.deliveredBy.get(atN), a.id);
+  assert.equal(piece.files.get(atN), 'the worker\'s notes\n', 'the delivered file stays at its path');
+  assert.deepEqual([piece.by.get(atN), piece.origin.get(atN)?.owner], [a.id, wa.id]);
+  assert.equal(piece.files.get(atB), 'the builder\'s notes\n');
+  assert.ok(piece.glue.has(atB) && !piece.glue.has(atN));
   assert.equal(piece.files.get('README.md'), '# Base\n', 'an existing file changes only through the person\'s grant');
   assert.ok(!piece.glue.has('README.md'));
   assert.match(events(room, 'bundle_conflict').at(-1).body, /README\.md/);

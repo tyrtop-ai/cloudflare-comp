@@ -103,20 +103,20 @@ test('what the room keeps of a session: each renamed file\'s text for the exact 
   assert.deepEqual(builderWork(changed, kept, p => textHash(p === 'report.js' ? REPORT + '\n' : STORE)), {renamed: {}, glue: {}}, 'a rename made for another text, and files it no longer has, are not kept');
 });
 
-test('a delivered file and one of the builder\'s own at one path are both in its world: read_file shows both, its own stays its to write, rename or remove', () => {
-  const w = builderWorld({files: new Map([['wire.js', 'delivered\n'], ['store.js', STORE]]), from: new Map([['wire.js', 'Ticket store'], ['store.js', 'Ticket store']]), glue: new Map([['wire.js', 'mine\n']])});
-  assert.deepEqual(builderCall(w, 'read_file', {path: 'wire.js'}).result, {path: 'wire.js', content: 'delivered\n', piece: 'Ticket store', yours: 'mine\n'});
-  assert.deepEqual(builderCall(w, 'write_file', {path: 'wire.js', content: 'mine 2\n'}).result, {written: 'wire.js', characters: 7});
-  assert.equal(w.glue.get('wire.js'), 'mine 2\n');
-  assert.equal(w.files.get('wire.js'), 'delivered\n');
-  // A rename at that path changes its own file, the one the piece holds there.
-  assert.equal(builderCall(w, 'rename', {path: 'wire.js', from: 'mine', to: 'ours', name_characters: '_$'}).result.renamed, 'wire.js');
-  assert.deepEqual([w.glue.get('wire.js'), w.files.get('wire.js')], ['ours 2\n', 'delivered\n']);
-  // Its own file at a delivered file's path is its to write; removed, the delivered file is the one there.
-  assert.deepEqual(builderCall(w, 'write_file', {path: 'store.js', content: 'wired\n'}).result, {written: 'store.js', characters: 6});
-  assert.deepEqual(builderCall(w, 'delete_file', {path: 'wire.js'}).result, {removed: 'wire.js'});
+test('a delivered file stays the file at its path: the builder\'s write_file there writes a file of its own in its own folder and says where; rename edits the names in the delivered copy', () => {
+  const home = p => `components/p_builder/${p}`;
+  const w = builderWorld({files: new Map([['wire.js', 'delivered\n'], ['store.js', STORE]]), from: new Map([['wire.js', 'Ticket store'], ['store.js', 'Ticket store']]), home});
+  const says = MESSAGES.builder_beside({path: 'wire.js', piece: 'Ticket store', at: home('wire.js')});
+  assert.deepEqual(builderCall(w, 'write_file', {path: 'wire.js', content: 'mine\n'}).result, {written: home('wire.js'), characters: 5, says});
+  assert.deepEqual([w.files.get('wire.js'), w.glue.get(home('wire.js')), w.glue.has('wire.js')], ['delivered\n', 'mine\n', false]);
   assert.deepEqual(builderCall(w, 'read_file', {path: 'wire.js'}).result, {path: 'wire.js', content: 'delivered\n'});
-  assert.deepEqual(builderWork(w, {}, () => '').glue, {'store.js': 'wired\n'});
+  assert.deepEqual(builderCall(w, 'read_file', {path: home('wire.js')}).result, {path: home('wire.js'), content: 'mine\n'});
+  assert.deepEqual(builderCall(w, 'write_file', {path: 'wire.js', content: 'mine\n'}).result, {unchanged: home('wire.js'), says: `${says} ${MESSAGES.unchanged({path: home('wire.js')})}`});
+  // A rename at the delivered path edits the names in its copy of the delivered file.
+  assert.equal(builderCall(w, 'rename', {path: 'wire.js', from: 'delivered', to: 'joined', name_characters: '_$'}).result.renamed, 'wire.js');
+  assert.deepEqual([w.files.get('wire.js'), w.renamed.get('wire.js')], ['joined\n', [{from: 'delivered', to: 'joined'}]]);
+  assert.deepEqual(builderCall(w, 'delete_file', {path: home('wire.js')}).result, {removed: home('wire.js')});
+  assert.deepEqual(builderWork(w, {}, () => '').glue, {});
 });
 
 // ------------------------------------------------------------ package directories

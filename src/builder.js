@@ -4,10 +4,10 @@
 // Its world is the files its manager's children delivered, each where the
 // design artifact (its manager's level file) places it, and its own files:
 // it reads them, writes the glue between their interfaces as files of its
-// own (at any path: one of its own at a delivered file's path is the file
-// the piece holds there, and read_file shows both), removes one of its own,
-// and renames interface names in its copies of their files (a child's own
-// file never changes). Each call does exactly what it is given, or says
+// own (a delivered file stays the file at its path, so one of its own
+// written at that path goes in its own folder, home, and the result says
+// where), removes one of its own, and renames interface names in its copies
+// of their files (a child's own file never changes). Each call does exactly what it is given, or says
 // exactly why it cannot, and nothing reads what the model writes besides its
 // calls. done ends the session with the summary given. The room keeps what
 // the session did (builderWork): each renamed file's text, for the exact text
@@ -15,6 +15,7 @@
 // A path names a place in its world, as a rooted file system reads it
 // (rootedPath): '..' from the top is the top, so no path reaches past it.
 import { rootedPath } from '../container/build-path.mjs';
+import { packagePath } from './assembly.js';
 import { session } from './session.js';
 import { systemPrompt, TOOLS, MESSAGES } from './prompts.js';
 
@@ -35,15 +36,16 @@ const wholeName = (from, inside) => {
 
 // The world one session acts on. files: Map path -> text (the delivered
 // files as joined, its earlier renames in them); from: Map path -> the label
-// of the piece that delivered it; glue: Map path -> text (its own files).
-export function builderWorld({files = new Map(), from = new Map(), glue = new Map()} = {}) {
-  return {files: new Map(files), from: new Map(from), glue: new Map(glue), renamed: new Map(), written: [], unchanged: [], removed: []};
+// of the piece that delivered it; glue: Map path -> text (its own files);
+// home: path -> where a file of its own at that path goes in its own folder.
+export function builderWorld({files = new Map(), from = new Map(), glue = new Map(), home = p => packagePath('Builder', p)} = {}) {
+  return {files: new Map(files), from: new Map(from), glue: new Map(glue), home, renamed: new Map(), written: [], unchanged: [], removed: []};
 }
 export const builderTools = () => TOOLS.builder;
 
 // ------------------------------------------------------------ the functions
 const paths = w => [...new Set([...w.files.keys(), ...w.glue.keys()])].sort();
-// Its own file where it has one at the path (the file the piece holds there), else the delivered one.
+// Its own file where it has one at the path, else the delivered one.
 const textOf = (w, p) => w.glue.has(p) ? w.glue.get(p) : w.files.get(p);
 // The place a path names in its world: '' when it names none (the top itself).
 const placeOf = a => isText(a.path) ? rootedPath(a.path) : '';
@@ -53,21 +55,22 @@ function readFile(w, a) {
   const path = placeOf(a);
   if (!path) return {error: 'path is the text of a relative path'};
   if (!w.files.has(path) && !w.glue.has(path)) return {error: MESSAGES.builder_no_file({path, paths: paths(w).join(', ')})};
-  // A delivered file and one of its own at one path: both.
-  if (w.files.has(path) && w.glue.has(path)) return {path, content: w.files.get(path), piece: w.from.get(path) || '', yours: w.glue.get(path)};
   return {path, content: textOf(w, path)};
 }
 function writeFile(w, a) {
   const bad = fieldsOf('write_file', a, ['path', 'content']);
   if (bad) return {error: bad};
-  const path = placeOf(a);
-  if (!path) return {error: 'path is the text of a relative path'};
+  const named = placeOf(a);
+  if (!named) return {error: 'path is the text of a relative path'};
   if (!isText(a.content)) return {error: 'content is the complete text of the file'};
-  if (w.glue.get(path) === a.content) { w.unchanged.push(path); return {unchanged: path, says: MESSAGES.unchanged({path})}; }
+  // A delivered file stays the file at its path: one of its own written there goes in its own folder.
+  const path = w.files.has(named) ? w.home(named) : named, beside = path !== named ? MESSAGES.builder_beside({path: named, piece: w.from.get(named) || '', at: path}) : '';
+  const said = beside ? {says: beside} : {};
+  if (w.glue.get(path) === a.content) { w.unchanged.push(path); return {unchanged: path, says: [beside, MESSAGES.unchanged({path})].filter(Boolean).join(' ')}; }
   w.glue.set(path, a.content);
   if (!w.written.includes(path)) w.written.push(path);
   w.removed = w.removed.filter(p => p !== path);
-  return {written: path, characters: a.content.length};
+  return {written: path, characters: a.content.length, ...said};
 }
 function deleteFile(w, a) {
   const bad = fieldsOf('delete_file', a, ['path']);
