@@ -105,12 +105,14 @@ test('a file placed outside the root gets the module path and a one-line script;
   const pieces = new Map([...PIECES].map(([p, o]) => [p === 'wordfreq.py' ? 'bin/wordfreq.py' : p, o]));
   const out = linkBundle(new Map(Object.entries(files)), {pieces, contracts: CONTRACTS});
   assert.deepEqual(out.paths, {PYTHONPATH: ['.']});
-  assert.equal(out.glue.get('glue/run.sh'), py.glue.path_setup.script.text);
+  // The runtime's script sits in its own folder, beside its notes, so no project folder holds a file of the runtime's.
+  assert.equal(out.glue.get('.recursive/run.sh'), py.glue.path_setup.script.text);
+  assert.ok(![...out.glue.keys()].some(p => p.startsWith('glue/')));
   const spec = {contracts: [{name: 'wordfreq', kind: 'command', path: 'bin/wordfreq.py', does: 'prints the words'}], validations: []};
-  assert.match(runNotes({goal: 'g', paths: out.paths}, spec, {}), /- `wordfreq`: `sh glue\/run\.sh python3 bin\/wordfreq\.py`: prints the words/);
+  assert.match(runNotes({goal: 'g', paths: out.paths}, spec, {}), /- `wordfreq`: `sh \.recursive\/run\.sh python3 bin\/wordfreq\.py`: prints the words/);
   assert.match(runNotes({goal: 'g'}, spec, {}), /- `wordfreq`: `python3 bin\/wordfreq\.py`/, 'the plain command when no module path is needed');
   const all = new Map([...out.files, ['s.txt', 'b a b\n']]);
-  const r = runBundle(all, ['sh', 'glue/run.sh', 'python3', 'bin/wordfreq.py', 's.txt', '1']);
+  const r = runBundle(all, ['sh', '.recursive/run.sh', 'python3', 'bin/wordfreq.py', 's.txt', '1']);
   assert.equal(r.stdout, 'b 2\n', r.stderr);
   assert.equal(checkPlan(spec, out.files, {paths: out.paths}).plan.paths.PYTHONPATH[0], '.');
 });

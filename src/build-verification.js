@@ -1,20 +1,21 @@
 // Immutable source snapshots, diagnostic attribution, and repair envelopes.
 // This code never asks a model to decide whether a build passed.
 import {sha256} from './assembly.js';
-import {buildPathError} from '../container/build-path.mjs';
+import {buildPathError,boxPathError} from '../container/build-path.mjs';
 export async function snapshotHash(files) {
   const entries=[...(files instanceof Map?files:new Map(Object.entries(files))).entries()].sort(([a],[b])=>a.localeCompare(b));
   return sha256(JSON.stringify(entries));
 }
 // What one build snapshot holds at most: files, and bytes in all.
 export const BUILD_LIMITS=Object.freeze({files:1600,bytes:4*1024*1024});
-export function validateBuildFiles(files) {
+// v7's build path rule: the one the Container's v7 build and the Worker's gate share (v8 S1 review), and never memory/.
+const v7BuildPath=path=>buildPathError(path)||/^memory(?:\/|$)/i.test(path);
+export function validateBuildFiles(files,unsafe=v7BuildPath) {
   const entries=files instanceof Map?[...files]:Object.entries(files||{});
   if(!entries.length || entries.length>BUILD_LIMITS.files)throw new Error(`Build snapshot must contain 1–${BUILD_LIMITS.files} files`);
   let bytes=0;
   for(const [path,content] of entries) {
-    // The one path rule the Container's runner and the Worker's gate share (v8 S1 review).
-    if(buildPathError(path)||/^memory(?:\/|$)/i.test(path))
+    if(unsafe(path))
       throw Object.assign(new Error(`Unsafe build path ${path}`),{path});
     if(typeof content!=='string')throw new Error(`Non-text build file ${path}`);
     bytes+=new TextEncoder().encode(content).length;
@@ -26,6 +27,9 @@ export function validateBuildFiles(files) {
   }
   return new Map(entries);
 }
+// v8: what one box holds of a bundle: every file at a path inside its
+// folder (the box's own safety, boxPathError), within its limits.
+export const validateBoxFiles=files=>validateBuildFiles(files,boxPathError);
 // Review: at most 24 checks, and never a dropped verdict: every check but
 // the passing per-file syntax confirmations is kept (the runner's test, the
 // load, start() and any failure), and those fill what room is left, in order.

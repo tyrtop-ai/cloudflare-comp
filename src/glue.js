@@ -86,7 +86,7 @@ export function rowContext(files, row, {contracts = [], pieces = new Map(), part
   const takenAnyCase = p => lower.has(p.toLowerCase());
   const pieceDir = p => pieceDirOf(p, parts);
   const ext = row.extensions?.[0] || '';
-  const own = [...files.keys()].filter(p => toolchainOf(p)?.id === row.id && !p.startsWith('glue/'));
+  const own = [...files.keys()].filter(p => toolchainOf(p)?.id === row.id);
   const surfaces = new Map(own.map(p => [p, new Set(extractSurface(p, files.get(p)).names)]));
   const stdlib = stdlibNames(row);
   const fns = contracts.filter(c => typeof c.name === 'string');
@@ -304,7 +304,7 @@ export function linkPage(path, text, files, row, {pieces = new Map(), parts = 'c
   // server: never one that listens or reads the process).
   const SERVER = /\brequire\s*\(\s*['"](?:node:)?(?:http|https|net|fs|child_process)['"]|\.listen\s*\(|\bprocess\./;
   const loads = p => toolchainOf(p)?.id === 'text' ? !(row.reference_files || []).some(e => p.toLowerCase().endsWith(e)) : LINKABLE.test(p) && !SERVER.test(files.get(p));
-  const mine = p => p !== path && !p.startsWith('glue/') && (pieces.get(p) === owner || !p.startsWith(cleanParts(parts) + '/') || loads(p));
+  const mine = p => p !== path && (pieces.get(p) === owner || !p.startsWith(cleanParts(parts) + '/') || loads(p));
   const lines = String(text).split('\n'), res = (row?.imports || []).map(x => new RegExp(x, 'gd'));
   for (let i = 0; i < lines.length; i++) for (const re of res) {
     re.lastIndex = 0;

@@ -73,7 +73,7 @@ const CHECK_TOOLS = [
 export const CHECK_TOOL_KINDS = Object.freeze(Object.fromEntries(CHECK_TOOLS.map(t => [t.name, t.name.replace(/_check$/, '')])));
 export const TOOLS = Object.freeze({
   splitter: Object.freeze([
-    {name: 'contract', description: 'Declares one contract of this level, stored exactly as given. The result says it is stored, or why it is not: a kind outside the seven, a path outside the files\' root, a language the box does not run, or a name already declared.',
+    {name: 'contract', description: 'Declares one contract of this level, stored exactly as given. The result says it is stored, or why it is not: a kind outside the seven, a language the box does not run, or a name already declared.',
       parameters: {type: 'object', properties: {
         name: {type: 'string', description: 'A function by a name its language accepts; a command by the one word that runs it; a route as a request method in capitals, a space and a path; a file, page, doc or data contract by its path.'},
         kind: {type: 'string', enum: KIND_LIST, description: 'What the contract is.'},
@@ -176,7 +176,9 @@ export const MESSAGES = Object.freeze({
   answered_before: () => 'Asked and answered before; the answer is final.',
   unchanged: ({path}) => `unchanged: ${path} is already exactly this text.`,
   no_file: ({path, paths}) => paths ? `You have no file ${path}. Your files: ${paths}.` : `You have no file ${path}, and no files yet.`,
-  not_inside: ({path, why}) => `${path} is not a relative path inside your files: ${why}.`,
+  // A place a repository holds no file at (src/validations.js unheldPath): its own records folder, or longer than it holds.
+  records_folder: ({path}) => `${path} is in the folder a repository keeps for its own records, outside the files.`,
+  too_long: ({path}) => `${path} is longer than a repository holds: a name of up to 255 characters, in a path of up to 512.`,
   no_examples: () => 'Nothing you deliver has examples to run.',
   // ------------------------------------------------------------ answers to asks
   provided: ({contract, reference}) => `${contract}. Refer to it exactly as: ${reference}, and use it rather than writing your own.`,

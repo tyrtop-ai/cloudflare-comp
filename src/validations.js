@@ -4,8 +4,10 @@
 // piece is one call, stored as written or refused with the exact reason.
 // This module holds what those functions check and render: whether a check
 // can run as written (executability only: a command is one program and its
-// arguments that exists in the box, a path lies inside the bundle, a
-// selector is one the adapter reads, a check names what it runs by), how a
+// arguments that exists in the box, a selector is one the adapter reads, a
+// check names what it runs by; a file's path names the place it does in the
+// files, as a rooted file system reads it, and a request's path is sent as
+// written, the box keeping each on its own folder and origin), how a
 // contract is started, and a validation as the examples a worker reads, one
 // per step that exercises a contract. Nothing here reads a model's text
 // leniently, resolves a name written inexactly or repairs a form: a check
@@ -14,6 +16,8 @@
 import { toolchainOf } from './toolchains.js';
 import { kindOf } from './contracts.js';
 import { isPath } from './protocol.js';
+import { rootedPath } from '../container/build-path.mjs';
+import { MESSAGES } from './prompts.js';
 
 export const VALIDATION_KINDS = Object.freeze(['file', 'judge', 'command', 'call', 'http', 'browser']);
 export const EXAMPLES_PER_CONTRACT = 3;
@@ -56,16 +60,10 @@ export function commandArgv(run) {
 }
 
 // ------------------------------------------------------------ paths
-// A path a check requests from the served project: one '/', then a name on
-// the served site.
-export function urlPathError(p) {
-  if (typeof p !== 'string' || !/^\/(?:$|[^/\\])/.test(p)) return 'it must start with a single "/"';
-  if (p.length > 512 || /[\\\s\u0000-\u001f]/.test(p) || p.includes('//') || /%(?:2e|2f|5c)/i.test(p)) return 'it must be a plain path on the served site';
-  if (/(?:^|\/)\.\.(?:[/?#]|$)/.test(p)) return 'it must not step up with ".."';
-  return '';
-}
-// A file path inside the bundle: relative, no step up.
-export const bundlePath = p => isPath(p) && !String(p).split('/').some(x => x === '..' || x === '.');
+// Why a repository holds no file at a plain relative path (rootedPath's), or
+// '': the folder it keeps for its own records, or a name or path longer than
+// it holds (isPath, the store's own form).
+export const unheldPath = path => path.split('/').some(x => x.toLowerCase() === '.git') ? MESSAGES.records_folder({path}) : isPath(path) ? '' : MESSAGES.too_long({path});
 
 // ------------------------------------------------------------ elements
 // An element a page has, named by a simple selector: a tag, then any of #id,
@@ -105,7 +103,7 @@ export function readCheck(c, ctx) {
   const bad = extra(c, CHECK_FIELDS[kind], `the ${kind} check`);
   if (bad) return {error: bad};
   if (kind === 'file' || kind === 'judge') {
-    const path = typeof c.path === 'string' ? c.path : '';
+    const path = typeof c.path === 'string' ? rootedPath(c.path) : '';
     if (!path || !ctx.paths.has(path)) return {error: `the ${kind} check reads ${path ? `"${path.slice(0, 200)}", which no declared contract places and the existing files do not hold` : 'no path'}`};
     if (kind === 'judge') {
       const q = text(c.question, LEVEL_LIMITS.question, 'its question');
@@ -129,8 +127,12 @@ export function readCheck(c, ctx) {
       if (!plain(c.files)) return {error: 'the command check: files maps each input file\'s path to its text'};
       const entries = Object.entries(c.files);
       if (entries.length > LEVEL_LIMITS.fixtures) return {error: `the command check has ${entries.length} input files; at most ${LEVEL_LIMITS.fixtures}`};
-      for (const [p, t] of entries) if (!bundlePath(p) || typeof t !== 'string' || t.length > LEVEL_LIMITS.fixture) return {error: `the command check has an input file "${String(p).slice(0, 80)}" that is not a relative path with a text of at most ${LEVEL_LIMITS.fixture} characters`};
-      files = c.files;
+      // Each input file at the place its path names beside the command.
+      files = {};
+      for (const [p, t] of entries) {
+        if (!rootedPath(p) || typeof t !== 'string' || t.length > LEVEL_LIMITS.fixture) return {error: `the command check has an input file "${String(p).slice(0, 80)}" that is not a file's path with a text of at most ${LEVEL_LIMITS.fixture} characters`};
+        files[rootedPath(p)] = t;
+      }
     }
     const expect = {};
     if (c.expect !== undefined) {
@@ -193,8 +195,6 @@ function httpStep(s) {
   const method = s.method === undefined ? 'GET' : s.method;
   if (!METHODS.has(method)) return {error: `its method ${JSON.stringify(method)?.slice(0, 40)} is not one of ${quoted([...METHODS])}`};
   if (typeof s.path !== 'string') return {error: 'it requests no path'};
-  const bad = urlPathError(s.path);
-  if (bad) return {error: `its path "${s.path.slice(0, 80)}": ${bad}`};
   const expect = {};
   if (s.expect !== undefined) {
     const e = s.expect;
@@ -224,7 +224,7 @@ function browserStep(s) {
   const keys = Object.keys(s);
   if (keys.length !== 1 || !BROWSER_STEPS.includes(keys[0])) return {error: `a browser step is an object with exactly one of ${quoted(BROWSER_STEPS)}; this one has ${keys.length ? quoted(keys.map(k => k.slice(0, 40))) : 'none'}`};
   const [k] = keys, v = s[k];
-  if (k === 'goto') { if (typeof v !== 'string') return {error: 'goto is a path'}; const bad = urlPathError(v); return bad ? {error: `goto "${v.slice(0, 80)}": ${bad}`} : {step: {goto: v}}; }
+  if (k === 'goto') return typeof v === 'string' ? {step: {goto: v}} : {error: 'goto is a path'};
   if (k === 'reload') return v === true ? {step: {reload: true}} : {error: 'reload is true'};
   if (k === 'press') return typeof v === 'string' && v && v.length <= 40 ? {step: {press: v}} : {error: 'press is a key name of at most 40 characters'};
   if (k === 'expect_text' || k === 'expect_no_text') { const t = text(v, LEVEL_LIMITS.text, k); return t.error ? {error: t.error} : {step: {[k]: v}}; }
@@ -272,7 +272,7 @@ export function runOf(raw, contract, world) {
   if (parsed.error) return {error: `its run: ${parsed.error}`};
   const [first] = parsed.argv;
   if (!world.commands.has(first) && !world.executables.has(first)) return {error: `its run starts "${first.slice(0, 80)}", which is neither a command contract declared so far nor a program the box has (${[...world.executables].join(', ') || 'none'})`};
-  if (raw.ready !== undefined) { const bad = typeof raw.ready === 'string' ? urlPathError(raw.ready) : 'it is a path'; if (bad) return {error: `its ready path: ${bad}`}; }
+  if (raw.ready !== undefined && typeof raw.ready !== 'string') return {error: 'its ready path is a path'};
   return {run: {run: raw.run, argv: parsed.argv, ...(raw.ready !== undefined ? {ready: raw.ready} : {})}};
 }
 // A run something serves: it listens on the port the box gives it, ready

@@ -2,7 +2,7 @@
 // files on 127.0.0.1. argv: <directory> [port]; port 0 (the default) picks a
 // free port. The first stdout line is {"port":N} once it listens.
 // GET and HEAD only; a directory serves its index.html; a path that leaves
-// the directory, or names a dot file or folder (.recursive/), is a 404.
+// the directory (the box's own safety) is a 404.
 import {createServer} from 'node:http';
 import {createReadStream} from 'node:fs';
 import {stat} from 'node:fs/promises';
@@ -23,7 +23,7 @@ async function resolveFile(dir, urlPath) {
   let rel;
   try { rel = decodeURIComponent(String(urlPath).split(/[?#]/)[0]); } catch { return null; }
   const parts = rel.split('/').filter(Boolean);
-  if (parts.some(p => p === '..' || p.startsWith('.'))) return null;
+  if (parts.some(p => p === '..')) return null;
   let file = path.join(dir, ...parts);
   if (file !== dir && !file.startsWith(dir + path.sep)) return null;
   let info = await stat(file).catch(() => null);

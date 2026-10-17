@@ -34,7 +34,7 @@ test('the splitter\'s functions are contract, the six check functions, piece, le
   assert.deepEqual(splitterCall(splitterState({divide: false}), 'piece', {label: 'A', task: 'x', contracts: []}).result, {error: 'There is no function "piece".'});
 });
 
-test('contract: stored exactly as given, or refused with exactly why: a kind outside the seven, no path for a placed kind, a path outside the files\' root, a language the box does not run, a name already declared, a field it does not have, a run on what is not started', () => {
+test('contract: stored exactly as given, or refused with exactly why: a kind outside the seven, no path for a placed kind, a language the box does not run, a name already declared, a field it does not have, a run on what is not started; a path names the place it does among the files, in any folder', () => {
   const s = splitterState({own: [{name: 'given', kind: 'doc', path: 'GIVEN.md', does: 'given'}], have: [{name: 'had', kind: 'function', path: 'had.py', does: 'had'}]});
   assert.deepEqual(calls(s, [['contract', CONVERT], ['contract', TO_F], ['contract', {name: 'README.md', kind: 'doc', path: 'README.md', does: 'how to run it'}]]),
     [{stored: 'convert', kind: 'command', examples_needed: 3}, {stored: 'to_f', kind: 'function', examples_needed: 3}, {stored: 'README.md', kind: 'doc'}]);
@@ -43,7 +43,12 @@ test('contract: stored exactly as given, or refused with exactly why: a kind out
   assert.equal(why({name: 'x', kind: 'script', does: 'x'}), 'kind "script" is not one of function, file, page, route, command, doc, data');
   assert.equal(why({name: 'x', does: 'x'}), 'kind null is not one of function, file, page, route, command, doc, data', 'no kind is inferred');
   assert.equal(why({name: 'notes', kind: 'doc', does: 'x'}), 'a doc contract needs the relative path of its file');
-  assert.equal(why({name: '../up.md', kind: 'doc', path: '../up.md', does: 'x'}), '"../up.md" is not a relative path that stays inside the files\' root');
+  // A path is read as a rooted file system reads it: '..' from the top is the top, so it names up.md; no folder is the runtime's.
+  assert.deepEqual(splitterCall(s, 'contract', {name: '../up.md', kind: 'doc', path: '../up.md', does: 'x'}).result, {stored: 'up.md', kind: 'doc'});
+  assert.equal(levelView(s).contracts.find(c => c.name === 'up.md').path, 'up.md');
+  for (const path of ['components/Button.md', 'memory/notes.md', 'glue/how.md', '.recursive/x.md'])
+    assert.deepEqual(splitterCall(s, 'contract', {name: path, kind: 'doc', path, does: 'x'}).result, {stored: path, kind: 'doc'}, path);
+  assert.equal(why({name: 'x.md', kind: 'doc', path: '.git/x.md', does: 'x'}), '.git/x.md is in the folder a repository keeps for its own records, outside the files.');
   assert.equal(why({name: 'guide.md', kind: 'doc', path: 'docs/guide.md', does: 'x'}), 'doc "guide.md" must be named by its path docs/guide.md', 'no renaming');
   assert.equal(why({name: 'convert', kind: 'command', path: 'other.py', does: 'x'}), '"convert" is already declared');
   assert.equal(why({name: 'given', kind: 'doc', path: 'GIVEN.md', does: 'x'}), '"given" is already declared: it is one of the contracts you deliver');

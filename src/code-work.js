@@ -88,10 +88,11 @@ export function fileGateError(path, content, facts={}) {
   return null;
 }
 
-// What a worker delivered: every file the bundle carries, so outside
+// What a v7 worker delivered: every file the bundle carries, so outside
 // memory/, the builders' components/, the runtime-owned paths and the
 // assembly metadata (v8 §3.1 S17: a README, a LICENSE or any .md file
-// counts like any other).
+// counts like any other). A v8 worker delivers every file of its own
+// repository (ControlRoom.deliveredOf).
 export function deliveredFiles(files) {
   return (files||[]).filter(f=>{const p=String(f?.path||'');return !/^memory(?:\/|$)/i.test(p)&&!p.startsWith('components/')&&!runtimeOwned(p)&&!isAssemblyMetadata(p);});
 }

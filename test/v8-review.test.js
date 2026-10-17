@@ -250,22 +250,19 @@ test('F10: every level\'s linker request says the same about the references it m
 });
 
 // ------------------------------------------------------------------ files a worker writes
-test('a worker\'s file whose name starts with a dot is written to its own repository; it ships in the bundle, never in the box: the room holds for the person, Continue accepts it, and the export names it', {skip}, async () => {
+test('a worker\'s file whose name starts with a dot is written to its own repository; it ships in the bundle and its box holds it like any other file: no hold, no path rule', {skip}, async () => {
   const r = await toolkit({leaf: leafOf({extra: {shout: {'.shoutrc': 'volume = 11\n'}}})});
   const m = at(r.room), worker = r.room.children(m.Shouter).find(c => c.role === 'worker');
   assert.ok(r.room.files(worker.id).some(f => f.path === '.shoutrc'), 'written to its repository');
   assert.ok(!events(r.room, 'file_refused').length);
-  assert.ok(!r.boxes.some(b => Object.keys(b.files).some(p => p.endsWith('.shoutrc'))), 'never in a box');
-  const pause = r.room.read('paused_state', null);
-  assert.equal(pause?.kind, 'checks_untested', tail(r.room));
-  assert.match(pause.text, /\.shoutrc \(its path is one the box does not hold/);
-  await again(r, 20);
+  assert.ok(r.boxes.some(b => Object.entries(b.files).some(([p, t]) => p.endsWith('.shoutrc') && t === 'volume = 11\n')), 'its box holds it');
+  assert.equal(r.room.read('paused_state', null), null, tail(r.room));
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
   const {app, files} = await exported(r.room);
   assert.equal(app.passed, true);
   const at_ = [...files.keys()].find(p => p.endsWith('/.shoutrc'));
   assert.ok(at_, 'it ships under its piece\'s folder');
   assert.equal(files.get(at_), 'volume = 11\n');
-  assert.deepEqual(app.unchecked, [at_]);
+  assert.equal(app.unchecked, undefined, 'nothing ships unchecked');
   assert.deepEqual(Object.values(statusOf(r.room)).filter(p => p !== true), []);
 });
