@@ -126,19 +126,19 @@ Full text of each round's findings and votes: the round's section below; the wor
 - record, docs/owner/rulings.md:130
 - Owner (2026-10-16 05:54): why does it not go back?   it should go back until done, just like anything else?
 - Required: Record the owner's ruling instead: the grade goes back to the room until done.
-- Fixed in: COMMIT (rulings.md: the grade goes back until done; once is an option)
+- Fixed in: 3de341e (rulings.md: the grade goes back until done; once is an option)
 
 ### R1-record-11: rulings.md still keeps lenient repair and safety rules 'waiting on per-check boxes'
 - record, docs/owner/rulings.md:25
 - Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
 - Required: Delete the lenient-repair and safety-rules clauses from the Flow section, so the record matches the owner's rulings.
-- Fixed in: COMMIT (rulings.md step 5: typed functions, no repair, no path rules)
+- Fixed in: 3de341e (rulings.md step 5: typed functions, no repair, no path rules)
 
 ### R1-record-12: rulings.md lists 'masking of check values' as something that stays
 - record, docs/owner/rulings.md:43
 - Owner (2026-10-16 05:39): text heuristics - I don't understand what this is for. Like architecturally, this is protecting from someting that shouldn't happen.
 - Required: Remove 'masking of check values' from the list of what stays.
-- Fixed in: COMMIT (rulings.md: masking of check values removed from what stays)
+- Fixed in: 3de341e (rulings.md: masking of check values removed from what stays)
 
 ## Disputed
 
