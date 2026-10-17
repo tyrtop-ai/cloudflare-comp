@@ -83,7 +83,7 @@ test('replay, issue tracker: its answers as calls, in order; each mistake is a r
   assert.equal(two['validation start-server-validation-1'].error, 'the command check: stdout_has is a list of texts');
   assert.equal(two['validation start-server-validation-3'].error, 'the http check serves "start-server", which is not a declared contract that states how it runs (none states one yet)');
   assert.deepEqual(['get-tickets', 'update-ticket', 'delete-ticket'].map(id => two[`validation ${id}-validation-3`].examples_so_far), [{getTickets: 3}, {updateTicket: 3}, {deleteTicket: 3}]);
-  assert.deepEqual(two.done, {complete: false, missing: ['start-server has 0 different examples of 3 from the validations that serve it.']});
+  assert.deepEqual(two.done, {complete: false, missing: ['start-server has 0 different examples of 3 from the validations that serve it: checks that run it.']});
   assert.equal(three['validation create-ticket-validation-3'].examples_so_far.createTicket, 3);
   assert.equal(three.done.missing.length, 4, three.done.missing.join('\n'));
 });

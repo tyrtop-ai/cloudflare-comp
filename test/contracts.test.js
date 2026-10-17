@@ -39,13 +39,14 @@ test('S2: old {params, returns, operation} rows normalize to function contracts 
     {name:'readTickets',does:'',params:[],returns:'nothing'},
     {name:'getTickets',does:'returns all tickets',params:[]},
     {name:'deleteTicket',does:'',params:['id']}]);
-  // v8 keeps each text as written: no filler dropped, no final stop, no leading "returns" cut, no no-value phrasing turned into "nothing".
+  // v8 keeps each text as written: no filler dropped, no final stop, no leading "returns" cut, no no-value phrasing turned into "nothing", and a function's name is never read as a signature (any language's name, Store::create, is stored whole).
   assert.deepEqual(normalizeContracts(rows,V8),[
     {name:'createTicket',does:'creates a ticket and returns it.',params:['title','description'],returns:'The created ticket.',operation:'create a ticket'},
     {name:'saveTickets',does:'',params:['tickets'],returns:'nothing'},
     {name:'readTickets',does:'',params:[],returns:'returns a promise that resolves when done'},
-    {name:'getTickets',does:'returns all tickets',params:[]},
-    {name:'deleteTicket',does:'',params:['id']}],'a v8 row keeps its texts as written');
+    {name:'getTickets(): returns all tickets',does:'',params:[]},
+    {name:'deleteTicket(id)',does:'',params:[]}],'a v8 row keeps its texts as written');
+  assert.deepEqual(['Store::create','Vec::new','std::sort'].map(name=>N1({name,path:'src/lib.rs'}).name),['Store::create','Vec::new','std::sort']);
   assert.deepEqual(N1({name:'list_items',does:'What it does.',inputs:[{name:'argument',is:'argument'}],outputs:'the list of items, or an empty list if none exist'}),
     {name:'list_items',does:'What it does.',params:['argument'],inputs:[{name:'argument',is:'argument'}],returns:'the list of items, or an empty list if none exist'},'v8 matches no filler and rewrites no output');
   assert.ok(once.every(f=>!('kind' in f)&&kindOf(f)==='function'),'a function contract carries no kind field: kind defaults to function');
@@ -227,7 +228,7 @@ test('S2: the v8 keys are read only in v8 mode: pieces win over spawn, an empty 
   assert.deepEqual([normalizeAction(both).spawn.map(c=>c.label),normalizeAction(both,{v8:true}).spawn.map(c=>c.label)],[['A'],['B']]);
   assert.deepEqual(normalizeAction({spawn:[{label:'A',task:'Write the thing'}],pieces:[]},{v8:true}).spawn.map(c=>c.label),['A'],'an empty pieces never hides spawn');
   const empty={spawn:[{label:'S',task:'Write the store module that keeps tickets',functions:['a()'],contracts:[]}]};
-  assert.deepEqual([normalizeAction(empty).spawn[0].interfaces,normalizeAction(empty,{v8:true}).spawn[0].interfaces],[[{name:'a',does:'',params:[]}],[{name:'a',does:'',params:[]}]]);
+  assert.deepEqual([normalizeAction(empty).spawn[0].interfaces,normalizeAction(empty,{v8:true}).spawn[0].interfaces],[[{name:'a',does:'',params:[]}],[{name:'a()',does:'',params:[]}]],'v7 reads a signature; v8 stores the name as written');
   assert.deepEqual(normalizeAction({spawn:[{label:'S',task:'Write the store module that keeps tickets',functions:['a()'],contracts:['b()']}]}).spawn[0].interfaces.map(f=>f.name),['a'],'v7 never reads contracts');
   assert.deepEqual(I.normalizeSpawn([{label:'A',task:'t',contracts:[{name:'index.html',kind:'page'}]}],[],{v8:true}).spawn[0].interfaces,[{name:'index.html',kind:'page',does:'',params:[],path:'index.html'}]);
   assert.deepEqual(I.normalizeSpawn([{label:'A',task:'t',contracts:[{name:'index.html',kind:'page'}]}]).spawn[0].interfaces,[]);

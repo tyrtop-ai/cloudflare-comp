@@ -113,25 +113,22 @@ function promiseItem(o) {
 // A path-named kind's name: a path with an extension or a directory, and
 // no prose ("README.md: how to run" is README.md, whose does is the rest).
 const pathLike = s => isPath(s) && (/\.[A-Za-z0-9]+$/.test(s) || s.includes('/'));
-// One v8 contract (§2.1): each text stored as written. A function keeps
-// v7's field names (params, returns, operation), so v7 readers see the same
-// promise; inputs stays beside params only when an input says what it is.
+// One v8 contract (§2.1): each text stored as written, a function's name
+// too, in whatever language it is written (Store::create, Vec::new). A
+// function keeps v7's field names (params, returns, operation), so v7
+// readers see the same promise; inputs stays beside params only when an
+// input says what it is.
 function contractItem(o, keepServes) {
   const kind = typeof o.kind === 'string' && KINDS.has(o.kind.trim().toLowerCase()) ? o.kind.trim().toLowerCase() : 'function';
-  let name = o.name.trim().replace(/^`+|`+$/g, ''), inputs = inputsOf(o), does = kept(o.does);
-  const out = [o.returns, o.outputs].map(kept).find(Boolean) ?? '';
+  let name = o.name.trim(), does = kept(o.does);
+  const inputs = inputsOf(o), out = [o.returns, o.outputs].map(kept).find(Boolean) ?? '';
   let path = typeof o.path === 'string' && isPath(o.path.trim()) ? o.path.trim() : '';
-  if (kind === 'function') {
-    const call = /^([^(]*)\(([^)]*)\)?[\s;.]*$/.exec(name) || /^([A-Za-z_$][\w$]*)`?\s*(?:\(([^)]*)\)`?)?(?:\s*:|\s+-+|\s+[–—])\s*([\s\S]*)$/.exec(name);
-    if (call) { name = call[1].trim(); if (!inputs.length) inputs = inputsOf({params: call[2] || ''}); if (!does) does = kept(call[3]); }
-  } else {
-    if (PATH_NAMED.has(kind)) {
-      const tail = /^(\S+?):\s+(.+)$/.exec(name);
-      if (tail && pathLike(tail[1])) { name = tail[1]; if (!does) does = tail[2]; }
-      // Named by its path: a valid path given renames it; a path-like name gives the path.
-      if (path) name = path;
-      else if (pathLike(name)) path = name;
-    }
+  if (PATH_NAMED.has(kind)) {
+    const tail = /^(\S+?):\s+(.+)$/.exec(name);
+    if (tail && pathLike(tail[1])) { name = tail[1]; if (!does) does = tail[2]; }
+    // Named by its path: a valid path given renames it; a path-like name gives the path.
+    if (path) name = path;
+    else if (pathLike(name)) path = name;
   }
   if (!name) return null;
   const operation = kind === 'function' ? kept(o.operation) : '';

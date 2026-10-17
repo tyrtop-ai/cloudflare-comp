@@ -142,7 +142,7 @@ test('a contract with fewer than three distinct examples: done says what is miss
   // The two identical validations render one example between them; done reports the count, in the session.
   assert.deepEqual(heard[0][1], {name: 'command_check', result: {id: 'v1', examples: ['convert 100 C → it exits 0 and its output contains "212"'], examples_so_far: {convert: 1}}});
   assert.deepEqual(heard[0][2].result.examples_so_far, {convert: 1});
-  assert.deepEqual(heard[0].at(-1), {name: 'done', result: {complete: false, missing: ['convert has 1 different example of 3 from the validations that serve it.']}});
+  assert.deepEqual(heard[0].at(-1), {name: 'done', result: {complete: false, missing: ['convert has 1 different example of 3 from the validations that serve it: checks that run it.']}});
   assert.deepEqual(room.splitterRows().map(r => r.outcome), ['done']);
   const record = JSON.parse(room.db().exec('SELECT output FROM splitters').toArray()[0].output);
   assert.deepEqual(record.calls.map(c => c.name), ['contract', 'command_check', 'command_check', 'done', 'command_check', 'command_check', 'done'], 'the splitter row keeps every call with its result');

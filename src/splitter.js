@@ -10,7 +10,7 @@
 // assignment and the pieces as written.
 import { TOOLCHAINS, toolchainOf } from './toolchains.js';
 import { normalizeContract, kindOf, nameError, ownNameError, PLACED_KINDS, PATH_NAMED, CONTRACT_KINDS } from './contracts.js';
-import { readCheck, CHECK_FIELDS, runOf, servedRun, runsOf, unheldPath, contractExamples, checkExamples, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
+import { readCheck, CHECK_FIELDS, runOf, servedRun, runsOf, unheldPath, ownExamples, checkExamples, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
 import { rootedPath } from '../container/build-path.mjs';
 import { session } from './session.js';
 import { systemPrompt, TOOLS, CHECK_TOOL_KINDS } from './prompts.js';
@@ -57,8 +57,8 @@ function checkWorld(s) {
   return {paths: new Set([...all.map(c => c.path).filter(Boolean), ...s.base]), functions: new Set(all.filter(c => kindOf(c) === 'function').map(c => c.name)),
     functionPaths: new Map(all.filter(c => kindOf(c) === 'function' && c.path).map(c => [c.name, c.path])), served, commands, executables: s.executables};
 }
-// The validations that give a contract of this level its examples: those held above it, and this session's.
-const examplesOf = (s, c) => contractExamples(c, [...s.held.filter(h => (c.serves || []).includes(h.id)), ...s.validations.filter(v => v.serves.includes(c.name))]);
+// A contract's different examples, from the validations that serve it (those held above it, and this session's): the ones that call, request or run it.
+const examplesOf = (s, c) => ownExamples(c, [...s.held.filter(h => (c.serves || []).includes(h.id)), ...s.validations.filter(v => v.serves.includes(c.name))]);
 
 // ------------------------------------------------------------ the functions
 const CONTRACT_FIELDS = ['name', 'kind', 'path', 'does', 'inputs', 'outputs', 'effects', 'run'];
@@ -73,6 +73,7 @@ function contract(s, a) {
   // reads it (rootedPath); a contract named by its path is named by that place.
   const path = a.path === undefined ? '' : rootedPath(a.path), name = PATH_NAMED.has(kind) ? rootedPath(a.name) : a.name;
   if (!name.trim()) return {error: 'name is required'};
+  if (name !== name.trim()) return {error: `name ${JSON.stringify(name.slice(0, 80))} has spaces before or after it`};
   if (s.own.some(c => c.name === name)) return {error: `"${name}" is already declared: it is one of the contracts you deliver`};
   if (s.contracts.some(c => c.name === name)) return {error: `"${name}" is already declared`};
   if (s.have.some(c => c.name === name)) return {error: `"${name}" is already declared: it is a contract your level already has`};
@@ -94,7 +95,6 @@ function contract(s, a) {
     run = r.run;
   }
   const c = normalizeContract({name, kind, ...(path ? {path} : {}), does: a.does || '', ...(a.inputs ? {inputs: a.inputs} : {}), ...(a.outputs ? {outputs: a.outputs} : {}), ...(a.effects ? {effects: a.effects} : {})}, {v8: true});
-  if (!c || c.name !== name) return {error: `"${name.slice(0, 80)}" cannot be stored under that name`};
   s.contracts.push({...c, ...(run ? {run} : {})});
   return {stored: name, kind, ...(EXAMPLE_KINDS.has(kind) ? {examples_needed: EXAMPLES_PER_CONTRACT} : {})};
 }
@@ -164,18 +164,20 @@ export function levelView(s) {
     validations: s.validations.map(v => ({id: v.id, serves: v.serves, check: v.check})), pieces: s.pieces};
 }
 // What the level still lacks: [] when nothing. Every contract that is
-// called or run (function, command, route) has three different examples.
+// called or run (function, command, route) has three different examples
+// that call, request or run it.
 // When piece is offered (the level may divide), the level is a division the
 // room can create now: every manager tries to split and Clef's review judges
 // the division, so a session with fewer than two pieces hears that its
 // division is not there yet, and one with more than the room can create now
 // hears what it can (with room for fewer than two, no division: the level
 // goes to one worker once its pieces are dropped).
+const EXAMPLE_OF = {function: 'steps that call it', route: 'requests of it', command: 'checks that run it'};
 export function missingOf(s) {
   const out = [];
   for (const c of levelContracts(s).filter(c => EXAMPLE_KINDS.has(kindOf(c)))) {
     const n = examplesOf(s, c).length;
-    if (n < EXAMPLES_PER_CONTRACT) out.push(`${c.name} has ${n} different example${n === 1 ? '' : 's'} of ${EXAMPLES_PER_CONTRACT} from the validations that serve it.`);
+    if (n < EXAMPLES_PER_CONTRACT) out.push(`${c.name} has ${n} different example${n === 1 ? '' : 's'} of ${EXAMPLES_PER_CONTRACT} from the validations that serve it: ${EXAMPLE_OF[kindOf(c)]}.`);
   }
   const n = s.pieces.length, room = s.divide ? s.room() : 0;
   if (s.divide && room >= 2 && n < 2) out.push(`the division has ${n} piece${n === 1 ? '' : 's'} of at least 2, each declared with piece.`);
