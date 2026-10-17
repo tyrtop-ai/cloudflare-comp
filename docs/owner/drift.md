@@ -306,7 +306,7 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - record, `docs/owner/rulings.md:25`
 - Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
 - Required: Delete the lenient-repair and safety-rules clauses from the Flow section, so the record matches the owner's rulings.
-- Fixed in: COMMIT (rulings.md:35: "and safety rules" and the lenient markupElement removed)
+- Fixed in: ec738cd (rulings.md:35: "and safety rules" and the lenient markupElement removed)
 
 ### R1-record-15: CHANGELOG-v8.md puts words in quotes that the owner never wrote
 - record, `CHANGELOG-v8.md:284`
@@ -324,25 +324,25 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - record, `docs/owner/rulings.md:36`
 - Owner (2026-10-16 05:16): managers are clef models (for routing purposes)
 - Required: Quote the owner exactly ('managers are clef models (for routing purposes)'), or paraphrase without quotation marks.
-- Fixed in: COMMIT (rulings.md)
+- Fixed in: ec738cd (rulings.md)
 
 ### R2-records/record-1: rulings.md says asks that reach the room are held for the person; the owner said the asker is killed (archived)
 - record, `docs/owner/rulings.md:61`
 - Owner (2026-10-12 23:55 and 2026-10-16 05:41): if it works up to root without finding it, it kills the work (2026-10-12 23:55) || more specifically, archived. You also ignored the second part of that, I noticed (2026-10-16 05:41)
 - Required: Take asks out of what the room holds for the person at rulings.md:61. Record the owner's rule there: an ask no one covers up to the room archives the asker, and the compensating controls rebuild what it delivered.
-- Fixed in: COMMIT (rulings.md)
+- Fixed in: ec738cd (rulings.md)
 
 ### R2-records/record-2: rulings.md says exactly 3 examples, and a defect retry the owner's function ruling replaced
 - record, `docs/owner/rulings.md:125`
 - Owner (2026-10-16 05:50 and 2026-10-16 20:40): there must 3 different examples for each contract (05:50) || every model should work that way, where the runtime should only be interfaces exposed to the models. not parsing the models output, but functions exposed to the models. for every model. For every interaction. (20:40, answering Claude's proposal that done() returns what the rules still need)
 - Required: Record the owner's rule as written: at least three different examples for each contract that is called or run. A shortfall is what done() returns inside the splitter's own session, not an 'exactly' bound or a retry.
-- Fixed in: COMMIT (rulings.md)
+- Fixed in: ec738cd (rulings.md)
 
 ### R2-records/record-3: rulings.md still keeps 'safety rules' among the rules carried into validations.js
 - unfixed, `docs/owner/rulings.md:35`
 - Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
 - Required: Delete 'and safety rules' from rulings.md:35, so the record keeps only what the owner allowed: executability, with no blocklists or path rules.
-- Fixed in: COMMIT (rulings.md)
+- Fixed in: ec738cd (rulings.md)
 
 ## Disputed
 
