@@ -6,7 +6,7 @@
 // holds the repo whole, and its agents read its files as they are. Pure:
 // `fetch` is injected, no secret is ever reachable from here, and no
 // request carries Authorization or Cookie.
-import {FetchRefused, concatBytes, fetchPolicy, guardedFetch, inputCapFor, plainBody, plainChunks, readCapped, redactText, sanitizeText} from './fetcher.js';
+import {FetchRefused, concatBytes, fetchPolicy, guardedFetch, inputCapFor, plainBody, plainChunks, readCapped, redactText} from './fetcher.js';
 
 // No count or size is set on a repo's files. One file is held in one row of
 // the room's storage, and a Durable Object's SQLite holds at most 2 MB in a
@@ -222,7 +222,7 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
       if (!rel || (sub && !rel.startsWith(sub))) return;
       const path = rel.slice(sub.length);
       if (!path || entry.type === '5') return;
-      if (!safePath(path) || sanitizeText(path) !== path) return skip(clip(path, 200), 'unsafe path');
+      if (!safePath(path)) return skip(clip(path, 200), 'unsafe path');
       const segs = path.split('/');
       const gitAt = segs.indexOf('.git');
       if (gitAt >= 0) { const d = segs.slice(0, gitAt + 1).join('/') + '/'; if (!recorded.has(d)) { recorded.add(d); skip(d, '.git dropped'); } return; }

@@ -59,14 +59,14 @@ test('ask names: under v8 an ask keeps a chunk ref or a path as its name; v7 ask
   assert.deepEqual(normalizeAsk([{need: 'the third part', name: 'S2#3'}]).map(a => a.name), [undefined]);
 });
 
-test('answer shaping: a chunk and a file carry their labels, a long value is given whole, next names the following held chunk', () => {
+test('answer shaping: a chunk and a file carry where they come from and their text as it is, a long value is given whole, next names the following held chunk', () => {
   const src = sourceAnswer({id: 'a1', ref: 'S2#2', url: 'https://docs.example.com/widget-guide', text: 'Part two.\r\nIt continues.​', next: nextHeld(CAT, 'S2#2')});
-  assert.deepEqual(src, {id: 'a1', name: 'S2#2', kind: 'source', status: 'answered', label: 'untrusted: fetched from https://docs.example.com/widget-guide', value: 'Part two.\nIt continues.', next: 'S2#3'});
+  assert.deepEqual(src, {id: 'a1', name: 'S2#2', kind: 'source', status: 'answered', label: 'fetched from https://docs.example.com/widget-guide', value: 'Part two.\r\nIt continues.​', next: 'S2#3'});
   assert.equal(nextHeld(CAT, 'S2#3'), null);
   assert.equal(nextHeld(CAT, 'S1#1'), 'S1#2');
   const base = baseAnswer({id: 'a2', path: 'src/shout.js', content: 'function shout(s) {}\n', own: true});
   assert.deepEqual(base, {id: 'a2', name: 'src/shout.js', kind: 'base', status: 'answered', label: BASE_LABEL, value: 'function shout(s) {}\n', facts: {placed_when: 'now'}});
-  assert.equal(BROKER_LABEL.base, 'untrusted: from the base repository');
+  assert.equal(BROKER_LABEL.base, 'from the base repository');
   assert.equal(baseAnswer({id: 'a3', path: 'x.md', content: 'x'}).facts, undefined);
   const long = shapeAnswer({id: 'a4', name: 'S1#1', kind: 'source', label: 'l', value: 'y'.repeat(20000)});
   assert.equal(long.value, 'y'.repeat(20000));

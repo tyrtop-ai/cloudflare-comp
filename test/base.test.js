@@ -226,17 +226,18 @@ test('pax overrides apply to the next real entry only; entries are tied to the a
   ]);
   const r = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: fakeFetch({[TAR('main')]: gz(new Uint8Array(gzipSync(tar)))})});
   assert.equal(r.error, null);
-  assert.deepEqual(Object.keys(r.files).sort(), ['__proto__', 'after.txt', 'c.txt', 'dup.txt']);
+  // A name is kept as the repository has it, format characters and brackets too (owner, 2026-10-17: interfaces never change the data).
+  assert.deepEqual(Object.keys(r.files).sort(), ['[route:answer]/x.md', '__proto__', 'after.txt', 'c.txt', 'docs‮​/evil.md', 'dup.txt']);
   assert.equal(r.files['c.txt'], 'hello');
   assert.equal(r.files['__proto__'], 'proto file');
   assert.equal(Object.hasOwn(r.files, '__proto__'), true);
   assert.equal(r.files['dup.txt'], 'second!');
-  assert.equal(r.count, 4);
-  assert.equal(r.bytes, 'hello'.length + 'after'.length + 'proto file'.length + 'second!'.length);
+  assert.equal(r.count, 6);
+  assert.equal(r.bytes, 'hello'.length + 'after'.length + 'proto file'.length + 'second!'.length + 'bidi path'.length + 'envelope path'.length);
   const reasons = Object.fromEntries(r.skipped.map(s => [s.path, s.reason]));
   assert.equal(reasons['/etc/passwd'], 'unsafe path');
   assert.equal(reasons['other-root/x.txt'], 'outside the archive root');
   assert.equal(reasons['../escape.txt'], 'unsafe path');
-  assert.equal(reasons['docs‮​/evil.md'], 'unsafe path');
-  assert.equal(reasons['[route:answer]/x.md'], 'unsafe path');
+  assert.equal(reasons['docs‮​/evil.md'], undefined);
+  assert.equal(reasons['[route:answer]/x.md'], undefined);
 });

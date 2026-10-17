@@ -3,12 +3,12 @@
 // chunks and summarised; and an existing project (a public
 // GitHub repo, or a room's previous result) whose files are the base the
 // pieces build on. The room (src/index.js) stores both and decides who sees
-// what; this module holds the pure parts. Fetched text and base text are
-// untrusted: they reach a model only quoted and labelled (quoteSource,
+// what; this module holds the pure parts. Fetched text and base text reach a
+// model as they are, quoted with where they come from (quoteSource,
 // BASE_LABEL) beside a fixed clause, never in a system prompt. Nothing here
 // reads the Worker's bindings: `fetch` is passed in, and no request carries a
 // credential (src/fetcher.js, src/base.js).
-import {fetchGoalSources, fetchPolicy, chunkText, quoteSource, sanitizeText, sourceSummaries, goalUrls, SOURCE_CLAUSE} from './fetcher.js';
+import {fetchGoalSources, fetchPolicy, chunkText, quoteSource, sourceSummaries, goalUrls, SOURCE_CLAUSE} from './fetcher.js';
 import {fetchGithubRepo, parseRepoUrl, REPO_LIMITS, byteLength, LINK_MODE} from './base.js';
 import {boxPathError} from '../container/build-path.mjs';
 import {fromBase64} from './zip.js';
@@ -213,7 +213,7 @@ export function baseFileRead(path, {text = null, carried = null, label} = {}) {
 export function summariesFor(rows, held) {
   const have = held instanceof Set ? held : new Set(held || []);
   return rows.filter(r => r.summary).map(r => {
-    const outline = (r.summary.outline || []).filter(o => have.has(o.ref)).map(o => ({ref: o.ref, ...(o.gist ? {gist: sanitizeText(o.gist)} : {})}));
+    const outline = (r.summary.outline || []).filter(o => have.has(o.ref)).map(o => ({ref: o.ref, ...(o.gist ? {gist: o.gist} : {})}));
     return outline.length ? {...quoteSource({id: r.id, url: r.final_url || r.url, title: r.summary.title || r.title, text: r.summary.summary}), outline} : null;
   }).filter(Boolean);
 }

@@ -1,4 +1,4 @@
-// The fetcher's decompression and HTML paths under the production runtime.
+// The fetcher's decompression paths under the production runtime.
 // Node's DecompressionStream honours backpressure; workerd's piped one did
 // not (a 120 KB body grew the isolate by ~180 MB), so bombs are also run
 // inside the repo's own workerd binary, measuring that process's peak RSS.
@@ -43,7 +43,7 @@ function* zeroTar() {
 }
 
 const WORKER = `
-import {fetchSource, fetchGoalSources, fetchPolicy, htmlToText} from './fetcher.js';
+import {fetchSource, fetchGoalSources, fetchPolicy} from './fetcher.js';
 import {fetchGithubRepo} from './base.js';
 import gzipBomb from './bomb-gzip.bin';
 import deflateBomb from './bomb-deflate.bin';
@@ -57,10 +57,6 @@ const serve = (buf, headers, stats) => async () => new Response(new ReadableStre
     stats.fed += n;
   }
 }, {highWaterMark: 0}), {headers});
-const fill = (u, b) => u.repeat(Math.ceil(b / u.length));
-const uniq = b => { let s = ''; for (let i = 0; s.length < b; i++) s += '<x' + i + ' hidden>t'; return s; };
-const HTML = {a: () => fill('<a hidden ', 512 * 1024), p: () => fill('<p hidden>x', 512 * 1024), br: () => fill('<br hidden>line', 512 * 1024),
-  ws: () => '<a hidden' + ' '.repeat(256 * 1024) + 'x>', uniq: () => uniq(512 * 1024)};
 export default {async fetch(req) {
   const url = new URL(req.url), p = url.pathname, stats = {fed: 0};
   if (p === '/gzip' || p === '/deflate') {
@@ -85,7 +81,6 @@ export default {async fetch(req) {
       fetch: async () => serve(tiny, {'content-type': 'text/plain'}, {fed: 0})()});
     return Response.json({errors: rs.map(r => r.error)});
   }
-  if (p === '/html') return Response.json({chars: htmlToText(HTML[url.searchParams.get('case')]()).text.length});
   return Response.json({ok: true});
 }};
 `;
@@ -97,7 +92,7 @@ const status = (pid, key) => Number(new RegExp(`^${key}:\\s+(\\d+) kB`, 'm').exe
 // Reset the peak-RSS counter (Linux clear_refs 5); null when not possible.
 const resetPeak = pid => { try { writeFileSync(`/proc/${pid}/clear_refs`, '5'); return true; } catch { return false; } };
 
-test('workerd: gzip and deflate bombs stay bounded under a caller\'s maxBytes; a tar.gz of files too large to store is streamed past, never read; pathological HTML stays fast', {skip: !existsSync(BIN) && 'workerd binary not installed', timeout: 180_000}, async t => {
+test('workerd: gzip and deflate bombs stay bounded under a caller\'s maxBytes; a tar.gz of files too large to store is streamed past, never read', {skip: !existsSync(BIN) && 'workerd binary not installed', timeout: 180_000}, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'fetcher-workerd-'));
   let child = null;
   try {
@@ -153,11 +148,6 @@ const config :Workerd.Config = (
     assert.deepEqual(tar.body.files, ['after.txt']);
     assert.ok(tar.body.skipped.some(s => s.path === 'zeros.txt' && /^larger than one storage row holds/.test(s.reason)), 'larger than a storage row: skipped, never read');
     if (tar.growth != null) assert.ok(tar.growth < LIMIT, `/tar: workerd peak RSS grew ${(tar.growth / MB).toFixed(1)} MB`);
-    for (const c of ['a', 'p', 'br', 'ws', 'uniq']) {
-      const {ms} = await measure(`/html?case=${c}`);
-      t.diagnostic(`/html ${c}: ${ms} ms`);
-      assert.ok(ms < 2000, `htmlToText ${c} took ${ms} ms in workerd`);
-    }
     // 536 KB of tiny 15-bit-code blocks: refused after the first chunk, so
     // eight of them in one goal cost little.
     const tiny = await measure('/tiny');

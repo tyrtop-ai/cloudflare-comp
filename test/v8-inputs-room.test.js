@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
 import {liveRoom, events, fileBlocks, levelCalls} from './helpers/room.js';
 import {lintRequests, crashAt, reopen} from './helpers/levels.js';
-import {SOURCE_CLAUSE, SOURCE_LABEL, chunkText} from '../src/fetcher.js';
+import {SOURCE_CLAUSE, chunkText} from '../src/fetcher.js';
 import {BASE_LABEL, MESSAGES} from '../src/prompts.js';
 import {normalizeBase, keepBaseFiles, summariesFor, chunksFor, baseFromApp, loadBase, baseFileRead} from '../src/room-inputs.js';
 import {STORE_ROW_BYTES} from '../src/base.js';
@@ -157,7 +157,7 @@ test('refs: piece() takes only refs its level holds, as written, and says exactl
   // A splitter reads the summaries cut to its refs (a part with no note is listed all the same); a worker every chunk it holds, whole.
   const rows = [{id: 'S1', url: 'https://docs.example.com/a', title: 'A', summary: {title: 'A', summary: 'sum', outline: [{ref: 'S1#1', gist: 'g1'}, {ref: 'S1#2', gist: 'g2'}, {ref: 'S1#3'}]}},
     {id: 'S2', url: 'https://docs.example.com/b', error: 'source_refused: http 404', summary: null}];
-  assert.deepEqual(summariesFor(rows, ['S1#2', 'S1#3']).map(c => [c.source_id, c.label, c.excerpt, c.outline]), [['S1', SOURCE_LABEL, 'sum', [{ref: 'S1#2', gist: 'g2'}, {ref: 'S1#3'}]]]);
+  assert.deepEqual(summariesFor(rows, ['S1#2', 'S1#3']).map(c => [c.source_id, c.label, c.excerpt, c.outline]), [['S1', undefined, 'sum', [{ref: 'S1#2', gist: 'g2'}, {ref: 'S1#3'}]]]);
   assert.deepEqual(summariesFor(rows, ['S3#1']), []);
   const chunks = [{ref: 'S1#1', source: 'S1', text: 'x'.repeat(9000)}, {ref: 'S1#2', source: 'S1', text: 'y'.repeat(9000)}];
   const out = chunksFor(rows, chunks, ['S1#1', 'S1#2']);
@@ -223,12 +223,12 @@ test('links in the prompt: fetched once with the owner\'s allowlist, stored and 
   assert.deepEqual(chunks.map(c => c.text), chunkText(PAGE, 6000));
   // Each gist and the summary is a model call of its own, quoted.
   assert.deepEqual(room.spans().filter(s => s.kind === 'model' && /^source/.test(s.name)).map(s => s.name), ['sourceGist', 'sourceGist', 'sourceGist', 'sourceSummary']);
-  assert.ok(calls.source.every(u => JSON.stringify(u).includes(SOURCE_LABEL)));
+  assert.ok(calls.source.every(u => !/untrusted/.test(JSON.stringify(u))), 'no reader is told its page is untrusted');
   // The room's manager holds the chunks; its splitter read the summaries as quoted data and cited refs; each piece holds a subset.
   const m = room.roomManager();
   assert.deepEqual(room.sourceRefs(m), ['S1#1', 'S1#2', 'S1#3']);
   assert.equal(calls.split[0].sources_note, SOURCE_CLAUSE);
-  assert.deepEqual(calls.split[0].sources.map(s => [s.source_id, s.label, s.title, s.outline.length]), [['S1', SOURCE_LABEL, 'Widget format', 3]]);
+  assert.deepEqual(calls.split[0].sources.map(s => [s.source_id, s.title, s.outline.length]), [['S1', 'Widget format', 3]]);
   const [guide, faq] = kids(room, m);
   assert.deepEqual(room.sourceRefs(guide.id), ['S1#1', 'S1#2', 'S1#3']);
   assert.deepEqual(room.sourceRefs(faq.id), ['S1#2']);
@@ -238,7 +238,7 @@ test('links in the prompt: fetched once with the owner\'s allowlist, stored and 
   const asked = name => calls.leaf.find(u => u.prompt.deliver.some(c => c.name === name));
   const g = asked('GUIDE.md').world, q = asked('FAQ.md').world;
   assert.equal(g.sources_note, SOURCE_CLAUSE);
-  assert.deepEqual(g.sources.map(s => [s.ref, s.label]), [['S1#1', SOURCE_LABEL], ['S1#2', SOURCE_LABEL], ['S1#3', SOURCE_LABEL]]);
+  assert.deepEqual(g.sources.map(s => s.ref), ['S1#1', 'S1#2', 'S1#3']);
   assert.deepEqual(g.sources.map(s => s.excerpt), chunks.map(c => c.text));
   assert.deepEqual(q.sources.map(s => s.ref), ['S1#2']);
   assert.equal(q.sources[0].excerpt, chunks[1].text);
