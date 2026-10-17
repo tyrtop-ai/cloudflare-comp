@@ -389,6 +389,6 @@ test('prompt, v8: there is no v8 linker; linkComponents is v7\'s under any pipel
   assert.equal(sent[0].messages[0].content,systemPrompt('builder'));
   assert.deepEqual(sent[0].tools.map(t=>t.name),TOOLS.builder.map(t=>t.name));
   assert.doesNotMatch(sent[0].messages[0].content,/createTicket|saveTickets|inmemoryti|require\(/);
-  assert.match(sent[1].messages.at(-1).content,/^No function was called\. The functions are: read_file, write_file, rename, done\.$/,'a reply with no call is answered with the functions\' names');
+  assert.match(sent[1].messages.at(-1).content,/^No function was called\. The functions are: read_file, write_file, delete_file, rename, done\.$/,'a reply with no call is answered with the functions\' names');
   assert.deepEqual(out.end,{done:true,summary:'joined'});
 });

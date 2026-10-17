@@ -182,6 +182,7 @@ In the answer, `items.hostname.runner_named` should be `true`, and `items.hostna
    | Total agents | 64 | 2–100,000 | Workers and managers in the tree. Builders, compilers and retired agents do not count. |
    | Recursion depth | 10 | 1–1,000 | Maximum tree depth. |
    | Pieces per split | 7 | 2–64 | The most pieces one split may have. |
+   | Verification time (v8) | 200 s | 1–86,400 s | How long one compile's checks of a level may run in all. The box's waits derive from it. What the project does within it is what the checks observe: a command still running or a page that never showed what a step expects goes back to its worker as a failure. |
    | Manager model | Qwen3 A3B | Qwen3 A3B, Llama 4 Scout, Qwen2.5 Coder 32B, DeepSeek V4 Flash, Mistral Small 3.1, Qwen 3.8 27B, Llama 3.2 1B | v7: splits and their promised functions, managers' decisions and link edits. v8: the splitters and the builders. |
    | Worker model | Qwen3 A3B | the same list | The workers, which write the code. |
    | Compiler model | Qwen3 A3B | the same list | v7: the API coverage mapping, triage and the runner's test. v8: the reader of the goal's linked pages. |
@@ -300,7 +301,7 @@ curl -sS -X POST "$URL/api/export/github" -H "Authorization: Bearer $APP_TOKEN" 
   -d '{"room":"demo-room-0001","repo":"your-name/your-repo"}'
 ```
 
-`settings` accepts `parallel`, `max_agents`, `max_depth`, `max_children`, `model`, `worker_model`, `compiler_model`, `split_model`, `split_threshold` (0.2–0.8, default 0.7) and `pipeline` (`"v7"`, the default, or `"v8"`), with the same limits as the dashboard. When `budget` is left out, it defaults to 20.
+`settings` accepts `parallel`, `max_agents`, `max_depth`, `max_children`, `check_seconds` (v8), `model`, `worker_model`, `compiler_model`, `split_model`, `split_threshold` (0.2–0.8, default 0.7) and `pipeline` (`"v7"`, the default, or `"v8"`), with the same limits as the dashboard. When `budget` is left out, it defaults to 20.
 
 ## Troubleshooting
 
@@ -330,8 +331,8 @@ curl -sS -X POST "$URL/api/export/github" -H "Authorization: Bearer $APP_TOKEN" 
 
 ### In a v8 room
 
-- **The room held**: the **Levels** panel says why. `base_confirm` waits for you to grant changing an existing file. `split_capacity` means a manager couldn't create its children within the room's agent or depth limit: raise it and press **Continue**. Any other hold is something nothing below could settle: its text says what, and **Continue** wakes the row it names. The room is done only when the compiler of the manager it created observes every validation passing; nothing else completes it.
-- **A check that could not run** (`build_infrastructure`: the box or Chromium could not run it): no worker gets a complaint for it. The compiler runs it again until it can observe it, each run a turn of the room's budget, with no hold. When the budget is spent the room pauses, and **Continue** runs it again with the new budget.
+- **The room held**: the **Levels** panel says why. `base_confirm` waits for you to grant changing an existing file. `split_capacity` means a rebuild or extension added a worker to a room already at its agent limit (a division or hand-down within the limits is always created): raise it and press **Continue**. Any other hold is something nothing below could settle: its text says what, and **Continue** wakes the row it names. The room is done only when the compiler of the manager it created observes every validation passing; nothing else completes it.
+- **A check that could not run** (`build_infrastructure`: the box or Chromium could not start it, or a call's parameter type its language cannot build from JSON): no worker gets a complaint for it. A check still running when the room's Verification time runs out is the project's failure, not this. The compiler runs it again until it can observe it, each run a turn of the room's budget, with no hold. When the budget is spent the room pauses, and **Continue** runs it again with the new budget.
 - **A check failed on the box itself**, for example a Python server that cannot bind because the box's host name does not resolve (`hostname_ok: false` in `state.toolchain_inventory`): the compiler reports the failure as it observed it, like any other. Run the probe's `hostname` item (step 6). A deploy that rebuilds the box images (`container/Dockerfile.box`) fixes the host name.
 
 ## Costs and cleanup

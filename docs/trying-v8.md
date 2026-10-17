@@ -24,7 +24,7 @@ The room creates one manager from your prompt, and the manager's splitter states
 | Hold | Meaning | What to do |
 |---|---|---|
 | `base_confirm` | A contract would change a file of the repo the room started from, and only you can grant that | Select the files to grant and press Continue, or send a follow-up prompt that leaves the file out |
-| `split_capacity` | A manager couldn't create its children within the room's agent or depth limit | Raise the limit and press Continue |
+| `split_capacity` | A rebuild or extension added a worker to a room already at its agent limit, or the limit is below what the room holds (a division or hand-down within the limits is always created) | Raise the limit and press Continue |
 | any other | Something nothing below could settle reached the room; its text says what | Read the text. Continue wakes the row it names, or send a follow-up prompt |
 
 ## 3. Try these goals
@@ -43,7 +43,7 @@ The room creates one manager from your prompt, and the manager's splitter states
 
 **"A static web page with a to-do list."**
 - The level should have a page contract (`index.html`) served as it is, and browser validations.
-- The browser validations are the most likely to hit infrastructure problems (Chromium starting on `standard-1`). A validation marked `infrastructure` means the box side failed, not the page: no worker gets a complaint for it, and the compiler runs it again until it can observe it, each run a turn of the room's budget, with no hold.
+- The browser validations are the most likely to hit infrastructure problems (Chromium starting on `standard-1`). A validation marked `infrastructure` means the box itself could not run it (Chromium or the box failed to start): no worker gets a complaint for it, and the compiler runs it again until it can observe it, each run a turn of the room's budget, with no hold. A page that never shows what a step expects within the room's **Verification time** is the page's failure, and goes back to its worker.
 
 **"Build a small issue tracker that lets someone create, view, update, and delete tickets."** (the old default)
 - No `start()` requirement is added in v8. The splitter chooses the shape, and the contracts it declares (routes, a page, a command) say what it chose.
