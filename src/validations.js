@@ -329,15 +329,15 @@ function readsSaved(v, saved, inText) {
   if (plain(v)) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, readsSaved(x, saved, inText)]));
   return v;
 }
-// The examples one check gives, each as {key, text, of}: key is what the
+// The examples one check gives, each as {key, text, call}: key is what the
 // example is (one call of a call check or one request of an http check: its
 // function or its method and path, its inputs, with what it reads of an
 // earlier step's result as that step, and what it observes, never the name
 // its own result is saved under; a command check, a browser scenario or a
 // judge question; one text a file check looks for), so a step written again
 // is the same example; text shows it after the steps that run before it in
-// the same process (the state it starts from); of is what it exercises
-// (exercises).
+// the same process (the state it starts from); call is the function a call
+// step names.
 function keyedExamples(check) {
   const c = check || {};
   if (c.kind === 'call' || c.kind === 'http') {
@@ -346,36 +346,12 @@ function keyedExamples(check) {
       const {save: _, ...step} = s;
       const key = JSON.stringify(call ? {...step, args: readsSaved(step.args || [], saved, false)} : {...step, path: readsSaved(step.path, saved, true), ...('body' in step ? {body: readsSaved(step.body, saved, true)} : {})});
       if (s.save) saved.set(s.save, key);
-      return {key, text: texts.slice(0, i + 1).join('; '), of: call ? {call: s.call} : {method: s.method || 'GET', paths: [s.path], serve: c.serve}};
+      return {key, text: texts.slice(0, i + 1).join('; '), ...(call ? {call: s.call} : {})};
     });
   }
-  if (c.kind === 'file' && c.has?.length) return c.has.map(t => ({key: fileItem(c, t), text: fileItem(c, t), of: null}));
+  if (c.kind === 'file' && c.has?.length) return c.has.map(t => ({key: fileItem(c, t), text: fileItem(c, t)}));
   const one = renderExample(c);
-  const of = c.kind === 'command' ? {argv: c.argv || []} : c.kind === 'browser' ? {method: 'GET', paths: (c.steps || []).filter(s => typeof s?.goto === 'string').map(s => s.goto), serve: c.serve} : null;
-  return one ? [{key: one, text: one, of}] : [];
-}
-// Whether a route contract's name ("GET /items/:id") is what a request of
-// method to path asks for: the same method, and the same path segment for
-// segment, a :x or {x} segment standing for any one segment.
-function requests(contract, method, path) {
-  const m = /^(\S+) (\/\S*)$/.exec(String(contract?.name ?? ''));
-  if (!m || m[1] !== method || typeof path !== 'string') return false;
-  const want = m[2].split('/'), got = path.split(/[?#]/)[0].split('/');
-  return want.length === got.length && want.every((w, i) => /^(?::\w+|\{[^/{}]+\})$/.test(w) ? got[i] !== '' : w === got[i]);
-}
-// Whether an example exercises a contract that is called or run: a call of
-// the function, a request of the route, a run of the command (by its name,
-// by its own command line, or as what an http or browser check serves).
-function exercises(contract, of) {
-  if (!of) return false;
-  const kind = kindOf(contract), name = contract?.name;
-  if (kind === 'function') return of.call === name;
-  if (kind === 'route') return !!of.paths && of.paths.some(p => requests(contract, of.method, p));
-  if (kind === 'command') {
-    const own = contract?.run?.argv;
-    return of.serve === name || !!of.argv && (of.argv[0] === name || Array.isArray(own) && own.length > 0 && own.every((a, i) => of.argv[i] === a));
-  }
-  return false;
+  return one ? [{key: one, text: one}] : [];
 }
 // Each different example of a check, the first time it is written, by
 // what it is (keyedExamples): its text.
@@ -390,12 +366,13 @@ export function contractExamples(contract, validations) {
   return distinct(servingOf(contract, validations).flatMap(v => keyedExamples(v.check))).map(e => e.text);
 }
 // The different examples of a contract that is called or run (a function,
-// command or route): of those, the ones that call, request or run it. Three
-// is the least a splitter writes (the reader counts these). Any other
-// contract's are all of them (contractExamples).
+// command or route). Three is the least a splitter writes (the reader counts
+// these). A function's are the steps that call it, each step naming the
+// function it calls; any other contract's are every example of the
+// validations declared as serving it (contractExamples).
 export function ownExamples(contract, validations) {
-  if (!EXAMPLE_KINDS.has(kindOf(contract))) return contractExamples(contract, validations);
-  return distinct(servingOf(contract, validations).flatMap(v => keyedExamples(v.check)).filter(e => exercises(contract, e.of))).map(e => e.text);
+  if (kindOf(contract) !== 'function') return contractExamples(contract, validations);
+  return distinct(servingOf(contract, validations).flatMap(v => keyedExamples(v.check)).filter(e => e.call === contract.name)).map(e => e.text);
 }
 
 // ------------------------------------------------------------ words
