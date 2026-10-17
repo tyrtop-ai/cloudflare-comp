@@ -24,9 +24,11 @@ const isText = v => typeof v === 'string';
 // The world one session acts on. files: Map path -> text (the worker's own
 // files, kept current as it writes). write(path, content): stores a whole
 // file. runExamples(): what its examples observed. ask({need, name}): the
-// result of sending an ask.
-export function workerWorld({files = new Map(), write, runExamples, ask}) {
-  return {files: files instanceof Map ? files : new Map(files), write, runExamples, ask, written: [], unchanged: [], asked: [], examples: 0};
+// result of sending an ask. readBase(path), given to a worker that holds the
+// project the work starts from: one file of it, whole (the room's
+// readBaseFile), which read_file shows where the worker has no file there.
+export function workerWorld({files = new Map(), write, runExamples, ask, readBase}) {
+  return {files: files instanceof Map ? files : new Map(files), write, runExamples, ask, readBase, written: [], unchanged: [], asked: [], examples: 0};
 }
 // The functions offered (TOOLS.worker).
 export const workerTools = () => TOOLS.worker;
@@ -40,8 +42,10 @@ function readFile(w, a) {
   if (bad) return {error: bad};
   const path = placeOf(a);
   if (!path) return {error: 'path is the text of a relative path'};
-  if (!w.files.has(path)) return {error: MESSAGES.no_file({path, paths: paths(w).join(', ')})};
-  return {path, content: w.files.get(path)};
+  if (w.files.has(path)) return {path, content: w.files.get(path)};
+  const base = w.readBase ? w.readBase(path) : null;
+  if (base && !base.error) return base;
+  return {error: MESSAGES.no_file({path, paths: paths(w).join(', ')})};
 }
 async function writeFile(w, a) {
   const bad = fieldsOf('write_file', a, ['path', 'content']);

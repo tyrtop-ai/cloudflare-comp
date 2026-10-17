@@ -100,7 +100,7 @@ export const TOOLS = Object.freeze({
   // The worker's functions (src/worker.js): its own files, its examples run
   // on them, an ask by name, and the end of its turn.
   worker: Object.freeze([
-    {name: 'read_file', description: 'Shows one of your files as it stands now, written this turn or before. The result is its whole text, or that you have no file at that path, with the paths you have.',
+    {name: 'read_file', description: 'Shows one of your files as it stands now, written this turn or before, or, where you have none at the path, a file existing_files lists. The result is its whole text, or that you have no file at that path, with the paths you have.',
       parameters: {type: 'object', properties: {path: text('The relative path of the file, exactly as your files list it.')}, required: ['path']}},
     {name: 'write_file', description: 'Stores a whole file at a path among your files: a new file, or the complete new text of one you have. The result says it is written, that the file already holds exactly this text, or why it is not written.',
       parameters: {type: 'object', properties: {path: text('The relative path of the file, inside your files.'), content: text('The complete text of the file.')}, required: ['path', 'content']}},

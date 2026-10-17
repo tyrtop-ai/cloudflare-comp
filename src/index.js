@@ -9007,7 +9007,8 @@ export class ControlRoom extends DurableObject {
       const inbox=this.receive(id),ownFiles=await this.ownFiles(id),view=this.workerView(id,inbox,ownFiles);
       this.event(id,'working',`Turn ${n.turn+1}; received ${inbox.length} messages.`);
       const world=workerWorld({files:new Map(ownFiles.map(f=>[f.path,f.content])),
-        write:(path,content)=>this.putFile(id,path,content),runExamples:()=>this.runExamples(id),ask:a=>this.workerAsk(id,a)});
+        write:(path,content)=>this.putFile(id,path,content),runExamples:()=>this.runExamples(id),ask:a=>this.workerAsk(id,a),
+        ...(this.heldDigest(id)?{readBase:path=>this.readBaseFile(path)}:{})});
       const out=await workerSession(this.inferenceEnv('worker'),view,world);
       const said=[out.transcript.length?`${out.transcript.length} call(s) in ${out.rounds} round(s)`:'no call',world.written.length?`wrote ${world.written.join(', ')}`:'',
         world.unchanged.length?`unchanged ${world.unchanged.join(', ')}`:'',world.examples?`ran its examples ${world.examples} time(s)`:'',world.asked.length?`asked ${world.asked.length}`:''].filter(Boolean).join('; ');

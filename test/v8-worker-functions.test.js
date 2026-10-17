@@ -56,6 +56,18 @@ test('the worker\'s functions: each stores exactly what it is given or says exac
   assert.deepEqual(TOOLS.worker.map(t => t.name), ['read_file', 'write_file', 'run_examples', 'ask', 'done', 'wait']);
 });
 
+test('read_file of a worker that holds the project the work starts from: a path it has no file at shows that project\'s file whole; its own file at a path comes first; a path neither holds says it has no file there', async () => {
+  const base = new Map([['src/shout.js', 'export const shout = s => s.toUpperCase();\n'], ['convert.js', 'base\n']]);
+  const world = workerWorld({files: new Map([['convert.js', 'mine\n']]), write: async () => {}, runExamples: async () => ({}), ask: async () => ({}),
+    readBase: path => base.has(path) ? {path, label: 'base', content: base.get(path)} : {error: `no ${path}`}});
+  const read = async path => (await workerCall(world, 'read_file', {path})).result;
+  assert.deepEqual(await read('./src/shout.js'), {path: 'src/shout.js', label: 'base', content: base.get('src/shout.js')});
+  assert.deepEqual(await read('convert.js'), {path: 'convert.js', content: 'mine\n'});
+  assert.deepEqual(await read('other.js'), {error: 'You have no file other.js. Your files: convert.js.'});
+  const without = workerWorld({files: new Map(), write: async () => {}, runExamples: async () => ({}), ask: async () => ({})});
+  assert.deepEqual((await workerCall(without, 'read_file', {path: 'src/shout.js'})).result, {error: 'You have no file src/shout.js, and no files yet.'}, 'a worker that does not hold the project reads none of it');
+});
+
 // ------------------------------------------------------------ run_examples in a room
 const CLI = 'Write a command-line temperature converter: `convert 100 C` prints the Fahrenheit value.';
 const convertCheck = (id, args, out) => ({id, serves: ['convert'], check: {kind: 'command', run: `convert ${args}`, expect: {exit: 0, stdout_has: [out]}}});
