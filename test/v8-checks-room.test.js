@@ -213,7 +213,11 @@ test('repairs go on: validations that keep failing go back to the worker every r
 test('a package granted to a worker is listed up its line, and the compiler\'s box installs it: the plan carries it, and the box opens with the internet for its install',{skip:!hasPython&&'python3 is not installed'},async()=>{
   const requests=[];let room;
   const executor={build:async req=>{requests.push(req);return verifyChecks({...req,plan:{...req.plan,install:[]},snapshot_hash:await snapshotHash(req.files)},{isolation:[]});}};
-  const ask=()=>{const w=room.agentRows().find(r=>r.role==='worker'&&r.interfaces.some(c=>c.name==='temp'));assert.equal(room.packageAsk(w.id,{name:'flask'}).how,'granted');return wrote('temp.py',RIGHT_TEMP);};
+  // The room's manager holds flask and grants it, as its choice on an ask would.
+  const ask=()=>{const w=room.agentRows().find(r=>r.role==='worker'&&r.interfaces.some(c=>c.name==='temp')),top=room.roomManager(),flask={name:'flask',language:'python',provides:'web framework'};
+    if(!room.packagesOf(w.id).some(p=>p.name==='flask')){room.db().exec('UPDATE agents SET packages=? WHERE id=?',JSON.stringify([...room.packagesOf(top),flask]),top);
+    room.grantPackage(top,{worker:w.id,key:'fn flask',need:'a web framework'},flask);}
+    assert.ok(room.packagesOf(w.id).some(p=>p.name==='flask'));return wrote('temp.py',RIGHT_TEMP);};
   const made=v8Room({level:TEMP_LEVEL,splitWhen:t=>t.startsWith(TEMP_GOAL),executor,answers:{temp:[ask],'USAGE.md':[wrote('USAGE.md',USAGE_MD)]}});
   room=made.room;
   await room.start(TEMP_GOAL,30,{pipeline:'v8'});
