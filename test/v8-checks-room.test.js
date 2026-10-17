@@ -213,11 +213,9 @@ test('repairs go on: validations that keep failing go back to the worker every r
 test('a package granted to a worker is listed up its line, and the compiler\'s box installs it: the plan carries it, and the box opens with the internet for its install',{skip:!hasPython&&'python3 is not installed'},async()=>{
   const requests=[];let room;
   const executor={build:async req=>{requests.push(req);return verifyChecks({...req,plan:{...req.plan,install:[]},snapshot_hash:await snapshotHash(req.files)},{isolation:[]});}};
-  // The room's manager holds flask and grants it, as its choice on an ask would.
-  const ask=()=>{const w=room.agentRows().find(r=>r.role==='worker'&&r.interfaces.some(c=>c.name==='temp')),top=room.roomManager(),flask={name:'flask',language:'python',provides:'web framework'};
-    if(!room.packagesOf(w.id).some(p=>p.name==='flask')){room.db().exec('UPDATE agents SET packages=? WHERE id=?',JSON.stringify([...room.packagesOf(top),flask]),top);
-    room.grantPackage(top,{worker:w.id,key:'fn flask',need:'a web framework'},flask);}
-    assert.ok(room.packagesOf(w.id).some(p=>p.name==='flask'));return wrote('temp.py',RIGHT_TEMP);};
+  // The top of the line grants flask new (its manager's function on the worker's ask), as Clef's choice would.
+  let granted=false;
+  const ask=()=>{const w=room.agentRows().find(r=>r.role==='worker'&&r.interfaces.some(c=>c.name==='temp'));if(!granted&&(granted=true))room.grantPackage(room.roomManager(),{worker:w.id,key:'fn flask',need:'a web framework',name:'flask'},{name:'flask',language:'python'},{fresh:true});return wrote('temp.py',RIGHT_TEMP);};
   const made=v8Room({level:TEMP_LEVEL,splitWhen:t=>t.startsWith(TEMP_GOAL),executor,answers:{temp:[ask],'USAGE.md':[wrote('USAGE.md',USAGE_MD)]}});
   room=made.room;
   await room.start(TEMP_GOAL,30,{pipeline:'v8'});
@@ -319,6 +317,15 @@ test('checkPlan: a command contract in Go or Ruby runs by its row\'s run_file, a
   if(spawnSync('sh',['-c','command -v ruby']).status!==0)return;
   const report=await verifyChecks({mode:'checks',fingerprint:'f',snapshot_hash:await snapshotHash(files),files:Object.fromEntries(files),toolchains,plan:{...plan,checks:plan.checks.filter(c=>c.id==='V1')}},{isolation:[]});
   assert.equal(report.checks.find(c=>c.id==='V1').passed,true,JSON.stringify(report.checks));
+});
+
+// Owner 2026-10-15 22:12 ("why are packages not allowed now?"): every row's packages go to the box, which installs them by the row's install command (gem for Ruby) or says it has none; none is dropped on the way.
+test('checkPlan: every language\'s packages go to the box with its row; a row with no install command is the box\'s to report',()=>{
+  const files=new Map([['greet.rb','require "colorize"\nputs "hi"\n'],['main.go','package main\nfunc main() {}\n']]);
+  const {plan,toolchains}=checkPlan({contracts:[],validations:[]},files,{rows:TOOLCHAINS,install:[{toolchain:'ruby',packages:['colorize']},{toolchain:'go',packages:['github.com/x/y']}]});
+  assert.deepEqual(plan.install,[{toolchain:'ruby',packages:['colorize']},{toolchain:'go',packages:['github.com/x/y']}]);
+  assert.ok(toolchains.find(r=>r.id==='ruby').install.argv.includes('gem'));
+  assert.ok(toolchains.some(r=>r.id==='go'));
 });
 
 test('checkPlan: command contracts run by their own path, call checks load the file that defines the function, file and judge checks stay in the Worker',()=>{

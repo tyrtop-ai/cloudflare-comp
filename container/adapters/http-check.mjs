@@ -9,7 +9,6 @@ import {request as httpRequest} from 'node:http';
 import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 
-const clip = (s, n) => { const t = String(s ?? ''); return t.length > n ? t.slice(0, n - 1) + '…' : t; };
 // A value as a step's reason shows it: whole.
 const show = v => { let t; try { t = JSON.stringify(v); } catch { t = String(v); } return t === undefined ? 'undefined' : t; };
 export const deepEqual = (a, b) => {
@@ -68,7 +67,7 @@ export async function pollReady(url, ms) {
   for (;;) {
     try { const r = await localRequest(url, {ms: 1000}); if (r.status < 500) return {ready: true, status: r.status}; last = `HTTP ${r.status}`; }
     catch (e) { last = String(e?.message || e); }
-    if (Date.now() >= end) return {ready: false, error: clip(last, 200)};
+    if (Date.now() >= end) return {ready: false, error: last};
     await sleep(200);
   }
 }
@@ -78,9 +77,8 @@ export async function runHttpSteps({base_url, steps, step_ms = 5000, check_ms = 
   const list = Array.isArray(steps) ? steps : [];
   for (const [i, s] of list.entries()) {
     const method = String(s?.method || 'GET').toUpperCase(), p = String(substituteSaved(String(s?.path || '/'), saved)), e = s?.expect && typeof s.expect === 'object' ? s.expect : {};
-    // v8 S4b review: the status a server answered rides apart from the reason (which names the expected one).
-    let status;
-    const fail = (reason, body = '', what = 'step') => ({passed: false, ms: Date.now() - t, step: i + 1, label: `${method} ${p}`, reason, body: clip(body, 1500), what, ...(Number.isInteger(status) ? {status} : {})});
+    // body: the whole answer, as the server gave it.
+    const fail = (reason, body = '') => ({passed: false, ms: Date.now() - t, step: i + 1, label: `${method} ${p}`, reason, body});
     // A path, never another origin.
     if (!p.startsWith('/') || p.startsWith('//')) return fail('the path must start with a single /');
     const url = new URL(p, base_url);
@@ -90,15 +88,14 @@ export async function runHttpSteps({base_url, steps, step_ms = 5000, check_ms = 
     let res;
     try { res = await localRequest(url.href, {method, body: s.body === undefined ? undefined : substituteSaved(s.body, saved), ms}); }
     catch (err) { return fail(`no answer: ${err?.message || err}`); }
-    status = res.status;
     let json; try { json = JSON.parse(res.text); } catch {}
     if (typeof s.save === 'string' && s.save) saved.set(s.save, json === undefined ? res.text : json);
-    if (Number.isInteger(e.status) && res.status !== e.status) return fail(`status ${res.status}, expected ${e.status}`, res.text, 'status');
+    if (Number.isInteger(e.status) && res.status !== e.status) return fail(`status ${res.status}, expected ${e.status}`, res.text);
     if (!Number.isInteger(e.status) && res.status >= 500) return fail(`status ${res.status}`, res.text);
-    for (const x of Array.isArray(e.body_has) ? e.body_has : []) if (!res.text.includes(String(x))) return fail(`the body lacks ${show(String(x))}; it was ${show(res.text)}`, res.text, 'body');
+    for (const x of Array.isArray(e.body_has) ? e.body_has : []) if (!res.text.includes(String(x))) return fail(`the body lacks ${show(String(x))}`, res.text);
     if (e.json_has !== undefined) {
-      if (json === undefined) return fail(`the body is not JSON: ${show(res.text)}`, res.text, 'json');
-      if (!jsonHas(json, e.json_has)) return fail(`the JSON lacks ${show(e.json_has)}; it was ${show(json)}`, res.text, 'body');
+      if (json === undefined) return fail('the body is not JSON', res.text);
+      if (!jsonHas(json, e.json_has)) return fail(`the JSON lacks ${show(e.json_has)}`, res.text);
     }
   }
   return {passed: true, ms: Date.now() - t};

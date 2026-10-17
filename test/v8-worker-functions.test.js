@@ -190,7 +190,9 @@ test('an ask goes to the asker\'s manager as one choice among its functions, eac
   // One choice Clef scores per ask: the room's manager's (the piece's only child is the asker's own line, so it has nothing to answer with).
   const asks = choices.filter(c => c.state.item.kind === 'ask');
   assert.equal(asks.length, 2);
-  assert.deepEqual(Object.keys(asks[0].questions), ['answer_0', 'answer_1', 'ask_parent'], 'the store\'s contracts, none of the asker\'s line, and no extend');
+  // At the top of the line a name no row holds may also be granted new, as a package in each language whose box installs packages: Clef's choice, as every option is.
+  assert.deepEqual(Object.keys(asks[0].questions), ['answer_0', 'answer_1', 'grant_0', 'grant_1', 'ask_parent'], 'the store\'s contracts, none of the asker\'s line, the top\'s new grants, and no extend');
+  assert.deepEqual(asks[0].state.packages_offered.map(p => p.package), ['getTicket (a JavaScript package, not yet installed: the box installs it)', 'getTicket (a Python package, not yet installed: the box installs it)']);
   assert.equal(asks[0].questions.ask_parent.instructions, CLEF.ask_parent);
   assert.equal(asks[0].questions.answer_1.instructions, clefText('answer', {j: 1}));
   assert.deepEqual(asks[0].state.item, {kind: 'ask', need: 'read one ticket back by its id', expected_name: 'getTicket'});
@@ -200,7 +202,7 @@ test('an ask goes to the asker\'s manager as one choice among its functions, eac
   const said = events(room, 'manager_choice').filter(e => /^On the ask/.test(e.body)).map(e => [e.actor, e.body]);
   assert.deepEqual(said.map(([a]) => a), [rp.id, rp.id, m, m]);
   assert.equal(said[0][1], 'On the ask for getTicket: ask_parent(need) (the only function it may call).');
-  assert.equal(said[2][1], 'On the ask for getTicket: answer(getTicket) p=0.950; the others: answer(createTicket) p=0.900, ask_parent(need) p=0.100.');
+  assert.equal(said[2][1], 'On the ask for getTicket: answer(getTicket) p=0.950; the others: answer(createTicket) p=0.900, grant(getTicket, JavaScript) p=0.900, grant(getTicket, Python) p=0.900, ask_parent(need) p=0.100.');
   assert.equal(events(room, 'ask_parent').length, 2);
   // The answer reached the asker: the contract, how to refer to it, and its entry calls it.
   const answers = room.read(`fn_answers:${w.id}`, []);

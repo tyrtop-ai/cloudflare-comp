@@ -5,8 +5,9 @@
 // no row lists it, no ask is needed for it and none grants it. Root's row
 // holds what the image installs; a split gives each piece a part of its
 // parent's, as it gives contracts; an ask by a name its row does not hold
-// goes up the line as a contract ask does, and a third party's name no row
-// holds is granted from the top (packages are allowed, 22:12): the compiler's
+// goes to its manager as a contract ask does, whose choice grants a package
+// its row holds or asks one level up; at the top of the line a name no row
+// holds may be granted new (packages are allowed, 22:12), and the compiler's
 // box installs it. Pure: no room, no model.
 import {TOOLCHAINS, toolchainById, toolchainOf} from './toolchains.js';
 
@@ -88,7 +89,8 @@ export const pieceLanguages = contracts => {
 // none), and the names it was given that its parent's row lists in those
 // languages (v8 live 4 review: added to that set, never replacing it); a
 // given name its parent's row does not list is an ask, which goes up as a
-// worker's would (a module of a standard library needs none: it is there).
+// worker's does, to its manager (a module of a standard library needs none:
+// it is part of the language, always there).
 export function piecePackages(piece, parentHeld = [], rows = TOOLCHAINS) {
   const langs = pieceLanguages(piece?.interfaces), fits = p => !langs || !p.language || langs.includes(p.language);
   const own = parentHeld.filter(fits), given = packageNames(piece?.packages), packages = [...own], asks = [];

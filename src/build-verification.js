@@ -27,9 +27,18 @@ export function validateBuildFiles(files,unsafe=v7BuildPath) {
   }
   return new Map(entries);
 }
-// v8: what one box holds of a bundle: every file at a path inside its
-// folder (the box's own safety, boxPathError), within its limits.
-export const validateBoxFiles=files=>validateBuildFiles(files,boxPathError);
+// v8: what one box holds of a bundle: every file, each text at a path
+// inside its folder (the box's own safety, boxPathError). No count or size
+// of its own: the compiler compiles the whole bundle (owner, 2026-10-17
+// 00:25, on invented caps: "I don't understand the need").
+export function validateBoxFiles(files) {
+  const entries=files instanceof Map?[...files]:Object.entries(files||{});
+  for(const [path,content] of entries) {
+    if(boxPathError(path))throw Object.assign(new Error(`Unsafe build path ${path}`),{path});
+    if(typeof content!=='string')throw new Error(`Non-text build file ${path}`);
+  }
+  return new Map(entries);
+}
 // Review: at most 24 checks, and never a dropped verdict: every check but
 // the passing per-file syntax confirmations is kept (the runner's test, the
 // load, start() and any failure), and those fill what room is left, in order.

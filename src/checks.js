@@ -4,7 +4,7 @@
 // (fileResult), has Clef judge the documents, and turns every failed
 // validation into an item (checkProblems) whose detail is what the compiler
 // observed, as it observed it: the complaint a worker reads.
-import { TOOLCHAINS, toolchainOf, runRowOf, extractSurface } from './toolchains.js';
+import { TOOLCHAINS, COMPILE_ROWS, toolchainOf, runRowOf, extractSurface } from './toolchains.js';
 import { kindOf } from './contracts.js';
 import { failureHead } from './problems.js';
 import { clip } from './protocol.js';
@@ -18,8 +18,8 @@ export const CHECK_LIMITS = Object.freeze({total_ms: 200_000, check_ms: 20_000, 
 export const WORKER_CHECKS = Object.freeze(['file', 'judge']);
 // What a validation's status holds: passed (true, false, or null when the
 // check could not run: infrastructure), the bundle digest it ran on, when,
-// and the failure's detail.
-export const statusEntry = (passed, digest, detail = '', extra = {}) => ({passed, digest, ts: Date.now(), detail: passed ? '' : clip(detail, 300), ...extra});
+// and the failure's detail, whole.
+export const statusEntry = (passed, digest, detail = '', extra = {}) => ({passed, digest, ts: Date.now(), detail: passed ? '' : String(detail ?? ''), ...extra});
 
 const show = v => { try { return JSON.stringify(v); } catch { return String(v); } };
 const rowsOf = rows => (Array.isArray(rows) && rows.length ? rows : TOOLCHAINS).filter(r => r && typeof r.id === 'string');
@@ -80,8 +80,10 @@ export function checkPlan(spec, files, {rows = TOOLCHAINS, placed = new Set(), c
     // A compile row (one no contract names) goes to the box with the files it compiles.
     for (const {row} of steps.values()) if (!toolchains.some(r => r.id === row.id)) toolchains.push(row);
   } else for (const r of toolchains) if (Array.isArray(r.syntax) && r.syntax.length) steps.set(r.id, {row: r, files: paths.filter(p => toolchainOf(p)?.id === r.id)});
-  const installs = (install || []).filter(x => x?.packages?.length && all.some(r => r.id === x.toolchain && r.install));
-  for (const x of installs) if (!toolchains.some(r => r.id === x.toolchain)) toolchains.push(all.find(r => r.id === x.toolchain));
+  // Every row's packages go to the box, which installs them by the row's
+  // install command or reports that it has none (never dropped here).
+  const installs = (install || []).filter(x => x?.packages?.length);
+  for (const x of installs) { const row = [...all, ...COMPILE_ROWS].find(r => r.id === x.toolchain); if (row && !toolchains.some(r => r.id === row.id)) toolchains.push(row); }
   const syntax = [...steps.values()].filter(s => s.files.length).map(s => ({toolchain: s.row.id, files: s.files}));
   // A command contract runs by its own path, through its row's run_file (never a PATH lookup).
   const commands = {};
@@ -128,7 +130,7 @@ export function fileResult(check, files) {
 // The items a run files: each failed validation, its detail what the check
 // observed (the complaint as the compiler states it), its parties the frames
 // in the project's files; each file that did not compile, with the syntax
-// step's own words. results: Map id -> {passed, detail, frames, output,
+// step's own words. results: Map id -> {passed, detail, frames,
 // infrastructure}; issues: [{path, detail}]. origin(path) -> {owner,
 // owner_path} of a bundle path.
 export function checkProblems(spec, results, issues = [], {origin = () => null} = {}) {
