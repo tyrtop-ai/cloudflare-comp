@@ -14,7 +14,6 @@
 // and until then the catalogue never lists them. A package it lists is one
 // the worker's row holds.
 import {MESSAGES, BROKER_LABEL} from './prompts.js';
-import {sanitizeText} from './fetcher.js';
 
 // The kinds a request may have, and the ones this slice answers (§5.5).
 export const REQUEST_KINDS = Object.freeze(['contract', 'source', 'base', 'url', 'run', 'package']);
@@ -54,7 +53,7 @@ export function catalogue({own = [], uses = [], packages = [], base = [], source
   for (const p of base) add(p, 'base', MESSAGES.available_base());
   for (const s of sources) {
     const m = SOURCE_REF.exec(String(s?.ref ?? ''));
-    if (m?.[2]) add(s.ref, 'source', MESSAGES.available_source({part: m[2], title: sanitizeText(s.title || `S${m[1]}`)}));
+    if (m?.[2]) add(s.ref, 'source', MESSAGES.available_source({part: m[2], title: s.title || `S${m[1]}`}));
   }
   return out;
 }
@@ -95,10 +94,10 @@ export function nextHeld(cat, ref) {
 }
 // A chunk of a linked page: its text, labelled with where it was fetched from.
 export const sourceAnswer = ({id, ref, url, text, next = null}) =>
-  shapeAnswer({id, name: ref, kind: 'source', label: BROKER_LABEL.source(sanitizeText(url)), value: sanitizeText(text), next});
+  shapeAnswer({id, name: ref, kind: 'source', label: BROKER_LABEL.source(url), value: text, next});
 // An existing file of the project: its text, labelled as the base repository's.
 // own: a contract of the asker names its path, so its version is placed now.
 export const baseAnswer = ({id, path, content, own = false}) =>
-  shapeAnswer({id, name: path, kind: 'base', label: BROKER_LABEL.base, value: sanitizeText(content), facts: own ? {placed_when: 'now'} : null});
+  shapeAnswer({id, name: path, kind: 'base', label: BROKER_LABEL.base, value: content, facts: own ? {placed_when: 'now'} : null});
 // An answer as the worker's answers carry it: {name, label, value, next?, facts?}.
 export const viewAnswer = a => ({name: a.name, label: a.label, value: a.value, ...(a.next ? {next: a.next} : {}), ...(a.facts ? {facts: a.facts} : {})});

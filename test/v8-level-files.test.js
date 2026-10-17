@@ -552,7 +552,7 @@ const FORMAT_LEVEL = {contracts: [FORMAT], pieces: [], validations: [
   callCheck('f2', ['formatTicket'], [['formatTicket', [{id: 7, title: 'Printer jam', status: 'open'}], '#7 Printer jam [open]']]),
   callCheck('f3', ['formatTicket'], [['formatTicket', [{id: 2, title: 'Coffee', status: 'closed'}], '#2 Coffee [closed]']])]};
 for (const [where, method, when] of [
-  ['after its level file is committed, before the base-file confirmation and its children\'s rows', 'baseContracts', function (id) { return this.read(`level_job:${id}`, null)?.kind === 'extend'; }],
+  ['after its level file is committed, before its children\'s rows', 'spawnLevel', function (id) { return this.read(`level_job:${id}`, null)?.kind === 'extend'; }],
   ['after its children\'s rows, before its job is cleared', 'save', function (key, value) { return value === null && /^level_job:/.test(key) && this.read(key, null)?.kind === 'extend'; }]
 ]) test(`an extension for a change, interrupted by a restart ${where}: the turn after the restart finishes what the admission owes; the level is not split again, and the room completes`, async () => {
   const leaf = user => user.prompt.deliver.some(c => c.name === 'formatTicket') ? deliver({'format.js': FORMAT_JS}) : trackerLeaf(user);
