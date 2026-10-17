@@ -6,9 +6,10 @@
 //            or {"base_url","steps","deadline_ms"} → {"passed":true,"ms"}
 //            | {"passed":false,"ms","step","label","reason","body","timed_out"?}.
 // No request has a time of its own: each waits for its answer until the
-// verification's time runs out (deadline_ms, what the runner has left; none
-// when absent). That end is the runtime's clock (timed_out), never the
-// server's failure.
+// verification's time runs out (deadline_ms, what the runner has left of the
+// time the room's setting gives the verification; none when absent). A
+// server that has not answered by then is what the check observed of it
+// (timed_out): the step fails with that. The process then reports and ends.
 import {request as httpRequest} from 'node:http';
 import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
@@ -64,12 +65,12 @@ export function localRequest(url, {method = 'GET', body, ms = Infinity} = {}) {
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// Poll url every 200 ms until it answers below 500, for up to ms.
+// Poll url every 200 ms until it answers below 500, for up to ms (none: until it does).
 export async function pollReady(url, ms) {
-  const end = Date.now() + ms;
+  const end = Number.isFinite(ms) ? Date.now() + ms : Infinity;
   let last = '';
   for (;;) {
-    try { const r = await localRequest(url, {ms: 1000}); if (r.status < 500) return {ready: true, status: r.status}; last = `HTTP ${r.status}`; }
+    try { const r = await localRequest(url, {ms: Math.max(1, end - Date.now())}); if (r.status < 500) return {ready: true, status: r.status}; last = `HTTP ${r.status}`; }
     catch (e) { last = String(e?.message || e); }
     if (Date.now() >= end) return {ready: false, error: last};
     await sleep(200);
@@ -108,7 +109,7 @@ export async function runHttpSteps({base_url, steps, deadline_ms}) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const input = JSON.parse(readFileSync(0, 'utf8') || '{}');
-  const out = input.ready ? await pollReady(String(input.ready.url), Number(input.ready.ms) || 10_000) : await runHttpSteps(input);
+  const out = input.ready ? await pollReady(String(input.ready.url), input.ready.ms == null ? Infinity : Number(input.ready.ms)) : await runHttpSteps(input);
   process.stdout.write(JSON.stringify(out) + '\n');
   process.exit(0);
 }

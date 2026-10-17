@@ -28,9 +28,21 @@ export const BOX_IMAGES = Object.freeze(['check', 'browser', 'fetch']);
 export const BOX_INSTANCES = Object.freeze(['lite', 'standard-1', 'standard-2', 'standard-3', 'standard-4']);
 // The one environment a box's process gets: a fixed PATH, nothing else.
 export const BOX_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
-// Backstop: an opened box is destroyed by its alarm this long after it
-// started, whatever happened to the caller (a compile's exec is bounded at 255 s).
-export const BOX_LIFETIME_MS = 6 * 60_000;
+// A box's times, every one from the verification's time (total_ms: the
+// room's check_seconds setting, which the person sets beside the turn budget
+// and every compile sends; nothing here picks one):
+//   ready: how long the platform may take to make the box ready;
+//   exec:  the runner's one exec: the verification's time for its checks and
+//          as long again for the runner's own work around them (its adapters'
+//          last reports, stopping what runs, the report); past it the box failed;
+//   life:  the backstop alarm that destroys the box whatever happened to the
+//          caller, from its open (and again from its compile's start): its
+//          ready time and its exec.
+export function boxTimes(total_ms) {
+  const t = Number(total_ms);
+  if (total_ms === null || total_ms === '' || !Number.isFinite(t) || t <= 0) throw new BoxError('bad_request', "A box is given the verification's time (limits.total_ms).");
+  return {ready: t, exec: 2 * t, life: 3 * t};
+}
 // v8 live 2: a box that took longer than this to become ready waited for its
 // image to be pulled (the first use after a deploy took 9.7 to 14.7 s, a warm
 // one about 1.2 s); it is recorded cold.
@@ -39,8 +51,9 @@ export const BOX_COLD_MS = 5000;
 // WorkerEntrypoint that serves one fixed thing. Today only the S0 probe's
 // page and WebSocket echo (src/box-probe.js BoxProbePeer).
 export const BOX_PEERS = Object.freeze({probe: 'BoxProbePeer'});
-// The whole runner in one exec (Level A, §3.3): today's build-runner, as
-// BuildExecutor runs it, with the same GNU timeout around it.
+// The whole runner in one exec (Level A, §3.3): today's build-runner. The
+// exec's end is boxTimes' exec (Box.compile); the box is destroyed after it,
+// with everything the runner started.
 export const BOX_RUNNER = Object.freeze(['node', '/opt/build-runner.mjs']);
 // v8 live 5: the runner runs under the box's own host name. The platform
 // names a box's VM with a label over 63 characters, on which Python's
@@ -52,7 +65,7 @@ export const BOX_HOSTNAME = Object.freeze(['python3', '-I', '/opt/box/hostname.p
 export const BOX_NAME = /^box-[0-9a-f]{16}$/;
 export const boxBuildCommand = name => {
   if (!BOX_NAME.test(String(name))) throw new BoxError('bad_name', 'A box is named box-<16 hex>.');
-  return Object.freeze(['timeout', '--signal=TERM', '--kill-after=5s', '240s', ...BOX_HOSTNAME, name, '--', ...BOX_RUNNER]);
+  return Object.freeze([...BOX_HOSTNAME, name, '--', ...BOX_RUNNER]);
 };
 // A box's name, from its Durable Object id: box-<the first 16 hex of its
 // SHA-256>. The same id always gives the same name (a replay, the spans,
@@ -158,20 +171,21 @@ export class Box extends DurableObject {
   // v8 live 5: a prewarmed box is opened by the room before its compile
   // (open), and its compile then runs in it (compile); open's promise is
   // kept so a compile that arrives while it starts waits for it.
-  open(raw) {
+  // total_ms: the verification's time (boxTimes).
+  open(raw, total_ms) {
     if (this.opening) return Promise.reject(new BoxError('used', 'A box is single-use: this one was opened before.'));
-    this.opening = this.boot(raw);
+    this.opening = this.boot(raw, total_ms);
     return this.opening;
   }
-  async boot(raw) {
-    const c = this.container(), spec = boxSpec(raw);
+  async boot(raw, total_ms) {
+    const c = this.container(), spec = boxSpec(raw), times = boxTimes(total_ms);
     if (this.opened || await this.ctx.storage.get('opened_at')) throw new BoxError('used', 'A box is single-use: this one was opened before.');
     if (c.running) throw new BoxError('not_fresh', 'A new box found its Container already running.');
     const options = boxStartOptions(spec, c.images);
     const began = Date.now(), name = await this.name();
     this.opened = {spec, began};
     await this.ctx.storage.put('opened_at', began);
-    if (typeof this.ctx.storage.setAlarm === 'function') await this.ctx.storage.setAlarm(began + BOX_LIFETIME_MS);
+    if (typeof this.ctx.storage.setAlarm === 'function') await this.ctx.storage.setAlarm(began + times.life);
     for (const r of spec.intercept) {
       const peer = this.ctx.exports?.[BOX_PEERS[r.peer]];
       if (typeof peer !== 'function') throw new BoxError('peer_unavailable', `The peer ${r.peer} is not exported by this Worker.`);
@@ -181,7 +195,7 @@ export class Box extends DurableObject {
     const started = Date.now();
     let retries = 0;
     const ready = await execAfterStartup(c, ['true'], boxExecOptions({quiet: true}), {onRetry: () => { retries++; }});
-    const code = await waitForBuildOutput(ready, ready.exitCode, {timeoutMs: 60_000});
+    const code = await waitForBuildOutput(ready, ready.exitCode, {timeoutMs: times.ready});
     if (code !== 0) throw new BoxError('not_ready', `The box's readiness command exited ${code}.`);
     const ready_ms = Date.now() - began;
     const opened = {fresh: true, internet: options.enableInternet, image: spec.snapshot ? 'snapshot' : spec.image, instance: spec.instance, name,
@@ -192,22 +206,23 @@ export class Box extends DurableObject {
   }
   // The box a compile runs in: this one, opened now, or opened before by a
   // prewarm with exactly this spec and never compiled in. A box compiles once.
-  async compileBox(raw) {
-    const spec = boxSpec(raw);
+  async compileBox(raw, total_ms) {
+    const spec = boxSpec(raw), times = boxTimes(total_ms);
     if (this.compiling || await this.ctx.storage.get('compiled_at')) throw new BoxError('used', 'A box is single-use: it compiled once already.');
     this.compiling = true;
     await this.ctx.storage.put('compiled_at', Date.now());
-    if (!this.opening && !await this.ctx.storage.get('opened_at')) return {...await this.open(spec), prewarmed: false};
+    if (!this.opening && !await this.ctx.storage.get('opened_at')) return {...await this.open(spec, total_ms), prewarmed: false};
     let kept;
     if (this.opening) { const result = await this.opening; kept = {spec: this.opened?.spec, result}; }
     else kept = await this.ctx.storage.get('opened');
-    if (this.closed || !kept?.result) throw new BoxError('closed', 'The prewarmed box is no longer open.');
-    // v8 live 8: its Container stopped before the compile took it (the platform stopped it while it waited); it never compiled.
-    if (!this.container().running) return {gone: true};
+    if (!kept?.result) throw new BoxError('closed', 'The prewarmed box is no longer open.');
+    // v8 live 8: its Container stopped before the compile took it (the
+    // platform stopped it while it waited, or its own alarm closed it); it never compiled.
+    if (this.closed || !this.container().running) return {gone: true};
     if (JSON.stringify(boxSpec(kept.spec)) !== JSON.stringify(spec)) throw new BoxError('mismatch', 'A prewarmed box runs only the compile it was opened for (its image, instance and internet).');
     this.opened ??= {spec, began: Date.now(), result: kept.result};
     // Its backstop runs from the compile's start.
-    if (typeof this.ctx.storage.setAlarm === 'function') await this.ctx.storage.setAlarm(Date.now() + BOX_LIFETIME_MS);
+    if (typeof this.ctx.storage.setAlarm === 'function') await this.ctx.storage.setAlarm(Date.now() + times.life);
     return {...kept.result, prewarmed: true};
   }
   // One command; {code, stdout, stderr, ms, timed_out}. No shell, no env but PATH.
@@ -227,10 +242,12 @@ export class Box extends DurableObject {
     }
   }
   // Level A (S1): open a box, run today's build runner on the request inside
-  // it, close it. The request has the shape BuildExecutor.build takes.
+  // it, close it. The request has the shape BuildExecutor.build takes; its
+  // limits.total_ms, the verification's time, gives the box its times.
   async compile(raw, {fingerprint, files, options, ...checks} = {}) {
     try {
-      const opened = await this.compileBox(raw);
+      const total_ms = checks.limits?.total_ms, times = boxTimes(total_ms);
+      const opened = await this.compileBox(raw, total_ms);
       if (opened.gone) return {prewarm_closed: true};
       if (typeof fingerprint !== 'string' || fingerprint.length > 240) throw new BoxError('bad_request', 'Invalid build fingerprint');
       const entries = validateBoxFiles(files);
@@ -238,7 +255,7 @@ export class Box extends DurableObject {
       const input = JSON.stringify({fingerprint, snapshot_hash, files: Object.fromEntries(entries), options: buildRequestOptions(options), ...checksRequestFields(checks)});
       const c = this.container(), began = Date.now();
       const process = await c.exec([...boxBuildCommand(opened.name)], boxExecOptions({stdin: true}));
-      const output = await waitForBuildOutput(process, (async () => { await writeAll(process, input); return process.output(); })());
+      const output = await waitForBuildOutput(process, (async () => { await writeAll(process, input); return process.output(); })(), {timeoutMs: times.exec});
       if (output.exitCode !== 0) throw new BoxError('exit', `The box's build runner exited ${output.exitCode}: ${clip(decode(output.stderr).slice(-800) || decode(output.stdout).slice(-800), 800)}`);
       const result = JSON.parse(decode(output.stdout));
       if (result.snapshot_hash !== snapshot_hash || result.fingerprint !== fingerprint) throw new BoxError('attestation', 'Box attestation mismatch');

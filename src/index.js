@@ -19,7 +19,7 @@ import { buildPathError } from '../container/build-path.mjs';
 import { toolchainById, toolchainOf, TOOLCHAINS, COMPILE_ROWS, installed as installedRows, parseModeOf, scopeManifestOf, codeRowOf, pageScripts, pageModes } from './toolchains.js';
 // v8 S9: amendments and the prompt queue.
 import { effectiveGoal, goalView, promptText, reorderError } from './amend.js';
-import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS } from './checks.js';
+import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, checkLimitsOf, DEFAULT_CHECK_SECONDS } from './checks.js';
 import { getArtifactStore } from './artifact-store.js';
 import { RETRY, MESSAGES, BASE_LABEL, CLEF, clefText } from './prompts.js';
 import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './assembly-gate.js';
@@ -277,12 +277,15 @@ const replyFn = (fn, opts={}) => { const [f]=normalizeInterfaces(fn&&typeof fn==
 // had 50 direct children (run19's 28), one Clef step vetted them all, their
 // repositories took 86 s to create, and every routing question at Root ran
 // over dozens; a piece still large is split again by its own manager.
+// v8: check_seconds, the verification's time (seconds): what one compile's
+// checks have, the person's setting beside the turn budget (src/checks.js
+// checkLimitsOf; the box's times derive from it, src/box.js boxTimes).
 export const ROOM_LIMITS = Object.freeze({
-  max_agents: [2, 100000], max_depth: [1, 1000], parallel: [1, 10000], budget: [1, 10000000], max_children: [2, 64]
+  max_agents: [2, 100000], max_depth: [1, 1000], parallel: [1, 10000], budget: [1, 10000000], max_children: [2, 64], check_seconds: [1, 86400]
 });
 export const DEFAULT_ROOM_SETTINGS = Object.freeze({
   packages: 'none', pipeline: 'v7',
-  max_agents: 64, max_depth: 10, parallel: 16, max_children: 7,
+  max_agents: 64, max_depth: 10, parallel: 16, max_children: 7, check_seconds: DEFAULT_CHECK_SECONDS,
   model: '@cf/qwen/qwen3-30b-a3b-fp8', worker_model: '@cf/qwen/qwen3-30b-a3b-fp8', compiler_model: '@cf/qwen/qwen3-30b-a3b-fp8', split_model: '@cf/cloudflare/clef-flash', split_threshold: 0.7,
   // v8 live 5: the split's three tunable numbers. split_floor: a pre-grade p at
   // or below it means Clef is very certain no split is needed, and the manager
@@ -321,7 +324,7 @@ export const CLOUDFLARE_MODELS = new Set(['@cf/qwen/qwen3-30b-a3b-fp8', '@cf/met
 export function normalizeRoomSettings(raw = {}, prior = DEFAULT_ROOM_SETTINGS) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid settings');
   const result = {...prior};
-  for (const key of ['max_agents','max_depth','parallel','max_children']) {
+  for (const key of ['max_agents','max_depth','parallel','max_children','check_seconds']) {
     if (raw[key] === undefined) continue;
     const n=Number(raw[key]);
     const [min,max]=ROOM_LIMITS[key];
@@ -852,7 +855,8 @@ export class ControlRoom extends DurableObject {
   }
   store() { return getArtifactStore(this.env); }
   // v7.15.14 review: a room saved before max_children reads its default (the snapshot shows 7, the bound it splits by); its missing worker and compiler models still fall back to its own model (inferenceEnv), not the defaults.
-  settings() { const s=this.read('settings', DEFAULT_ROOM_SETTINGS); return s.max_children===undefined?{...s,max_children:DEFAULT_ROOM_SETTINGS.max_children}:s; }
+  // A room saved before check_seconds reads its default too (the time its compiles had then).
+  settings() { const s=this.read('settings', DEFAULT_ROOM_SETTINGS),d=DEFAULT_ROOM_SETTINGS; return s.max_children===undefined||s.check_seconds===undefined?{...s,max_children:s.max_children??d.max_children,check_seconds:s.check_seconds??d.check_seconds}:s; }
   maxChildren() { return this.settings().max_children ?? DEFAULT_ROOM_SETTINGS.max_children; }
   // v7.15.16 (run25): the split gate's bar rises with depth into the headroom left below 0.95: threshold + (0.95 - threshold) x min(depth - 1, H) / H, H = min(max_depth, 10) (0.7: 0.725 at depth 2, 0.75 at 3, 0.925 at 10, 0.95 below). Root and its children keep the room's threshold. run25 (0.45) went ten deep on YES answers of p 0.57-0.74.
   // v7.15.16 review: over a fixed horizon, min(max_depth, 10) levels, so raising max_depth (what split_capacity_blocked advises) never flattens it.
@@ -4033,7 +4037,7 @@ export class ControlRoom extends DurableObject {
   // validations need; it counts against BOX_CONCURRENCY like any open box.
   boxPrewarm() {
     if(!this.v8()||!this.env.BOXES)return null;
-    this.prewarm??=new BoxPrewarm({namespace:this.env.BOXES,slot:()=>this.tryBoxSlot(),span:(k,n,a,b,attrs)=>this.span(k,n,a,b,attrs,'system'),waitUntil:p=>this.ctx.waitUntil?.(p)});
+    this.prewarm??=new BoxPrewarm({namespace:this.env.BOXES,slot:()=>this.tryBoxSlot(),totalMs:()=>checkLimitsOf(this.settings()).total_ms,span:(k,n,a,b,attrs)=>this.span(k,n,a,b,attrs,'system'),waitUntil:p=>this.ctx.waitUntil?.(p)});
     this.prewarm.namespace=this.env.BOXES;
     return this.prewarm;
   }
@@ -4117,7 +4121,7 @@ export class ControlRoom extends DurableObject {
     let box=null;
     try {
       box=warm?.box||freshBox(this.env.BOXES);
-      const {box:opened,...report}=await box.compile(spec,{fingerprint:key,files:Object.fromEntries(snapshot),mode:'checks',plan,toolchains,limits:CHECK_LIMITS})||{};
+      const {box:opened,...report}=await box.compile(spec,{fingerprint:key,files:Object.fromEntries(snapshot),mode:'checks',plan,toolchains,limits:checkLimitsOf(this.settings())})||{};
       // v8 live 8: the prewarmed box's Container had stopped before this compile took it: the checks run in a fresh box.
       if(warm&&report.prewarm_closed) {
         this.span('container','checks',start,Date.now(),{node:id,files:snapshot.size,box:{prewarmed:true},error:'the prewarmed box had stopped'});

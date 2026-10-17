@@ -12,9 +12,14 @@
 // Time: no step and no check has a time of its own (owner, 2026-10-17
 // 00:25 and 2026-10-15 23:16: no caps the runtime picked). Every wait lasts
 // until what the step waits for holds, or until the verification's own time
-// runs out (deadline_ms: what the runner has left for this stage). That end
-// is the runtime's clock, never the page's failure: the check reports it as
-// infrastructure, with what the page showed then.
+// runs out (deadline_ms: what the runner has left for this stage, of the
+// time the room's setting gives the verification). A page that by then never
+// had what the step waits for is what the compiler observed of the page: the
+// check fails with what the page showed then (its text and what it offers,
+// as last read while the step waited), for the worker whose page it is. The
+// process reads nothing after the deadline: it reports what it saw and ends.
+// Only a browser that could not start or open a page, or a check the time
+// was spent before it started, is infrastructure.
 //
 // Each step runs exactly as the splitter wrote it (owner, 2026-10-16 20:38:
 // no "runtime fixing it via matching or whatever"). A target is every field
@@ -80,6 +85,19 @@ const visible = loc => typeof loc.filter === 'function' ? loc.filter({visible: t
 class Timeout extends Error {}
 // A step whose target the page never had before the verification's time ran out: the record lists what the page offers.
 class Miss extends Error {}
+// What the page showed when the current step last looked (each failed look
+// of a wait reads it again, within the time left): its text, what it offers,
+// and for expect_element the elements of the kind it looked for.
+const seen = {body: '', offers: null, elements: null};
+const forget = () => Object.assign(seen, {body: '', offers: null, elements: null});
+async function look(page, step) {
+  if (left() <= 0) return;
+  const body = await bodyText(page, left(), null);
+  if (body !== null) seen.body = body;
+  const offers = await offersOf(page, left());
+  if (offers) seen.offers = offers;
+  if (step && 'expect_element' in step && left() > 0) { const els = await elementsOf(page, step.expect_element, left()); if (els) seen.elements = els; }
+}
 // The elements a step's target names: every field it gives, each exactly as written.
 function targetLocator(page, t = {}) {
   const parts = [];
@@ -91,15 +109,15 @@ function targetLocator(page, t = {}) {
   return parts.length ? visible(parts.reduce((a, b) => a.and(b))) : null;
 }
 // The first element the target names, once the page has one; null when it never does before the verification's time runs out.
-async function resolve(page, t, kind) {
+async function resolve(page, t, kind, observe) {
   const loc = targetLocator(page, kind === 'field' ? {...t, kind} : t);
   if (!loc) return null;
-  const found = await poll(async ms => { try { return await within(loc.count(), ms, 'reading the page') > 0; } catch (e) { if (e instanceof Timeout) return false; throw e; } });
+  const found = await poll(async ms => { try { return await within(loc.count(), ms, 'reading the page') > 0; } catch (e) { if (e instanceof Timeout) return false; throw e; } }, observe);
   return found ? loc.first() : null;
 }
 const missText = (kind, t = {}) => `the page had no ${target(t, {field: kind === 'field'})}`;
 // What the page offers a check: its visible fields and its buttons and links.
-async function offersOf(page, ms = 1500) {
+async function offersOf(page, ms) {
   try {
     return await within(page.evaluate(() => {
       const shown = el => { const r = el.getBoundingClientRect(), st = getComputedStyle(el); return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none'; };
@@ -140,11 +158,11 @@ async function elementMatches(page, arg, ms) {
   const want = typeof arg?.text === 'string' ? arg.text : '';
   return want ? infos.filter(x => x.raw.includes(want)) : infos;
 }
-// What a page has of the element kind a step looked for: the elements of its tag.
-async function elementsOf(page, arg, ms = 1500) {
+// What a page has of the element kind a step looked for: the elements of its tag (null when it could not be read in ms).
+async function elementsOf(page, arg, ms) {
   const tag = (/^[a-z][a-z0-9-]*/i.exec(String(arg?.selector || '')) || [''])[0];
   if (!tag) return [];
-  try { return (await within(page.locator(tag).evaluateAll(ELEMENT_INFO), ms, 'reading the page')).map(x => x.said); } catch { return []; }
+  try { return (await within(page.locator(tag).evaluateAll(ELEMENT_INFO), ms, 'reading the page')).map(x => x.said); } catch { return null; }
 }
 // A promise bounded by ms: it rejects with Timeout(what) when ms pass first
 // (none when ms is not finite: no deadline).
@@ -153,11 +171,14 @@ function within(promise, ms, what) {
   let timer;
   return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Timeout(what)), ms); })]).finally(() => clearTimeout(timer));
 }
-const bodyText = async (page, ms = left()) => { try { return await within(page.evaluate(() => document.body ? document.body.innerText : ''), ms, 'reading the page'); } catch { return ''; } };
-// test(ms), again every 100 ms, until it holds (true) or the verification's time runs out (false).
-async function poll(test) {
+const bodyText = async (page, ms = left(), none = '') => { try { return await within(page.evaluate(() => document.body ? document.body.innerText : ''), Math.max(1, ms), 'reading the page'); } catch { return none; } };
+// test(ms), again every 100 ms, until it holds (true) or the verification's
+// time runs out (false); after each failed test, observe() reads what the page shows.
+async function poll(test, observe = async () => {}) {
   for (;;) {
-    if (await test(Math.max(50, left()))) return true;
+    if (await test(Math.max(1, left()))) return true;
+    if (left() <= 0) return false;
+    await observe();
     if (left() <= 0) return false;
     await new Promise(r => setTimeout(r, 100));
   }
@@ -165,6 +186,7 @@ async function poll(test) {
 
 async function runStep(page, base, step) {
   const [op, arg] = Object.entries(step || {})[0] || [];
+  const observe = () => look(page, step);
   switch (op) {
     case 'goto': {
       const url = new URL(String(arg || '/'), base).href;
@@ -177,32 +199,32 @@ async function runStep(page, base, step) {
     case 'press': await within(page.keyboard.press(String(arg)), left(), `pressing ${arg}`); return;
     case 'fill': {
       if (!arg || !(arg.label || arg.placeholder || arg.name || arg.role)) throw new Error('fill names no field');
-      const loc = await resolve(page, arg, 'field');
+      const loc = await resolve(page, arg, 'field', observe);
       if (!loc) throw new Miss(missText('field', arg));
       await loc.fill(String(arg?.text ?? ''), {timeout: until()}); return;
     }
     case 'click': {
       if (!arg || !(arg.role || arg.name || arg.text || arg.label)) throw new Error('click names no element');
-      const loc = await resolve(page, arg, 'click');
+      const loc = await resolve(page, arg, 'click', observe);
       if (!loc) throw new Miss(missText('click', arg));
       await loc.click({timeout: until()}); return;
     }
     case 'expect_text':
-      if (!await poll(async ms => (await bodyText(page, ms)).includes(String(arg)))) throw new Timeout(`the page had not shown ${quote(arg)}`);
+      if (!await poll(async ms => (await bodyText(page, ms)).includes(String(arg)), observe)) throw new Timeout(`the page had not shown ${quote(arg)}`);
       return;
     case 'expect_no_text':
-      if (!await poll(async ms => !(await bodyText(page, ms)).includes(String(arg)))) throw new Timeout(`the page still showed ${quote(arg)}`);
+      if (!await poll(async ms => !(await bodyText(page, ms)).includes(String(arg)), observe)) throw new Timeout(`the page still showed ${quote(arg)}`);
       return;
     // v8 live 4: the page has at least one element the selector matches (with the text, if given); a miss names what it has.
     case 'expect_element': {
       let hits = [];
-      const found = await poll(async ms => { try { hits = await elementMatches(page, arg, ms); } catch (e) { if (!(e instanceof Timeout)) throw e; hits = []; } return hits.length > 0; });
+      const found = await poll(async ms => { try { hits = await elementMatches(page, arg, ms); } catch (e) { if (!(e instanceof Timeout)) throw e; hits = []; } return hits.length > 0; }, observe);
       if (!found) throw new Miss(`the page had no ${String(arg?.selector ?? '')}${arg?.text ? ` with the text ${quote(arg.text)}` : ''}`);
       return;
     }
     case 'expect_no_element': {
       let hits = [];
-      const gone = await poll(async ms => { try { hits = await elementMatches(page, arg, ms); } catch (e) { if (!(e instanceof Timeout)) throw e; } return hits.length === 0; });
+      const gone = await poll(async ms => { try { hits = await elementMatches(page, arg, ms); } catch (e) { if (!(e instanceof Timeout)) throw e; } return hits.length === 0; }, observe);
       if (!gone) throw new Timeout(`the page still had ${hits.length} ${String(arg?.selector ?? '')}${arg?.text ? ` with the text ${quote(arg.text)}` : ''}`);
       return;
     }
@@ -215,8 +237,9 @@ async function runStep(page, base, step) {
       if (arg.role && holding) loc = loc.filter({hasText: holding});
       loc = visible(loc);
       let seen = -1;
-      const counted = async ms => { try { seen = await within(loc.count(), ms, 'counting'); } catch { seen = -1; } return seen === n; };
-      if (!await poll(counted)) throw new Timeout(seen < 0 ? 'the page had not answered' : `the page had ${seen}, expected ${n}`);
+      // A count that could not be read in the time left keeps the last one read.
+      const counted = async ms => { try { seen = await within(loc.count(), ms, 'counting'); } catch {} return seen === n; };
+      if (!await poll(counted, observe)) throw new Timeout(seen < 0 ? 'the page had not answered' : `the page had ${seen}, expected ${n}`);
       return;
     }
     default: throw new Error(`unknown step ${JSON.stringify(step)}`);
@@ -259,10 +282,12 @@ async function runCheck(check) {
     const note = blocked.length ? `; blocked non-served request ${blocked[0]}` : uncaught ? `; page error: ${uncaught.text}` : '';
     return {id: check.id, passed: false, ms: Date.now() - began, failed_step: i + 1, step,
       detail: `step ${i + 1} (${describe(step)}): ${reason}${offersLine(extra.offers)}${note}`,
-      body_text: state.page ? await bodyText(state.page, 1000) : '',
+      // Before the deadline the page is read now; after it, as last read.
+      body_text: !state.page ? '' : left() > 0 ? await bodyText(state.page, left(), seen.body) : seen.body,
       console_errors: [...errors.map(x => x.stack || x.text), ...blocked.map(u => `blocked: ${u}`)], frames, ...extra};
   };
   const body = async () => {
+    forget();
     context = await within(browser.newContext({serviceWorkers: 'block'}), left(), 'opening a browser context');
     await context.route('**/*', route => {
       const url = route.request().url();
@@ -281,30 +306,33 @@ async function runCheck(check) {
     for (const [i, step] of steps.entries()) {
       Object.assign(state, {index: i, step});
       // Each wait inside the step ends by the verification's deadline.
+      forget();
       try { await runStep(page, base, step); }
       catch (e) {
-        // The verification's time ran out while the step waited (a target the
-        // page never had, a text it never showed): the runtime's clock, not
-        // the page's failure; what the page offered then is in the record.
+        // The page never had what the step waited for (a target, a text, a
+        // count) before the verification's time ran out: what the compiler
+        // observed of the page, with what it offered when last read.
         if (e instanceof Miss) {
-          const offers = await offersOf(page), elements = step && 'expect_element' in step ? await elementsOf(page, step.expect_element) : null;
-          return failure(i, step, `${e.message}${elements ? `; ${elements.length ? `elements of that kind found: ${elements.join(', ')}` : 'no element of that kind'}` : ''}`, {miss: true, infrastructure: true, offers: elements ? {...(offers || {fields: [], buttons: []}), elements} : offers});
+          const elements = step && 'expect_element' in step ? seen.elements || [] : null, offers = seen.offers;
+          return failure(i, step, `${e.message}${elements ? `; ${elements.length ? `elements of that kind found: ${elements.join(', ')}` : 'no element of that kind'}` : ''}`, {miss: true, offers: elements ? {...(offers || {fields: [], buttons: []}), elements} : offers});
         }
-        if (e instanceof Timeout || e?.name === 'TimeoutError') return failure(i, step, `the verification's time ran out while the step waited (${e?.message || e})`, {infrastructure: true});
+        if (e instanceof Timeout || e?.name === 'TimeoutError') return failure(i, step, `${e?.message || e}, when the verification's time ran out`);
         return failure(i, step, String(e?.message || e));
       }
     }
     return {id: check.id, passed: true, ms: Date.now() - began};
   };
+  // The time was spent before this check started: it observed nothing.
+  if (left() <= 0) return {id: check.id, passed: false, ms: 0, detail: "not run: the verification's time was spent before it started", infrastructure: true};
   try {
     return await body();
   } catch (e) {
     if (state.index < 0) { wedged = true; return {id: check.id, passed: false, ms: Date.now() - began, detail: `the browser did not open a page: ${e?.message || e}`, infrastructure: true}; }
-    return failure(state.index, state.step, String(e?.message || e), {infrastructure: e instanceof Timeout});
+    return failure(state.index, state.step, String(e?.message || e));
   } finally {
-    // A hung renderer may not let its context close: then the browser is
-    // restarted before the next check.
-    if (context) try { await within(context.close(), 3000, 'closing the context'); } catch { wedged = true; }
+    // A context that does not close in the time left (a hung renderer): the
+    // browser is restarted before the next check.
+    if (context) try { await within(context.close(), Math.max(1, left()), 'closing the context'); } catch { wedged = true; }
   }
 }
 
@@ -323,12 +351,13 @@ try { chromium = browser.version(); } catch {}
 for (const check of checks) {
   if (wedged) {
     wedged = false;
-    await within(browser.close(), 3000, 'closing the browser').catch(() => { try { browser.process?.()?.kill('SIGKILL'); } catch {} });
+    await within(browser.close(), Math.max(1, left()), 'closing the browser').catch(() => { try { browser.process?.()?.kill('SIGKILL'); } catch {} });
     try { browser = await launch(); } catch (e) { print({id: check.id, passed: false, ms: 0, detail: `the browser did not restart: ${e?.message || e}`, infrastructure: true}); continue; }
   }
   print({start: check.id});
   print(await runCheck(check));
 }
 print({inventory: {chromium, playwright: version}});
-await within(browser.close(), 3000, 'closing the browser').catch(() => {});
+// What is left of the time to close the browser; the runner kills what remains by its tag.
+await within(browser.close(), Math.max(1, left()), 'closing the browser').catch(() => {});
 process.exit(0);

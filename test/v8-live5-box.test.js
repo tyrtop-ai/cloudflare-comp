@@ -9,8 +9,10 @@ import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {liveRoom, events, fileBlocks, snapshotHash, verifyChecks} from './helpers/room.js';
 import {fakeBoxes} from './helpers/boxes.js';
-const {freshBox, boxName, boxBuildCommand, BOX_HOSTNAME, BOX_NAME, BOX_LIFETIME_MS} = await import('../src/box.js');
-const {BoxPrewarm, levelBoxSpec, PREWARM_IDLE_MS} = await import('../src/box-prewarm.js');
+const {freshBox, boxName, boxBuildCommand, boxTimes, BOX_HOSTNAME, BOX_NAME} = await import('../src/box.js');
+const {BoxPrewarm, levelBoxSpec} = await import('../src/box-prewarm.js');
+// The verification's time a room sends (its check_seconds setting).
+const T = 200_000;
 const runner = await import('../container/build-runner.mjs');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -51,12 +53,13 @@ test('a box is named box-<16 hex> after its Durable Object id, and its runner ru
   assert.notEqual(name, await boxName('unique-2'));
   const sha = Buffer.from(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('unique-1'))).toString('hex');
   assert.equal(name, `box-${sha.slice(0, 16)}`);
-  assert.deepEqual(boxBuildCommand(name), ['timeout', '--signal=TERM', '--kill-after=5s', '240s', ...BOX_HOSTNAME, name, '--', 'node', '/opt/build-runner.mjs']);
+  // No GNU timeout of its own: the exec's end derives from the verification's time (Box.compile, boxTimes).
+  assert.deepEqual(boxBuildCommand(name), [...BOX_HOSTNAME, name, '--', 'node', '/opt/build-runner.mjs']);
   assert.throws(() => boxBuildCommand('box-xyz'), e => e.code === 'bad_name');
   assert.throws(() => boxBuildCommand(`box-${'0'.repeat(16)}; rm -rf /`), e => e.code === 'bad_name');
   // The fake Container saw the runner started under that name.
   const ns = fakeBoxes({run: async req => ({fingerprint: req.fingerprint, snapshot_hash: req.snapshot_hash, mode: 'card', passed: true, checks: []})});
-  const r = await freshBox(ns).compile(SPEC, {fingerprint: 'f', files: {'a.js': '1;\n'}, mode: 'card', plan: {checks: []}});
+  const r = await freshBox(ns).compile(SPEC, {fingerprint: 'f', files: {'a.js': '1;\n'}, mode: 'card', plan: {checks: []}, limits: {total_ms: T}});
   assert.equal(r.box.name, name);
   assert.equal(ns.boxes[0].container.hostname, name);
   // The image installs the wrapper beside the probe, read-only.
@@ -122,7 +125,7 @@ test('the runner inventory reports the host name, its longest label, how the box
   assert.match(hung.getfqdn.error, /no answer within 8 s/);
   assert.equal((await runner.hostnameInventory({python: false})).getfqdn, null, 'no Python, no getfqdn probe');
   // verifyChecks puts them in its inventory.
-  const files = {'a.txt': 'x'}, report = await verifyChecks({fingerprint: 'f', snapshot_hash: await snapshotHash(new Map(Object.entries(files))), mode: 'checks', files, plan: {checks: []}, toolchains: []}, {isolation: []});
+  const files = {'a.txt': 'x'}, report = await verifyChecks({fingerprint: 'f', snapshot_hash: await snapshotHash(new Map(Object.entries(files))), mode: 'checks', files, plan: {checks: []}, toolchains: [], limits: {total_ms: 60_000}}, {isolation: []});
   for (const k of ['hostname', 'hostname_ok', 'hostname_longest_label', 'hostname_status', 'getfqdn']) assert.ok(Object.hasOwn(report.inventory, k), k);
   assert.equal(typeof report.inventory.hostname, 'string');
 });
@@ -142,20 +145,20 @@ test('a v8 room reports a failure as the box observed it, whatever its inventory
 // ------------------------------------------------------------ the Box: prewarmed, then compiled once
 test('Box: a prewarmed box compiles once, only for the spec it was opened with; a compile arriving while it starts waits for it', async () => {
   const ns = fakeBoxes({readyMs: 60, run: async req => ({fingerprint: req.fingerprint, snapshot_hash: req.snapshot_hash, mode: 'checks', passed: true, checks: []})});
-  const box = freshBox(ns), opening = box.open(SPEC);
-  const req = {fingerprint: 'f', files: {'a.js': '1;\n'}, mode: 'checks', plan: {checks: []}};
+  const box = freshBox(ns), opening = box.open(SPEC, T);
+  const req = {fingerprint: 'f', files: {'a.js': '1;\n'}, mode: 'checks', plan: {checks: []}, limits: {total_ms: T}};
   const r = await box.compile(SPEC, req);
   assert.equal(r.box.prewarmed, true);
   assert.equal((await opening).name, r.box.name);
   const {container, storage} = ns.boxes[0];
   assert.equal(container.starts, 1, 'started once, by the prewarm');
-  assert.deepEqual(container.log.filter(l => l[0] === 'exec').map(l => l[1][0]), ['true', 'timeout'], 'readiness, then the runner: nothing else ran in it');
+  assert.deepEqual(container.log.filter(l => l[0] === 'exec').map(l => l[1][0]), ['true', BOX_HOSTNAME[0]], 'readiness, then the runner: nothing else ran in it');
   assert.equal(container.destroyed, 1);
-  assert.ok(storage.alarm === null || storage.alarm >= Date.now() + BOX_LIFETIME_MS - 5000);
+  assert.ok(storage.alarm === null || storage.alarm >= Date.now() + boxTimes(T).life - 5000);
   await assert.rejects(box.compile(SPEC, req), e => e.code === 'used', 'a box compiles once');
   // A box opened for the check image never runs a browser compile.
   const other = fakeBoxes({run: async () => { throw new Error('must not run'); }}), b = freshBox(other);
-  await b.open(SPEC);
+  await b.open(SPEC, T);
   await assert.rejects(b.compile({...SPEC, image: 'browser'}, req), e => e.code === 'mismatch');
   assert.equal(other.boxes[0].container.running, false, 'and is destroyed');
   assert.equal(other.boxes[0].container.log.filter(l => l[0] === 'exec').length, 1);
@@ -171,10 +174,10 @@ test('levelBoxSpec: the image a level\'s validations need, or no box for a level
   assert.equal(levelBoxSpec(null), null);
 });
 
-const prewarmer = (ns, cap = 4, opts = {}) => {
+const prewarmer = (ns, cap = 4, {total = T, ...opts} = {}) => {
   const state = {open: 0, spans: [], waits: []};
   const slot = () => { if (state.open >= cap) return null; state.open++; return () => { state.open--; }; };
-  const p = new BoxPrewarm({namespace: ns, slot, span: (kind, name, start, end, attrs) => state.spans.push({kind, name, start, end, attrs}), waitUntil: x => state.waits.push(x), ...opts});
+  const p = new BoxPrewarm({namespace: ns, slot, totalMs: () => total, span: (kind, name, start, end, attrs) => state.spans.push({kind, name, start, end, attrs}), waitUntil: x => state.waits.push(x), ...opts});
   return {p, state, settle: () => Promise.all(state.waits.splice(0))};
 };
 test('BoxPrewarm: a matching compile takes the box; another image discards it unused; it counts a slot and never waits for one', async () => {
@@ -228,18 +231,24 @@ test('BoxPrewarm: a matching compile takes the box; another image discards it un
     assert.equal(ns.boxes.length, before);
   }
   {
-    // Nobody takes it: stopped after the idle time.
-    const {p, state, settle} = prewarmer(ns, 4, {idleMs: 40});
+    // Nobody takes it: stopped at the end of its life, three times the verification's time (boxTimes), no time of its own.
+    const {p, state, settle} = prewarmer(ns, 4, {total: 40});
     p.start(SPEC);
     const entry = ns.boxes.at(-1);
-    await sleep(120);
+    await sleep(220);
     await settle();
     assert.equal(p.spec, null);
     assert.equal(entry.container.running, false);
     assert.equal(state.open, 0);
-    assert.match(state.spans.find(s => s.name === 'prewarm_unused').attrs.reason, /no compile took it/);
+    assert.match(state.spans.find(s => s.name === 'prewarm_unused').attrs.reason, /no compile took it within its life/);
+    assert.ok(entry.storage.alarm <= Date.now(), 'the box\'s own alarm was due as well');
   }
-  assert.ok(PREWARM_IDLE_MS < BOX_LIFETIME_MS, 'the room stops it before the box\'s own alarm would');
+  {
+    // With no verification time, no prewarm.
+    const {p} = prewarmer(ns, 4, {total: null}), before = ns.boxes.length;
+    assert.equal(p.start(SPEC), false);
+    assert.equal(ns.boxes.length, before);
+  }
   // A prewarm that fails to open is that compile's failure.
   const refused = fakeBoxes({refuse: () => 'no capacity'});
   const {p, state} = prewarmer(refused);
@@ -331,9 +340,9 @@ test('the S0 probe reports the platform\'s host name, the name the runner runs u
 // longer open", six validations untested). The box reports it, and the room runs the checks in a fresh box.
 test('Box: a prewarmed box whose Container stopped before the compile says so, and compiles nothing', async () => {
   const ns = fakeBoxes({run: async () => { throw new Error('must not run'); }}), box = freshBox(ns);
-  await box.open(SPEC);
+  await box.open(SPEC, T);
   await ns.boxes[0].container.destroy();
-  assert.deepEqual(await box.compile(SPEC, {fingerprint: 'f', files: {'a.js': '1;\n'}, mode: 'checks', plan: {checks: []}}), {prewarm_closed: true});
+  assert.deepEqual(await box.compile(SPEC, {fingerprint: 'f', files: {'a.js': '1;\n'}, mode: 'checks', plan: {checks: []}, limits: {total_ms: T}}), {prewarm_closed: true});
   assert.equal(ns.boxes[0].container.log.filter(l => l[0] === 'exec').length, 1, 'only its readiness ran');
 });
 test('a room whose prewarmed box stopped before its compile runs the checks in a fresh box, and completes', async () => {

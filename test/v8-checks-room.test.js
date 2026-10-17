@@ -112,7 +112,7 @@ test('Python temperature CLI: a wrong output fails its command validations, the 
   const requests=[],executor={build:async req=>{requests.push(req);return verifyChecks({...req,snapshot_hash:await snapshotHash(req.files)},{isolation:[]});}};
   const {room,calls,drain}=v8Room({level:TEMP_LEVEL,splitWhen:t=>t.startsWith(TEMP_GOAL),executor,
     answers:{temp:[wrote('temp.py',WRONG_TEMP),wrote('temp.py',RIGHT_TEMP)],'USAGE.md':[blocks([{path:'USAGE.md',content:USAGE_MD},{path:'notes.txt',content:'draft notes\n'}])]}});
-  await room.start(TEMP_GOAL,30,{pipeline:'v8'});
+  await room.start(TEMP_GOAL,30,{pipeline:'v8',check_seconds:45});
   await drain();
   assert.equal(room.get('status'),'complete',tail(room));
   assert.ok(Object.values(statusOf(room)).every(Boolean));
@@ -138,8 +138,9 @@ test('Python temperature CLI: a wrong output fails its command validations, the 
   assert.deepEqual(first.plan.checks[0],{id:'V1',kind:'command',argv:['temp','100'],run:'temp 100',expect:{exit:0,stdout_has:['212']}});
   assert.deepEqual(first.plan.checks.map(c=>c.id),['V1','V2','V3'],'the guide\'s validations run in the Worker');
   assert.deepEqual(first.toolchains.map(r=>r.id),['python']);
-  // Owner 2026-10-17 00:25: one time only, the verification's (what the exec leaves it); no check or step has one.
-  assert.deepEqual(first.limits,{total_ms:200_000});
+  // Owner 2026-10-17 00:25: one time only, the verification's: the room's own setting (check_seconds), sent with every compile; no check or step has one.
+  assert.equal(seen.settings.check_seconds,45,'the dashboard shows the setting with its value');
+  for(const r of requests)assert.deepEqual(r.limits,{total_ms:45_000});
   // The complaints went down to the converter's worker, as the compiler observed them; the guide's worker heard none.
   const sent=room.problems("stage='complaint'").filter(p=>p.assignee);
   assert.ok(sent.length>=1);
@@ -226,7 +227,7 @@ test('a package granted to a worker is listed up its line, and the compiler\'s b
   for(const req of requests)assert.deepEqual(req.plan.install,[{toolchain:'python',packages:['flask']}]);
   assert.ok(requests.every(req=>req.toolchains.some(r=>r.id==='python'&&r.install)));
   // The boxes that compiled (a prewarmed box, opened before the grant with the internet off, was discarded unused).
-  const starts=made.boxes.boxes.filter(b=>b.container.log.some(x=>x[0]==='exec'&&x[1][0]==='timeout')).flatMap(b=>b.container.log.filter(x=>x[0]==='start'));
+  const starts=made.boxes.boxes.filter(b=>b.container.log.some(x=>x[0]==='exec'&&x[1].at(-1)==='/opt/build-runner.mjs')).flatMap(b=>b.container.log.filter(x=>x[0]==='start'));
   assert.ok(starts.length>0&&starts.every(([,o])=>o.enableInternet===true),JSON.stringify(starts));
 });
 
@@ -349,7 +350,7 @@ test('checkPlan: a command contract in Go or Ruby runs by its row\'s run_file, a
   assert.deepEqual(plan.commands,{serve:['go','run','main.go'],greet:['ruby','greet.rb']});
   assert.deepEqual(toolchains.map(r=>r.id).sort(),['go','ruby']);
   if(spawnSync('sh',['-c','command -v ruby']).status!==0)return;
-  const report=await verifyChecks({mode:'checks',fingerprint:'f',snapshot_hash:await snapshotHash(files),files:Object.fromEntries(files),toolchains,plan:{...plan,checks:plan.checks.filter(c=>c.id==='V1')}},{isolation:[]});
+  const report=await verifyChecks({mode:'checks',fingerprint:'f',snapshot_hash:await snapshotHash(files),files:Object.fromEntries(files),toolchains,plan:{...plan,checks:plan.checks.filter(c=>c.id==='V1')},limits:{total_ms:60_000}},{isolation:[]});
   assert.equal(report.checks.find(c=>c.id==='V1').passed,true,JSON.stringify(report.checks));
 });
 

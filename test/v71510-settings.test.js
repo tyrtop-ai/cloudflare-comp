@@ -169,10 +169,14 @@ test('v7.15.12: the count controls carry ROOM_LIMITS, and the room takes values 
   const bounds={};
   for(const m of html.matchAll(/<input id="([a-z-]+)" class="count" type="number" inputmode="numeric" min="(\d+)" max="(\d+)"/g)) bounds[m[1]]=[Number(m[2]),Number(m[3])];
   // v7.15.14: and pieces per split (max_children, 2–64).
-  assert.deepEqual(bounds,{'budget-value':ROOM_LIMITS.budget,'parallel-value':ROOM_LIMITS.parallel,'max-agents-value':ROOM_LIMITS.max_agents,'max-depth-value':ROOM_LIMITS.max_depth,'max-children-value':ROOM_LIMITS.max_children});
+  assert.deepEqual(bounds,{'budget-value':ROOM_LIMITS.budget,'parallel-value':ROOM_LIMITS.parallel,'max-agents-value':ROOM_LIMITS.max_agents,'max-depth-value':ROOM_LIMITS.max_depth,'max-children-value':ROOM_LIMITS.max_children,'check-seconds-value':ROOM_LIMITS.check_seconds});
   for(const m of html.matchAll(/<input id="([a-z-]+)" type="range" min="0" max="1000" step="1" value="0" data-min="(\d+)" data-max="(\d+)"/g))
     assert.deepEqual([Number(m[2]),Number(m[3])],bounds[m[1]==='parallel-limit'?'parallel-value':m[1]+'-value'],m[1]);
-  assert.deepEqual(ROOM_LIMITS,{max_agents:[2,100000],max_depth:[1,1000],parallel:[1,10000],budget:[1,10000000],max_children:[2,64]});
+  assert.deepEqual(ROOM_LIMITS,{max_agents:[2,100000],max_depth:[1,1000],parallel:[1,10000],budget:[1,10000000],max_children:[2,64],check_seconds:[1,86400]});
+  // v8: the verification's time, in seconds, is the person's setting (its default the time compiles had before it).
+  assert.equal(normalizeRoomSettings({}).check_seconds,200);
+  assert.equal(normalizeRoomSettings({check_seconds:900}).check_seconds,900);
+  assert.throws(()=>normalizeRoomSettings({check_seconds:0}),/Invalid check_seconds: expected 1–86400/);
   const top=normalizeRoomSettings({max_agents:100000,max_depth:1000,parallel:10000});
   assert.deepEqual([top.max_agents,top.max_depth,top.parallel],[100000,1000,10000]);
   assert.throws(()=>normalizeRoomSettings({parallel:10001}),/Invalid parallel: expected 1–10000/);

@@ -48,7 +48,8 @@ async function runAdapter(html, checks, deadline_ms = 30_000) {
 // Owner 2026-10-16 20:38 (no "runtime fixing it via matching"): a selector
 // runs as written, so input[type=text] is not widened to an input with no
 // type. A step that waits for what never comes waits out the verification's
-// time (infrastructure), so each runs alone with a short one.
+// time, then fails as the page's (no infrastructure: owner 2026-10-16 05:39,
+// the worker gets the complaint), so each runs alone with a short one.
 test('M4 + M5: in Chromium, a selector runs as written (input[type=text] does not match an input with no type); hidden elements are not matched; text is matched as written', {skip: browserReady || false}, async () => {
   const html = '<!doctype html><html><head><style>.done{display:none}</style></head><body><h1>Todos archive</h1><input placeholder="Task"><button>Add</button>'
     + '<ul id="list"><li class="done">Buy milk</li><li>Feed cat</li></ul><div hidden><input type="text" id="tmpl"></div><svg viewBox="0 0 10 10" width="10" height="10"></svg></body></html>';
@@ -61,11 +62,11 @@ test('M4 + M5: in Chromium, a selector runs as written (input[type=text] does no
     runAdapter(html, [{id: 'hiddenInput', steps: [{goto: '/'}, {expect_element: {selector: 'input#tmpl'}}]}], 10_000),
     runAdapter(html, [{id: 'case', steps: [{goto: '/'}, {expect_element: {selector: 'h1', text: 'TODOS'}}]}], 10_000)]);
   assert.equal(r.asWritten.passed, true, JSON.stringify(r.asWritten));
-  assert.deepEqual([hidden.hiddenInput.passed, hidden.hiddenInput.infrastructure], [false, true]);
+  assert.deepEqual([hidden.hiddenInput.passed, hidden.hiddenInput.miss, hidden.hiddenInput.infrastructure], [false, true, undefined]);
   assert.match(hidden.hiddenInput.detail, /input\[type=text\]#tmpl \(hidden\)/);
   assert.equal(r.hiddenItem.passed, true, JSON.stringify(r.hiddenItem));
   assert.equal(r.shownItem.passed, true);
-  assert.deepEqual([cased.case.passed, cased.case.infrastructure], [false, true], 'the text as written, its case too');
+  assert.deepEqual([cased.case.passed, cased.case.infrastructure], [false, undefined], 'the text as written, its case too');
   assert.equal(r.svg.passed, true, JSON.stringify(r.svg));
 });
 
