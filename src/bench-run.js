@@ -191,12 +191,12 @@ export class BenchRun extends DurableObject {
     this.finish({...this.row(t.idx)}, g, s, now);
   }
   // The grader on the bundle the room ships, as its export holds it (the
-  // runtime's notes under .recursive/ left out).
+  // runtime's own notes, marked runtime, left out).
   async grade(t) {
     let app;
     try { app = await this.env.ROOMS.getByName(t.room).appFiles(); } catch (e) { return {infrastructure: clip(`the room's files could not be read: ${e?.message || e}`)}; }
     if (!app || app.error) return {passed: false, detail: `the room shipped no files: ${app?.error || 'no answer'}`};
-    const files = new Map((app.files || []).filter(f => typeof f?.content === 'string' && !f.path.startsWith('.recursive/')).map(f => [f.path, f.content]));
+    const files = new Map((app.files || []).filter(f => typeof f?.content === 'string' && !f.runtime).map(f => [f.path, f.content]));
     return gradeBundle(this.env, parse(t.grader, null), files);
   }
   // The counts of the current attempt, on top of the stopped attempts' (prior).

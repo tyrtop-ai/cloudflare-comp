@@ -1,8 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {gzipSync} from 'node:zlib';
-import {randomBytes} from 'node:crypto';
-import {byteLength, fetchGithubRepo, parseRepoUrl, STORE_ROW_BYTES} from '../src/base.js';
+import {byteLength, fetchGithubRepo, parseRepoUrl, REPO_LIMITS, STORE_ROW_BYTES} from '../src/base.js';
 
 const enc = new TextEncoder();
 const SHA = '0123456789abcdef0123456789abcdef01234567';
@@ -165,11 +164,23 @@ test('refusals: bad inputs never reach the network; redirects off GitHub and mis
   assert.match(missing.error, /repo lookup answered 404/);
   const html = fakeFetch({[TAR('main')]: () => new Response('<html>', {headers: {'content-type': 'text/html'}})});
   assert.match((await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: html})).error, /content type text\/html/);
-  const hang = fakeFetch({[TAR('main')]: () => new Promise(() => {})});
-  assert.match((await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: hang, timeoutMs: 50})).error, /timeout/);
 });
 
 // --- security review fixes (S8a review) ---------------------------------------------
+
+test('the repo is read whole with no deadline: a slow archive is read to its end, and a long path is kept', async () => {
+  assert.equal('timeoutMs' in REPO_LIMITS, false);
+  const long = 'd/'.repeat(250) + 'deep.txt';
+  const tgz = new Uint8Array(gzipSync(rawTar([entry(`${ROOT}/a.txt`, 'aaa'), ...pax('x', [['path', `${ROOT}/${long}`]], 'PaxHeader'), entry('placeholder', 'deep')])));
+  // Each 64-byte piece arrives 2 ms after the last, far past a caller's timeoutMs, which is not read.
+  const slow = () => new Response(new ReadableStream({
+    async start(c) { for (let i = 0; i < tgz.length; i += 64) { await new Promise(r => setTimeout(r, 2)); c.enqueue(tgz.subarray(i, i + 64)); } c.close(); }
+  }), {headers: {'content-type': 'application/x-gzip'}});
+  const r = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: fakeFetch({[TAR('main')]: slow}), timeoutMs: 5});
+  assert.equal(r.error, null);
+  assert.equal(r.truncated, false);
+  assert.deepEqual(Object.keys(r.files), ['a.txt', long]);
+});
 
 const ROOT = 'widget-' + SHA.slice(0, 7);
 const cat = parts => { const n = parts.reduce((a, p) => a + p.length, 0), o = new Uint8Array(n); let i = 0; for (const p of parts) { o.set(p, i); i += p.length; } return o; };
@@ -179,7 +190,7 @@ const serveBytes = (bytes, {stallAfter = null} = {}) => () => new Response(new R
   start(c) { c.enqueue(stallAfter == null ? bytes : bytes.subarray(0, stallAfter)); if (stallAfter == null) c.close(); }
 }), {headers: {'content-type': 'application/x-gzip'}});
 
-test('incomplete archives: an early end or a timeout keeps what was read, with truncated and an error', async () => {
+test('incomplete archives: an early end keeps what was read, with truncated and an error', async () => {
   const full = rawTar([entry(`${ROOT}/a.txt`, 'aaa'), entry(`${ROOT}/b.txt`, 'bbb'), entry(`${ROOT}/c.txt`, 'c'.repeat(5000))], {end: false});
   const cut = new Uint8Array(gzipSync(full.subarray(0, full.length - 3000)));
   const r = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: fakeFetch({[TAR('main')]: gz(cut)})});
@@ -190,22 +201,6 @@ test('incomplete archives: an early end or a timeout keeps what was read, with t
   const r2 = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: fakeFetch({[TAR('main')]: gz(noEnd)})});
   assert.match(r2.error, /archive ended early/);
   assert.equal(r2.truncated, true);
-  // The body stalls after a.txt and b.txt arrived.
-  const noise = new Uint8Array(randomBytes(200 * 1024));
-  const big = new Uint8Array(gzipSync(rawTar([entry(`${ROOT}/a.txt`, 'aaa'), entry(`${ROOT}/b.txt`, 'bbb'), entry(`${ROOT}/noise.dat`, noise)])));
-  const t0 = Date.now();
-  const r3 = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: fakeFetch({[TAR('main')]: serveBytes(big, {stallAfter: 100 * 1024})}), timeoutMs: 150});
-  assert.match(r3.error, /timeout/);
-  assert.equal(r3.truncated, true);
-  assert.deepEqual(Object.keys(r3.files), ['a.txt', 'b.txt']);
-  assert.ok(Date.now() - t0 < 2000);
-  // The whole small archive arrives but the stream never closes: everything
-  // decodable is still handed over before the wait.
-  const small = new Uint8Array(gzipSync(rawTar([entry(`${ROOT}/a.txt`, 'aaa'), entry(`${ROOT}/b.txt`, 'bbb')], {end: false})));
-  const r5 = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: fakeFetch({[TAR('main')]: serveBytes(small, {stallAfter: small.length})}), timeoutMs: 150});
-  assert.deepEqual(Object.keys(r5.files), ['a.txt', 'b.txt']);
-  assert.equal(r5.truncated, true);
-  assert.match(r5.error, /timeout/);
   // A corrupt header checksum stops the read.
   const bad = rawTar([entry(`${ROOT}/a.txt`, 'aaa'), entry(`${ROOT}/b.txt`, 'bbb')]);
   bad[512 * 3 + 148] ^= 0x01; // checksum field of the a.txt header (after the pax and root blocks)

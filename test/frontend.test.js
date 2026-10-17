@@ -654,7 +654,7 @@ test('v8 S8b: the Sources panel shows each link\'s title, host, size, and whethe
 
 test('v8 S8b review: the Sources panel marks an unverified previous result and counts the files carried untouched',()=>{
   const elements=renderWithPage(true,{settings:{pipeline:'v8'},sources:[],
-    base:{kind:'room',source:'room room-aaaa-0001',ref:null,resolved_sha:null,room:'room-aaaa-0001',files:3,bytes:40,skipped_count:0,truncated:false,passthrough:2,not_carried:1,passed:false,unverified:true}});
+    base:{kind:'room',source:'room room-aaaa-0001',ref:null,resolved_sha:null,room:'room-aaaa-0001',files:3,bytes:40,skipped_count:0,truncated:false,passthrough:2,passed:false,unverified:true}});
   const panel=elements.get('sources').innerHTML;
   assert.match(panel,/· 2 carried untouched/);
   assert.match(panel,/<span class="req-chip fail" title="base_unverified: that result had not passed its checks">unverified<\/span>/);

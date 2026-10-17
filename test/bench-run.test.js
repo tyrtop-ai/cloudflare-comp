@@ -52,7 +52,7 @@ function fakeRooms() {
         },
         stop: async () => { r.stopped++; log.push(['stop', name]); if (r.state?.status === 'running') { r.state = {...r.state, status: 'paused', busy: false}; live--; } return {status: 'stopping'}; },
         benchSummary: async () => { if (r.broken) throw new Error('room unreachable'); return r.state; },
-        appFiles: async () => r.solution === null ? {status: 409, error: 'No application yet'} : {kind: 'levels', files: [{path: 'solution.py', content: r.solution}, {path: '.recursive/RUN.md', content: 'notes'}]},
+        appFiles: async () => r.solution === null ? {status: 409, error: 'No application yet'} : {kind: 'levels', files: [{path: 'solution.py', content: r.solution}, {path: '.recursive/RUN.md', content: 'notes', runtime: true}]},
         graderComplaint: async (...args) => {
           if (r.left === 0) return {error: 'The room\'s turn budget is spent.'};
           r.complaints.push(args); log.push(['complaint', name]); r.state = {...r.state, status: 'running', busy: true}; live++; return {status: 'running'};

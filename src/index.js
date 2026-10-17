@@ -1214,7 +1214,7 @@ export class ControlRoom extends DurableObject {
     return {
       sources: sources.map(({summary,fetched_at:_,...r})=>({...r,summary:summary?.summary?clip(summary.summary,400):'',parts:summary?.outline?.length||0})),
       base: base?{kind:base.kind,source:base.source,ref:base.ref,resolved_sha:base.resolved_sha,room:base.room||null,files:base.files,bytes:base.bytes,skipped_count:base.skipped_count,truncated:!!base.truncated,
-        passthrough:base.passthrough||0,not_carried:(base.not_carried||[]).length,...(base.kind==='room'?{passed:!!base.passed,unverified:!!base.unverified}:{})}:null
+        passthrough:base.passthrough||0,...(base.kind==='room'?{passed:!!base.passed,unverified:!!base.unverified}:{})}:null
     };
   }
   // Export manifests contain only aliases, never hidden child routing IDs.
@@ -1445,9 +1445,11 @@ export class ControlRoom extends DurableObject {
     const levels=[];
     for(const f of this.levelFiles())levels.push({...f,content:await this.indexedContent(f.manager,LEVEL_FILE)});
     app.levels=levels.map(({content:_,...f})=>f);
-    // The runtime's notes go where the project holds no file: a file the agents placed there is the one that ships.
+    // The runtime's notes are marked as its own (runtime: true), so a reader of the export (a later room's base,
+    // an export onto the base, the bench's grading) tells them from the project's files by the mark, never by a
+    // path. They go where the project holds no file: a project file at one of their paths is the one that ships.
     const notes=[{path:'.recursive/RUN.md',content:runNotes(app,spec,status)+baseNotes(meta,pass)},{path:'.recursive/validations.json',content:JSON.stringify({contracts:spec.contracts,validations:spec.validations},null,2)+'\n'},
-      ...levels.map(f=>({path:f.export_path,content:f.content}))].filter(f=>!files.has(f.path));
+      ...levels.map(f=>({path:f.export_path,content:f.content}))].filter(f=>!files.has(f.path)).map(f=>({...f,runtime:true}));
     const carried=pass.map(r=>({path:r.path,content_base64:toBase64(new Uint8Array(r.bytes)),mode:gitMode(r.mode),passthrough:true,reason:r.reason}));
     return {...app,files:[...notes,...own,...carried]};
   }
@@ -7828,7 +7830,7 @@ export class ControlRoom extends DurableObject {
     this.set('status','running'); this.set('step','0'); this.save('queue',[]); this.save('failures',{});
     this.busy=true;
     this.event('system','start',clip(goal,1300));
-    if(loaded)this.event('system','base_loaded',clip(`Starts from ${loaded.meta.source}${loaded.meta.ref?` at ${loaded.meta.ref}`:''}${loaded.meta.resolved_sha?` (${loaded.meta.resolved_sha.slice(0,12)})`:''}: ${loaded.meta.files} file(s), ${loaded.meta.bytes} bytes${loaded.meta.skipped_count?`; ${loaded.meta.skipped_count} skipped`:''}${loaded.meta.fetch_skipped_count?`; ${loaded.meta.fetch_skipped_count} not read from the repo`:''}${loaded.meta.passthrough?`; ${loaded.meta.passthrough} carried untouched (not built)`:''}${loaded.meta.not_carried?.length?`; ${loaded.meta.not_carried.length} not carried (the runtime's own paths)`:''}.${loaded.meta.kind==='room'?(loaded.meta.unverified?' base_unverified: that result had not passed its checks.':' That result passed its checks.'):''}${this.partsRoot()!==PARTS_ROOT?` The pieces' own files go under ${this.partsRoot()}/, since the project has a components/ of its own.`:''} A worker changes an existing file its contracts place once the person grants it.`,900));
+    if(loaded)this.event('system','base_loaded',clip(`Starts from ${loaded.meta.source}${loaded.meta.ref?` at ${loaded.meta.ref}`:''}${loaded.meta.resolved_sha?` (${loaded.meta.resolved_sha.slice(0,12)})`:''}: ${loaded.meta.files} file(s), ${loaded.meta.bytes} bytes${loaded.meta.skipped_count?`; ${loaded.meta.skipped_count} skipped`:''}${loaded.meta.fetch_skipped_count?`; ${loaded.meta.fetch_skipped_count} not read from the repo`:''}${loaded.meta.passthrough?`; ${loaded.meta.passthrough} carried untouched (not built)`:''}.${loaded.meta.kind==='room'?(loaded.meta.unverified?' base_unverified: that result had not passed its checks.':' That result passed its checks.'):''}${this.partsRoot()!==PARTS_ROOT?` The pieces' own files go under ${this.partsRoot()}/, since the project has a components/ of its own.`:''} A worker changes an existing file its contracts place once the person grants it.`,900));
     this.ctx.waitUntil((async()=>{
       // v7.15: Root promises start, the only runtime-written promise (live rooms).
       // v8: the room creates the manager the prompt goes to.

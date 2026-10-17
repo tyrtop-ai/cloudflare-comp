@@ -15,7 +15,6 @@ import {FetchRefused, concatBytes, fetchPolicy, guardedFetch, inputCapFor, plain
 export const STORE_ROW_BYTES = 2_000_000 - 16 * 1024;
 export const REPO_LIMITS = Object.freeze({
   maxFileBytes: STORE_ROW_BYTES,
-  timeoutMs: 30_000,
   maxSkipped: 200               // skipped entries listed; the rest are counted
 });
 // Only these two hosts are ever contacted, whatever FETCH_ALLOW says.
@@ -41,7 +40,7 @@ const validRef = r => typeof r === 'string' && /^[A-Za-z0-9._/-]{1,200}$/.test(r
 const validDir = d => typeof d === 'string' && d.length <= 200 && !d.split('/').some(s => !s || s === '.' || s === '..') &&
   /^[A-Za-z0-9_.@+/-]+$/.test(d);
 // Repo-relative paths only: no absolute paths, no '..', no control characters.
-const safePath = p => p && p.length <= 400 && !p.startsWith('/') && !/[\\\x00-\x1f\x7f]/.test(p) &&
+const safePath = p => p && !p.startsWith('/') && !/[\\\x00-\x1f\x7f]/.test(p) &&
   !p.split('/').some(s => !s || s === '.' || s === '..');
 
 // --- minimal streaming tar reader ------------------------------------------------
@@ -153,7 +152,8 @@ async function readTar(src, onEntry, meta = {sha: null}) {
 // Result: {source, owner, name, ref, resolved_sha, dir, files: {path: text},
 // count, bytes, skipped: [{path, reason}], skipped_count, truncated, error}.
 // `files` has no prototype, so any path (even `__proto__`) is a plain key.
-// A timeout or broken archive after reading began sets truncated and error.
+// The repo is read whole, with no deadline: a broken archive after reading
+// began sets truncated and error.
 export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetch, redact = t => t, ...limits} = {}) {
   const L = {...REPO_LIMITS, ...limits};
   const id = parseRepoUrl(repo);
@@ -164,14 +164,8 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
   if (ref != null && ref !== '' && !validRef(ref)) return {...out, error: 'invalid ref'};
   if (dir != null && dir !== '' && !validDir(String(dir).replace(/\/+$/, ''))) return {...out, error: 'invalid dir'};
   const sub = dir ? String(dir).replace(/\/+$/, '') + '/' : '';
-  const policy = fetchPolicy({...GITHUB_POLICY, timeoutMs: L.timeoutMs});
-  const controller = new AbortController();
-  let fail;
-  const expired = new Promise((_, rej) => { fail = rej; });
-  expired.catch(() => {});
-  const timer = setTimeout(() => { controller.abort(); fail(new FetchRefused('timeout')); }, L.timeoutMs);
-  const race = p => Promise.race([p, expired]);
-  const get = (url, accept) => guardedFetch(url, {fetch, policy, accept, race, signal: controller.signal});
+  const policy = fetchPolicy(GITHUB_POLICY);
+  const get = (url, accept) => guardedFetch(url, {fetch, policy, accept});
   const recorded = new Set(), meta = {sha: null}, sizes = new Map();
   let root = null;
   const skip = (path, reason) => {
@@ -188,7 +182,7 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
         if (response.status === 403 || response.status === 429) throw new FetchRefused(`repo lookup answered ${response.status}: GitHub's API is rate limited for requests without a token; give a branch, tag or commit (ref) to start from, which needs no lookup, or try later`);
         throw new FetchRefused(`repo lookup answered ${response.status}`);
       }
-      const {bytes} = await readCapped(await plainBody(response.body, {race, inputCap: inputCapFor(256 * 1024)}), 256 * 1024, race);
+      const {bytes} = await readCapped(await plainBody(response.body, {inputCap: inputCapFor(256 * 1024)}), 256 * 1024);
       const branch = JSON.parse(new TextDecoder().decode(bytes))?.default_branch;
       if (!validRef(branch)) throw new FetchRefused('the repo has no usable default branch');
       out.ref = branch;
@@ -206,7 +200,7 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
       response.body?.cancel?.().catch?.(() => {});
       throw new FetchRefused(`archive content type ${type || '(none)'} is not read`);
     }
-    src = byteSource(await plainChunks(response.body, {race}));
+    src = byteSource(await plainChunks(response.body));
     // ignoreBOM: a byte order mark is part of the file and survives (S8b review).
     const decoder = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true});
     // A file whose content is not text (a NUL byte, or not UTF-8), carried as bytes.
@@ -248,7 +242,6 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
     out.error = clip(redact(redactText(e instanceof FetchRefused ? `base_refused: ${e.message}` : `base fetch failed: ${e?.message || e}`)));
   } finally {
     out.resolved_sha ||= meta.sha;
-    clearTimeout(timer);
     src?.cancel();
   }
   return out;
