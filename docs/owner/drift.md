@@ -66,12 +66,6 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: Remove the runtime's path collision rule. The builder's file stays in its world, and the overlap is left to the builder and the compiler, rather than the runtime silently deciding which of an agent's files exist.
 - Status: partly fixed (406e953: the builder's file wins at a delivered path; its world keeps every file it wrote). At an existing file's path the existing file still ships, since only the person's grant (base_confirm) changes one: waiting on the owner (does a builder file at an existing path go through base_confirm?).
 
-### R4-compiler/chrono-2: The runtime guesses which module a call check loads by scanning every bundle file for the function name, instead of using the served contract's path
-- extra, `src/checks.js:32`
-- Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
-- Required: Run the call check against the file the splitter declared for the function contract it serves (the contract's path), as written. Don't search the bundle by name.
-- Status: in progress: the owner's 2026-10-17 answer ("Those interfaces shouldn't be mutating the data ever", and no runtime matching): a function contract names its file and the name scan goes. Earlier: partly fixed (6514de0: callModule runs against the path the function contract declares). A function contract the splitter gave no path (the splitter's interface allows it) still finds its file by name, marked pending the owner. Owner question: must a function a call check serves declare a path?
-
 ### R4-compiler/code-3: Toolchain row comment still says package-fetching commands are refused while packages is 'none'
 - record, `src/toolchains.js:37`
 - Owner (2026-10-15 22:12): why are packages not allowed now?
@@ -150,12 +144,6 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: Follow a link's redirects until it reaches its page, rechecking each hop against the allowlist, with no runtime-picked number of hops deciding that a linked page does not exist. Update the test that pins the count.
 - Status: The owner answered on 2026-10-17 (group 3: "see 2"); this session's permission check still refused the edit in Auto mode, so it waits for the owner to switch the session to Accept edits. Earlier: not done: this session's permission check refused removing the fetcher's 3-redirect count as a security weakening, so it waits for the owner's decision (without it a redirect loop is bounded only by Cloudflare's subrequest limit).
 
-### R8-edges/code-2: A base repo's symbolic links are dropped before any agent sees them ('link' skip in fetchGithubRepo)
-- extra, `src/base.js:224`
-- Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
-- Required: Keep link entries in the agents' world, as the repo holds them (for example carried untouched with their target, like other non-text entries), rather than skipping them. The runtime should not decide by entry type which of the project's files exist.
-- Status: in progress: the owner's 2026-10-17 answer ("Those interfaces shouldn't be mutating the data ever"): symlinks are carried as links. Earlier: waiting on the owner: keeping a base repo's symbolic link as it is needs a link type the store, the export and the box do not have (git mode 120000, a link kind in the box); it is still skipped as 'link'.
-
 ### R8-edges/record-2: The fetcher drops the owner's own FETCH_ALLOW entries by Claude-written suffix lists (about 100 'public suffixes', and blocked names such as workers.dev)
 - extra, `src/fetcher.js:63`
 - Owner (2026-10-16 05:39): text heuristics - I don't understand what this is for. Like architecturally, this is protecting from someting that shouldn't happen. || 2026-10-15 05:16: "2. I want to be able to point this thing at links and benchmarks, like AI benchmarks"
@@ -175,6 +163,18 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Status: waiting on the owner: this session's permission check refused removing fetchSource's content-type refusal as a security weakening. The owner's 2026-10-17 answer ("Those interfaces shouldn't be mutating the data ever") covers it; the check still refused it in Auto mode.
 
 ## Fixed, awaiting recheck
+
+### R4-compiler/chrono-2: The runtime guesses which module a call check loads by scanning every bundle file for the function name, instead of using the served contract's path
+- extra, `src/checks.js:32`
+- Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
+- Required: Run the call check against the file the splitter declared for the function contract it serves (the contract's path), as written. Don't search the bundle by name.
+- Fixed in: 59c00a9: a function contract names its file (contract() refuses one with no path, as for a command); callModule returns the declared path only, and the name scan is gone.
+
+### R8-edges/code-2: A base repo's symbolic links are dropped before any agent sees them ('link' skip in fetchGithubRepo)
+- extra, `src/base.js:224`
+- Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
+- Required: Keep link entries in the agents' world, as the repo holds them (for example carried untouched with their target, like other non-text entries), rather than skipping them. The runtime should not decide by entry type which of the project's files exist.
+- Fixed in: 3459cdf, 01531b8: a base repo's symbolic links are carried with their target (mode 120000): the agents see them, the box writes them as links, the export writes mode 120000.
 
 ### R9-room/record-1: A level-file comment says the manager routes without reading its level file, but every routing choice is built from it
 - record, `src/index.js:8276`
