@@ -110,7 +110,7 @@ const validationState=(v,status)=>{const st=status?.[v.id];return typeof st?.pas
 // step with its manager, attempt and outcome.
 function levelsMarkup(s) {
   const list=s.validations||[];
-  if(!list.length)return '<p class="empty">A v8 room\'s manager states its level first: its contracts, and the validations that check each.</p>';
+  if(!list.length)return '<p class="empty">A v8 room\'s manager\'s splitter states its level first: its contracts, and the validations that check each. The manager owns its children\'s interfaces and routes.</p>';
   const row=v=>{const state=validationState(v,s.validation_status),detail=s.validation_status?.[v.id]?.detail;
     return `<li><span class="req-chip ${state}"${detail?` title="${esc(detail)}"`:''}>${state}</span> <b class="mono">${esc(v.id)}</b> ${esc(v.check)} <span class="faint">· serves ${esc((v.serves||[]).join(', '))}${v.held?` · held by ${esc(v.held)}`:''}</span></li>`;};
   const step=x=>`<li><span class="mono">${esc(x.id)}</span> <span class="faint">· ${esc(x.manager)} · ${esc(x.kind)} attempt ${esc(x.attempt)} · ${esc(x.ended_at?x.outcome||'ended':'running')}</span></li>`;

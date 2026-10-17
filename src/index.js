@@ -8256,9 +8256,14 @@ export class ControlRoom extends DurableObject {
   }
   // ---------- the level file ----------
   // A manager's level is a file in its own repository (LEVEL_FILE): the
-  // design its splitter answered, as the manager admitted it, with every
-  // change to the level since (an extension, a rebuild, an amendment, an
-  // archive). Its form:
+  // design its splitter answered, as the manager admitted it. Its writers
+  // are three: an admission (admitLevel: the split, or a job's rebuild or
+  // extension, whose children and validations are added, and whose
+  // contracts replace the file's contracts of the same name), a validation
+  // of a contract the level above already had joining serves (serveBelow,
+  // on every level file below that lists that contract), and an archive
+  // (the child's entry moves to archived). An ask never writes it: it is
+  // answered, granted or passed up with ask_parent. Its form:
   //   {format, manager,
   //    contracts: [the level's contracts, each with the ids of the validations that serve it],
   //    children: [{id, role, label, prompt, delivers: [contract names], calls: [names]}],
@@ -8330,8 +8335,8 @@ export class ControlRoom extends DurableObject {
   // A row's assignment as it stands: what its entry gives (designOf), its
   // prompt followed by each change routed to it since (its revisions,
   // revise), and the names it may call, its entry's and each contract an
-  // answered ask gave it (its answers, answerAsk). Its manager's level file
-  // stays as its splitter wrote it.
+  // answered ask gave it (its answers, answerAsk). Neither a change nor an
+  // answer is written into its manager's level file.
   assignmentOf(id) {
     const design=this.designOf(id),answered=this.read(`fn_answers:${id}`,[]).map(a=>a.call).filter(Boolean);
     return {...design,prompt:[design.prompt,...this.read(`revisions:${id}`,[])].join('\n\n'),calls:[...new Set([...design.calls,...answered])]};
@@ -8489,8 +8494,10 @@ export class ControlRoom extends DurableObject {
   // the same step, are the validations' rows written and its own contracts
   // refined, and what the admission still owes is recorded on its job
   // (level_job:<id>.admitted) for finishLevel. A failed commit leaves the
-  // level as it was. A job's level adds to the file, which stays as it was
-  // otherwise; a job for an ask answers its asker with the contract it named.
+  // level as it was. A job's level (a rebuild or an extension) adds its
+  // children and validations to the file, and its contracts replace the
+  // file's contracts of the same name; a validation of a contract the level
+  // already had joins that contract's serves, here and below (serveBelow).
   async admitLevel(id, level, {why='', job=null}={}) {
     const n=this.node(id),given=this.assignmentOf(id),own=job?job.own||[]:given.contracts,prior=this.levelDesign(id);
     // What its level file does not list never landed: a reservation of children, validations and their ids are released, and this admission takes their place.
