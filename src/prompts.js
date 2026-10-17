@@ -190,7 +190,9 @@ export const MESSAGES = Object.freeze({
   own_contract: ({contract}) => `${contract} is in your own prompt: write it in your files under exactly that name.`,
   // ------------------------------------------------------------ the broker
   available_note: () => 'available lists what you can ask for by name with ask: what you deliver, the names you may call, your installed packages, existing files open to you and parts of linked pages. Each answer is labelled with where it comes from.',
-  available_package: ({provides}) => provides ? `an installed package for ${provides}` : 'an installed package',
+  available_package: ({provides, observed}) => observed ? `a package the box did not install${provides ? `, for ${provides}` : ''}: ${observed}` : provides ? `an installed package for ${provides}` : 'an installed package',
+  // What the box observed when it did not install a package (its words), for whoever holds it.
+  package_not_installed: ({names, observed}) => `The box did not install ${names}: ${observed}`,
   package_yours: ({names, many}) => `Your packages hold ${names}: use ${it(many)} as ${many ? 'they are' : 'it is'}.`,
   package_granted: ({names, many}) => `${names} ${many ? 'are' : 'is'} now in your packages, and the box installs ${many ? 'them' : 'it'}: use ${it(many)}.`,
   // What a piece's ask for a package its split named says (spawn): the name alone.

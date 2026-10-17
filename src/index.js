@@ -745,12 +745,13 @@ export class ControlRoom extends DurableObject {
   // Every program the box has: the rows' executables and every executable on its PATH, as its inventory lists them.
   boxPrograms() { return [...new Set([...this.installedToolchains().flatMap(r=>r.executables||[]),...(this.read('toolchain_inventory',null)?.executables||[])])]; }
   // What a row's box installs before its checks: the packages its row lists
-  // beyond the image's and the language's standard library, per language.
+  // beyond the image's and the language's standard library, per language
+  // (one with no language goes as such: the box says it has no install for it).
   packageInstalls(id) {
     const rows=this.installedToolchains(),image=new Set(this.installedSet().map(p=>p.name)),by=new Map();
     for(const p of this.packagesOf(id)) {
-      if(image.has(p.name)||!p.language||stdlibRow(p.name,rows.filter(r=>r.id===p.language)))continue;
-      by.set(p.language,[...(by.get(p.language)||[]),p.name]);
+      if(image.has(p.name)||p.language&&stdlibRow(p.name,rows.filter(r=>r.id===p.language)))continue;
+      by.set(p.language||'',[...(by.get(p.language||'')||[]),p.name]);
     }
     return [...by].map(([toolchain,packages])=>({toolchain,packages}));
   }
@@ -759,7 +760,32 @@ export class ControlRoom extends DurableObject {
   // v8 live 4 review (L6): a row's packages as a prompt shows them: those of the levels' code languages, once a level names them.
   packageView(id) {
     const langs=contractLanguages(this.treeContracts()),all=this.packagesOf(id);
-    return langs.length?all.filter(p=>!p.language||langs.includes(p.language)):all;
+    return (langs.length?all.filter(p=>!p.language||langs.includes(p.language)):all).map(p=>{const seen=this.installSeen(p);return seen&&!seen.passed?{...p,not_installed:clip(seen.detail,400)}:p;});
+  }
+  // v8 (owner, 2026-10-15 22:12, "why are packages not allowed now?"): what
+  // the box last observed installing package p, in its language: {passed,
+  // detail, ts}, or null before a box tried it.
+  installSeen(p) { return this.read('package_installs',{})[`${p?.language||''}|${p?.name}`]||null; }
+  // A package as a manager's options and a worker's answers name it, with
+  // what the box observed when it did not install it.
+  seenLine(p) { const seen=this.installSeen(p);return seen&&!seen.passed?MESSAGES.package_not_installed({names:packageLine(p),observed:clip(seen.detail,400)}):packageLine(p); }
+  // The box's report of the packages it installed (report.installed): each
+  // recorded by language and name (installSeen), and the room's record says
+  // what it installed and what it did not. The entries it did not install,
+  // each as what the compiler observed: an item routed as the others are,
+  // from the level whose box it was, down to the rows that list them.
+  recordInstalls(id, installed) {
+    const list=(Array.isArray(installed)?installed:[]).filter(x=>Array.isArray(x?.packages)&&x.packages.length);
+    if(!list.length)return [];
+    const seen=this.read('package_installs',{}),ts=Date.now(),lang=x=>(toolchainById(x.toolchain)||COMPILE_ROWS.find(r=>r.id===x.toolchain))?.name||x.toolchain||'no language';
+    for(const x of list)for(const n of x.packages)seen[`${x.toolchain||''}|${n}`]={passed:!!x.passed,detail:x.passed?'':String(x.detail||''),ts};
+    this.save('package_installs',seen);
+    const ok=list.filter(x=>x.passed),bad=list.filter(x=>!x.passed);
+    this.event(id,bad.length?'packages_not_installed':'packages_installed',clip([...ok.map(x=>`The box installed ${x.packages.join(', ')} (${lang(x)}).`),...bad.map(x=>`The box did not install ${x.packages.join(', ')} (${lang(x)}): ${x.detail||'no detail'}`)].join(' '),900));
+    const holders=x=>this.subtree(id).filter(w=>this.isWorker(this.node(w))&&this.packagesOf(w).some(p=>x.packages.includes(p.name)&&(p.language||'')===(x.toolchain||'')));
+    return bad.map(x=>({kind:'install',path:'',sites:[],parties:holders(x).map(w=>({path:'',owner:w,owner_path:'',digest:'',role:'holder'})),
+      detail:MESSAGES.package_not_installed({names:`${x.packages.join(', ')} (${lang(x)})`,observed:String(x.detail||'no detail')}),
+      facts:{stage:'install',toolchain:x.toolchain||'',packages:[...x.packages],failure:String(x.detail||'').split('\n')[0]}}));
   }
   // v8: a room held at a stop only Continue moves on: what an agent sent up
   // its line reached the room (escalate: checks_failed,
@@ -8693,10 +8719,11 @@ export class ControlRoom extends DurableObject {
       // The name asked for, which m's row does not list, granted new in a
       // language: one option per code language the box compiles (owner,
       // 2026-10-15 22:12: "why are packages not allowed now?"; every manager
-      // has it, whatever its depth, 22:22); the box installs it.
+      // has it, whatever its depth, 22:22): each language whose row says how
+      // the box installs its packages (install); the box installs it.
       const [named]=normalizePackages(item.name?[item.name]:[]);
       if(named&&!mine.some(p=>p.name===named.name)&&!held.has(named.name))
-        for(const row of this.compileRows().filter(r=>r.id!=='text'))grants.push({package:{name:named.name,language:row.id},fresh:row.name});
+        for(const row of this.compileRows().filter(r=>r.install))grants.push({package:{name:named.name,language:row.id},fresh:row.name});
       grants.forEach((g,j)=>out.push({fn:'grant',...g,key:`grant_${j}`,question:clefText('grant',{j}),call:`grant(${g.package.name}${g.fresh?`, ${g.fresh}`:''})`}));
       out.push({fn:'ask_parent',key:'ask_parent',question:CLEF.ask_parent,call:'ask_parent(need)'});
       return out;
@@ -8724,11 +8751,11 @@ export class ControlRoom extends DurableObject {
     const unchanged=c=>[...new Set(before.filter(r=>this.within(r.assignee,c.id)).map(r=>r.detail))];
     const offered=options.filter(o=>o.fn==='answer'),granted=options.filter(o=>o.fn==='grant');
     const state={item:item.kind==='ask'?{kind:'ask',need:item.need,expected_name:item.name||''}:{kind:item.kind,text:item.text,
-        ...(item.kind==='complaint'?{concerns:{contracts:(item.serves||[]).map(named),files:[...new Set((item.parties||[]).map(x=>x.owner_path||x.path).filter(Boolean))]}}:{})},
+        ...(item.kind==='complaint'?{concerns:{contracts:(item.serves||[]).map(named),files:[...new Set((item.parties||[]).map(x=>x.owner_path||x.path).filter(Boolean))],...(item.packages?.length?{packages:item.packages}:{})}}:{})},
       assignment:view.assignment,my_contracts:lines(view.mine),
-      children:view.children.map((c,i)=>({slot:i,label:c.label,contracts:lines(c.contracts),...(item.kind==='complaint'?{wrote:wrote(c),...(unchanged(c).length?{handed_before_and_unchanged:unchanged(c)}:{})}:{})})),
+      children:view.children.map((c,i)=>({slot:i,label:c.label,contracts:lines(c.contracts),...(item.packages?.length?{packages:this.packagesOf(c.id).map(p=>p.name).filter(n=>item.packages.includes(n))}:{}),...(item.kind==='complaint'?{wrote:wrote(c),...(unchanged(c).length?{handed_before_and_unchanged:unchanged(c)}:{})}:{})})),
       ...(offered.length?{contracts_offered:offered.map((o,j)=>({slot:j,contract:contractLine(o.contract)}))}:{}),
-      ...(granted.length?{packages_offered:granted.map((o,j)=>({slot:j,package:o.fresh?`${o.package.name} (a ${o.fresh} package, not yet installed: the box installs it)`:packageLine(o.package)}))}:{}),
+      ...(granted.length?{packages_offered:granted.map((o,j)=>({slot:j,package:o.fresh&&!this.installSeen(o.package)?`${o.package.name} (a ${o.fresh} package, not yet installed: the box installs it)`:this.seenLine(o.package)}))}:{}),
       options:options.map(o=>o.call)};
     const what=item.kind==='ask'?`the ask for ${item.name||`"${clip(item.need,120)}"`}`:`the ${item.kind}`;
     let ps=[null];
@@ -8756,7 +8783,7 @@ export class ControlRoom extends DurableObject {
     const held={kind:item.kind,stage:'complaint',source:flags.source||m,input:flags.input||'',parties:item.parties||[],detail:item.detail,facts:item.facts||{},flags};
     const serves=item.facts?.validation?.serves||[],options=this.managerOptions(m,{kind:'complaint',serves},this.managerView(m));
     if(!options.length)return void this.escalate(m,'checks_failed',clip(`"${this.node(m)?.label||m}" has no live part for what was observed: ${item.detail}`,900));
-    const pick=await this.managerChoice(m,{kind:'complaint',text:item.detail,serves,parties:item.parties||[]},held);
+    const pick=await this.managerChoice(m,{kind:'complaint',text:item.detail,serves,parties:item.parties||[],...(item.facts?.packages?{packages:item.facts.packages}:{})},held);
     if(!pick)return;
     if(pick.fn==='route_to')return this.deliverComplaint(m,this.node(pick.child.id),item,flags);
     this.set(`orphans:${m}`,JSON.stringify(this.unheld(this.managerView(m),serves)));
@@ -9037,7 +9064,7 @@ export class ControlRoom extends DurableObject {
     }
     const held=name?this.packagesOf(id).find(p=>p.name===name):null;
     if(held) {
-      const text=MESSAGES.package_yours({need,names:packageLine(held),many:false});
+      const seen=this.installSeen(held),text=seen&&!seen.passed?this.seenLine(held):MESSAGES.package_yours({need,names:packageLine(held),many:false});
       this.recordAnswer(id,{key,kind:'provided',text});
       return {answered:text};
     }
@@ -9076,6 +9103,7 @@ export class ControlRoom extends DurableObject {
     for(const [vid,x] of judged)results.set(vid,x);
     for(const c of run?.report?.checks||[])results.set(c.id,c);
     if(run?.report?.inventory)this.save('toolchain_inventory',run.report.inventory);
+    const notInstalled=this.recordInstalls(id,run?.report?.installed).map(x=>x.detail);
     if(run&&!run.infrastructure)this.markCompiled(files,plan.syntax,run.report?.stages,parsed.clean);
     const shown=v=>[...new Set(checkExamples(v.check))];
     const observed=v=>{const r=results.get(v.id);if(run?.infrastructure&&!r)return `not run: ${run.infrastructure}`;if(!r)return 'not run';if(r.infrastructure)return `not run: ${r.detail}`;return r.passed?'pass':String(r.detail||'it did not hold');};
@@ -9085,8 +9113,8 @@ export class ControlRoom extends DurableObject {
     const passed=examples.filter(e=>e.observed==='pass').length;
     this.span('worker','run_examples',started,Date.now(),{worker:id,validations:runs.length,passed,files:files.size,...(run?.infrastructure?{infrastructure:true}:{})},id);
     this.event(id,'examples_run',clip(`Ran its examples on its ${files.size} file(s): ${passed} of ${examples.length} pass${issues.length?`; ${issues.length} file(s) do not compile`:''}${run?.infrastructure?`; the box: ${clip(run.infrastructure,200)}`:''}.`,600));
-    if(!examples.length&&!issues.length)return {examples:[],says:MESSAGES.no_examples()};
-    return {examples,...(issues.length?{files_that_do_not_compile:issues}:{}),passed,of:examples.length};
+    if(!examples.length&&!issues.length&&!notInstalled.length)return {examples:[],says:MESSAGES.no_examples()};
+    return {examples,...(issues.length?{files_that_do_not_compile:issues}:{}),...(notInstalled.length?{packages_not_installed:notInstalled}:{}),passed,of:examples.length};
   }
   // Clef judges each document check among runs, as a compile does: [[id, result]].
   judgeRuns(id, runs, files, contracts) {
@@ -9182,6 +9210,8 @@ export class ControlRoom extends DurableObject {
     for(const v of unjudged)results.set(v.id,{id:v.id,passed:false,infrastructure:true,detail:'not run: Clef gave no answer on whether this piece runs it'});
     const report=run?.report||null;
     if(report?.inventory)this.save('toolchain_inventory',report.inventory);
+    // What the box did not install is what the compiler observed, as a failing check is.
+    const notInstalled=this.recordInstalls(id,report?.installed);
     for(const c of report?.checks||[])results.set(c.id,c);
     // What the syntax steps compiled cleanly is known by its bytes from now on.
     if(!run?.infrastructure)this.markCompiled(box,plan.syntax,report?.stages,parsed.clean);
@@ -9206,9 +9236,10 @@ export class ControlRoom extends DurableObject {
     const stale=moved({ran:runs.length,passed:passes.length});
     if(stale)return stale;
     const failed=kept.filter(v=>status[v.id].passed===false),untested=kept.filter(v=>status[v.id].passed===null);
-    const line=!kept.length?`${issues.length} file(s) do not compile`:`${kept.length-failed.length-untested.length} of ${kept.length} validation(s) pass`+(failed.length?`; failing: ${failed.map(v=>v.id).join(', ')}`:'')+(untested.length?`; not run: ${untested.map(v=>v.id).join(', ')}`:'')+(issues.length?`; ${issues.length} file(s) do not compile`:'');
+    const line=[kept.length?`${kept.length-failed.length-untested.length} of ${kept.length} validation(s) pass`+(failed.length?`; failing: ${failed.map(v=>v.id).join(', ')}`:'')+(untested.length?`; not run: ${untested.map(v=>v.id).join(', ')}`:''):'',
+      issues.length||!kept.length&&!notInstalled.length?`${issues.length} file(s) do not compile`:'',notInstalled.length?`the box did not install ${notInstalled.flatMap(x=>x.facts.packages).join(', ')}`:''].filter(Boolean).join('; ');
     const blocked=untested.length>0||!!report?.infrastructure_issue||!!run?.infrastructure||!!notBuilt;
-    if(!failed.length&&!untested.length&&!issues.length&&!blocked) {
+    if(!failed.length&&!untested.length&&!issues.length&&!notInstalled.length&&!blocked) {
       this.save(`compile_reported:${id}`,null);this.save(`compile_blocked:${id}`,null);this.set(`compile_infrastructure:${id}`,'');
       this.closeProblemsFrom(id,'resolved');
       if(!runs.length)this.event(id,'piece_compiled',`Every file of ${this.node(id)?.label||id}'s piece compiles (${fresh.size} compiled now; snapshot ${digest.slice(0,14)}).`);
@@ -9218,7 +9249,7 @@ export class ControlRoom extends DurableObject {
     }
     // This run is not a verified compile.
     this.save(`verified:${id}`,null);
-    const items=checkProblems({...spec,validations:kept},results,issues,{origin:p=>origin.get(p)||null});
+    const items=[...checkProblems({...spec,validations:kept},results,issues,{origin:p=>origin.get(p)||null}),...notInstalled];
     this.event(id,'checks_reported',clip(`The compiler of ${this.node(id)?.label||id}: ${line}.`,900));
     span('reported',{ran:runs.length,passed:passes.length,failed:failed.length});
     if(!items.length) {

@@ -705,6 +705,9 @@ function validateCheckPlan(raw) {
   const commands=plan.commands&&typeof plan.commands==='object'?plan.commands:{};
   return {syntax:list(plan.syntax),install:list(plan.install),project:list(plan.project),runs,checks,commands};
 }
+// An install's env value: {$NAME} is NAME's value before it, and a list
+// one of them makes ends with no empty entry ('' is the current folder).
+const listed=(value,env)=>value.includes('{$')?value.replace(/\{\$(\w+)\}/g,(_,n)=>env[n]||'').split(':').filter(Boolean).join(':'):value;
 async function writeTree(dir,files) {
   for(const [name,content] of Object.entries(files)){const target=path.join(dir,name);await mkdir(path.dirname(target),{recursive:true});await writeFile(target,content,'utf8');}
 }
@@ -762,7 +765,9 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
     // names it to the checks). The install has the box's network; the checks
     // after it run as before (without it where the platform allows a network
     // namespace). The tree is made read-only once installed. What the install
-    // printed is the stage's detail and the report's installed entry. It
+    // printed is the stage's detail and the report's installed entry (a row
+    // with no install command is reported as such), and a package not
+    // installed fails the verification as an issue does. It
     // runs before the syntax step, so a compiler that reads a file's imports
     // (javac) reads them with the packages there.
     for(const x of plan.install) {
@@ -774,7 +779,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
         await mkdir(tree,{recursive:true});
         const r=await execCheck(row.install.argv.flatMap(a=>a==='{packages}'?names:[fill(a)]),{cwd:scratch,env,prefix:limitPrefix,ms:Math.max(1000,left()-1000)});
         const out=redact(`${r.stdout}\n${r.stderr}`).trim(),passed=r.code===0&&!r.timedOut;
-        if(passed){for(const [k,v] of Object.entries(row.install.env||{}))env[k]=String(v).replaceAll('{tree}',tree);await execCheck(['chmod','-R','a-w',tree],{cwd:scratch,env,ms:10_000});}
+        if(passed){for(const [k,v] of Object.entries(row.install.env||{}))env[k]=listed(String(v).replaceAll('{tree}',tree),env);await execCheck(['chmod','-R','a-w',tree],{cwd:scratch,env,ms:10_000});}
         installed.push({toolchain:row.id,packages:names,passed,...(passed?{}:{detail:r.timedOut?`timed out after ${seconds(r.ms)}${out?`: ${out}`:''}`:`exit ${r.code}${out?`: ${out}`:''}`})});
         return passed?{detail:names.join(' ')}:{passed:false,detail:installed.at(-1).detail};
       });
@@ -1026,7 +1031,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
       }
       return {passed:checks.slice(n).every(x=>x.passed)};
     });
-    const passed=!issues.length&&!infrastructure_issue&&checks.every(c=>c.passed);
+    const passed=!issues.length&&!infrastructure_issue&&checks.every(c=>c.passed)&&installed.every(x=>x.passed);
     // Checks in the plan's order (project checks first).
     const order=new Map([...plan.project.map(p=>String(p.id||'P')),...plan.checks.map(c=>c.id)].map((id,i)=>[id,i]));
     checks.sort((a,b)=>(order.get(a.id)??1e9)-(order.get(b.id)??1e9));
