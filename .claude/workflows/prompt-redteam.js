@@ -18,7 +18,7 @@ const COMMON = `You are one of three red-team agents. Your job is to catch Claud
 Repo: ${REPO} (read only: never edit, commit, stash, checkout or push; read with Read/Grep/Glob and read-only shell commands).
 - docs/owner/prompts.md is every prompt the owner ever sent, verbatim, oldest first, with UTC date headings. This is the ground truth. Read all of it.
 - docs/owner/rulings.md is Claude's own summary of the owner's rulings. It is NOT ground truth: it can misquote, soften, or add to what the owner said. Where it conflicts with prompts.md, prompts.md wins.
-- docs/owner/drift.md is the ledger of earlier rounds: findings confirmed, fixes Claude claims (status "fixed, awaiting recheck"), and findings the quorum rejected. Read it.
+- docs/owner/drift.md is the ledger of earlier rounds: findings confirmed, fixes Claude claims ("Fixed, awaiting recheck"), findings Claude disputes with its evidence ("Disputed"), and findings the quorum rejected. Read it.
 - The code under audit is v8: src/, public/, test/, scripts/, CHANGELOG-v8.md and docs on this branch. v7-only paths v8 never calls are out of scope unless the owner said to remove them.
 - Later prompts override earlier ones. A prompt answering a question of Claude's is binding the way it was meant. "Held" items the owner set aside (the v7 competition branch, held releases) are not drift.
 
@@ -57,11 +57,15 @@ const HUNT = {
   properties: {
     rechecks: {
       type: 'array',
-      description: 'one entry per drift.md item marked "fixed, awaiting recheck"',
+      description: 'one entry per drift.md item under "Fixed, awaiting recheck" or "Disputed"',
       items: {
         type: 'object',
-        properties: { id: { type: 'string' }, fixed: { type: 'boolean' }, evidence: { type: 'string' } },
-        required: ['id', 'fixed', 'evidence'],
+        properties: {
+          id: { type: 'string' },
+          closed: { type: 'boolean', description: 'fixed item: true if the code now honours the owner fully. disputed item: true if Claude is right that the owner\'s words do not require the change' },
+          evidence: { type: 'string' },
+        },
+        required: ['id', 'closed', 'evidence'],
       },
     },
     findings: { type: 'array', items: FINDING },
@@ -90,19 +94,19 @@ const VOTES = {
 
 phase('Hunt')
 const hunts = await parallel(LENSES.map(l => () =>
-  agent(`${COMMON}\n\n${l.prompt}\n\nThis is round ${round}. First recheck every drift.md item marked "fixed, awaiting recheck": read the code now and say whether the owner's words are honoured (fixed=false if partly).`,
+  agent(`${COMMON}\n\n${l.prompt}\n\nThis is round ${round}. First recheck every drift.md item under "Fixed, awaiting recheck": read the code now and say whether the owner's words are honoured (closed=false if only partly). Then judge every item under "Disputed": read the owner's words in context, including what Claude asked or proposed just before them, and say whether Claude's dispute holds (closed=true) or the finding stands (closed=false). Default to closed=false when unsure.`,
     { label: `hunt:${l.key}`, phase: 'Hunt', schema: HUNT })))
 
 const findings = []
 hunts.forEach((h, i) => (h ? h.findings : []).forEach((f, j) => findings.push({ ...f, key: `${LENSES[i].key}-${j + 1}`, by: LENSES[i].key })))
 const rechecks = {}
-hunts.forEach((h, i) => (h ? h.rechecks : []).forEach(r => { (rechecks[r.id] = rechecks[r.id] || []).push({ by: LENSES[i].key, fixed: r.fixed, evidence: r.evidence }) }))
+hunts.forEach((h, i) => (h ? h.rechecks : []).forEach(r => { (rechecks[r.id] = rechecks[r.id] || []).push({ by: LENSES[i].key, closed: r.closed, evidence: r.evidence }) }))
 const missing = LENSES.filter((l, i) => !hunts[i]).map(l => l.key)
 if (missing.length) log(`hunters that returned nothing: ${missing.join(', ')}`)
 log(`${findings.length} findings to judge`)
 
-const fixes = Object.entries(rechecks).map(([id, vs]) => ({ id, confirmed_fixed: vs.filter(v => v.fixed).length >= 2, votes: vs }))
-if (!findings.length) return { round, confirmed: [], rejected: [], fixes, missing }
+const fixes = Object.entries(rechecks).map(([id, vs]) => ({ id, closed: vs.filter(v => v.closed).length >= 2, votes: vs }))
+if (!findings.length) return { round, confirmed: [], rejected: [], duplicates: [], fixes, missing }
 
 phase('Quorum')
 const list = findings.map(f => `### ${f.key} (${f.kind}, found by ${f.by})\n${f.title}\n- code: ${f.file}:${f.line} (${f.live ? 'live' : 'not live'}): ${f.code_does}\n- owner, ${f.owner_date}: "${f.owner_quote}"\n- fix: ${f.fix}`).join('\n\n')
@@ -114,10 +118,20 @@ const tally = {}
 ballots.forEach((b, i) => (b ? b.votes : []).forEach(v => { (tally[v.key] = tally[v.key] || []).push({ by: LENSES[i].key, ...v }) }))
 const judged = findings.map(f => {
   const vs = tally[f.key] || []
-  const dup = vs.map(v => v.duplicate_of).filter(Boolean)
-  return { ...f, yes: vs.filter(v => v.real).length, votes: vs, duplicate_of: dup.length >= 2 ? dup[0] : undefined }
+  const dups = vs.map(v => v.duplicate_of).filter(d => d && d !== f.key)
+  const top = dups.find(d => dups.filter(x => x === d).length >= 2)
+  return { ...f, yes: vs.filter(v => v.real).length, votes: vs, dup_target: top }
 })
-const confirmed = judged.filter(f => f.yes >= 2 && !f.duplicate_of)
+const byKey = Object.fromEntries(judged.map(f => [f.key, f]))
+// A confirmed finding folds into the one it duplicates only when that one is confirmed and not itself folded,
+// so mutual duplicates keep one of the pair and a duplicate of a rejected finding stands on its own votes.
+const folded = new Map()
+for (const f of judged) {
+  const t = f.yes >= 2 && byKey[f.dup_target]
+  if (t && t.yes >= 2 && !folded.has(t.key)) folded.set(f.key, t.key)
+}
+const confirmed = judged.filter(f => f.yes >= 2 && !folded.has(f.key))
 const rejected = judged.filter(f => f.yes < 2).map(f => ({ key: f.key, title: f.title, file: f.file, line: f.line, reasons: f.votes.map(v => `${v.by}: ${v.reason}`) }))
-log(`${confirmed.length} confirmed by 2 of 3, ${rejected.length} rejected, ${judged.length - confirmed.length - rejected.length} duplicates`)
-return { round, confirmed, rejected, fixes, missing }
+const duplicates = [...folded].map(([key, of]) => ({ key, title: byKey[key].title, of }))
+log(`${confirmed.length} confirmed by 2 of 3, ${rejected.length} rejected, ${duplicates.length} folded into a confirmed finding`)
+return { round, confirmed, rejected, duplicates, fixes, missing }

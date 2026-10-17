@@ -22,7 +22,7 @@ Owner, 2026-10-16: "throw out the fucking card writer. You're too attached to th
 4. **Clef validates each attempt in one batched call. It annotates and never deletes.**
    - **Split:** `split_valid`, `split_size` and the per-piece `scope` question, when there are pieces. Retry parameters depend on the objection.
    - **Validations:** the per-validation questions worth keeping from reviewCard: `exercises`, `implementable` and `internal`. A NO marks the validation doubtful. The writer is not asked to revise.
-5. **The runtime's hard rules (executability and safety only)** apply to contracts and validations: argv form, paths, toolchain rows, selector syntax, and the safety rules still waiting on per-check boxes. Lenient repair (the parts of repairCard that keep meaning, such as markup to element steps) moves into `src/validations.js`.
+5. **The splitter writes through typed functions.** Each function's result says what it stored, or exactly why it can't (its own argument checks). The runtime never repairs, reinterprets or matches what the splitter wrote, and there are no path rules or blocklists (owner, 2026-10-16: "The splitter should be given interfaces and then write via those interfaces. That's it").
 6. **The manager admits the result.** It writes its contracts file (its children's contracts with their validations; the DO row indexes the file by commit).
    - **The proposal splits:** each piece becomes a `manager-<hex16>`, with its contracts on its row.
    - **It doesn't split:** one `worker-<hex16>` with the manager's contracts.
@@ -40,7 +40,7 @@ Owner, 2026-10-16: "throw out the fucking card writer. You're too attached to th
 
 ## What stays, renamed
 
-- **The validation states** (`requirement_status` becomes `validation_status`), passes keyed to exact bytes, the top verifying what ships, accept-untested holds, base_confirm (the person grants changing existing files), sources and refs, packages and the broker, interface facts in contract lines, masking of check values.
+- **The validation states** (`requirement_status` becomes `validation_status`), passes keyed to exact bytes, the top verifying what ships, accept-untested holds, base_confirm (the person grants changing existing files), sources and refs, packages and the broker, interface facts in contract lines.
 - **Benchmarks:** see "There are no hidden tests inside a room" below; the grader is outside the room.
 
 ## Done when
@@ -127,7 +127,7 @@ Owner: "the workers shouldn't know about their siblings. Or about the overall pr
   - Benchmark: the 3 come from the splitter's own validations of the task's prompt, as in any room.
 - **There are no "hidden tests" inside a room.** The benchmark's own tests are the grader, and the grader sits outside the system.
   - **Today** (src/bench.js): a bench room starts from a fixed card with one deliverable and one "hidden requirement", whose check runs the benchmark's tests inside the room's compiler. A failure ends the room `benchmark_failed` without repair, and the room has no validations of its own.
-  - **Now:** a bench task room is an ordinary room. Its prompt is the task's prompt (the signature and docstring). The splitter writes that level's validations from it like any other, with 3 examples per contract, and the room iterates against its own validations only. When the room is done, the BenchRun grades the shipped bundle once, in the harness's own box. That grade never enters the room: no complaint, no event, no example.
+  - **Now:** a bench task room is an ordinary room. Its prompt is the task's prompt (the signature and docstring). The splitter writes that level's validations from it like any other, with 3 examples per contract, and the room iterates against its own validations only. When the room is done, the BenchRun grades the shipped bundle in the harness's own box. A failing grade goes back into the room as a complaint, until the room is done (owner, 2026-10-16 05:54: "why does it not go back? it should go back until done, just like anything else?"). Grading once, for a pass@1 number, is an option, not the default.
   - **Delete:** the bench card, hidden requirements, the `hidden` flag, `benchmark_failed`, and every masking of hidden validations.
 - **The three-examples rule covers only contracts that are called or run** (owner, 2026-10-16: "only to contracts that are called or run"): functions, commands and routes. Pages, files, docs and data owe none.
 
