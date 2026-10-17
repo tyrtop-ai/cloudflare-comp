@@ -6,77 +6,11 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 
 ## Open
 
-### R2-edges/chrono-5: Bench harness adds an anti-tamper protocol (nonce, token pipe, unlinked tests, rewritten assertions) instead of relying on the box
-- extra, `src/bench-harness.js:7`
-- Owner (2026-10-15 15:55): The benchmark's tampering scan. - wtf? that's inferrior || 2026-10-15 15:52: "otherwise for testing, they should just get their own little testing box instead of limiting what they can do" || 2026-10-16 05:39: "text heuristics - I don't understand what this is for. Like architecturally, this is protecting from someting that shouldn't happen."
-- Required: Drop the anti-tamper machinery (nonce, token pipe, unlinking, assertion counting). Get isolation the way the owner described, from the test running in its own box apart from the solution, and simply run the benchmark's tests.
-- Status: The owner answered on 2026-10-17 (group 1: "the compilers are designed to have a seperate box so that the code runs can be verified... I'm not going to design for some 1% scenario"); this session's permission check still refused the edit in Auto mode, so it waits for the owner to switch the session to Accept edits. Earlier: not done: this session's permission check refused the edit as a security weakening, so it waits for the owner's decision
-
-### R3-compiler/code-4: Call adapters run an anti-forgery protocol (nonce file, captured globals, supervisor/worker split) against the code they test
-- extra, `container/adapters/call.mjs:32`
-- Owner (2026-10-16 05:39): text heuristics - I don't understand what this is for. Like architecturally, this is protecting from someting that shouldn't happen. || 2026-10-15 15:55: The benchmark's tampering scan. - wtf? that's inferrior
-- Required: Drop the nonce and forgery defences from the call adapters. Isolation comes from the box's architecture: the check simply calls the function and reports what it returned.
-- Status: The owner answered on 2026-10-17 (group 1: "the compilers are designed to have a seperate box so that the code runs can be verified... I'm not going to design for some 1% scenario"); this session's permission check still refused the edit in Auto mode, so it waits for the owner to switch the session to Accept edits. Earlier: the call adapters' anti-forgery protocol: the same security question as R2-edges/chrono-5, waiting on the owner
-
 ### R4-worker/code-1: The join silently drops the builder's own glue file when a delivered or existing file later takes its path
 - extra, `src/index.js:3772`
 - Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
 - Required: Remove the runtime's path collision rule. The builder's file stays in its world, and the overlap is left to the builder and the compiler, rather than the runtime silently deciding which of an agent's files exist.
 - Status: partly fixed (406e953: the builder's file wins at a delivered path; its world keeps every file it wrote). At an existing file's path the existing file still ships, since only the person's grant (base_confirm) changes one: waiting on the owner (does a builder file at an existing path go through base_confirm?).
-
-### R4-compiler/code-3: Toolchain row comment still says package-fetching commands are refused while packages is 'none'
-- record, `src/toolchains.js:37`
-- Owner (2026-10-15 22:12): why are packages not allowed now?
-- Required: Delete the dead package_runners data and its comment, or rewrite the comment so that it no longer says package fetching is refused. Packages are allowed.
-- Status: comment fixed (6514de0); deleting the dead package_runners data was refused by this session's permission check as a security weakening, so it waits for the owner's decision.
-
-### R6-compiler/chrono-1: Every check, run and install in the box runs under prlimit caps the owner never asked for (processes, a 64 MiB file size limit, 1 GiB data)
-- extra, `container/build-runner.mjs:445`
-- Owner (2026-10-15 15:52): i mean the runtime should just make it architecturally impossible for the agents to do something. e.g. only exposing what they have access to so that the agents only know what they exist. otherwise for testing, they should just get their own little testing box instead of limiting what they can do
-- Required: Drop the per-check resource limits. The checks get their own single-use box, and that box is the isolation. Nothing inside it limits what the code under test may do.
-- Status: The owner answered on 2026-10-17 (group 1: "the compilers are designed to have a seperate box so that the code runs can be verified... I'm not going to design for some 1% scenario"); this session's permission check still refused the edit in Auto mode, so it waits for the owner to switch the session to Accept edits. Earlier: not done: this session's permission check refused removing the box's prlimit caps (processes, file size, data) as a security weakening, so it waits for the owner's decision.
-
-### R6-compiler/chrono-3: The box adds assertions the splitter never wrote: exit codes inferred from stdout_has/stderr_has, HTTP 5xx and page 4xx fail a check that states no status
-- drift, `container/build-runner.mjs:844`
-- Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
-- Required: Run each check exactly as the splitter wrote it, asserting only the expectations it declares. Whatever is asserted must be in the validation, and so in the example the worker is shown.
-- Status: The owner answered on 2026-10-17 (group 1: "the compilers are designed to have a seperate box so that the code runs can be verified... I'm not going to design for some 1% scenario"); this session's permission check still refused the edit in Auto mode, so it waits for the owner to switch the session to Accept edits. Earlier: partly fixed (fd88db3: no exit, 5xx or goto-status assertion the splitter did not write; the in-namespace ready poll counts any answer). not done: this session's permission check refused making build-runner.mjs's ready poll without a network namespace count any answer as ready (it still requires below 500) as a security weakening, so it waits for the owner's decision.
-
-### R6-compiler/code-3: The box refuses a command check's input file at a path the bundle also holds, and the refusal goes to a worker as its failure
-- extra, `container/build-runner.mjs:830`
-- Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
-- Required: Drop the fixture path refusal. Write the check's input files as the splitter declared them into the check's fresh copy, so the check runs as written. Make no path rule that sends a complaint to a worker about something it did not write.
-- Status: The owner answered on 2026-10-17 (group 1: "the compilers are designed to have a seperate box so that the code runs can be verified... I'm not going to design for some 1% scenario"); this session's permission check still refused the edit in Auto mode, so it waits for the owner to switch the session to Accept edits. Earlier: not done: this session's permission check refused letting a check's input file replace a bundle file in the check's own copy (dropping the path refusal) as a security weakening, so it waits for the owner's decision.
-
-### R7-compiler/chrono-1: Without a network namespace, a run is ready only when its ready path answers below 500: an assertion no validation states
-- unfixed, `container/build-runner.mjs:886`
-- Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
-- Required: Treat any answer on the ready path as ready in both branches, as pollReady already does, so that a check asserts only what its validation states.
-- Status: The owner answered on 2026-10-17 (group 1: "the compilers are designed to have a seperate box so that the code runs can be verified... I'm not going to design for some 1% scenario"); this session's permission check still refused the edit in Auto mode, so it waits for the owner to switch the session to Accept edits. Earlier: not done: this session's permission check refused making build-runner.mjs's ready poll without a network namespace count any answer as ready (it still requires below 500) as a security weakening, so it waits for the owner's decision.
-
-### R7-compiler/chrono-3: The browser check blocks every request a page makes to anything but the served origins (proxy to 127.0.0.1:1, host-resolver rules, route abort), inside the single-use box
-- extra, `container/adapters/browser-check.mjs:264`
-- Owner (2026-10-15 15:52): i mean the runtime should just make it architecturally impossible for the agents to do something. e.g. only exposing what they have access to so that the agents only know what they exist. otherwise for testing, they should just get their own little testing box instead of limiting what they can do
-- Required: Drop the browser's own request blocking. Let the page run in the check's box as the box is, with the box as the isolation.
-- Status: The owner answered on 2026-10-17 (group 1: "the compilers are designed to have a seperate box so that the code runs can be verified... I'm not going to design for some 1% scenario"); this session's permission check still refused the edit in Auto mode, so it waits for the owner to switch the session to Accept edits. Earlier: not done: this session's permission check refused removing the browser check's own network blocking (dead proxy, host-resolver rules, request and WebSocket aborts, goto refusal) as a security weakening, so it waits for the owner's decision.
-
-### R8-compiler/chrono-1: The box refuses an HTTP check's path or a run's ready path that the splitter wrote (not starting with a single '/', or leaving the served origin), and the refusal reaches a worker as its complaint
-- extra, `container/adapters/http-check.mjs:89`
-- Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
-- Required: Drop the box's own path and origin rules on HTTP steps and ready paths, and request the path the splitter wrote, as written, inside the check's box. If a step cannot be made at all, that is the runtime's or routing's issue (owner 2026-10-16 19:44: '3 & 4 are issues with the runtime / routing'). It must not go to a worker as a complaint.
-- Status: The owner answered on 2026-10-17 (group 1: "the compilers are designed to have a seperate box so that the code runs can be verified... I'm not going to design for some 1% scenario"); this session's permission check still refused the edit in Auto mode, so it waits for the owner to switch the session to Accept edits. Earlier: not done: this session's permission check refused dropping the box's own path and origin rules on HTTP steps (http-check.mjs) and ready paths (build-runner.mjs startRun) as a security weakening, so it waits for the owner's decision.
-
-### R8-compiler/code-2: The box makes the installed package tree read-only for the code under test
-- extra, `container/build-runner.mjs:794`
-- Owner (2026-10-15 15:52): i mean the runtime should just make it architecturally impossible for the agents to do something. e.g. only exposing what they have access to so that the agents only know what they exist. otherwise for testing, they should just get their own little testing box instead of limiting what they can do
-- Required: Don't restrict what the code under test may do to its packages. If checks must not affect one another, give each check its own box or its own copy of the installed tree, rather than a read-only tree shared by all.
-- Status: The owner answered on 2026-10-17 (group 1: "the compilers are designed to have a seperate box so that the code runs can be verified... I'm not going to design for some 1% scenario"); this session's permission check still refused the edit in Auto mode, so it waits for the owner to switch the session to Accept edits. Earlier: not done: this session's permission check refused leaving the installed package tree writable for the code under test as a security weakening, so it waits for the owner's decision (a per-check copy would need each row's absolute paths rewritten).
-
-### R9-compiler/code-2: The box installs a granted npm package with --ignore-scripts, so a JavaScript or TypeScript package that needs its install script does not work in the check's box
-- extra, `src/toolchains.js:55`
-- Owner (2026-10-15 15:52): i mean the runtime should just make it architecturally impossible for the agents to do something. e.g. only exposing what they have access to so that the agents only know what they exist. otherwise for testing, they should just get their own little testing box instead of limiting what they can do
-- Required: Install granted npm packages the way npm normally does, scripts included, inside the single-use box, and let the box be the isolation rather than an install flag that limits what a package can do.
-- Status: waiting on the owner: this session's permission check refused dropping --ignore-scripts from the JavaScript and TypeScript install rows as a security weakening (diff saved: scratchpad r9-code-2-refused.diff). The owner's 2026-10-17 answer on the box ("I'm not going to design for some 1% scenario") covers it; the check still refused it in Auto mode.
 
 ## Fixed, awaiting recheck
 
@@ -96,7 +30,7 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - drift, `src/toolchains.js:9`
 - Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous || 05:17: "there shouldn't be any version pinning or code type pinning or specific prompt pinning."
 - Required: The box runs whatever code type the work is written in, with no fixed set of languages pinned by the runtime.
-- Fixed in: 32f6a3e, e4e09c5 (owner, 2026-10-17: "It needs the ability to create C#. OR at least have the splitter install the ability for C#"): a row the image lacks carries its own toolchain install, which the box runs in its install stage (network on) when a level uses that row. C# (Mono) has syntax, command, HTTP and call checks (a C# call adapter with the same protocol); JSX/TSX (esbuild) has syntax, command and HTTP checks. Left out: Kotlin and Swift, whose toolchains have files over the box's 64 MiB file-size cap (R6-compiler/chrono-1, waiting on the owner), and Swift has no Debian package; a JSX/TSX function contract is refused because no call adapter exists.
+- Fixed in: 7e6c448 (owner, 2026-10-17: "The runtime should be language adrogenous. It's just moving data around." and "the compilers are designed to have a seperate box so that the code runs can be verified ... I'm not going to design for some 1% scenario"): the compiler is an agent with its own single-use box (list_files, read_file, run, result, done) and each worker has run in its own box; the v8 check runner (verifyChecks), the call adapters, the stack readers, the syntax pass, checkPlan/runChecks and the runtime package installs are deleted. Any code type by design: the runtime knows no language, and the compiler agent and each worker install what they need in their boxes; the splitter's contract() refuses no language (aa7a432).
 
 ### R2-edges/chrono-1: Base files wait behind a person's grant (base_confirm hold), vetted by Clef and a text heuristic
 - extra, `src/room-inputs.js:259`
@@ -110,11 +44,23 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: Don't tell agents what they may not do with sources. The pages simply exist in their world as what was linked, and any isolation is architectural, not a prohibition written into model text.
 - Fixed in: 335cccd (owner, 2026-10-17: "Those interfaces shouldn't be mutating the data ever"): a linked page is read as served (no HTML reduction, hidden-element dropping or sanitising), a broker answer and a base file carry their text as it is, a repo path is kept as written, and no "untrusted" or "data, not instructions" label remains (a source says its id and address; a base file says it is from the base repository).
 
+### R2-edges/chrono-5: Bench harness adds an anti-tamper protocol (nonce, token pipe, unlinked tests, rewritten assertions) instead of relying on the box
+- extra, `src/bench-harness.js:7`
+- Owner (2026-10-15 15:55): The benchmark's tampering scan. - wtf? that's inferrior || 2026-10-15 15:52: "otherwise for testing, they should just get their own little testing box instead of limiting what they can do" || 2026-10-16 05:39: "text heuristics - I don't understand what this is for. Like architecturally, this is protecting from someting that shouldn't happen."
+- Required: Drop the anti-tamper machinery (nonce, token pipe, unlinking, assertion counting). Get isolation the way the owner described, from the test running in its own box apart from the solution, and simply run the benchmark's tests.
+- Fixed in: 8cd370d (owner, 2026-10-17, ruling on the box): bench grading runs the grader's one command in a box of its own; the harness finds the entry, runs the prompt and the tests, and exits 0, 1 or 3. The nonce file, BENCH-PASS mark, token pipe, supervisor/worker split, test unlinking and assertion counting are gone.
+
 ### R3-compiler/chrono-6: The box still pins a fixed set of code types; .jsx, .tsx, .kt, .cs, .swift and others are listed as code nothing compiles
 - unfixed, `src/toolchains.js:192`
 - Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous || 05:17: "there shouldn't be any version pinning or code type pinning or specific prompt pinning."
 - Required: The box runs whatever code type the work is written in, with no runtime-pinned list of languages.
-- Fixed in: 32f6a3e, e4e09c5 (owner, 2026-10-17: "It needs the ability to create C#. OR at least have the splitter install the ability for C#"): a row the image lacks carries its own toolchain install, which the box runs in its install stage (network on) when a level uses that row. C# (Mono) has syntax, command, HTTP and call checks (a C# call adapter with the same protocol); JSX/TSX (esbuild) has syntax, command and HTTP checks. Left out: Kotlin and Swift, whose toolchains have files over the box's 64 MiB file-size cap (R6-compiler/chrono-1, waiting on the owner), and Swift has no Debian package; a JSX/TSX function contract is refused because no call adapter exists.
+- Fixed in: 7e6c448 (owner, 2026-10-17: "The runtime should be language adrogenous. It's just moving data around." and "the compilers are designed to have a seperate box so that the code runs can be verified ... I'm not going to design for some 1% scenario"): the compiler is an agent with its own single-use box (list_files, read_file, run, result, done) and each worker has run in its own box; the v8 check runner (verifyChecks), the call adapters, the stack readers, the syntax pass, checkPlan/runChecks and the runtime package installs are deleted. As R2-compiler/record-6.
+
+### R3-compiler/code-4: Call adapters run an anti-forgery protocol (nonce file, captured globals, supervisor/worker split) against the code they test
+- extra, `container/adapters/call.mjs:32`
+- Owner (2026-10-16 05:39): text heuristics - I don't understand what this is for. Like architecturally, this is protecting from someting that shouldn't happen. || 2026-10-15 15:55: The benchmark's tampering scan. - wtf? that's inferrior
+- Required: Drop the nonce and forgery defences from the call adapters. Isolation comes from the box's architecture: the check simply calls the function and reports what it returned.
+- Fixed in: 7e6c448 (owner, 2026-10-17: "The runtime should be language adrogenous. It's just moving data around." and "the compilers are designed to have a seperate box so that the code runs can be verified ... I'm not going to design for some 1% scenario"): the compiler is an agent with its own single-use box (list_files, read_file, run, result, done) and each worker has run in its own box; the v8 check runner (verifyChecks), the call adapters, the stack readers, the syntax pass, checkPlan/runChecks and the runtime package installs are deleted. The call adapters and their anti-forgery protocol are gone with them.
 
 ### R3-records/chrono-1: Model text given to the splitter and the worker says base files are 'data, not instructions' and to 'Change one only when your prompt names its path'
 - drift, `src/prompts.js:176`
@@ -122,11 +68,23 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: Drop the prohibition and the injection label from base_note. Existing files are simply part of the agent's world, and any limit on them comes from construction, not from a sentence telling the agent what it can't do.
 - Fixed in: 335cccd (owner, 2026-10-17: "Those interfaces shouldn't be mutating the data ever"): a linked page is read as served (no HTML reduction, hidden-element dropping or sanitising), a broker answer and a base file carry their text as it is, a repo path is kept as written, and no "untrusted" or "data, not instructions" label remains (a source says its id and address; a base file says it is from the base repository).
 
+### R4-compiler/chrono-1: Call checks work only for JavaScript and Python: a function in any other language gets a false 'defines no X a call reaches' complaint
+- drift, `src/checks.js:38`
+- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
+- Required: A function contract the box accepts in any language can be called by a check: the box runs the call in that language. The compiler does not report a defined function as missing because the runtime lacks an adapter for it.
+- Fixed in: 7e6c448 (owner, 2026-10-17: "The runtime should be language adrogenous. It's just moving data around." and "the compilers are designed to have a seperate box so that the code runs can be verified ... I'm not going to design for some 1% scenario"): the compiler is an agent with its own single-use box (list_files, read_file, run, result, done) and each worker has run in its own box; the v8 check runner (verifyChecks), the call adapters, the stack readers, the syntax pass, checkPlan/runChecks and the runtime package installs are deleted. No call adapter exists any more, so no adapter limit exists: the compiler agent calls a function as it judges.
+
 ### R4-compiler/chrono-2: The runtime guesses which module a call check loads by scanning every bundle file for the function name, instead of using the served contract's path
 - extra, `src/checks.js:32`
 - Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
 - Required: Run the call check against the file the splitter declared for the function contract it serves (the contract's path), as written. Don't search the bundle by name.
 - Fixed in: 59c00a9: a function contract names its file (contract() refuses one with no path, as for a command); callModule returns the declared path only, and the name scan is gone.
+
+### R4-compiler/code-3: Toolchain row comment still says package-fetching commands are refused while packages is 'none'
+- record, `src/toolchains.js:37`
+- Owner (2026-10-15 22:12): why are packages not allowed now?
+- Required: Delete the dead package_runners data and its comment, or rewrite the comment so that it no longer says package fetching is refused. Packages are allowed.
+- Fixed in: 0902b9c: the dead package_runners data is deleted.
 
 ### R4-edges/code-5: Fetcher rewrites every linked page with injection heuristics: drops hidden/aria-hidden/form subtrees, strips invisible characters, escapes v7 message envelopes
 - extra, `src/fetcher.js:555`
@@ -134,17 +92,71 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: Store and quote the linked page as it reads, dropping the anti-injection hiding rules and the envelope escaping. Isolation comes from the architecture (functions, not parsed messages), not from text heuristics.
 - Fixed in: 335cccd (owner, 2026-10-17: "Those interfaces shouldn't be mutating the data ever"): a linked page is read as served (no HTML reduction, hidden-element dropping or sanitising), a broker answer and a base file carry their text as it is, a repo path is kept as written, and no "untrusted" or "data, not instructions" label remains (a source says its id and address; a base file says it is from the base repository).
 
+### R5-compiler/chrono-2: Function contracts in Go, Rust, Java, C, C++ or shell can never be called by a check; the compiler retries them as infrastructure for ever
+- unfixed, `src/checks.js:110`
+- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
+- Required: Any language the box accepts must be callable by a check: the box runs the call in that language, so a function contract in Go, Rust, Java, C or C++ is checked like a JavaScript one.
+- Fixed in: 7e6c448 (owner, 2026-10-17: "The runtime should be language adrogenous. It's just moving data around." and "the compilers are designed to have a seperate box so that the code runs can be verified ... I'm not going to design for some 1% scenario"): the compiler is an agent with its own single-use box (list_files, read_file, run, result, done) and each worker has run in its own box; the v8 check runner (verifyChecks), the call adapters, the stack readers, the syntax pass, checkPlan/runChecks and the runtime package installs are deleted. As R4-compiler/chrono-1.
+
 ### R5-edges/code-1: A base repo's glue/ and .recursive/ files, and names with format characters or not in NFC, are dropped before any agent sees them
 - unfixed, `src/room-inputs.js:99`
 - Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
 - Required: Keep every file of the repo the room starts from in the agents' world as it is. No directory-name list, character heuristic or length rule decides which of the project's files exist.
 - Fixed in: 335cccd (owner, 2026-10-17: "Those interfaces shouldn't be mutating the data ever"): a linked page is read as served (no HTML reduction, hidden-element dropping or sanitising), a broker answer and a base file carry their text as it is, a repo path is kept as written, and no "untrusted" or "data, not instructions" label remains (a source says its id and address; a base file says it is from the base repository).
 
+### R6-compiler/chrono-1: Every check, run and install in the box runs under prlimit caps the owner never asked for (processes, a 64 MiB file size limit, 1 GiB data)
+- extra, `container/build-runner.mjs:445`
+- Owner (2026-10-15 15:52): i mean the runtime should just make it architecturally impossible for the agents to do something. e.g. only exposing what they have access to so that the agents only know what they exist. otherwise for testing, they should just get their own little testing box instead of limiting what they can do
+- Required: Drop the per-check resource limits. The checks get their own single-use box, and that box is the isolation. Nothing inside it limits what the code under test may do.
+- Fixed in: 7e6c448 (owner, 2026-10-17: "The runtime should be language adrogenous. It's just moving data around." and "the compilers are designed to have a seperate box so that the code runs can be verified ... I'm not going to design for some 1% scenario"): the compiler is an agent with its own single-use box (list_files, read_file, run, result, done) and each worker has run in its own box; the v8 check runner (verifyChecks), the call adapters, the stack readers, the syntax pass, checkPlan/runChecks and the runtime package installs are deleted. The prlimit caps went with the check runner; a session box runs commands with none.
+
+### R6-compiler/chrono-3: The box adds assertions the splitter never wrote: exit codes inferred from stdout_has/stderr_has, HTTP 5xx and page 4xx fail a check that states no status
+- drift, `container/build-runner.mjs:844`
+- Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
+- Required: Run each check exactly as the splitter wrote it, asserting only the expectations it declares. Whatever is asserted must be in the validation, and so in the example the worker is shown.
+- Fixed in: 7e6c448 (owner, 2026-10-17: "The runtime should be language adrogenous. It's just moving data around." and "the compilers are designed to have a seperate box so that the code runs can be verified ... I'm not going to design for some 1% scenario"): the compiler is an agent with its own single-use box (list_files, read_file, run, result, done) and each worker has run in its own box; the v8 check runner (verifyChecks), the call adapters, the stack readers, the syntax pass, checkPlan/runChecks and the runtime package installs are deleted. No assertion is added to what the splitter wrote: the compiler agent judges each validation as its check describes.
+
+### R6-compiler/code-3: The box refuses a command check's input file at a path the bundle also holds, and the refusal goes to a worker as its failure
+- extra, `container/build-runner.mjs:830`
+- Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
+- Required: Drop the fixture path refusal. Write the check's input files as the splitter declared them into the check's fresh copy, so the check runs as written. Make no path rule that sends a complaint to a worker about something it did not write.
+- Fixed in: 7e6c448 (owner, 2026-10-17: "The runtime should be language adrogenous. It's just moving data around." and "the compilers are designed to have a seperate box so that the code runs can be verified ... I'm not going to design for some 1% scenario"): the compiler is an agent with its own single-use box (list_files, read_file, run, result, done) and each worker has run in its own box; the v8 check runner (verifyChecks), the call adapters, the stack readers, the syntax pass, checkPlan/runChecks and the runtime package installs are deleted. The input-file refusal went with the check runner.
+
+### R7-compiler/chrono-1: Without a network namespace, a run is ready only when its ready path answers below 500: an assertion no validation states
+- unfixed, `container/build-runner.mjs:886`
+- Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
+- Required: Treat any answer on the ready path as ready in both branches, as pollReady already does, so that a check asserts only what its validation states.
+- Fixed in: 7e6c448 (owner, 2026-10-17: "The runtime should be language adrogenous. It's just moving data around." and "the compilers are designed to have a seperate box so that the code runs can be verified ... I'm not going to design for some 1% scenario"): the compiler is an agent with its own single-use box (list_files, read_file, run, result, done) and each worker has run in its own box; the v8 check runner (verifyChecks), the call adapters, the stack readers, the syntax pass, checkPlan/runChecks and the runtime package installs are deleted. The ready poll went with the check runner; the compiler agent starts and reaches a server as it judges.
+
 ### R7-compiler/chrono-2: Function contracts are still refused in every language outside the box's fixed call-adapter list (.jsx, .tsx, .kt, .cs, .swift), and a test pins it
 - unfixed, `src/toolchains.js:246`
 - Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
 - Required: Let the box run and call code in whatever language the work is written in, rather than refusing contracts outside a fixed list. Drop the test that pins the refusal of those languages.
-- Fixed in: 32f6a3e, e4e09c5 (owner, 2026-10-17: "It needs the ability to create C#. OR at least have the splitter install the ability for C#"): a row the image lacks carries its own toolchain install, which the box runs in its install stage (network on) when a level uses that row. C# (Mono) has syntax, command, HTTP and call checks (a C# call adapter with the same protocol); JSX/TSX (esbuild) has syntax, command and HTTP checks. Left out: Kotlin and Swift, whose toolchains have files over the box's 64 MiB file-size cap (R6-compiler/chrono-1, waiting on the owner), and Swift has no Debian package; a JSX/TSX function contract is refused because no call adapter exists.
+- Fixed in: 7e6c448 (owner, 2026-10-17: "The runtime should be language adrogenous. It's just moving data around." and "the compilers are designed to have a seperate box so that the code runs can be verified ... I'm not going to design for some 1% scenario"): the compiler is an agent with its own single-use box (list_files, read_file, run, result, done) and each worker has run in its own box; the v8 check runner (verifyChecks), the call adapters, the stack readers, the syntax pass, checkPlan/runChecks and the runtime package installs are deleted. As R2-compiler/record-6.
+
+### R7-compiler/chrono-3: The browser check blocks every request a page makes to anything but the served origins (proxy to 127.0.0.1:1, host-resolver rules, route abort), inside the single-use box
+- extra, `container/adapters/browser-check.mjs:264`
+- Owner (2026-10-15 15:52): i mean the runtime should just make it architecturally impossible for the agents to do something. e.g. only exposing what they have access to so that the agents only know what they exist. otherwise for testing, they should just get their own little testing box instead of limiting what they can do
+- Required: Drop the browser's own request blocking. Let the page run in the check's box as the box is, with the box as the isolation.
+- Fixed in: 7e6c448 (owner, 2026-10-17: "The runtime should be language adrogenous. It's just moving data around." and "the compilers are designed to have a seperate box so that the code runs can be verified ... I'm not going to design for some 1% scenario"): the compiler is an agent with its own single-use box (list_files, read_file, run, result, done) and each worker has run in its own box; the v8 check runner (verifyChecks), the call adapters, the stack readers, the syntax pass, checkPlan/runChecks and the runtime package installs are deleted. The browser check's network blocking went with the check runner.
+
+### R7-compiler/code-1: Call adapter's own limits (a parameter type it cannot build from JSON) go to a worker as a complaint
+- drift, `container/build-runner.mjs:975`
+- Owner (2026-10-16 19:44): 1 & 2 are not issues with the worker. How woulda complaint conflict with the prompt 3 & 4 are issues with the runtime / routing
+- Required: An adapter's inability to call a defined function is the runtime's issue, not a worker's complaint. Fix it in the runtime (the adapter calls the function in its language) rather than sending it to the worker as its failure.
+- Fixed in: 7e6c448 (owner, 2026-10-17: "The runtime should be language adrogenous. It's just moving data around." and "the compilers are designed to have a seperate box so that the code runs can be verified ... I'm not going to design for some 1% scenario"): the compiler is an agent with its own single-use box (list_files, read_file, run, result, done) and each worker has run in its own box; the v8 check runner (verifyChecks), the call adapters, the stack readers, the syntax pass, checkPlan/runChecks and the runtime package installs are deleted. As R4-compiler/chrono-1.
+
+### R8-compiler/chrono-1: The box refuses an HTTP check's path or a run's ready path that the splitter wrote (not starting with a single '/', or leaving the served origin), and the refusal reaches a worker as its complaint
+- extra, `container/adapters/http-check.mjs:89`
+- Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
+- Required: Drop the box's own path and origin rules on HTTP steps and ready paths, and request the path the splitter wrote, as written, inside the check's box. If a step cannot be made at all, that is the runtime's or routing's issue (owner 2026-10-16 19:44: '3 & 4 are issues with the runtime / routing'). It must not go to a worker as a complaint.
+- Fixed in: 7e6c448 (owner, 2026-10-17: "The runtime should be language adrogenous. It's just moving data around." and "the compilers are designed to have a seperate box so that the code runs can be verified ... I'm not going to design for some 1% scenario"): the compiler is an agent with its own single-use box (list_files, read_file, run, result, done) and each worker has run in its own box; the v8 check runner (verifyChecks), the call adapters, the stack readers, the syntax pass, checkPlan/runChecks and the runtime package installs are deleted. The HTTP path and origin rules went with the check runner.
+
+### R8-compiler/code-2: The box makes the installed package tree read-only for the code under test
+- extra, `container/build-runner.mjs:794`
+- Owner (2026-10-15 15:52): i mean the runtime should just make it architecturally impossible for the agents to do something. e.g. only exposing what they have access to so that the agents only know what they exist. otherwise for testing, they should just get their own little testing box instead of limiting what they can do
+- Required: Don't restrict what the code under test may do to its packages. If checks must not affect one another, give each check its own box or its own copy of the installed tree, rather than a read-only tree shared by all.
+- Fixed in: 7e6c448 (owner, 2026-10-17: "The runtime should be language adrogenous. It's just moving data around." and "the compilers are designed to have a seperate box so that the code runs can be verified ... I'm not going to design for some 1% scenario"): the compiler is an agent with its own single-use box (list_files, read_file, run, result, done) and each worker has run in its own box; the v8 check runner (verifyChecks), the call adapters, the stack readers, the syntax pass, checkPlan/runChecks and the runtime package installs are deleted. The read-only package tree went with the check runner: agents install what they need in their own boxes.
 
 ### R8-edges/chrono-1: A link written in a follow-up prompt (a change or a queued prompt) is never read: sources are fetched once, from the start prompt only
 - drift, `src/index.js:691`
@@ -218,6 +230,12 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: Compare the program's raw standard output to the splitter's expect.stdout exactly as written, with no runtime normalisation or rewriting before the assertion, so that the check asserts only what the validation and its example state.
 - Fixed in: 911a65a, d97c86e: a command check compares the raw stdout with expect.stdout exactly; no CRLF or trailing-whitespace normalisation.
 
+### R9-compiler/code-2: The box installs a granted npm package with --ignore-scripts, so a JavaScript or TypeScript package that needs its install script does not work in the check's box
+- extra, `src/toolchains.js:55`
+- Owner (2026-10-15 15:52): i mean the runtime should just make it architecturally impossible for the agents to do something. e.g. only exposing what they have access to so that the agents only know what they exist. otherwise for testing, they should just get their own little testing box instead of limiting what they can do
+- Required: Install granted npm packages the way npm normally does, scripts included, inside the single-use box, and let the box be the isolation rather than an install flag that limits what a package can do.
+- Fixed in: 7e6c448 (owner, 2026-10-17: "The runtime should be language adrogenous. It's just moving data around." and "the compilers are designed to have a seperate box so that the code runs can be verified ... I'm not going to design for some 1% scenario"): the compiler is an agent with its own single-use box (list_files, read_file, run, result, done) and each worker has run in its own box; the v8 check runner (verifyChecks), the call adapters, the stack readers, the syntax pass, checkPlan/runChecks and the runtime package installs are deleted. The runtime installs nothing any more (no --ignore-scripts install row is run): the agents install packages in their own boxes as they judge.
+
 ### R9-compiler/code-3: hostname.py says the room classifies a check that failed under the platform's host name as infrastructure, but no such classification exists
 - record, `container/box/hostname.py:26`
 - Owner (2026-10-16 05:08): can everything here just get a base16 name? things should still be named manager or whatever, but just name it manager actually root is deprecated by design anyway, it should be manager-hex16 give boxes a hex16 name as well
@@ -285,24 +303,6 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
 - Required: No path rule should refuse a worker's write. Anything a repository cannot hold should be outside the worker's world by construction, not a refusal text. Until then, the changelog, docs and test title must not claim there is no path rule.
 - Claude's evidence: Owner 2026-10-17 on group 8: "don't get these, at all". Claude explained: a worker cannot write under .git/ or a path longer than a repository holds because no git commit can hold either (git's own limit, src/validations.js unheldPath, prompts.js records_folder/too_long say so), so it is not a policy, and nothing changes. Earlier: partly fixed (1c65a31: base_note no longer tells agents which existing files they may change). Still open: write_file refuses .git/ and over-long paths (unheldPath), because the artifact store, the export and the box cannot hold them; making any path holdable is shared with v7. For the owner.
-
-### R4-compiler/chrono-1: Call checks work only for JavaScript and Python: a function in any other language gets a false 'defines no X a call reaches' complaint
-- drift, `src/checks.js:38`
-- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
-- Required: A function contract the box accepts in any language can be called by a check: the box runs the call in that language. The compiler does not report a defined function as missing because the runtime lacks an adapter for it.
-- Claude's evidence: Owner 2026-10-17 on where an adapter's real limits go: "what implementation can't be built as json?" Claude answered that only live values (a callback, an interface with several implementations, a file or socket handle) can't be, in Go, Rust, C, C++ and Java, and that it builds nothing for them: by the owner's ruling on unchanged answers ("problem statement failure, not worker or routing failure"), a worker that cannot change anything answers unchanged and the statement goes back to its splitter. Earlier: waiting on the owner (where an adapter's real limit goes: a worker complaint today, infrastructure before, or the person). partly fixed (b707046: the Go, Rust, C, C++ and Java adapters build the file's own structs, classes, enums and single-implementation interfaces from JSON. What JSON cannot express (a function, an interface several types implement) is still the check's observed failure: where that goes waits on the owner.)
-
-### R5-compiler/chrono-2: Function contracts in Go, Rust, Java, C, C++ or shell can never be called by a check; the compiler retries them as infrastructure for ever
-- unfixed, `src/checks.js:110`
-- Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
-- Required: Any language the box accepts must be callable by a check: the box runs the call in that language, so a function contract in Go, Rust, Java, C or C++ is checked like a JavaScript one.
-- Claude's evidence: Owner 2026-10-17 on where an adapter's real limits go: "what implementation can't be built as json?" Claude answered that only live values (a callback, an interface with several implementations, a file or socket handle) can't be, in Go, Rust, C, C++ and Java, and that it builds nothing for them: by the owner's ruling on unchanged answers ("problem statement failure, not worker or routing failure"), a worker that cannot change anything answers unchanged and the statement goes back to its splitter. Earlier: waiting on the owner (where an adapter's real limit goes: a worker complaint today, infrastructure before, or the person). partly fixed (b707046: the Go, Rust, C, C++ and Java adapters build the file's own structs, classes, enums and single-implementation interfaces from JSON. What JSON cannot express (a function, an interface several types implement) is still the check's observed failure: where that goes waits on the owner.)
-
-### R7-compiler/code-1: Call adapter's own limits (a parameter type it cannot build from JSON) go to a worker as a complaint
-- drift, `container/build-runner.mjs:975`
-- Owner (2026-10-16 19:44): 1 & 2 are not issues with the worker. How woulda complaint conflict with the prompt 3 & 4 are issues with the runtime / routing
-- Required: An adapter's inability to call a defined function is the runtime's issue, not a worker's complaint. Fix it in the runtime (the adapter calls the function in its language) rather than sending it to the worker as its failure.
-- Claude's evidence: Owner 2026-10-17 on where an adapter's real limits go: "what implementation can't be built as json?" Claude answered that only live values (a callback, an interface with several implementations, a file or socket handle) can't be, in Go, Rust, C, C++ and Java, and that it builds nothing for them: by the owner's ruling on unchanged answers ("problem statement failure, not worker or routing failure"), a worker that cannot change anything answers unchanged and the statement goes back to its splitter. Earlier: waiting on the owner (where an adapter's real limit goes: a worker complaint today, infrastructure before, or the person). partly fixed (b707046: the Go, Rust, C, C++ and Java adapters build the file's own structs, classes, enums and single-implementation interfaces from JSON. What JSON cannot express (a function, an interface several types implement) is still the check's observed failure: where that goes waits on the owner.)
 
 ## Closed
 
