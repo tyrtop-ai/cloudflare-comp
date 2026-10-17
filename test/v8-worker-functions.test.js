@@ -393,9 +393,9 @@ test('the join keeps the worker\'s delivery at its contract\'s path: a builder\'
   assert.match(events(room, 'bundle_conflict').at(-1).body, /builder's file stands in its own folder: index\.html/);
 });
 
-test('a delivered file at a builder\'s own file\'s path stays the delivered one, unplaced files too; at an existing file\'s path the existing file stays (a worker whose contract places it changes it), and the builder\'s file stays in its world', async () => {
+test('a delivered or existing file at a builder\'s own file\'s path stays the file there, unplaced files too; the builder\'s file stands in its own folder and ships (only workers write the code)', async () => {
   const {room, top, a, wa} = await tree(recorded().clef);
-  const bid = 'builder-00000000000000ab', atN = packagePath('Page', 'notes.txt', wa.id), atB = packagePath('Builder', atN, bid);
+  const bid = 'builder-00000000000000ab', atN = packagePath('Page', 'notes.txt', wa.id), atB = packagePath('Builder', atN, bid), atR = packagePath('Builder', 'README.md', bid);
   room.set(`base_digest:${top.id}`, 'd1');
   room.db().exec('INSERT INTO base_files(path,content,sha256) VALUES (?,?,?)', 'README.md', '# Base\n', 'h');
   await room.putFile(wa.id, 'notes.txt', 'the worker\'s notes\n');
@@ -405,9 +405,11 @@ test('a delivered file at a builder\'s own file\'s path stays the delivered one,
   assert.deepEqual([piece.by.get(atN), piece.origin.get(atN)?.owner], [a.id, wa.id]);
   assert.equal(piece.files.get(atB), 'the builder\'s notes\n');
   assert.ok(piece.glue.has(atB) && !piece.glue.has(atN));
-  assert.equal(piece.files.get('README.md'), '# Base\n', 'an existing file changes only through the person\'s grant');
-  assert.ok(!piece.glue.has('README.md'));
-  assert.match(events(room, 'bundle_conflict').at(-1).body, /README\.md/);
+  assert.equal(piece.files.get('README.md'), '# Base\n', 'the existing file stays at its path: a worker whose contract places it changes it');
+  assert.equal(piece.files.get(atR), '# mine\n', 'the builder\'s file ships in its own folder');
+  assert.ok(piece.glue.has(atR) && !piece.glue.has('README.md'));
+  assert.equal(piece.ownAt.get('README.md'), atR);
+  assert.match(events(room, 'bundle_conflict').at(-1).body, /README\.md \(the builder's at /);
 });
 
 test('a manager reads its children and contracts from its level files only, never from the rows\' copies: a copy that says otherwise changes nothing it is shown or chooses', async () => {

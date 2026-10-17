@@ -3740,22 +3740,21 @@ export class ControlRoom extends DurableObject {
     const actor=bid||m;
     if(twice.length)this.noteOnce(actor,'bundle_conflict',`Two files are placed at the same path, so each delivered copy stands in its writer's own folder: ${twice.join(', ')}.`);
     this.addBase(m,files);
-    const raw=new Map(files),work=bid?this.builtWork(bid):null,glue=new Map(),ownAt=new Map(),beside=[],aside=[];
+    const raw=new Map(files),work=bid?this.builtWork(bid):null,glue=new Map(),ownAt=new Map(),aside=[];
     for(const [p,r] of Object.entries(work?.renamed||{}))if(by.has(p)&&r?.base===textHash(files.get(p)))files.set(p,r.text);
     // The delivered files as the builder's world holds them (its renames in them), each with the child it came from.
     const delivered=new Map([...files].filter(([p])=>by.has(p))),deliveredBy=new Map(by);
     // The builder's own files stay its own (built:<builder>, its world), each in the piece (glue): at its path, or in
-    // its own folder where a delivered file stands at that path. An existing file's path stays the existing file's
-    // (only the person's grant changes one): the builder's own file there is in its world only.
+    // its own folder where a delivered or an existing file stands at that path (owner, 2026-10-16 05:21: the
+    // builder "writes glue between the interfaces created by the worker"; only workers write the code, an existing
+    // file's included).
     const existing=this.holdsBase(m)?new Set([...this.basePaths(),...this.passthroughPaths()]):new Set(),home=bid&&this.builderHome(bid);
     for(const [p,t] of Object.entries(work?.glue||{})) {
-      if(existing.has(p)){beside.push(p);continue;}
-      const at=by.has(p)?home(p):p;
+      const at=by.has(p)||existing.has(p)?home(p):p;
       if(at!==p){ownAt.set(p,at);aside.push(`${p} (the builder's at ${at})`);}
       files.set(at,t);glue.set(at,t);
     }
-    if(aside.length)this.noteOnce(actor,'bundle_conflict',`A delivered file stands at the path of the builder's own file, so the builder's file stands in its own folder: ${aside.join(', ')}.`);
-    if(beside.length)this.noteOnce(actor,'bundle_conflict',`The builder's own file is at the path of an existing file, which stays as it is; the builder's file is in its world: ${beside.join(', ')}.`);
+    if(aside.length)this.noteOnce(actor,'bundle_conflict',`A delivered or existing file stands at the path of the builder's own file, so the builder's file stands in its own folder: ${aside.join(', ')}.`);
     return {...this.pieceBundle(m,files,origin,placed,by,glue,raw),delivered,deliveredBy,ownAt};
   }
   // Where a builder's own file at a path stands when a delivered file holds that path: its own folder.
