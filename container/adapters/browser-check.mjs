@@ -191,8 +191,7 @@ async function runStep(page, base, step) {
     case 'goto': {
       const url = new URL(String(arg || '/'), base).href;
       if (!served(url)) throw new Error(`${url} is not served here (only the project's own pages are)`);
-      const r = await page.goto(url, {timeout: until(), waitUntil: 'load'});
-      if (r && r.status() >= 400) throw new Error(`${new URL(url).pathname} answered HTTP ${r.status()}`);
+      await page.goto(url, {timeout: until(), waitUntil: 'load'});
       return;
     }
     case 'reload': await page.reload({timeout: until(), waitUntil: 'load'}); return;

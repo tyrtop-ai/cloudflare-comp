@@ -20,7 +20,7 @@
 //   ctx.container.snapshotContainer({name}) -> {id, size, name}
 //   ctx.container.destroy(), ctx.container.running
 import {DurableObject} from 'cloudflare:workers';
-import {execAfterStartup, waitForBuildOutput, buildRequestOptions, checksRequestFields} from './build-executor.js';
+import {waitForBuildOutput, buildRequestOptions, checksRequestFields} from './build-executor.js';
 import {snapshotHash, validateBoxFiles} from './build-verification.js';
 
 export const BOX_IMAGES = Object.freeze(['check', 'browser', 'fetch']);
@@ -193,13 +193,13 @@ export class Box extends DurableObject {
     }
     await c.start(options);
     const started = Date.now();
-    let retries = 0;
-    const ready = await execAfterStartup(c, ['true'], boxExecOptions({quiet: true}), {onRetry: () => { retries++; }});
+    // A box that does not start is what was observed: its error is the open's.
+    const ready = await c.exec(['true'], boxExecOptions({quiet: true}));
     const code = await waitForBuildOutput(ready, ready.exitCode, {timeoutMs: times.ready});
     if (code !== 0) throw new BoxError('not_ready', `The box's readiness command exited ${code}.`);
     const ready_ms = Date.now() - began;
     const opened = {fresh: true, internet: options.enableInternet, image: spec.snapshot ? 'snapshot' : spec.image, instance: spec.instance, name,
-      start_ms: started - began, ready_ms, cold: ready_ms > BOX_COLD_MS, startup_retries: retries};
+      start_ms: started - began, ready_ms, cold: ready_ms > BOX_COLD_MS};
     this.opened.result = opened;
     await this.ctx.storage.put('opened', {spec, result: opened});
     return opened;

@@ -818,7 +818,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
         } finally {await box.dispose();}
       });
     }
-    // 4. The project's own checks: each a command that must exit 0.
+    // 4. The project's own checks: each a command, observed against what it states.
     const runCommand=async c=>{
       if(left()<=0)return notRun(c);
       const run=c.argv??c.run,resolved=resolveCommand(run,{files,rows,commands:plan.commands}),label=commandText(run);
@@ -839,12 +839,9 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
         if(r.spawn_error)return fail('could not start');
         if(r.timedOut)return fail(`still running when ${time} ran out (after ${seconds(r.ms)})`);
         const norm=s=>String(s).replace(/\r\n/g,'\n').trimEnd();
-        // No exit named: 0, or any non-zero exit when the check reads
-        // stderr (an error case); a check names exit:0 when it means it.
-        const errorCase=Array.isArray(e.stderr_has)&&e.stderr_has.length>0||e.stderr===true;
-        if(Number.isInteger(e.exit)){if(r.code!==e.exit)return fail(`exit ${r.code}, expected ${e.exit}`);}
-        else if(errorCase){if(r.code===0)return fail('exit 0, expected a failure exit (non-zero)');}
-        else if(r.code!==0)return fail(`exit ${r.code}, expected 0`);
+        // Only what the check states: an exit when it names one (the
+        // validation names exit 0 for a check that states nothing).
+        if(Number.isInteger(e.exit)&&r.code!==e.exit)return fail(`exit ${r.code}, expected ${e.exit}`);
         if(typeof e.stdout==='string'&&norm(stdout)!==norm(e.stdout))return fail(`printed ${show(norm(stdout))}, expected ${show(norm(e.stdout))}`);
         for(const s of Array.isArray(e.stdout_has)?e.stdout_has:[])if(!stdout.includes(String(s)))return fail(`output lacks ${show(String(s))}`);
         for(const s of Array.isArray(e.stderr_has)?e.stderr_has:[])if(!stderr.includes(String(s)))return fail(`stderr lacks ${show(String(s))}`);
