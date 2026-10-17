@@ -7,12 +7,15 @@
 // owner's allowlist narrowed to the dataset hosts, https only, manual and
 // rechecked redirects, no credentials, capped and decompressed bodies).
 //
-// A task room is an ordinary room started from the task's prompt: it
-// builds what the prompt asks, with its own validations, and completes on
-// them. The grader stays outside it: after the room completes, the run
-// grades the bundle the room ships, in a box of its own, with the
-// benchmark's tests (src/bench-run.js). The tests, the harness and the run's
-// nonce live only in the grader's input files.
+// A task room is an ordinary room started from the task's prompt, as the
+// benchmark wrote it: the runtime adds no language, path, library or
+// signature to it. The room builds what the prompt asks, with its own
+// validations, and completes on them. The grader stays outside it: after
+// the room completes, the run grades the bundle the room ships, in a box of
+// its own, with the benchmark's tests (src/bench-run.js); its harness finds
+// the entry in whichever file the room put it (src/bench-harness.js). The
+// tests, the harness and the run's nonce live only in the grader's input
+// files.
 import { fetchPolicy, guardedFetch, plainBody, readCapped, inputCapFor, allowedType, redactText, FetchRefused } from './fetcher.js';
 import { GOAL_LIMIT } from './model.js';
 import { pythonHarness as pyHarness, javascriptHarness as jsHarness } from './bench-harness.js';
@@ -33,16 +36,13 @@ export const BENCH_LIMITS = Object.freeze({
 // list, never widens it. huggingface.co covers datasets-server.huggingface.co.
 export const BENCH_HOSTS = Object.freeze(['huggingface.co', 'raw.githubusercontent.com']);
 export const BENCH_FORMATS = Object.freeze(['humaneval', 'mbpp', 'multipl-e', 'generic']);
-// The deliverable's path per language, and how the check runs the harness.
-const LANGS = Object.freeze({
-  python: {path: 'solution.py', exe: 'python3', name: 'Python', fence: 'python'},
-  javascript: {path: 'solution.js', exe: 'node', name: 'JavaScript', fence: 'javascript'}
-});
 const LANG_ALIASES = {py: 'python', python: 'python', python3: 'python', js: 'javascript', javascript: 'javascript', node: 'javascript', nodejs: 'javascript'};
 // The grader's input files: data files (.txt), so the harness is run by its
 // interpreter and never imported by the solution.
 export const FIXTURE = Object.freeze({harness: 'bench_check.txt', tests: 'bench_tests.txt', prompt: 'bench_prompt.txt', nonce: 'bench_nonce.txt'});
 export const PASS_MARK = 'BENCH-PASS';
+// How the check runs the harness, per language (src/bench-harness.js says why).
+const RUN = Object.freeze({python: `python3 -I ${FIXTURE.harness}`, javascript: `node -r ./${FIXTURE.harness} -e 0`});
 
 const clip = (v, n = 300) => String(v ?? '').slice(0, n);
 const plain = v => v && typeof v === 'object' && !Array.isArray(v);
@@ -84,69 +84,22 @@ export function detectFormat(row) {
   return null;
 }
 
-// --- names and signatures ----------------------------------------------------
+// --- names ---------------------------------------------------------------------
 
 const PY_DEF = /^[ \t]*(?:async[ \t]+)?def[ \t]+([A-Za-z_]\w*)[ \t]*\(/gm;
 const JS_FN = /(?:^|[\s;(])(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/g;
-// The parameter list after an opening bracket, to its balanced close.
-function paramList(text, from) {
-  let depth = 1, quote = '';
-  for (let i = from; i < text.length; i++) {
-    const c = text[i];
-    if (quote) { if (c === '\\') i++; else if (c === quote) quote = ''; continue; }
-    if (c === '"' || c === "'" || c === '`') quote = c;
-    else if ('([{'.includes(c)) depth++;
-    else if (')]}'.includes(c) && --depth === 0) return text.slice(from, i);
-  }
-  return text.slice(from);
-}
-// The top-level items of a parameter list.
-function paramItems(list) {
-  const out = [];
-  let depth = 0, cur = '', quote = '';
-  for (const ch of String(list ?? '')) {
-    if (quote) { cur += ch; if (ch === quote) quote = ''; continue; }
-    if (ch === '"' || ch === "'" || ch === '`') quote = ch;
-    if ('([{'.includes(ch)) depth++;
-    if (')]}'.includes(ch)) depth--;
-    if (ch === ',' && depth === 0) { out.push(cur); cur = ''; } else cur += ch;
-  }
-  out.push(cur);
-  return out.map(p => p.replace(/#[^\n]*/g, '').trim()).filter(Boolean);
-}
-// The signature as the goal states it: each parameter's name with its * or
-// ** (or ...) marker, "=…" for one with a default (never the default itself,
-// never a type), and the bare * and / markers; no cap.
-export function signatureText(list) {
-  return paramItems(list).map(p => {
-    if (p === '*' || p === '/') return p;
-    const m = /^(\*{1,2}|\.\.\.)?\s*([A-Za-z_$][\w$]*)/.exec(p);
-    if (!m) return null;
-    const rest = p.slice(m[0].length).replace(/^\s*:[^=]*/, '');
-    return `${m[1] || ''}${m[2]}${/^\s*=/.test(rest) ? '=…' : ''}`;
-  }).filter(x => x && x !== 'self').join(', ');
-}
-// Parameter names of a signature's text: types, defaults and stars dropped.
-export function paramNames(list) {
-  return paramItems(list).map(p => p.replace(/^\*{1,2}/, '').replace(/^\.\.\./, '').split(/[:=]/)[0].trim())
-    .filter(p => /^[A-Za-z_$][\w$]*$/.test(p) && p !== 'self').slice(0, 6);
-}
-const defsOf = (text, re) => [...String(text ?? '').matchAll(re)].map(m => {
-  const list = paramList(String(text), m.index + m[0].length);
-  return {name: m[1], params: paramNames(list), signature: signatureText(list)};
-});
-// The function a prompt asks for: the last one it defines (the one left open).
+const namesOf = (text, re) => [...String(text ?? '').matchAll(re)].map(m => m[1]);
+// The function a code prompt leaves open, which its tests call: the last one it defines.
 export function promptEntry(prompt, language) {
-  const defs = defsOf(prompt, language === 'javascript' ? JS_FN : PY_DEF);
-  return defs.at(-1) || null;
+  return namesOf(prompt, language === 'javascript' ? JS_FN : PY_DEF).at(-1) || null;
 }
 
 // --- harnesses ------------------------------------------------------------------
 // The supervisors the grader runs (src/bench-harness.js): a worker process
 // without the nonce, counted assertions and a token-signed report.
 export { HARNESS_EXIT } from './bench-harness.js';
-export const pythonHarness = ({entry, path, callCheck = true}) => pyHarness({entry, path, callCheck, files: FIXTURE, passMark: PASS_MARK});
-export const javascriptHarness = ({entry, path}) => jsHarness({entry, path, files: FIXTURE, passMark: PASS_MARK});
+export const pythonHarness = ({entry, callCheck = true}) => pyHarness({entry, callCheck, files: FIXTURE, passMark: PASS_MARK});
+export const javascriptHarness = ({entry}) => jsHarness({entry, files: FIXTURE, passMark: PASS_MARK});
 
 // --- tasks ------------------------------------------------------------------------
 
@@ -159,29 +112,20 @@ const languageOf = v => LANG_ALIASES[String(v ?? '').trim().toLowerCase()] || nu
 const taskId = (format, row, index) => clip(str(row.task_id) || str(row.name) || str(row.id) || `${format}-${index}`, 80)
   .replace(/^(\d+)$/, format === 'mbpp' ? 'MBPP/$1' : '$1');
 
-// The room's goal: the task's own words, then the one thing to deliver.
-function goalOf({prompt, language, entry, params, signature, format}) {
-  // A generic row that names its entry without a signature gets the name alone.
-  const L = LANGS[language], sig = signature != null ? `${entry}(${signature})` : params.length || format !== 'generic' ? `${entry}(${params.join(', ')})` : entry;
-  const deliver = `Deliver the ${L.name} function ${sig} in ${L.path}, using only the standard library.`;
-  if (format === 'mbpp') return `${prompt.trim()}\n\n${deliver}`;
-  if (format === 'generic' && !/(?:^|\n)\s*(?:def |function |async )/.test(prompt)) return `${prompt.trim()}\n\n${deliver}`;
-  return `Complete this ${L.name} function and deliver it. ${deliver} Keep the given signature, and define every other function the code below defines.\n\n\`\`\`${L.fence}\n${prompt.replace(/\s+$/, '')}\n\`\`\``;
-}
-
 // The grader of one task: a command check that runs the harness against the
 // bundle the room ships, with the benchmark's tests and the nonce as its
 // input files (validation-shaped, so src/checks.js checkPlan reads it).
 export function benchGrader({language, entry, tests, prompt = '', callCheck = true, nonce}) {
-  const L = LANGS[language];
-  const harness = language === 'python' ? pythonHarness({entry, path: L.path, callCheck}) : javascriptHarness({entry, path: L.path});
+  const harness = language === 'python' ? pythonHarness({entry, callCheck}) : javascriptHarness({entry});
   const files = {[FIXTURE.harness]: harness, [FIXTURE.tests]: tests, [FIXTURE.nonce]: nonce};
   if (language === 'python' && prompt) files[FIXTURE.prompt] = prompt;
-  return {id: 'grader', serves: [], check: {kind: 'command', run: `${L.exe} ${FIXTURE.harness}`, files, expect: {exit: 0, stdout_has: [`${PASS_MARK} ${nonce}`]}}};
+  return {id: 'grader', serves: [], check: {kind: 'command', run: RUN[language], files, expect: {exit: 0, stdout_has: [`${PASS_MARK} ${nonce}`]}}};
 }
 
-// One row as a task, or {skip} with the reason. opts: format (forced),
-// nonce (tests pass a fixed one).
+// One row as a task, or {skip} with the reason: its prompt, verbatim, is
+// the goal the task's room starts from; its entry (the function the tests
+// call) and tests are the grader's only. opts: format (forced), nonce
+// (tests pass a fixed one).
 export function taskFromRow(row, index = 0, {format = null, nonce = null} = {}) {
   const f = format || detectFormat(row);
   if (!f) return {skip: 'unrecognised row: expected HumanEval, MBPP, MultiPL-E or {id, prompt, tests} fields'};
@@ -189,16 +133,15 @@ export function taskFromRow(row, index = 0, {format = null, nonce = null} = {}) 
   let language, prompt, tests, entry = null, callCheck = true, promptFixture = '';
   if (f === 'humaneval') {
     language = 'python'; prompt = str(row.prompt); tests = str(row.test); promptFixture = prompt;
-    const def = defsOf(prompt, PY_DEF).find(d => d.name === str(row.entry_point).trim());
-    entry = {name: str(row.entry_point).trim(), params: def?.params || [], signature: def?.signature};
+    entry = str(row.entry_point).trim();
   } else if (f === 'mbpp') {
     language = 'python'; prompt = str(row.text) || str(row.prompt); callCheck = false;
     const list = row.test_list.filter(t => typeof t === 'string');
     const all = list.join('\n');
     // The function the asserts call: one the reference code defines (its
-    // name and parameters only; the code itself is never shown).
-    const defs = defsOf(str(row.code), PY_DEF).filter(d => new RegExp(`\\b${d.name}\\s*\\(`).test(all));
-    entry = defs.sort((a, b) => all.search(new RegExp(`\\b${a.name}\\s*\\(`)) - all.search(new RegExp(`\\b${b.name}\\s*\\(`)))[0] || null;
+    // name, for the grader; the room never sees the code or the name).
+    const names = namesOf(str(row.code), PY_DEF).filter(n => new RegExp(`\\b${n}\\s*\\(`).test(all));
+    entry = names.sort((a, b) => all.search(new RegExp(`\\b${a}\\s*\\(`)) - all.search(new RegExp(`\\b${b}\\s*\\(`)))[0] || null;
     const imports = Array.isArray(row.test_imports) ? row.test_imports.filter(t => typeof t === 'string') : [];
     tests = [...imports, str(row.test_setup_code), ...list].filter(s => s.trim()).join('\n') + '\n';
   } else if (f === 'multipl-e') {
@@ -210,21 +153,17 @@ export function taskFromRow(row, index = 0, {format = null, nonce = null} = {}) 
     language = languageOf(row.language) || (/(?:^|\n)\s*(?:async\s+)?def\s/.test(str(row.prompt)) ? 'python' : /\bfunction\s+[A-Za-z_$]/.test(str(row.prompt)) ? 'javascript' : null);
     if (!language) return {id, skip: 'no language: give "language" (python or javascript) or a def/function in the prompt'};
     prompt = str(row.prompt); tests = Array.isArray(row.tests) ? row.tests.filter(t => typeof t === 'string').join('\n') : str(row.tests);
-    const named = str(row.entry_point) || str(row.entry);
-    const fromPrompt = promptEntry(prompt, language);
-    entry = named ? (fromPrompt?.name === named.trim() ? fromPrompt : {name: named.trim(), params: []}) : fromPrompt;
+    entry = (str(row.entry_point) || str(row.entry)).trim() || promptEntry(prompt, language);
     if (language === 'python') promptFixture = /(?:^|\n)\s*(?:async\s+)?def\s/.test(prompt) ? prompt : '';
   }
-  if (!entry?.name || !/^[A-Za-z_$][\w$]{0,63}$/.test(entry.name)) return {id, skip: 'no entry function could be read from the row'};
+  if (!entry || !/^[A-Za-z_$][\w$]{0,63}$/.test(entry)) return {id, skip: 'no entry function could be read from the row'};
   if (!prompt.trim()) return {id, skip: 'the row has no prompt'};
   if (!String(tests ?? '').trim()) return {id, skip: 'the row has no tests'};
   for (const [what, text] of [['tests', tests], ['prompt', promptFixture]])
     if (String(text).length > BENCH_LIMITS.fixture) return {id, skip: `its ${what} (${String(text).length} characters) exceed the check's ${BENCH_LIMITS.fixture}-character input file`};
-  const params = entry.params || [];
-  const goal = goalOf({prompt, language, entry: entry.name, params, signature: entry.signature, format: f});
-  if (goal.length > BENCH_LIMITS.goal) return {id, skip: `its prompt makes a goal of ${goal.length} characters (at most ${BENCH_LIMITS.goal})`};
-  const grader = benchGrader({language, entry: entry.name, tests, prompt: promptFixture, callCheck, nonce: nonce || newNonce()});
-  return {id, format: f, language, entry: entry.name, prompt: goal, grader};
+  if (prompt.length > BENCH_LIMITS.goal) return {id, skip: `its prompt (${prompt.length} characters) is longer than a room's goal (at most ${BENCH_LIMITS.goal})`};
+  const grader = benchGrader({language, entry, tests, prompt: promptFixture, callCheck, nonce: nonce || newNonce()});
+  return {id, format: f, language, entry, prompt, grader};
 }
 
 // Rows → tasks, at most `limit`, with the skipped rows and why.
@@ -392,21 +331,21 @@ export function roomOutcome(s) {
   if (s.infra_errors >= 3 && s.infra_errors * 4 >= (s.turns || 0)) return out('error', `the turn budget went mostly on platform failures (${s.infra_errors} of ${s.turns} turns)`);
   return out('fail', s.pause?.text || 'the turn budget ended before the task was solved');
 }
-// The grader's result as an outcome: pass, fail (what it observed, the
-// complaint a run with feedback 'until_done' sends the room), or error when
-// it could not run.
+// The grader's result as an outcome: pass, fail (what it observed, whole:
+// the complaint a run with feedback 'until_done' sends the room), or error
+// when it could not run.
 export function gradeOutcome(g) {
   if (!g || g.infrastructure) return {outcome: 'error', detail: clip(`the grader could not run: ${g?.infrastructure || 'no answer'}`)};
-  return g.passed ? {outcome: 'pass', detail: ''} : {outcome: 'fail', detail: clip(g.detail || 'the benchmark\'s tests failed', 900)};
+  return g.passed ? {outcome: 'pass', detail: ''} : {outcome: 'fail', detail: g.detail || 'the benchmark\'s tests failed'};
 }
 
 const SCORED = new Set(['pass', 'fail', 'timeout']);
-// Aggregates of a run's task rows: pass@1 (feedback 'once': each task's
-// first grading) over the scored tasks (pass, fail, timeout; errors are
-// counted apart), and, for a run with feedback 'until_done', the share that
-// passed once the grader's failures went back as complaints, with the mean
-// grading rounds it took; mean wall time, total tokens and Container seconds.
-export function aggregate(rows, {feedback = 'once'} = {}) {
+// Aggregates of a run's task rows: pass@1 (each task's first grading) over
+// the scored tasks (pass, fail, timeout; errors are counted apart), and, for
+// a run with feedback 'until_done', the share that passed once the grader's
+// failures went back as complaints, with the mean gradings it took; mean
+// wall time, total tokens and Container seconds.
+export function aggregate(rows, {feedback} = {}) {
   const done = rows.filter(r => r.outcome);
   const first = r => r.once || r.outcome;
   const by = Object.fromEntries(['pass', 'fail', 'timeout', 'error', 'stopped'].map(k => [k, done.filter(r => first(r) === k).length]));

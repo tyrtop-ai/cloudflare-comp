@@ -8932,18 +8932,19 @@ export class ControlRoom extends DurableObject {
   }
   // Bench (feedback 'until_done'): what the grader observed on the bundle the
   // room shipped is a complaint at the room's manager, verbatim, and the room
-  // runs again for it with up to budget turns.
-  graderComplaint(text, budget=20) {
+  // goes on for it with the turns its budget has left (budget_left, what its
+  // last run left): the room's own budget bounds every round together.
+  graderComplaint(text) {
     const m=this.roomManager();
     if(!m||!this.node(m))return {error:'Start a run first.'};
     if(this.busy||this.get('status')==='running')return {error:'The room is running.',status:409};
+    const left=Number(this.get('budget_left','0'))||0;
+    if(left<1)return {error:'The room\'s turn budget is spent.'};
     this.resetForAmendment();
-    this.insertProblem({holder:m,kind:'run',stage:'complaint',source:'grader',input:'',parties:[],detail:clip(text,950),facts:{}});
+    this.insertProblem({holder:m,kind:'run',stage:'complaint',source:'grader',input:'',parties:[],detail:text,facts:{}});
     this.event('room','grader_complaint',clip(`The grader's observation goes to "${this.node(m).label}" as a complaint: ${text}`,900),m);
     this.wake(m);
-    let cap;
-    try {cap=normalizeTurnBudget(budget);} catch {cap=20;}
-    this.runAgain(cap,'The grader\'s complaint runs');
+    this.runAgain(left,'The grader\'s complaint runs');
     return {status:'running'};
   }
   // A change the person gives (a follow-up prompt, or the queue's next): a
