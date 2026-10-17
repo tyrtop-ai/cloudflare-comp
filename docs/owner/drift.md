@@ -28,7 +28,7 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - drift, `src/toolchains.js:9`
 - Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous || 05:17: "there shouldn't be any version pinning or code type pinning or specific prompt pinning."
 - Required: The box runs whatever code type the work is written in, with no fixed set of languages pinned by the runtime.
-- Status: reopened by the round 7 recheck (1 of 3 closed): The box still runs a fixed set of code types. Dockerfile.box installs Node, Python, Go, Rust, C/C++, Java, Ruby and PHP, and nothing else. CALL_EXTENSIONS (src/toolchains.js:246) is built only from the rows that have a call_adapter, and the TypeScript row covers only .ts/.mts/.cts (toolchains.js:177 | The fix (f041aa3, 039cc00) does not remove the pinned set of languages. It refuses the languages outside it when they are declared. src/toolchains.js:9-102 and :176-242 are still a fixed list of rows (JavaScript, Python, text, TypeScript, shell, Go, Rust, C, C++, Java, Ruby, PHP). CALL_EXTENSIONS (t
+- Status: waiting on the owner: the box runs a fixed set of languages (Dockerfile.box); a function contract in .jsx, .tsx, .kt, .cs or .swift is refused at declaration with the reason. Calling them needs their toolchains in the image (esbuild or typescript, kotlinc, dotnet-sdk, swiftc) and an adapter each, or toolchains installed at run time.
 
 ### R2-edges/chrono-1: Base files wait behind a person's grant (base_confirm hold), vetted by Clef and a text heuristic
 - extra, `src/room-inputs.js:259`
@@ -52,7 +52,7 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - unfixed, `src/toolchains.js:192`
 - Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous || 05:17: "there shouldn't be any version pinning or code type pinning or specific prompt pinning."
 - Required: The box runs whatever code type the work is written in, with no runtime-pinned list of languages.
-- Status: reopened by the round 7 recheck (1 of 3 closed): Same claimed fix and same result as R2-compiler/record-6. The fix moved the language limit from the compiler (an infrastructure 'not run') to the splitter's contract() refusal (splitter.js:89, validations.js:28 uncallable), and the list is still fixed. .jsx/.tsx (React GUIs, which the owner complain | Same code as R2-compiler/record-6. The fixed rows in src/toolchains.js:176-242 remain. .jsx, .tsx, .kt, .cs and .swift are no row's extensions, so nothing compiles them. A function contract in one of them is refused at declaration (splitter.js:89 via validations.js:28 uncallable), and the refusal te
+- Status: waiting on the owner: the box runs a fixed set of languages (Dockerfile.box); a function contract in .jsx, .tsx, .kt, .cs or .swift is refused at declaration with the reason. Calling them needs their toolchains in the image (esbuild or typescript, kotlinc, dotnet-sdk, swiftc) and an adapter each, or toolchains installed at run time.
 
 ### R3-compiler/code-4: Call adapters run an anti-forgery protocol (nonce file, captured globals, supervisor/worker split) against the code they test
 - extra, `container/adapters/call.mjs:32`
@@ -82,7 +82,7 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - drift, `src/checks.js:38`
 - Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
 - Required: A function contract the box accepts in any language can be called by a check: the box runs the call in that language. The compiler does not report a defined function as missing because the runtime lacks an adapter for it.
-- Status: reopened by the round 7 recheck (1 of 3 closed): The required outcome is: 'The compiler does not report a defined function as missing because the runtime lacks an adapter for it.' It is still possible. (1) call-native.mjs:241 and :293-294 test each step's name against a fixed per-language regex (Rust /^[A-Za-z_]\w*(::[A-Za-z_]\w*)*$/ at :111, C /^ | The false 'defines no X' complaint is gone for files with no adapter: they are now refused at declaration. But commit 039cc00 changed container/build-runner.mjs:974-975 so that `rec.unsupported`, the adapter's own inability to build an argument from JSON, is now `fail(...)`, a worker complaint, wher
+- Status: waiting on the owner (where an adapter's real limit goes: a worker complaint today, infrastructure before, or the person). partly fixed (b707046: the Go, Rust, C, C++ and Java adapters build the file's own structs, classes, enums and single-implementation interfaces from JSON. What JSON cannot express (a function, an interface several types implement) is still the check's observed failure: where that goes waits on the owner.)
 
 ### R4-compiler/chrono-2: The runtime guesses which module a call check loads by scanning every bundle file for the function name, instead of using the served contract's path
 - extra, `src/checks.js:32`
@@ -106,19 +106,13 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - unfixed, `src/checks.js:110`
 - Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
 - Required: Any language the box accepts must be callable by a check: the box runs the call in that language, so a function contract in Go, Rust, Java, C or C++ is checked like a JavaScript one.
-- Status: reopened by the round 7 recheck (1 of 3 closed): Go, Rust, Java, C, C++ and shell now have a call adapter (src/toolchains.js:189, 202, 209, 221, 225, 229; container/adapters/call-native.mjs). They are still not 'checked like a JavaScript one'. A step whose parameter type the adapter cannot build from JSON (a C struct pointer, for example) becomes  | Go, Rust, Java, C, C++ and shell now have call adapters (toolchains.js:189-229), and nothing reruns as infrastructure for ever. But they are not 'checked like a JavaScript one'. Every adapter refuses parameter types it cannot build from JSON: call-cpp.hpp:119, call-go.go:118, call-rust.rs:231, CallW
+- Status: waiting on the owner (where an adapter's real limit goes: a worker complaint today, infrastructure before, or the person). partly fixed (b707046: the Go, Rust, C, C++ and Java adapters build the file's own structs, classes, enums and single-implementation interfaces from JSON. What JSON cannot express (a function, an interface several types implement) is still the check's observed failure: where that goes waits on the owner.)
 
 ### R5-edges/code-1: A base repo's glue/ and .recursive/ files, and names with format characters or not in NFC, are dropped before any agent sees them
 - unfixed, `src/room-inputs.js:99`
 - Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
 - Required: Keep every file of the repo the room starts from in the agents' world as it is. No directory-name list, character heuristic or length rule decides which of the project's files exist.
 - Status: waiting on the owner: the glue/ and .recursive/ drop is gone (9de17da); a repo path sanitizeText would change (format or invisible characters, not NFC, an envelope) is still skipped as 'unsafe path'. That is the fetcher's injection heuristic applied to file names, which waits on the owner with R2-worker/code-4. reopened by the round 6 recheck (0 of 3 closed): keepBaseFiles no longer drops glue/ or .recursive/ by name (src/room-inputs.js:87-99). But fetchGithubRepo still skips every repo path that sanitizeText would change: `if (!safePath(path) || sanitizeText(path) !== path) return skip(..., 'unsafe path')
-
-### R6-worker/chrono-3: The broker clips what a worker sees of a linked page: the title to 120 characters and the source URL in an answer's label to 500
-- extra, `src/broker.js:57`
-- Owner (2026-10-16 19:41): how is this possible - this is the place where i WANT worker context? (also 2026-10-17 00:25: "it wasn't the question. I don't understand the need")
-- Required: Give the worker the page's title and source as they are, with no character clip chosen by the runtime.
-- Status: reopened by the round 7 recheck (1 of 3 closed): The broker's own clips are gone (70a29de): broker.js catalogue uses sanitizeText(s.title) and sourceAnswer uses sanitizeText(url), with no slice. But the worker still gets the page title and URL cut by the runtime. workerView puts this.sourceInputs(id,'chunks') into the worker's world (src/index.js: | 70a29de only took the slices out of broker.js (catalogue :57, sourceAnswer :98). The worker still gets clipped titles and URLs in two ways. (1) Its view's world includes this.sourceInputs(id,'chunks') (index.js:9004). That goes through chunksFor (room-inputs.js:242) to quoteSource (fetcher.js:619-62
 
 ### R6-compiler/chrono-1: Every check, run and install in the box runs under prlimit caps the owner never asked for (processes, a 64 MiB file size limit, 1 GiB data)
 - extra, `container/build-runner.mjs:445`
@@ -130,7 +124,7 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - drift, `container/build-runner.mjs:844`
 - Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
 - Required: Run each check exactly as the splitter wrote it, asserting only the expectations it declares. Whatever is asserted must be in the validation, and so in the example the worker is shown.
-- Status: reopened by the round 7 recheck (0 of 3 closed): The fix is only partial. Inside the runs' network namespace a run counts as ready on any HTTP answer (http-check.mjs pollReady). Without a namespace, waitReady still requires a status below 500: build-runner.mjs:886 has `if(r.status<500)return {ready:true}`, and the comment at 873 says 'Ready: below | The command and HTTP parts are fixed. runCommand asserts an exit only when e.exit is set (build-runner.mjs:841-844). http-check's runHttpSteps has no implicit 5xx failure (http-check.mjs:99-104). browser goto no longer fails on a status (browser-check.mjs:196-201). The ledger also says 'a run ready  | Command checks are fixed: build-runner.mjs:840-846 asserts an exit only when e.exit is set, and validations.js:141-142 stores exit 0 in the validation itself, so the example shows it. The http client has no 5xx rule (http-check.mjs:99), and pollReady accepts any status (deed89e). But the runner's ow
+- Status: partly fixed (fd88db3: no exit, 5xx or goto-status assertion the splitter did not write; the in-namespace ready poll counts any answer). not done: this session's permission check refused making build-runner.mjs's ready poll without a network namespace count any answer as ready (it still requires below 500) as a security weakening, so it waits for the owner's decision.
 
 ### R6-compiler/code-3: The box refuses a command check's input file at a path the bundle also holds, and the refusal goes to a worker as its failure
 - extra, `container/build-runner.mjs:830`
@@ -138,93 +132,97 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - Required: Drop the fixture path refusal. Write the check's input files as the splitter declared them into the check's fresh copy, so the check runs as written. Make no path rule that sends a complaint to a worker about something it did not write.
 - Status: not done: this session's permission check refused letting a check's input file replace a bundle file in the check's own copy (dropping the path refusal) as a security weakening, so it waits for the owner's decision.
 
-### R7-room/record-1: A person's follow-up change reaches a worker as a '[complaint]' carrying the room's goal text verbatim, outside its prompt, and a test pins it
-- drift, `src/index.js:8980`
-- Owner (2026-10-16 05:44): the workers shouldn't know about their siblings. or about the overall project goal. it should be literally getting handed (here is your prompt, okay have fun now) after something decided it shouldnt' split
-- Required: Don't hand the room's goal change to a worker as a complaint. A worker gets only its prompt, its files and the complaints about what its files did, so a change that concerns a worker must reach it as part of the prompt it is handed, not as goal text labelled as an observation.
-- Status: to be fixed (round 7 fixer)
-
-### R7-room/record-2: An answered ask makes the runtime rewrite level-file entries: the asker's and every intermediate manager's assignment gain the answered name as a call
-- drift, `src/index.js:8886`
-- Owner (2026-10-16 05:39): Managers rewrite their children's assignments at runtime. - this is why managers are clef. Clef is built to walk the tree and route questions. The builder can know what the original design is from the splitter, sure, but the manager doesn't need to know that, that's why we use an artifact for that.
-- Required: A manager answers the ask (the asker hears the contract) and routes. It does not rewrite its children's assignments in the splitter's design artifact, so the level file keeps the original design the splitter wrote.
-- Status: to be fixed (round 7 fixer)
-
-### R7-splitter/code-1: Admitting a level gives every piece all its parent's packages for a guessed language, whatever packages the splitter named for it
-- extra, `src/packages.js:83`
-- Owner (2026-10-15 22:11; 2026-10-16 20:38): packages should be listed in the durable object upon creation, same way as interfaces. That way it can have the same hierarchy as interfaces || e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
-- Required: Give a piece the packages the splitter named for it through piece(), nothing more, the same way it gets only the contracts named for it. Drop the language-guess inheritance.
-- Status: to be fixed (round 7 fixer)
-
-### R7-splitter/record-1: A validation a job writes for a contract the level already has never joins that contract's serves, so its examples reach no worker though the level's compiler checks it
-- drift, `src/index.js:8510`
-- Owner (2026-10-16 05:49 / 05:50): the worker doesn't get validations. The example sohuld be built from the validation. || there must 3 different examples for each contract
-- Required: Every contract that a validation serves must carry that validation's id, including contracts the level already had, so the worker who delivers the contract gets its examples, rendered from the validation.
-- Status: to be fixed (round 7 fixer)
-
-### R7-worker/record-1: The builder's compare-and-store gives up after an invented six joins, then re-runs the whole builder session on the room's budget
-- extra, `src/index.js:131`
-- Owner (2026-10-17 00:25): it wasn't the question. I don't understand the need (answering Claude's 'The 100-call cap was my own invention. I'd drop it and count each call against the room's turn budget'); also 2026-10-15 23:16: "no? there should be no stopgaps? ever?"
-- Required: Drop the runtime-picked count. Keep joining and comparing until the children's work reads the same, and store the builder's finished work. No invented number should decide that a model turn is spent again.
-- Status: to be fixed (round 7 fixer)
-
 ### R7-compiler/chrono-1: Without a network namespace, a run is ready only when its ready path answers below 500: an assertion no validation states
 - unfixed, `container/build-runner.mjs:886`
 - Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
 - Required: Treat any answer on the ready path as ready in both branches, as pollReady already does, so that a check asserts only what its validation states.
-- Status: to be fixed (round 7 fixer)
+- Status: not done: this session's permission check refused making build-runner.mjs's ready poll without a network namespace count any answer as ready (it still requires below 500) as a security weakening, so it waits for the owner's decision.
 
 ### R7-compiler/chrono-2: Function contracts are still refused in every language outside the box's fixed call-adapter list (.jsx, .tsx, .kt, .cs, .swift), and a test pins it
 - unfixed, `src/toolchains.js:246`
 - Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
 - Required: Let the box run and call code in whatever language the work is written in, rather than refusing contracts outside a fixed list. Drop the test that pins the refusal of those languages.
-- Status: to be fixed (round 7 fixer)
+- Status: waiting on the owner: the box runs a fixed set of languages (Dockerfile.box); a function contract in .jsx, .tsx, .kt, .cs or .swift is refused at declaration with the reason. Calling them needs their toolchains in the image (esbuild or typescript, kotlinc, dotnet-sdk, swiftc) and an adapter each, or toolchains installed at run time.
 
 ### R7-compiler/chrono-3: The browser check blocks every request a page makes to anything but the served origins (proxy to 127.0.0.1:1, host-resolver rules, route abort), inside the single-use box
 - extra, `container/adapters/browser-check.mjs:264`
 - Owner (2026-10-15 15:52): i mean the runtime should just make it architecturally impossible for the agents to do something. e.g. only exposing what they have access to so that the agents only know what they exist. otherwise for testing, they should just get their own little testing box instead of limiting what they can do
 - Required: Drop the browser's own request blocking. Let the page run in the check's box as the box is, with the box as the isolation.
-- Status: to be fixed (round 7 fixer)
+- Status: not done: this session's permission check refused removing the browser check's own network blocking (dead proxy, host-resolver rules, request and WebSocket aborts, goto refusal) as a security weakening, so it waits for the owner's decision.
 
 ### R7-compiler/code-1: Call adapter's own limits (a parameter type it cannot build from JSON) go to a worker as a complaint
 - drift, `container/build-runner.mjs:975`
 - Owner (2026-10-16 19:44): 1 & 2 are not issues with the worker. How woulda complaint conflict with the prompt 3 & 4 are issues with the runtime / routing
 - Required: An adapter's inability to call a defined function is the runtime's issue, not a worker's complaint. Fix it in the runtime (the adapter calls the function in its language) rather than sending it to the worker as its failure.
-- Status: to be fixed (round 7 fixer)
+- Status: waiting on the owner (where an adapter's real limit goes: a worker complaint today, infrastructure before, or the person). partly fixed (b707046: the Go, Rust, C, C++ and Java adapters build the file's own structs, classes, enums and single-implementation interfaces from JSON. What JSON cannot express (a function, an interface several types implement) is still the check's observed failure: where that goes waits on the owner.)
+
+## Fixed, awaiting recheck
+
+### R6-worker/chrono-3: The broker clips what a worker sees of a linked page: the title to 120 characters and the source URL in an answer's label to 500
+- extra, `src/broker.js:57`
+- Owner (2026-10-16 19:41): how is this possible - this is the place where i WANT worker context? (also 2026-10-17 00:25: "it wasn't the question. I don't understand the need")
+- Required: Give the worker the page's title and source as they are, with no character clip chosen by the runtime.
+- Fixed in: 7479efb: a linked page's title and URL are kept whole on every path to a splitter or worker (htmlToText, titleOf, fetchSource, quoteSource, sourceSummaries, loadSources). (with 70a29de's broker change).
+
+### R7-room/record-1: A person's follow-up change reaches a worker as a '[complaint]' carrying the room's goal text verbatim, outside its prompt, and a test pins it
+- drift, `src/index.js:8980`
+- Owner (2026-10-16 05:44): the workers shouldn't know about their siblings. or about the overall project goal. it should be literally getting handed (here is your prompt, okay have fun now) after something decided it shouldnt' split
+- Required: Don't hand the room's goal change to a worker as a complaint. A worker gets only its prompt, its files and the complaints about what its files did, so a change that concerns a worker must reach it as part of the prompt it is handed, not as goal text labelled as an observation.
+- Fixed in: 3aac5cf: a change routed to a worker (or a manager before its split) is recorded on the row and shown in its prompt after the entry's (assignmentOf), never as a complaint.
+
+### R7-room/record-2: An answered ask makes the runtime rewrite level-file entries: the asker's and every intermediate manager's assignment gain the answered name as a call
+- drift, `src/index.js:8886`
+- Owner (2026-10-16 05:39): Managers rewrite their children's assignments at runtime. - this is why managers are clef. Clef is built to walk the tree and route questions. The builder can know what the original design is from the splitter, sure, but the manager doesn't need to know that, that's why we use an artifact for that.
+- Required: A manager answers the ask (the asker hears the contract) and routes. It does not rewrite its children's assignments in the splitter's design artifact, so the level file keeps the original design the splitter wrote.
+- Fixed in: 3aac5cf: an answered ask is recorded in the asker's answers with the contract's name; callableOf reads it; no level-file entry or uses is rewritten (amendEntry gone).
+
+### R7-splitter/code-1: Admitting a level gives every piece all its parent's packages for a guessed language, whatever packages the splitter named for it
+- extra, `src/packages.js:83`
+- Owner (2026-10-15 22:11; 2026-10-16 20:38): packages should be listed in the durable object upon creation, same way as interfaces. That way it can have the same hierarchy as interfaces || e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
+- Required: Give a piece the packages the splitter named for it through piece(), nothing more, the same way it gets only the contracts named for it. Drop the language-guess inheritance.
+- Fixed in: 296ba0b: a piece holds only the packages its splitter named that its parent's row lists (no language guess, pieceLanguages gone); a level handed down whole gives its worker every package its row lists.
+
+### R7-splitter/record-1: A validation a job writes for a contract the level already has never joins that contract's serves, so its examples reach no worker though the level's compiler checks it
+- drift, `src/index.js:8510`
+- Owner (2026-10-16 05:49 / 05:50): the worker doesn't get validations. The example sohuld be built from the validation. || there must 3 different examples for each contract
+- Required: Every contract that a validation serves must carry that validation's id, including contracts the level already had, so the worker who delivers the contract gets its examples, rendered from the validation.
+- Fixed in: bc918ec: a validation a job writes for a contract the level already has joins that contract's serves on every level file and row below that carries it (serveBelow).
+
+### R7-worker/record-1: The builder's compare-and-store gives up after an invented six joins, then re-runs the whole builder session on the room's budget
+- extra, `src/index.js:131`
+- Owner (2026-10-17 00:25): it wasn't the question. I don't understand the need (answering Claude's 'The 100-call cap was my own invention. I'd drop it and count each call against the room's turn budget'); also 2026-10-15 23:16: "no? there should be no stopgaps? ever?"
+- Required: Drop the runtime-picked count. Keep joining and comparing until the children's work reads the same, and store the builder's finished work. No invented number should decide that a model turn is spent again.
+- Fixed in: e3fe6df: the builder's compare-and-store joins until the input reads the same, with no count (ASSEMBLE_TRIES and piece_moving gone).
 
 ### R7-compiler/code-2: Native call adapter decides by an ASCII name regex that a defined function does not exist
 - extra, `container/adapters/call-native.mjs:294`
 - Owner (2026-10-16 20:38): e.g. instead of the splitter writting a flat answer, and the runtime fixing it via matching or whatever, The splitter should be given interfaces and then write via those interfaces. That's it
 - Required: Call the function by the name the contract declares, as its language reads it, with no runtime name pattern deciding that it is missing. Only the compiler's own answer says whether the file defines it.
-- Status: to be fixed (round 7 fixer)
+- Fixed in: 711eec9: no name regex in call-native.mjs decides existence; the compiler's answer does. v8 JavaScript and Python names follow their languages' Unicode identifier rules.
 
 ### R7-edges/chrono-1: A linked page's title is still cut to 200 characters, and its URL to 500, before any splitter or worker sees it: the R6-worker/chrono-3 fix only removed the broker's copy of the clip
 - unfixed, `src/fetcher.js:620`
 - Owner (2026-10-16 19:41; 2026-10-17 00:25): how is this possible - this is the place where i WANT worker context? || it wasn't the question. I don't understand the need
 - Required: Store and quote a linked page's title and URL as they are, with no character clip chosen by the runtime, in fetchSource, loadSources, quoteSource and sourceSummaries, so the worker and the splitter get them whole.
-- Status: to be fixed (round 7 fixer)
+- Fixed in: 7479efb: a linked page's title and URL are kept whole on every path to a splitter or worker (htmlToText, titleOf, fetchSource, quoteSource, sourceSummaries, loadSources).
 
 ### R7-edges/chrono-2: The benchmark loader refuses dataset links the owner's allowlist covers: it narrows FETCH_ALLOW to two hard-coded hosts
 - extra, `src/bench.js:35`
 - Owner (2026-10-15 05:16): 2. I want to be able to point this thing at links and benchmarks, like AI benchmarks
 - Required: Fetch a benchmark from any link the owner's own allowlist covers, as the goal's links are fetched, with no runtime-picked subset of hosts.
-- Status: to be fixed (round 7 fixer)
+- Fixed in: ee122f2: BENCH_HOSTS is gone; datasets are fetched under the owner's FETCH_ALLOW as it is.
 
 ### R7-edges/chrono-3: Bench cuts each task id to 80 characters, then silently skips any later row whose cut id matches an earlier one
 - extra, `src/bench.js:135`
 - Owner (2026-10-15 05:16; 2026-10-17 00:25): 2. I want to be able to point this thing at links and benchmarks, like AI benchmarks || it wasn't the question. I don't understand the need
 - Required: Use each row's id as written, with no runtime length cap, so a benchmark's tasks are every row it holds, and list every skipped row.
-- Status: to be fixed (round 7 fixer)
+- Fixed in: ee122f2: a task id is used as written (no 80-character clip) and every skipped row is listed; bench.js has no clip left.
 
 ### R7-records/chrono-1: how-it-works and INSTALL still say a call step whose parameter type cannot be built from JSON is infrastructure (rerun, never a complaint), the behaviour 039cc00 removed
 - record, `docs/how-it-works.md:411`
 - Owner (2026-10-15 05:16): 1. more code that just js. Any code type. should be adrogenous
 - Required: Rewrite how-it-works.md:411 and INSTALL-CLOUDFLARE.md:335 to say what the box does: a step the call adapter cannot build from JSON is what the check observed, a failed step that goes back as a complaint. Remove it from the list of checks that could not run.
-- Status: to be fixed (round 7 fixer)
-
-## Fixed, awaiting recheck
-
-(none)
+- Fixed in: the round 7 merge commit: how-it-works and INSTALL describe what the adapters build and that what JSON cannot give is the check's observed failure.
 
 ## Disputed
 
