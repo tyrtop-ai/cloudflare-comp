@@ -250,8 +250,11 @@ test('links in the prompt: fetched once with the owner\'s allowlist, stored and 
   // Each link reader is an agent of the room, in the snapshot the graph draws: a part's reader each, then the page's,
   // each named reader-<hex16> as every row is <role>-<hex16> (owner 2026-10-16 05:08).
   const readers = room.snapshot().readers;
-  assert.deepEqual(readers.map(r => [r.ref, r.role, r.noted, !!r.ended_at]), [['S1#1', 'source_gist', true, true],
-    ['S1#2', 'source_gist', true, true], ['S1#3', 'source_gist', true, true], ['S1', 'source_summary', true, true]]);
+  // The parts are read at the same time, so they end in any order; the page's reader reads after its parts.
+  const row = r => [r.ref, r.role, r.noted, !!r.ended_at];
+  assert.deepEqual(readers.slice(0, 3).map(row).sort(), [['S1#1', 'source_gist', true, true],
+    ['S1#2', 'source_gist', true, true], ['S1#3', 'source_gist', true, true]]);
+  assert.deepEqual(row(readers[3]), ['S1', 'source_summary', true, true]);
   for (const r of readers) assert.match(r.id, /^reader-[0-9a-f]{16}$/);
   assert.equal(new Set(readers.map(r => r.id)).size, readers.length);
   assert.deepEqual(lintRequests(room, calls), []);

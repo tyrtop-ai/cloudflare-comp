@@ -62,9 +62,9 @@ const COUNT_C = {name: 'count_words', kind: 'function', does: 'counts each word 
 const TOP_C = {name: 'top_words', kind: 'function', does: 'the n most frequent words of a text, most frequent first', inputs: [{name: 'text', is: 'a text'}, {name: 'n', is: 'how many'}], outputs: 'a list of word and count pairs'};
 const WF_LEVEL = {contracts: [WORDFREQ_C, COUNT_C, TOP_C],
   validations: [
-    cmd('c1', ['wordfreq'], ['wordfreq', 'sample.txt', '2'], {'sample.txt': 'the cat and the hat and the bat\n'}, 'the 3\nand 2'),
-    cmd('c2', ['wordfreq'], ['wordfreq', 'a.txt', '1'], {'a.txt': 'b a b\n'}, 'b 2'),
-    cmd('c3', ['wordfreq'], ['wordfreq', 't.txt', '3'], {'t.txt': 'x y z x\n'}, 'x 2\ny 1\nz 1'),
+    cmd('c1', ['wordfreq'], ['wordfreq', 'sample.txt', '2'], {'sample.txt': 'the cat and the hat and the bat\n'}, 'the 3\nand 2\n'),
+    cmd('c2', ['wordfreq'], ['wordfreq', 'a.txt', '1'], {'a.txt': 'b a b\n'}, 'b 2\n'),
+    cmd('c3', ['wordfreq'], ['wordfreq', 't.txt', '3'], {'t.txt': 'x y z x\n'}, 'x 2\ny 1\nz 1\n'),
     callCheck('w1', ['count_words'], [['count_words', ['b a b'], {a: 1, b: 2}]]),
     callCheck('w2', ['count_words'], [['count_words', ['x'], {x: 1}]]),
     callCheck('w3', ['count_words'], [['count_words', ['A a'], {a: 2}]]),
