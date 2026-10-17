@@ -5,12 +5,12 @@
 // done ends the session once the level lacks nothing (missingOf): with
 // piece offered, that includes a division of two or more pieces. The level
 // it returns is what the session declared: {contracts, validations,
-// pieces, division}. Whether the division is sound (what each piece
-// delivers, whether pieces are too small) is Clef's review alone
-// (src/model.js reviewLevel), which reads the division's facts (divisionOf).
+// pieces}. Whether the division is valid, and whether pieces are too small,
+// is Clef's review alone (src/model.js reviewLevel), which reads the
+// assignment and the pieces as written.
 import { TOOLCHAINS, toolchainOf } from './toolchains.js';
 import { normalizeContract, kindOf, nameError, PLACED_KINDS, PATH_NAMED, CONTRACT_KINDS } from './contracts.js';
-import { readCheck, CHECK_FIELDS, runOf, servedRun, runsOf, unheldPath, contractExamples, checkExamples, exerciseWords, divisionOf, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
+import { readCheck, CHECK_FIELDS, runOf, servedRun, runsOf, unheldPath, contractExamples, checkExamples, exerciseWords, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
 import { rootedPath } from '../container/build-path.mjs';
 import { session } from './session.js';
 import { systemPrompt, TOOLS, CHECK_TOOL_KINDS } from './prompts.js';
@@ -161,7 +161,7 @@ export function levelOf(s) {
   const servedBy = new Set(s.validations.map(v => v.check.serve).filter(Boolean));
   const contracts = levelContracts(s).map(c => c.run && !c.run.static && (kindOf(c) === 'route' || servedBy.has(c.name)) ? {...c, run: servedRun(c.run)} : c);
   const pieces = s.pieces.map(p => ({...p}));
-  return {contracts, validations: s.validations.map(v => ({...v})), pieces, division: divisionOf(contracts, pieces, s.have)};
+  return {contracts, validations: s.validations.map(v => ({...v})), pieces};
 }
 // One call: {result, end?}.
 export function splitterCall(s, name, args) {

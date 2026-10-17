@@ -141,7 +141,7 @@ test('the graph: every agent is a node; managers and workers are circles, splitt
     {id:m,parent:null,role:'manager',label:'A to-do page',phase:'manager',status:'waiting',task:'goal',depth:0,seq:1},
     {id:w,parent:m,role:'',label:'A to-do page',phase:'implement',status:'done',task:'goal',depth:1,seq:1},
     {id:b,parent:m,role:'builder',label:'Builder',phase:'implement',status:'done',task:'Join',depth:1,seq:2}],
-    splitters:[{id:'splitter-3333333333333333',manager:m,kind:'split',attempt:1,spawned_at:1,ended_at:2,outcome:'done',verdict:'retry fewer'},
+    splitters:[{id:'splitter-3333333333333333',manager:m,kind:'split',attempt:1,spawned_at:1,ended_at:2,outcome:'done',verdict:'retry larger'},
       {id:'splitter-4444444444444444',manager:m,kind:'split',attempt:2,spawned_at:3,ended_at:null,outcome:null,verdict:''},
       {id:'splitter-5555555555555555',manager:'manager-ffffffffffffffff',kind:'split',attempt:1,spawned_at:1,ended_at:2,outcome:'done',verdict:'admitted'}],
     compilers:[{id:'compiler-6666666666666666',manager:m,state:'failed',box:'box-7777777777777777',began:5}]}).get('hierarchy').innerHTML;

@@ -180,7 +180,7 @@ test('v8: Clef grades the original as written: the pre-grade, the review, the ba
   const pieces = [{label: 'The first piece, named in more than seventy characters for this test', task: 'Write it. '.repeat(300).trim(), contracts: contracts.slice(0, 15).map(c => c.name)},
     {label: 'The second piece, named in more than seventy characters for this test too', task: 'Write that. '.repeat(300).trim(), contracts: contracts.slice(15).map(c => c.name)}];
   const validations = contracts.map((c, i) => ({id: `v${i}`, serves: [c.name], says: 'what it says '.repeat(40).trim(), check: {kind: 'call', steps: [{call: c.name, args: ['a'.repeat(400)], expect: 'b'.repeat(400)}]}}));
-  await reviewLevel(env, {assignment, contracts, pieces, validations, division: {places: [], undelivered: contracts.map(c => c.name), delivered_by_several: contracts.map(c => ({contract: c.name, pieces: ['a', 'b']}))}});
+  await reviewLevel(env, {assignment, contracts, pieces, validations});
   const st = asked[1].state;
   assert.equal(st.assignment, assignment);
   assert.equal(st.contracts.length, 30);
@@ -188,8 +188,9 @@ test('v8: Clef grades the original as written: the pre-grade, the review, the ba
   assert.equal(st.validations.length, 30);
   assert.equal(st.validations[29].says, validations[29].says);
   assert.ok(st.validations[29].check.includes('b'.repeat(400)), 'the whole check, in words');
-  assert.equal(st.division.delivered_by_no_piece.length, 30);
-  assert.equal(st.division.delivered_by_several_pieces.length, 30);
+  // The original, the pieces and the validations: the runtime works out nothing about the division for Clef.
+  assert.deepEqual(Object.keys(st), ['assignment', 'contracts', 'pieces', 'validations']);
+  assert.deepEqual(st.pieces.map(p => Object.keys(p)), pieces.map(() => ['slot', 'label', 'task', 'contracts']));
   // Every existing file a contract names is asked about, with the whole assignment.
   asked.length = 0;
   const paths = Array.from({length: 130}, (_, i) => `src/file${i}.py`);
