@@ -207,28 +207,40 @@ test('no reuse across bench tasks: each task room compiles in its own box; a roo
 });
 
 // ------------------------------------------------------------ fail closed
-const blockedText = room => room.snapshot().pause?.text || '';
-test('fail closed: the platform refusing enableInternet:false holds checks_blocked with its retries, and never falls back to the shared executor', async () => {
+// A check that could not run is nobody's work: the compiler runs it again, a
+// turn of the room's budget each time, until it observes it or the budget
+// ends; nothing holds (owner, 2026-10-16 05:54: "it should go back until
+// done, just like anything else").
+const blockedText = room => room.snapshot().build_infrastructure || '';
+const assertBlocked = (room, label) => {
+  assert.equal(room.get('status'), 'paused', label);
+  assert.deepEqual(room.roomHolds(), [], `${label}: nothing holds`);
+  assert.equal(room.get('budget_left'), '0', `${label}: the room's budget ended the run`);
+  assert.ok(events(room, 'build_infrastructure').length >= 2, `${label}: the compiler ran the checks again`);
+};
+test('fail closed: the platform refusing enableInternet:false is infrastructure: the compiler runs the checks again until the budget ends, and never falls back to the shared executor', async () => {
   const ns = fakeBoxes({run: () => { throw new Error('the runner must not run'); }, refuse: o => o.enableInternet === false ? 'enableInternet:false is not supported for this application' : null});
   const {room, drain, env, ctx} = tempRoom([RIGHT], {boxes: ns});
   const seen = watchExecutors(env);
   const alarms = []; ctx.storage.setAlarm = at => { alarms.push(at); };
   await room.start(TEMP_GOAL, 10, {pipeline: 'v8'});
   await drain();
-  assert.equal(room.snapshot().pause.kind, 'checks_blocked');
+  assertBlocked(room, 'refused');
   assert.match(blockedText(room), /enableInternet:false is not supported/);
-  assert.match(blockedText(room), /They run again automatically in 30 s \(retry 1 of 3\)/);
-  assert.equal(alarms.length, 1);
+  assert.equal(alarms.length, 0, 'no retry schedule');
   assert.equal(room.problems('1=1').length, 0, 'nothing is routed');
   assert.deepEqual(seen, {gets: 0, builds: 0});
-  assert.equal(ns.boxes.length, 1);
-  assert.equal(ns.boxes[0].container.starts, 0);
-  assert.deepEqual(ns.boxes[0].container.log.map(l => l[0]), ['start'], 'nothing was exec\'d');
+  assert.ok(ns.boxes.length >= 2, 'a fresh box each run');
+  assert.ok(ns.boxes.every(b => b.container.starts === 0 && b.container.log.every(l => l[0] === 'start')), 'nothing was exec\'d');
   assert.equal(room.read('validation_status', {}).V1.passed, null);
   assert.equal(boxSpans(room)[0].attrs.error.includes('enableInternet'), true);
+  // Continue runs them again.
+  await room.resume(3);
+  await drain();
+  assert.ok(ns.boxes.length >= 3);
 });
 
-test('fail closed: no BOXES binding, an image that is not deployed, or a box that does not confirm internet off, is infrastructure', async () => {
+test('fail closed: no BOXES binding, an image that is not deployed, or a box that does not confirm internet off, is infrastructure, run again until the budget ends', async () => {
   // No binding.
   {
     const {room, drain, env} = tempRoom();
@@ -236,7 +248,7 @@ test('fail closed: no BOXES binding, an image that is not deployed, or a box tha
     const seen = watchExecutors(env);
     await room.start(TEMP_GOAL, 10, {pipeline: 'v8'});
     await drain();
-    assert.equal(room.snapshot().pause.kind, 'checks_blocked');
+    assertBlocked(room, 'no binding');
     assert.match(blockedText(room), /BOXES binding unavailable/);
     assert.deepEqual(seen, {gets: 0, builds: 0});
   }
@@ -246,7 +258,7 @@ test('fail closed: no BOXES binding, an image that is not deployed, or a box tha
     const {room, drain} = tempRoom([RIGHT], {boxes: ns});
     await room.start(TEMP_GOAL, 10, {pipeline: 'v8'});
     await drain();
-    assert.equal(room.snapshot().pause.kind, 'checks_blocked');
+    assertBlocked(room, 'no image');
     assert.match(blockedText(room), /box image "check" is not deployed/);
     assert.equal(ns.boxes[0].container.starts, 0);
   }
@@ -257,23 +269,21 @@ test('fail closed: no BOXES binding, an image that is not deployed, or a box tha
     const {room, drain} = tempRoom([RIGHT], {boxes: ns});
     await room.start(TEMP_GOAL, 10, {pipeline: 'v8'});
     await drain();
-    assert.equal(room.snapshot().pause.kind, 'checks_blocked', JSON.stringify(box));
+    assertBlocked(room, JSON.stringify(box));
     assert.match(blockedText(room), /did not confirm a fresh start with the internet off/);
     assert.notEqual(room.get('status'), 'complete');
   }
 });
 
-test('a box that cannot start once is retried by the checks_blocked alarm in a NEW box, and passes', async () => {
+test('a box that cannot start once is infrastructure: the compiler runs the checks again at once, in a NEW box, and passes', async () => {
   let refuse = 1;
   const ns = fakeBoxes({run: req => verifyChecks({...req}, {isolation: []}), refuse: () => refuse-- > 0 ? 'no capacity' : null});
   const {room, drain, ctx} = tempRoom([RIGHT], {boxes: ns});
-  ctx.storage.setAlarm = () => {};
+  const alarms = []; ctx.storage.setAlarm = at => { alarms.push(at); };
   await room.start(TEMP_GOAL, 10, {pipeline: 'v8'});
   await drain();
-  assert.equal(room.snapshot().pause.kind, 'checks_blocked');
-  await room.alarm();
-  await drain();
   assert.equal(room.get('status'), 'complete');
+  assert.equal(alarms.length, 0);
   assert.equal(ns.boxes.length, 2);
   assert.deepEqual(ns.boxes.map(b => b.container.starts), [0, 1]);
 });

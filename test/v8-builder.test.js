@@ -4,7 +4,7 @@
 // done. Each call stores exactly what it is given or says exactly why it
 // cannot; nothing reads its prose, and the runtime writes no glue and
 // renames nothing on its behalf. Pure tests of the functions and of what the
-// room keeps of them, the reference grammar the import closure reads with,
+// room keeps of them, the tokens it reads code with,
 // and a bundle joined by the builder's files as the box runs it (no module
 // path, the real call adapter).
 import test from 'node:test';
@@ -17,7 +17,7 @@ import {fileURLToPath} from 'node:url';
 import {packageDirectory, packagePath, branchDirectory} from '../src/assembly.js';
 import {builderWorld, builderCall, builderWork, builderTools} from '../src/builder.js';
 import {textHash} from '../src/piece.js';
-import {textTokens, importStatements} from '../src/linker.js';
+import {textTokens} from '../src/linker.js';
 import {toolchainById, TOOLCHAINS, validIdentifier} from '../src/toolchains.js';
 import {checkPlan, runNotes} from '../src/checks.js';
 import {MESSAGES, TOOLS, ROLE, FORMAT} from '../src/prompts.js';
@@ -105,12 +105,8 @@ test('packageDirectory: p_<snake label>_<hash8>, a module name in every row, dis
   assert.equal(packageDirectory('!!!', 'x').startsWith('p_piece_'), true);
 });
 
-// ------------------------------------------------------------ the reference grammar the import closure reads
-test('import statements: a statement ends at a newline or ";", parentheses and backslashes join lines, and only import grammar counts', () => {
-  const src = 'from a import (b,\n    c as d)\nimport e, f.g as h\nfrom x import y; y()\nif True:\n    from . import k\nfrom .m import \\\n    n\nimport_line = 1\nfrom z import w, v()\n';
-  assert.deepEqual(importStatements(src, py).map(s => [s.line, s.bindings.map(b => `${'.'.repeat(b.level)}${b.module}:${b.name ?? ''}>${b.local}`)]), [
-    [1, ['a:b>b', 'a:c>d']], [3, ['e:>e', 'f.g:>h']], [4, ['x:y>y']], [6, ['.:k>k']], [7, ['.m:n>n']]]);
-  // Tokens: comments and strings (a triple quote is one), a prefix is part of its string, f-string fields are code.
+// ------------------------------------------------------------ the tokens the builder reads
+test('tokens: comments and strings (a triple quote is one), a prefix is part of its string, f-string fields are code', () => {
   assert.deepEqual(textTokens('x = """a\n\'b\'"""  # it\'s\ny = rb"z" + f"{q.r!r:>{w}}"', py).map(t => [t.type, t.value, t.field || false]), [
     ['name', 'x', false], ['punct', '=', false], ['string', '"""a\n\'b\'"""', false], ['comment', '# it\'s', false], ['name', 'y', false], ['punct', '=', false], ['string', 'rb"z"', false], ['punct', '+', false],
     ['string', 'f"{q.r!r:>{w}}"', false], ['name', 'q', true], ['punct', '.', true], ['name', 'r', true], ['name', 'w', true]]);

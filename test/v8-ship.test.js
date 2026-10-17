@@ -18,7 +18,7 @@ import {mkdtempSync, writeFileSync, mkdirSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, dirname} from 'node:path';
 import {liveRoom, events, snapshotHash, settle, verifyChecks} from './helpers/room.js';
-import {levelRoom, clefBy, deliver} from './helpers/levels.js';
+import {levelRoom, clefBy, choiceP, deliver} from './helpers/levels.js';
 import {checkPlan, fileResult} from '../src/checks.js';
 
 const hasPython = spawnSync('python3', ['--version']).status === 0;
@@ -58,7 +58,7 @@ const splitFor = (parts = PARTS) => user => {
   return {contracts: user.contracts_you_deliver, validations: [], pieces: (part?.kids || []).map(pieceOf)};
 };
 const splits = tasks => state => [GOAL, ...tasks].some(t => String(state.assignment || '').startsWith(t)) ? 0.9 : 0.05;
-const clefFor = (tasks = PARTS.filter(p => p.kids).map(p => p.task)) => clefBy((key, state) => key === 'should_split' ? splits(tasks)(state) : 0.9);
+const clefFor = (tasks = PARTS.filter(p => p.kids).map(p => p.task)) => clefBy((key, state) => key === 'should_split' ? splits(tasks)(state) : /^piece_reach_/.test(key) ? choiceP(key, state) : 0.9);
 const FILES = {
   shout: 'def shout(s):\n    return str(s).upper() + "!"\n',
   loud: 'from shout import shout\n\n\ndef loud(s):\n    return shout(s) + shout(s)\n',
@@ -123,7 +123,7 @@ async function shipsVerified(room, label) {
 }
 
 // ------------------------------------------------------------------ builders, placement, roll-up
-test('every manager has a builder of its own; each validation is held by the lowest manager whose pieces serve all it serves, and one whose code reaches outside its piece rolls up', {skip}, async () => {
+test('every manager has a builder of its own; each validation is held by the lowest manager whose pieces serve all it serves, and one Clef finds reaches outside its piece rolls up', {skip}, async () => {
   const {room} = await toolkit();
   assert.equal(room.get('status'), 'complete', tail(room));
   const m = at(room);
@@ -133,14 +133,14 @@ test('every manager has a builder of its own; each validation is held by the low
   assert.deepEqual(held(m.Shouter), [V.s1, V.s2, V.s3]);
   assert.deepEqual(held(m.Whisperer), [V.w1, V.w2, V.w3]);
   assert.deepEqual(held(m.Notes), [V.n1, V.n2, V.n3]);
-  // loud.py imports shout.py, outside Louder's piece: its validations rolled up to Loud part, which holds them from then on.
+  // loud.py imports shout.py, outside Louder's piece, as Clef reads it: its validations rolled up to Loud part, which holds them from then on.
   assert.deepEqual(held(m.Louder), []);
   assert.deepEqual(room.read(`rolled:${m.Louder}`, []), [V.l1, V.l2]);
   assert.deepEqual(held(m['Loud part']), [V.l1, V.l2, V.l3]);
   assert.deepEqual(room.read(`rolled:${m.Softener}`, []), [V.o1, V.o2]);
   assert.deepEqual(held(m['Quiet part']), [V.o1, V.o2, V.o3]);
   assert.deepEqual(held(m.Root), []);
-  assert.match(events(room, 'check_rolled_up').find(e => e.actor === m.Louder).body, /loud\.py refers to/);
+  assert.match(events(room, 'check_rolled_up').find(e => e.actor === m.Louder).body, /Clef found that it reaches something another piece provides/);
   // Each validation is held by exactly one row.
   const holders = VALIDATIONS.map(v => Object.values(m).filter(id => held(id).includes(V[v.id])).length);
   assert.deepEqual(holders, VALIDATIONS.map(() => 1));

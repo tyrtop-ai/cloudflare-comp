@@ -16,16 +16,20 @@ export const clefBy = p => input => ({answers: Object.fromEntries(Object.keys(in
 // wrote a file it names or delivers a contract it concerns (else its
 // splitter rebuilds what no child delivers); an ask is answered by the
 // contract it names, else the first offered, and asked one level up last;
-// a change goes to the first child. null: the
+// a change goes to the first child; a piece runs a check alone when its
+// code imports nothing the piece does not hold (pieceRunsAlone). null: the
 // key is no choice's.
 export function choiceP(key, state = {}) {
   const item = state.item || {}, kid = state.children?.[Number(key.split('_').pop())];
+  if (/^piece_reach_\d+$/.test(key)) return pieceRunsAlone(state.piece, state.installed) ? 0.9 : 0.1;
   if (item.kind === 'complaint') {
     if (/^route_to_\d+$/.test(key)) return (kid?.wrote || []).length || (kid?.contracts || []).some(l => (item.concerns?.contracts || []).includes(l)) ? 0.9 : 0.3;
     if (key === 'extend') return 0.5;
   }
   if (item.kind === 'ask') {
     if (/^answer_\d+$/.test(key)) { const c = state.contracts_offered?.[Number(key.split('_').pop())]?.contract || ''; return item.expected_name && new RegExp(`(^|\\s)${item.expected_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(c) ? 0.95 : 0.9; }
+    // The package the ask names, offered though no row holds it: granted when the need is a library's.
+    if (/^grant_\d+$/.test(key)) { const p = state.packages_offered?.[Number(key.split('_').pop())]?.package || ''; return item.expected_name && p.split(' ')[0] === item.expected_name && !/librar|package|framework|module|install/i.test(item.need || '') ? 0.2 : 0.9; }
     if (key === 'ask_parent') return 0.1;
   }
   if (item.kind === 'change') {
@@ -33,6 +37,20 @@ export function choiceP(key, state = {}) {
     if (key === 'extend') return 0.5;
   }
   return null;
+}
+// Whether a piece's code reaches only its own files, the installed packages
+// and the language, as Clef reads it (CLEF.piece_reach): a Python file's
+// `from X import` and a JavaScript file's relative require or import name a
+// file of the piece.
+export function pieceRunsAlone(piece = {}, installed = []) {
+  const files = piece.files || [], paths = new Set(files.map(f => f.path)), mods = new Set(files.map(f => f.path.replace(/\.py$/, '').split('/').pop()));
+  const dir = p => p.includes('/') ? p.slice(0, p.lastIndexOf('/') + 1) : '', norm = p => p.split('/').reduce((o, s) => s === '..' ? o.slice(0, -1) : s && s !== '.' ? [...o, s] : o, []).join('/');
+  return files.every(f => {
+    const text = String(f.content ?? '');
+    if (f.path.endsWith('.py')) return [...text.matchAll(/^from (\w+)[\w.]* import/gm)].every(m => mods.has(m[1]) || paths.has(`${m[1]}/__init__.py`) || installed.includes(m[1]));
+    if (/\.[cm]?js$/.test(f.path)) return [...text.matchAll(/(?:require\(|from\s+)['"](\.{1,2}\/[^'"]+)['"]/g)].every(m => { const t = norm(dir(f.path) + m[1]); return paths.has(t) || paths.has(`${t}.js`) || paths.has(`${t}/index.js`); });
+    return true;
+  });
 }
 // The usual Clef: the room's manager divides (its pre-grade is above the
 // floor), any level whose contracts were given is caught (one worker), a

@@ -54,7 +54,7 @@ test('F4: a rebuilt worker is handed what the archived one was: its uses (the ca
   const leaf = leafOf({control: user => {
     if (!user.prompt.deliver.some(c => c.name === 'loud') || asked) return null;
     asked = true;
-    return {summary: 'need a thesaurus', wait: true, ask: [{need: 'looks up synonyms of a word online', name: 'synonyms'}]};
+    return {summary: 'need a thesaurus', wait: true, ask: [{need: 'looks up synonyms of a word online'}]};
   }});
   const r = await toolkit({leaf, clef: clefFor(undefined, {'^ask_parent$': 0.95})});
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
@@ -182,7 +182,7 @@ test('F9: Clef failing on a manager\'s choice on an ask is asked again at the ma
   const leaf = leafOf({control: user => {
     if (!user.prompt.deliver.some(c => c.name === 'loud') || asked) return null;
     asked = true;
-    return {summary: 'need a thesaurus', wait: true, ask: [{need: 'looks up synonyms of a word online', name: 'synonyms'}]};
+    return {summary: 'need a thesaurus', wait: true, ask: [{need: 'looks up synonyms of a word online'}]};
   }});
   const r = await toolkit({leaf, clef: clefFor(undefined, {'^ask_parent$': () => bad ? 7 : 0.95})});
   const m = at(r.room);
@@ -191,7 +191,7 @@ test('F9: Clef failing on a manager\'s choice on an ask is asked again at the ma
   assert.deepEqual(r.room.roomHolds(), [], 'no hold for the person');
   const unanswered = events(r.room, 'clef_unanswered');
   assert.ok(unanswered.length >= 2 && unanswered.every(e => e.actor === m['Loud part']), tail(r.room));
-  assert.match(unanswered[0].body, /^Clef gave no answer to which function answers the ask for synonyms: .*Its next turn asks again\./s);
+  assert.match(unanswered[0].body, /^Clef gave no answer to which function answers the ask for .*synonyms.*: .*Its next turn asks again\./s);
   assert.match(events(r.room, 'paused').at(-1).body, /Inference budget ended/, 'the run ends when its budget does');
   assert.deepEqual(r.room.allNodes().filter(n => n.status === 'archived'), [], 'a failure is never read as out of scope');
   assert.deepEqual(events(r.room, 'manager_choice').map(e => e.actor), [m.Louder]);

@@ -763,11 +763,11 @@ export async function vetBaseChanges(env, {assignment='', paths=[]}) {
 }
 // v8 M3: Clef judges, per check held at a piece, whether what the check
 // reaches comes from the piece's files, the installed packages or the
-// language (CLEF.piece_reach): the reach the linker cannot see, such as a
-// route a page requests, a file read while it runs or data another piece
-// writes. One batched call per 12 checks: state {piece: {name, contracts,
-// files}, installed, checks: [{slot, says, check}]}. [{id, p}]; a Clef error throws (the caller rolls
-// the checks up, which only delays them).
+// language (CLEF.piece_reach), so the piece can be compiled and its checks
+// run as a piece (owner, 2026-10-15 22:22). One batched call per 12 checks:
+// state {piece: {name, contracts, files: [{path, content}]}, installed,
+// checks: [{slot, says, check}]}. [{id, p}]; a Clef error throws (the caller
+// rolls the checks up, which only delays them).
 export const PIECE_REACH_BAR = 0.5;
 export async function pieceReach(env, {name='', contracts=[], files=[], installed=[], checks=[]}) {
   if (!checks.length) return [];

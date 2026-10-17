@@ -200,8 +200,10 @@ test('v8: Clef grades the original as written: the pre-grade, the review, the ba
   // The reach question: the piece's name, every contract and file, every installed package and each check's own words.
   asked.length = 0;
   const name = 'A piece named at length '.repeat(10).trim();
-  await pieceReach(env, {name, contracts: lines, files: paths, installed: paths.map(p => p.replace(/\W/g, '_')), checks: validations.slice(0, 3).map(v => ({id: v.id, says: v.says, check: v.check}))});
-  assert.deepEqual([asked[0].state.piece.name, asked[0].state.piece.contracts, asked[0].state.piece.files, asked[0].state.installed.length], [name, lines, paths, 130]);
+  // The files with their whole text: Clef reads the code to judge whether the piece runs alone (owner, 2026-10-15 22:22).
+  const texts = paths.map(path => ({path, content: `from other import thing\n${'x = 1\n'.repeat(200)}`}));
+  await pieceReach(env, {name, contracts: lines, files: texts, installed: paths.map(p => p.replace(/\W/g, '_')), checks: validations.slice(0, 3).map(v => ({id: v.id, says: v.says, check: v.check}))});
+  assert.deepEqual([asked[0].state.piece.name, asked[0].state.piece.contracts, asked[0].state.piece.files, asked[0].state.installed.length], [name, lines, texts, 130]);
   assert.equal(asked[0].state.checks[0].says, validations[0].says);
 });
 
