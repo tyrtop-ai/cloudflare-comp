@@ -12,14 +12,9 @@
 // protocol's own shapes, read as such.
 //
 // What bounds a session: the model's context (MODEL_SETTINGS[model].context,
-// 32,768 tokens for the Qwen3 30B-A3B model), and SESSION_ROUNDS.
+// 32,768 tokens for the Qwen3 30B-A3B model), the platform's own limit.
 import { traced, modelRequest } from './model.js';
 
-// A resource limit, not a process: the most model calls one session makes.
-// Generous on purpose (a level of 24 contracts and their validations, one
-// call each, fits several times over); the context window ends a session
-// long before it in practice. The owner may veto this bound.
-export const SESSION_ROUNDS = 100;
 const model = env => env.MODEL_NAME || '@cf/qwen/qwen3.8-27b';
 const plain = v => v && typeof v === 'object' && !Array.isArray(v);
 
@@ -53,14 +48,14 @@ export const noCall = names => `No function was called. The functions are: ${nam
 // model when env.MOCK_AI is 'true'; with none, a mocked session makes no call.
 // Each model call is traced (env.TRACE) as a 'model' span with the role, the
 // call name, the round and the token counts. Returns {ended, end, reason,
-// rounds, transcript}: reason is 'ended' (a handler ended it), 'rounds'
-// (SESSION_ROUNDS), 'context' (the context window is full) or 'mock'.
+// rounds, transcript}: reason is 'ended' (a handler ended it), 'context'
+// (the context window is full) or 'mock'.
 // transcript: [{name, arguments, result}] per call, in order.
-export async function session(env, {system, user, tools, handle, role = '', call = 'session', maxTokens = 4096, noThink = false, rounds = SESSION_ROUNDS, mock = null}) {
+export async function session(env, {system, user, tools, handle, role = '', call = 'session', maxTokens = 4096, noThink = false, mock = null}) {
   const selected = model(env), names = tools.map(t => t.name), known = new Set(names), transcript = [];
   const messages = [{role: 'system', content: system}, {role: 'user', content: String(user)}];
   const toolText = JSON.stringify(tools).length;
-  for (let round = 1; round <= rounds; round++) {
+  for (let round = 1; ; round++) {
     let output;
     if (env.MOCK_AI === 'true') {
       const calls = mock ? await mock(round, messages) : [];
@@ -95,5 +90,4 @@ export async function session(env, {system, user, tools, handle, role = '', call
     if (end) return {ended: true, end: end.value, reason: 'ended', rounds: round, transcript};
     messages.push({role: 'assistant', content: '', tool_calls: asked}, ...results);
   }
-  return {ended: false, reason: 'rounds', rounds, transcript};
 }

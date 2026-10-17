@@ -8,7 +8,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {splitterState, splitterTools, splitterCall, levelView, levelOf, missingOf, splitLevel} from '../src/splitter.js';
-import {SESSION_ROUNDS} from '../src/session.js';
 import {TOOLS, systemPrompt} from '../src/prompts.js';
 import {TOOLCHAINS} from '../src/toolchains.js';
 
@@ -189,8 +188,9 @@ test('a splitter session: the system text and the request go first with the func
   assert.deepEqual(out.transcript.map(t => t.name), ['contract', 'command_check', 'contract', 'command_check', 'command_check', 'command_check', 'done']);
 });
 
-test('a splitter session that never completes ends at the round limit with no level', async () => {
-  const m = model(() => [['level']]);
+test('a splitter session that never completes ends when its context window is full, with no level', async () => {
+  const m = model(() => [['level', {note: 'x'.repeat(8000)}]]);
   const out = await splitLevel(m.env, {assignment: 'Write the converter.'});
-  assert.deepEqual([out.ended, out.reason, out.rounds, out.level, m.requests.length], [false, 'rounds', SESSION_ROUNDS, null, SESSION_ROUNDS]);
+  assert.deepEqual([out.ended, out.reason, out.level], [false, 'context', null]);
+  assert.equal(out.rounds, m.requests.length);
 });

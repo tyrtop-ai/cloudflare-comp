@@ -8716,7 +8716,7 @@ export class ControlRoom extends DurableObject {
     if(!level) {
       this.recordAttempt(id,{attempt,job:key,splitter:out.sid,outcome:`ended: ${out.reason}`,ms:Date.now()-started});
       this.save(`split_feedback:${id}`,null);
-      return void this.escalate(id,'split_failed',clip(`"${n.label}" could not state its level: its splitter's session ended without done (${out.reason==='context'?'its context window was full':out.reason==='rounds'?`after ${out.rounds} rounds, the session's limit`:out.reason}).`,1100));
+      return void this.escalate(id,'split_failed',clip(`"${n.label}" could not state its level: its splitter's session ended without done (${out.reason==='context'?`its context window was full after ${out.rounds} rounds`:out.reason}).`,1100));
     }
     const pieces=divide?level.pieces:[],split=pieces.length>=2,retry=feedback?.retry||'';
     const review=await reviewLevel(this.inferenceEnv(),{assignment:clipEnds(job?.text||given.prompt,2600),contracts:level.contracts,pieces:split?pieces:[],validations:level.validations,division:split?level.division:null,attempt,retry});

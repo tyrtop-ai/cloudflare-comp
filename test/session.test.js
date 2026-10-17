@@ -2,10 +2,10 @@
 // functions (tools), runs each call through the caller's handler, sends the
 // results back as tool messages, and ends when a handler says so. It never
 // reads the model's prose: a reply with no call is answered with the names
-// of the functions. Bounded by the model's context and SESSION_ROUNDS.
+// of the functions. Bounded only by the model's context window.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {session, toolCallsOf, argumentsOf, noCall, SESSION_ROUNDS} from '../src/session.js';
+import {session, toolCallsOf, argumentsOf, noCall} from '../src/session.js';
 
 const TOOLS = [
   {name: 'add', description: 'Adds a number to the total.', parameters: {type: 'object', properties: {n: {type: 'number'}}, required: ['n']}},
@@ -66,14 +66,12 @@ test('a call of no function, or with arguments that are not a JSON object, is an
   assert.deepEqual(out.transcript.map(t => t.name), ['multiply', 'add', 'add', 'add', 'finish'], 'the add after finish never ran');
 });
 
-test('the session\'s bounds are resources: SESSION_ROUNDS model calls, and the model\'s context window', async () => {
-  assert.equal(SESSION_ROUNDS, 100);
-  const forever = fakeEnv(() => ({tool_calls: [{name: 'add', arguments: {n: 1}}]}));
+test('the session\'s only bound is the model\'s context window: there is no cap on its calls', async () => {
+  // A model that never ends: each call and its result stay in the conversation until the window is full.
+  const forever = fakeEnv(() => ({tool_calls: [{name: 'add', arguments: {n: 1, note: 'x'.repeat(8000)}}]}));
   const out = await session(forever.env, {system: 'S', user: 'U', tools: TOOLS, handle: totalHandler()});
-  assert.deepEqual([out.ended, out.reason, out.rounds, forever.requests.length], [false, 'rounds', SESSION_ROUNDS, SESSION_ROUNDS]);
-  const few = fakeEnv(() => ({response: 'thinking'}));
-  assert.deepEqual((await session(few.env, {system: 'S', user: 'U', tools: TOOLS, handle: totalHandler(), rounds: 3})).reason, 'rounds');
-  assert.equal(few.requests.length, 3);
+  assert.deepEqual([out.ended, out.reason], [false, 'context']);
+  assert.ok(out.rounds > 5 && out.rounds === forever.requests.length, `${out.rounds} rounds, each one model call`);
   // A request that would leave the answer less than the clamp's floor in a 32,768-token context: the session ends there, with no call.
   const full = fakeEnv(() => { throw new Error('no call expected'); });
   const ctx = await session(full.env, {system: 'S', user: 'x'.repeat(120000), tools: TOOLS, handle: totalHandler()});
