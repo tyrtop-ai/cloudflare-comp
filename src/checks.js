@@ -4,15 +4,16 @@
 // (fileResult), has Clef judge the documents, and turns every failed
 // validation into an item (checkProblems) whose detail is what the compiler
 // observed, as it observed it: the complaint a worker reads.
-import { TOOLCHAINS, COMPILE_ROWS, toolchainOf, runRowOf, extractSurface } from './toolchains.js';
+import { TOOLCHAINS, COMPILE_ROWS, toolchainOf, runRowOf, callRowOf } from './toolchains.js';
 import { kindOf } from './contracts.js';
 import { failureHead } from './problems.js';
 import { clip } from './protocol.js';
 import { runsOf } from './validations.js';
 
-// The time a verification may take (container/build-runner.mjs
-// CHECK_LIMITS, which also clamps what it is sent): all checks, one check, one step.
-export const CHECK_LIMITS = Object.freeze({total_ms: 200_000, check_ms: 20_000, step_ms: 5_000});
+// The time a verification has (container/build-runner.mjs CHECK_LIMITS,
+// which also clamps what it is sent): what the box's one exec leaves the
+// runner to report in. No check or step has a time of its own.
+export const CHECK_LIMITS = Object.freeze({total_ms: 200_000});
 // The checks the Worker runs itself (file) or has Clef answer (judge); the
 // box runs every other kind.
 export const WORKER_CHECKS = Object.freeze(['file', 'judge']);
@@ -26,45 +27,30 @@ const rowsOf = rows => (Array.isArray(rows) && rows.length ? rows : TOOLCHAINS).
 // The executable a command line starts with (its argv's first word).
 const firstWord = c => (Array.isArray(c?.argv) && c.argv.length ? c.argv[0] : String(c?.run || '').trim().split(/\s+/)[0]) || '';
 
-// The module a call check loads: the bundle file that defines the first
-// function it calls (extractSurface), a placed file first, then the one that
-// defines most of the functions it calls. null when no file defines it.
-export function callModule(check, files, placed = new Set()) {
-  const names = [...new Set((check?.steps || []).map(s => s.call))];
-  if (!names.length) return null;
-  const hits = [];
-  for (const [path, content] of files) {
-    const row = toolchainOf(path);
-    if (!row?.call_adapter) continue;
-    const have = new Set(extractSurface(path, content).names);
-    if (!have.has(names[0])) continue;
-    hits.push({path, placed: placed.has(path), n: names.filter(n => have.has(n)).length, row});
-  }
-  hits.sort((a, b) => (b.placed - a.placed) || (b.n - a.n) || a.path.localeCompare(b.path));
-  return hits[0] ? {module: hits[0].path, adapter: hits[0].row.id} : null;
+// The module a call check loads: the file the splitter declared for the
+// function contract its first step calls (that contract's path, as written;
+// one call check calls the functions of one file, src/validations.js), and
+// the name it calls. Nothing in the bundle is searched for the name: the
+// call adapter observes whether the file gives it.
+export function callModule(check, contracts = []) {
+  const name = check?.steps?.[0]?.call || '';
+  const path = (contracts || []).find(d => d?.name === name && kindOf(d) === 'function')?.path || '';
+  return {name, path};
 }
 
 // What the box is asked to run for these validations on these files, and
-// the results the Worker already knows (local: a command contract whose file
-// is missing, a call no file defines). spec: {contracts (what the
-// validations run by: the command contracts' files, how a page or route
-// runs), validations: [{id, check}]}. rows: the installed toolchain rows.
-// placed: the bundle's placed paths. compile: the files the syntax step compiles, each
+// the results the Worker already knows (local: a command or function
+// contract whose file is missing; a call in a language the box has no call
+// adapter for, which is infrastructure). spec: {contracts (what the
+// validations run by: the command and function contracts' files, how a page
+// or route runs), validations: [{id, check}]}. rows: the installed toolchain
+// rows. compile: the files the syntax step compiles, each
 // with the row that compiles it (a Map), when not every file of each row (a
 // file whose exact bytes compiled before is not compiled again). inventory:
 // the room needs the box's inventory, so the box opens. install: the
 // packages the box installs before the checks, per row ([{toolchain,
 // packages: [names]}]: the packages the agents' rows list beyond the image's).
-// What a call check observed when no file gives the function it calls: the
-// function contract's file is missing, or it holds no function a call reaches
-// by that name (a JavaScript file exports it; a Python file defines it).
-function unreachable(c, contracts, files) {
-  const name = c.steps?.[0]?.call || 'the function', path = contracts.find(d => d.name === name && kindOf(d) === 'function')?.path;
-  if (!path) return `no file gives ${name} to a call`;
-  if (!files.has(path)) return `${path}, the file of ${name}, is missing`;
-  return toolchainOf(path)?.extractor === 'acorn' ? `${path} does not export ${name}: a call reaches a function by the name its file exports` : `${path} defines no ${name} a call reaches`;
-}
-export function checkPlan(spec, files, {rows = TOOLCHAINS, placed = new Set(), compile = null, inventory = false, install = []} = {}) {
+export function checkPlan(spec, files, {rows = TOOLCHAINS, compile = null, inventory = false, install = []} = {}) {
   const all = rowsOf(rows), paths = [...files.keys()], list = spec?.validations || [], contracts = spec?.contracts || [];
   const commandsOf = new Map(contracts.filter(d => kindOf(d) === 'command' && d.path).map(d => [d.name, d]));
   const served = new Set(list.map(v => v.check?.serve).filter(Boolean)), runs = runsOf(contracts).filter(r => served.has(r.id));
@@ -103,9 +89,13 @@ export function checkPlan(spec, files, {rows = TOOLCHAINS, placed = new Set(), c
       if (missing) { local.set(v.id, {id: v.id, kind: c.kind, passed: false, detail: missing, frames: [], observed: {what: 'local', note: missing}}); continue; }
       checks.push({id: v.id, kind: 'command', ...(c.argv ? {argv: c.argv} : {}), run: c.run, ...(c.stdin ? {stdin: c.stdin} : {}), ...(c.files ? {files: c.files} : {}), expect: c.expect || {}});
     } else if (c.kind === 'call') {
-      const at = callModule(c, files, placed);
-      if (!at) { const note = unreachable(c, contracts, files); local.set(v.id, {id: v.id, kind: c.kind, passed: false, detail: note, frames: [], observed: {what: 'local', note}}); continue; }
-      checks.push({id: v.id, kind: 'call', ...at, steps: c.steps});
+      const {name, path} = callModule(c, contracts), row = path ? callRowOf(path) : null;
+      const note = !path ? `no function contract declares ${name || 'the function'} with a file` : !files.has(path) ? `${path}, the file of ${name}, is missing` : '';
+      if (note) { local.set(v.id, {id: v.id, kind: c.kind, passed: false, detail: note, frames: [], observed: {what: 'local', note}}); continue; }
+      // A language the box has no call adapter for: the runtime cannot run the call, which is no worker's failure.
+      if (!row) { const why = `not run: the box has no call adapter for ${path}'s language`; local.set(v.id, {id: v.id, kind: c.kind, passed: false, infrastructure: true, detail: why, frames: [], observed: {what: 'local', note: why}}); continue; }
+      if (!toolchains.some(r => r.id === row.id)) toolchains.push(row);
+      checks.push({id: v.id, kind: 'call', module: path, adapter: row.id, steps: c.steps});
     } else checks.push({id: v.id, kind: c.kind, serve: c.serve, steps: c.steps});
   }
   return {plan: {syntax, install: installs.map(x => ({toolchain: x.toolchain, packages: [...x.packages]})), project: [], runs, commands, checks}, toolchains, local,
@@ -129,10 +119,12 @@ export function fileResult(check, files) {
 
 // The items a run files: each failed validation, its detail what the check
 // observed (the complaint as the compiler states it), its parties the frames
-// in the project's files; each file that did not compile, with the syntax
-// step's own words. results: Map id -> {passed, detail, frames,
-// infrastructure}; issues: [{path, detail}]. origin(path) -> {owner,
-// owner_path} of a bundle path.
+// in the project's files; each issue of a load (a file the Worker's parser
+// read, at its path; a syntax step of the box, with its own words whole and
+// the files it compiled, and no party: who must fix it is the managers'
+// routing). results: Map id -> {passed, detail, frames, infrastructure};
+// issues: [{path, detail}] or [{files, toolchain, stage, detail}].
+// origin(path) -> {owner, owner_path} of a bundle path.
 export function checkProblems(spec, results, issues = [], {origin = () => null} = {}) {
   const party = (path, role) => { const o = origin(path); return {path, owner: o?.owner || '', owner_path: o?.owner_path || '', digest: '', role}; };
   const items = [];
@@ -144,8 +136,9 @@ export function checkProblems(spec, results, issues = [], {origin = () => null} 
       facts: {validation: {id: v.id, serves: v.serves || [], check_kind: v.check?.kind || '', frames: frames.map(f => ({path: f.path, fn: f.fn || '', line: f.line || 0}))}, failure: failureHead(String(res.detail || ''))}});
   }
   for (const x of issues || []) {
-    if (!x?.path) continue;
-    items.push({kind: 'load', path: x.path, sites: [], parties: [party(x.path, 'site')], detail: String(x.detail ?? ''), facts: {failure: failureHead(x.detail), stage: x.stage || 'syntax'}});
+    if (x?.path) items.push({kind: 'load', path: x.path, sites: [], parties: [party(x.path, 'site')], detail: String(x.detail ?? ''), facts: {failure: failureHead(x.detail), stage: x.stage || 'syntax'}});
+    else if (Array.isArray(x?.files) && x.files.length) items.push({kind: 'load', path: '', sites: [], parties: [], detail: String(x.detail ?? ''),
+      facts: {failure: failureHead(x.detail), stage: x.stage || 'syntax', toolchain: x.toolchain || '', files: x.files.map(String)}});
   }
   return items;
 }

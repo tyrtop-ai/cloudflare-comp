@@ -9095,7 +9095,8 @@ export class ControlRoom extends DurableObject {
     const shown=v=>[...new Set(checkExamples(v.check))];
     const observed=v=>{const r=results.get(v.id);if(run?.infrastructure&&!r)return `not run: ${run.infrastructure}`;if(!r)return 'not run';if(r.infrastructure)return `not run: ${r.detail}`;return r.passed?'pass':String(r.detail||'it did not hold');};
     const examples=runs.map(v=>({examples:shown(v),observed:observed(v)}));
-    const issues=[...(run?.report?.issues||[]),...parsed.issues].filter(x=>x?.path).map(x=>({file:x.path,observed:x.detail}));
+    // A file the Worker's parser read is named at its path; a syntax step of the box, by the files it compiled (its words name the file).
+    const issues=[...(run?.report?.issues||[]),...parsed.issues].filter(x=>x?.path||x?.files?.length).map(x=>x.path?{file:x.path,observed:x.detail}:{files:x.files,observed:x.detail});
     const passed=examples.filter(e=>e.observed==='pass').length;
     this.span('worker','run_examples',started,Date.now(),{worker:id,validations:runs.length,passed,files:files.size,...(run?.infrastructure?{infrastructure:true}:{})},id);
     this.event(id,'examples_run',clip(`Ran its examples on its ${files.size} file(s): ${passed} of ${examples.length} pass${issues.length?`; ${issues.length} file(s) do not compile`:''}${run?.infrastructure?`; the box: ${clip(run.infrastructure,200)}`:''}.`,600));
@@ -9198,7 +9199,7 @@ export class ControlRoom extends DurableObject {
     if(!run?.infrastructure)this.markCompiled(box,plan.syntax,report?.stages,parsed.clean);
     // A file the run was to compile that is still not compiled, with no issue of its own, is no file this run compiled (unbuilt);
     // one that only now has a row (the box's inventory came with this run) compiles in a run of its own.
-    const left=run?.infrastructure?new Set():this.uncompiled(box),named=new Set([...(report?.issues||[]),...parsed.issues].map(i=>i.path));
+    const left=run?.infrastructure?new Set():this.uncompiled(box),named=new Set([...(report?.issues||[]),...parsed.issues].flatMap(i=>i.path?[i.path]:i.files||[]));
     const unbuilt=[...left].filter(p=>fresh.has(p)&&!named.has(p)),newly=[...left].filter(p=>!fresh.has(p));
     const notBuilt=unbuilt.length?`the syntax step left ${unbuilt.length} file(s) uncompiled with no issue of their own (${clip(unbuilt.join(', '),200)})`:'';
     if(run?.infrastructure)for(const c of plan.checks)if(!results.has(c.id))results.set(c.id,{id:c.id,passed:false,infrastructure:true,detail:`not run: ${clip(run.infrastructure,200)}`});

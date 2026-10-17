@@ -100,7 +100,7 @@ async function runOn(room, list, bundle) {
   const {plan, toolchains, local} = checkPlan(room.specOf(box), files, {rows: room.installedToolchains(), placed: bundle.placed, paths: bundle.link?.paths});
   for (const [id, x] of local) out.push({id, passed: !!x.passed, detail: x.detail});
   if (plan.checks.length) {
-    const rep = await verifyChecks({mode: 'checks', fingerprint: 'x', snapshot_hash: await snapshotHash(ship), files: ship, plan: {...plan, syntax: []}, toolchains, limits: {total_ms: 60000, check_ms: 20000, step_ms: 4000}}, {isolation: []});
+    const rep = await verifyChecks({mode: 'checks', fingerprint: 'x', snapshot_hash: await snapshotHash(ship), files: ship, plan: {...plan, syntax: []}, toolchains, limits: {total_ms: 60000}}, {isolation: []});
     for (const c of rep.checks) out.push({id: c.id, passed: !!c.passed, detail: c.detail});
   }
   return out;

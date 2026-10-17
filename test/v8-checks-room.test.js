@@ -138,7 +138,8 @@ test('Python temperature CLI: a wrong output fails its command validations, the 
   assert.deepEqual(first.plan.checks[0],{id:'V1',kind:'command',argv:['temp','100'],run:'temp 100',expect:{exit:0,stdout_has:['212']}});
   assert.deepEqual(first.plan.checks.map(c=>c.id),['V1','V2','V3'],'the guide\'s validations run in the Worker');
   assert.deepEqual(first.toolchains.map(r=>r.id),['python']);
-  assert.deepEqual(first.limits,{total_ms:200_000,check_ms:20_000,step_ms:5_000});
+  // Owner 2026-10-17 00:25: one time only, the verification's (what the exec leaves it); no check or step has one.
+  assert.deepEqual(first.limits,{total_ms:200_000});
   // The complaints went down to the converter's worker, as the compiler observed them; the guide's worker heard none.
   const sent=room.problems("stage='complaint'").filter(p=>p.assignee);
   assert.ok(sent.length>=1);
@@ -328,16 +329,21 @@ test('checkPlan: a command contract in Go or Ruby runs by its row\'s run_file, a
   assert.equal(report.checks.find(c=>c.id==='V1').passed,true,JSON.stringify(report.checks));
 });
 
-// Owner 2026-10-15 22:12 ("why are packages not allowed now?"): every row's packages go to the box, which installs them by the row's install command (gem for Ruby) or says it has none; none is dropped on the way.
-test('checkPlan: every language\'s packages go to the box with its row; a row with no install command is the box\'s to report',()=>{
-  const files=new Map([['greet.rb','require "colorize"\nputs "hi"\n'],['main.go','package main\nfunc main() {}\n']]);
-  const {plan,toolchains}=checkPlan({contracts:[],validations:[]},files,{rows:TOOLCHAINS,install:[{toolchain:'ruby',packages:['colorize']},{toolchain:'go',packages:['github.com/x/y']}]});
-  assert.deepEqual(plan.install,[{toolchain:'ruby',packages:['colorize']},{toolchain:'go',packages:['github.com/x/y']}]);
-  assert.ok(toolchains.find(r=>r.id==='ruby').install.argv.includes('gem'));
-  assert.ok(toolchains.some(r=>r.id==='go'));
+// Owner 2026-10-15 22:12 ("why are packages not allowed now?"): every row's packages go to the box, which installs them by the row's install command
+// (npm for JavaScript and TypeScript, pip for Python, gem for Ruby, go for Go, cargo for Rust, maven for Java, composer for PHP) or says it has none; none is dropped on the way.
+test('checkPlan: every language\'s packages go to the box with its row, each installed by its language\'s own package manager',()=>{
+  const files=new Map([['greet.rb','require "colorize"\nputs "hi"\n'],['main.go','package main\nfunc main() {}\n'],['m.rs','fn main() {}\n'],['M.java','class M {}\n'],['p.php','<?php\n'],['a.ts','export {}\n'],['c.c','int main(void){return 0;}\n']]);
+  const install=[['ruby','colorize'],['go','github.com/x/y'],['rust','itoa'],['java','org.x:y:1'],['php','x/y'],['typescript','left-pad'],['c','libfoo']].map(([toolchain,p])=>({toolchain,packages:[p]}));
+  const {plan,toolchains}=checkPlan({contracts:[],validations:[]},files,{rows:TOOLCHAINS,install});
+  assert.deepEqual(plan.install,install);
+  const by=id=>toolchains.find(r=>r.id===id);
+  for(const [id,tool] of [['ruby','gem'],['go','go get'],['rust','cargo add'],['java','mvn'],['php','composer require'],['typescript','npm']])assert.ok(by(id).install.argv.join(' ').includes(tool),id);
+  // C has no package manager of its own: its row has no install, and the box says so.
+  assert.equal(by('c').install,undefined);
 });
 
-test('checkPlan: command contracts run by their own path, call checks load the file that defines the function, file and judge checks stay in the Worker',()=>{
+// Owner 2026-10-16 20:38: a call check runs against the file its function contract declares, as written; nothing searches the bundle by name.
+test('checkPlan: command contracts run by their own path, call checks load the file their function contract declares, file and judge checks stay in the Worker',()=>{
   const spec={contracts:[{name:'temp',kind:'command',path:'temp.py'},{name:'to_f',kind:'function',path:'conv.py'},{name:'GUIDE.md',kind:'doc',path:'GUIDE.md'},{name:'gone',kind:'command',path:'gone.py'},
     {name:'index.html',kind:'page',path:'index.html',run:{static:true}}],
     validations:[
@@ -348,26 +354,30 @@ test('checkPlan: command contracts run by their own path, call checks load the f
       {id:'V5',check:{kind:'command',run:'gone',argv:['gone']}},
       {id:'V6',check:{kind:'call',steps:[{call:'missing_fn',args:[]}]}}]};
   const files=new Map([['temp.py','print(1)\n'],['conv.py','def to_f(c):\n    return c * 9 / 5 + 32\n'],['components/x-1/conv.py','def to_f(c):\n    return 0\n'],['GUIDE.md','# g\n']]);
-  const {plan,local,container,toolchains}=checkPlan(spec,files,{rows:TOOLCHAINS,placed:new Set(['temp.py','conv.py','GUIDE.md'])});
+  const {plan,local,container,toolchains}=checkPlan(spec,files,{rows:TOOLCHAINS});
   assert.equal(container,true);
   assert.deepEqual(plan.commands,{temp:['python3','temp.py']});
   assert.deepEqual(plan.syntax,[{toolchain:'python',files:['temp.py','conv.py','components/x-1/conv.py']}]);
   assert.deepEqual(plan.checks.map(c=>c.id),['V1','V2']);
   assert.deepEqual(plan.checks[1],{id:'V2',kind:'call',module:'conv.py',adapter:'python',steps:[{call:'to_f',args:[0],expect:32}]});
   assert.equal(local.get('V5').detail,'gone.py, the file of the command gone, is missing');
-  assert.equal(local.get('V6').detail,'no file gives missing_fn to a call','no function contract places missing_fn');
-  // A function no file gives: its observation says why, in the words of how a call reaches it.
-  const unreached=checkPlan({contracts:[{name:'gone_fn',kind:'function',path:'gone.py'},{name:'shout',kind:'function',path:'words.js'},{name:'whisper',kind:'function',path:'soft.py'}],
-    validations:[{id:'U1',check:{kind:'call',steps:[{call:'gone_fn'}]}},{id:'U2',check:{kind:'call',steps:[{call:'shout',args:['a']}]}},{id:'U3',check:{kind:'call',steps:[{call:'whisper',args:['a']}]}}]},
-    new Map([['words.js','function shout(s) { return s; }\nmodule.exports = {};\n'],['soft.py','def other(s):\n    return s\n']]),{rows:TOOLCHAINS}).local;
-  assert.deepEqual(['U1','U2','U3'].map(id=>[unreached.get(id).passed,unreached.get(id).detail,unreached.get(id).observed]),[
-    [false,'gone.py, the file of gone_fn, is missing',{what:'local',note:'gone.py, the file of gone_fn, is missing'}],
-    [false,'words.js does not export shout: a call reaches a function by the name its file exports',{what:'local',note:'words.js does not export shout: a call reaches a function by the name its file exports'}],
-    [false,'soft.py defines no whisper a call reaches',{what:'local',note:'soft.py defines no whisper a call reaches'}]]);
+  assert.equal(local.get('V6').detail,'no function contract declares missing_fn with a file','no function contract places missing_fn');
+  // The declared file, whatever else in the bundle defines the name: the call adapter observes whether the file gives it.
+  const unreached=checkPlan({contracts:[{name:'gone_fn',kind:'function',path:'gone.py'},{name:'shout',kind:'function',path:'words.js'},{name:'whisper',kind:'function',path:'soft.py'},
+    {name:'add',kind:'function',path:'add.ts'},{name:'up',kind:'function',path:'up.rb'},{name:'twice',kind:'function',path:'twice.php'},{name:'fib',kind:'function',path:'fib.go'},{name:'odd',kind:'function',path:'odd.kt'}],
+    validations:['gone_fn','shout','whisper','add','up','twice','fib','odd'].map((call,i)=>({id:`U${i+1}`,check:{kind:'call',steps:[{call,args:[]}]}}))},
+    new Map([['words.js','function shout(s) { return s; }\nmodule.exports = {};\n'],['soft.py','def other(s):\n    return s\n'],['other.py','def whisper(s):\n    return s\n'],
+      ['add.ts','export const add = (a: number, b: number) => a + b;\n'],['up.rb','def up(s) = s.upcase\n'],['twice.php','<?php function twice($n) { return 2 * $n; }\n'],['fib.go','package main\n'],['odd.kt','fun odd() = 1\n']]),{rows:TOOLCHAINS});
+  assert.deepEqual([...unreached.local.values()].map(x=>[x.id,x.passed,x.infrastructure===true,x.detail]),[
+    ['U1',false,false,'gone.py, the file of gone_fn, is missing'],
+    // A language the box has no call adapter for: the runtime cannot run the call, which is no worker's failure.
+    ['U7',false,true,"not run: the box has no call adapter for fib.go's language"],
+    ['U8',false,true,"not run: the box has no call adapter for odd.kt's language"]]);
+  assert.deepEqual(unreached.plan.checks.map(c=>[c.id,c.module,c.adapter]),[['U2','words.js','javascript'],['U3','soft.py','python'],['U4','add.ts','typescript'],['U5','up.rb','ruby'],['U6','twice.php','php']]);
+  assert.deepEqual(unreached.toolchains.map(r=>r.id).sort(),['javascript','php','python','ruby','typescript']);
   assert.deepEqual(toolchains.map(r=>r.id),['python','text']);
-  // A placed file first; else by path.
-  assert.equal(callModule({steps:[{call:'to_f'}]},files,new Set()).module,'components/x-1/conv.py');
-  assert.equal(callModule({steps:[{call:'to_f'}]},files,new Set(['conv.py'])).module,'conv.py');
+  // The contract's path, as written: conv.py, never another bundle file that defines to_f.
+  assert.deepEqual(callModule({steps:[{call:'to_f'}]},spec.contracts),{name:'to_f',path:'conv.py'});
   // Only file and judge checks: no box.
   assert.equal(checkPlan({...spec,validations:spec.validations.slice(2,4)},new Map([['GUIDE.md','x']]),{rows:[TOOLCHAINS[2]]}).container,false);
   assert.deepEqual(fileResult({path:'GUIDE.md',has:['# g']},files),{passed:true,detail:''});
@@ -375,7 +385,7 @@ test('checkPlan: command contracts run by their own path, call checks load the f
   assert.equal(fileResult({path:'x.json',json:true},new Map([['x.json','{']])).passed,false);
 });
 
-test('checkProblems: a failed validation is a run problem with its observation as it is and the frames of the project\'s files; a file that does not compile is a load problem at it; infrastructure is no problem',()=>{
+test('checkProblems: a failed validation is a run problem with its observation as it is and the frames of the project\'s files; a load issue is a load problem (at its file, or a syntax step\'s with its files and no party); infrastructure is no problem',()=>{
   const spec={validations:[
     {id:'V1',serves:['temp'],check:{kind:'command',run:'temp 100',expect:{stdout_has:['212']}}},
     {id:'V2',serves:['index.html'],check:{kind:'browser',serve:'index.html',steps:[{goto:'/'}]}},
@@ -386,15 +396,18 @@ test('checkProblems: a failed validation is a run problem with its observation a
     ['V2',{passed:false,infrastructure:true,detail:'not run: the browser did not start'}],
     ['V3',{passed:true}]]);
   const origin=p=>p==='components/c-1/conv.py'?{owner:'worker-0123456789abcdef',owner_path:'conv.py'}:null;
-  const items=checkProblems(spec,results,[{path:'temp.py',stage:'syntax',detail:'python syntax: temp.py line 2 | invalid syntax'}],{origin});
-  assert.equal(items.length,2);
-  const [run,load]=items;
+  // A file the Worker's parser read, at its path; a box syntax step's output, whole, with the files it compiled and no party (the managers route it).
+  const step='python syntax: exit 1\n--- stdout\n*** Error compiling \'conv.py\'...\nSyntaxError: invalid syntax';
+  const items=checkProblems(spec,results,[{path:'temp.py',stage:'syntax',detail:'temp.py: Unexpected token (2:1)'},{files:['temp.py','components/c-1/conv.py'],toolchain:'python',stage:'syntax',detail:step}],{origin});
+  assert.equal(items.length,3);
+  const [run,load,compiled]=items;
   assert.equal(run.kind,'run');
   assert.equal(run.detail,detail,'the observation, as it is');
   assert.deepEqual(run.parties,[{path:'components/c-1/conv.py',owner:'worker-0123456789abcdef',owner_path:'conv.py',digest:'',role:'site'}]);
   assert.deepEqual(run.facts.validation,{id:'V1',serves:['temp'],check_kind:'command',frames:[{path:'components/c-1/conv.py',fn:'to_f',line:3}]});
   assert.equal(load.kind,'load');assert.equal(load.path,'temp.py');
-  assert.equal(load.detail,'python syntax: temp.py line 2 | invalid syntax');
+  assert.equal(load.detail,'temp.py: Unexpected token (2:1)');
+  assert.deepEqual([compiled.kind,compiled.path,compiled.parties,compiled.detail,compiled.facts.files,compiled.facts.toolchain],['load','',[],step,['temp.py','components/c-1/conv.py'],'python']);
 });
 
 test('runNotes: the prompt, how to run each contract, and the validation table with the snapshot',()=>{

@@ -141,7 +141,7 @@ async function verify(t, solution) {
   const files = new Map(Object.entries(solution));
   const {plan, toolchains} = checkPlan({contracts: [], validations: [t.grader]}, files, {rows: ROWS});
   const report = await verifyChecks({mode: 'checks', fingerprint: 'f', snapshot_hash: await snapshotHash(files), files: Object.fromEntries(files), toolchains,
-    plan: {...plan, syntax: []}, limits: {total_ms: 60_000, check_ms: 15_000, step_ms: 4000}}, {isolation: []});
+    plan: {...plan, syntax: []}, limits: {total_ms: 60_000}}, {isolation: []});
   return report.checks[0];
 }
 test('Python graders in the Container\'s verifyChecks: a correct solution passes wherever it is placed; wrong and forged ones fail', {skip: !hasPython && 'python3 is not installed'}, async () => {
