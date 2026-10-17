@@ -155,7 +155,7 @@ export function jsonObjects(text) {
 // such as S2#3, or an existing file's path), which the room classifies.
 // v8 live 4: a piece's package names (src/packages.js packageNames, kept here to keep this file's imports as they are).
 const packageNamesOf = raw => [...new Set((Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[\s,;]+/) : [])
-  .map(p => typeof p === 'string' ? p.trim() : typeof p?.name === 'string' ? p.name.trim() : '').filter(n => /^(?:@[\w.-]+\/)?[A-Za-z_][\w.:-]{0,80}$/.test(n)))].slice(0, 64);
+  .map(p => typeof p === 'string' ? p.trim() : typeof p?.name === 'string' ? p.name.trim() : '').filter(Boolean))];
 export function normalizeAsk(ask, {v8 = false} = {}) {
   return (Array.isArray(ask) ? ask : ask && typeof ask === 'object' || typeof ask === 'string' ? [ask] : []).map(q => {
     if (typeof q === 'string') q = { need: q, name: q };

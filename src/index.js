@@ -4023,10 +4023,12 @@ export class ControlRoom extends DurableObject {
   // parent is the room has no row above to hand one to, and runs every one
   // it holds. v8 M3 review (L7): Clef's answer is kept per validation key
   // and piece digest (piece_reach:<id>), so a repair round on the same piece
-  // asks again only for what changed; an answer that is not a probability
-  // rolls up its own validation alone.
+  // asks again only for what changed. A validation Clef gave no answer for
+  // stays where it is and is not run (unjudged): whether the piece runs it is
+  // Clef's call, which the compiler asks again, a turn of the room's budget
+  // each time (compileLevel). {runs, unjudged}.
   async pieceScope(id, due, piece, digest='') {
-    if(!this.agentAbove(id)||!due.length)return due;
+    if(!this.agentAbove(id)||!due.length)return {runs:due,unjudged:[]};
     const kept=this.read(`piece_reach:${id}`,{}),keyOf=r=>`${this.checkKey(r)}|${digest}`,ask=due.filter(r=>typeof kept[keyOf(r)]!=='number');
     const n=this.node(id),start=Date.now();
     let ps=[];
@@ -4037,11 +4039,11 @@ export class ControlRoom extends DurableObject {
       if(Object.keys(fresh).length)this.save(`piece_reach:${id}`,Object.fromEntries(Object.entries({...kept,...fresh}).slice(-200)));
     }
     const p=new Map(due.map(r=>[r.id,typeof kept[keyOf(r)]==='number'?kept[keyOf(r)]:ps.find(x=>x.id===r.id)?.p])),errors=new Map(ps.filter(x=>x.error).map(x=>[x.id,clip(x.error,200)]));
-    const no=due.filter(r=>!(p.get(r.id)>=PIECE_REACH_BAR));
-    if(ask.length)this.span('piece','piece_clef',start,Date.now(),{manager:id,checks:ask.length,kept:due.length-ask.length,yes:due.length-no.length,...(errors.size?{errors:errors.size}:{})},id);
-    if(errors.size)this.event(id,'piece_clef_error',clip(`Clef could not judge what ${[...errors.keys()].join(', ')} reach${errors.size>1?'':'es'} (${[...errors.values()][0]}); ${errors.size>1?'they roll':'it rolls'} up.`,600));
-    this.rollUp(id,no.map(r=>({id:r.id,why:errors.has(r.id)?'Clef could not judge what it reaches':`Clef found that it reaches something another piece provides (p=${Number(p.get(r.id)??0).toFixed(3)})`})));
-    return due.filter(r=>!no.includes(r));
+    const unjudged=due.filter(r=>typeof p.get(r.id)!=='number'),no=due.filter(r=>typeof p.get(r.id)==='number'&&p.get(r.id)<PIECE_REACH_BAR);
+    if(ask.length)this.span('piece','piece_clef',start,Date.now(),{manager:id,checks:ask.length,kept:due.length-ask.length,yes:due.length-no.length-unjudged.length,...(unjudged.length?{errors:unjudged.length}:{})},id);
+    if(unjudged.length)this.event(id,'piece_clef_error',clip(`Clef gave no answer on whether the piece runs ${unjudged.map(r=>r.id).join(', ')} (${errors.get(unjudged[0].id)||'no probability'}); the compiler asks again.`,600));
+    this.rollUp(id,no.map(r=>({id:r.id,why:`Clef found that it reaches something another piece provides (p=${Number(p.get(r.id)).toFixed(3)})`})));
+    return {runs:due.filter(r=>!no.includes(r)&&!unjudged.includes(r)),unjudged};
   }
   // The validation table in a sentence, for a hold's or an escalation's text (the dashboard's; no worker reads it).
   checksSummary(head, list=this.validationRows()) {
@@ -5435,7 +5437,7 @@ export class ControlRoom extends DurableObject {
     const held=this.packagesOf(id),notes=[];
     const out=spawn.map(c=>{
       if(!c||typeof c!=='object')return c;
-      const r=piecePackages(c,held,this.installedToolchains()),{packages:_,...rest}=c;
+      const r=piecePackages(c,held),{packages:_,...rest}=c;
       if(r.given)notes.push(`"${clip(c.label,70)}" gets ${r.packages.map(p=>p.name).join(', ')||'no package'}${r.asks.length?` and asks for ${r.asks.join(', ')}`:''}`);
       return {...rest,packages:r.packages,...(r.asks.length?{package_asks:r.asks}:{})};
     });
@@ -8687,12 +8689,13 @@ export class ControlRoom extends DurableObject {
       // Each package its row holds that the asker's does not: grant gives it down the asker's line.
       const held=new Set(this.packagesOf(item.worker).map(p=>p.name)),mine=this.packagesOf(m);
       const grants=this.packageView(m).filter(p=>!held.has(p.name)).map(p=>({package:p}));
-      // At the top of the line (no manager above m), a name no row on it lists
-      // may be granted new, in each language whose box installs packages (owner,
-      // 2026-10-15 22:12: "why are packages not allowed now?"); the box installs it.
+      // The name asked for, which m's row does not list, granted new in a
+      // language: one option per code language the box compiles (owner,
+      // 2026-10-15 22:12: "why are packages not allowed now?"; every manager
+      // has it, whatever its depth, 22:22); the box installs it.
       const [named]=normalizePackages(item.name?[item.name]:[]);
-      if(named&&!this.agentAbove(m)&&!mine.some(p=>p.name===named.name)&&!held.has(named.name))
-        for(const row of this.compileRows().filter(r=>r.install))grants.push({package:{name:named.name,language:row.id},fresh:row.name});
+      if(named&&!mine.some(p=>p.name===named.name)&&!held.has(named.name))
+        for(const row of this.compileRows().filter(r=>r.id!=='text'))grants.push({package:{name:named.name,language:row.id},fresh:row.name});
       grants.forEach((g,j)=>out.push({fn:'grant',...g,key:`grant_${j}`,question:clefText('grant',{j}),call:`grant(${g.package.name}${g.fresh?`, ${g.fresh}`:''})`}));
       out.push({fn:'ask_parent',key:'ask_parent',question:CLEF.ask_parent,call:'ask_parent(need)'});
       return out;
@@ -8793,7 +8796,7 @@ export class ControlRoom extends DurableObject {
   // ---------- asks ----------
   // An ask a worker sent (workerAsk), held by manager m: m's choice answers
   // it with a contract its children deliver (none of the asker's own line),
-  // grants it a package (one m's row holds, or at the top of the line a name no row holds), or asks its
+  // grants it a package (one m's row holds, or the name asked for, new), or asks its
   // own parent the same. At the room (the parent of the manager it created), an
   // ask no manager up to it holds archives the asker with its subtree, and
   // its manager's splitter rebuilds what it delivered (rebuildOrphans).
@@ -8805,7 +8808,7 @@ export class ControlRoom extends DurableObject {
     const pick=await this.managerChoice(m,{kind:'ask',worker:ask.worker,need:ask.need,name:ask.name||''},held);
     if(!pick)return;
     if(pick.fn==='answer')return this.answerAsk(ask,pick.contract);
-    if(pick.fn==='grant')return this.grantPackage(m,ask,pick.package,{fresh:!!pick.fresh});
+    if(pick.fn==='grant')return this.grantPackage(m,ask,pick.package);
     const up=this.agentAbove(m);
     if(up) {
       this.insertProblem({...held,holder:up});
@@ -8834,14 +8837,14 @@ export class ControlRoom extends DurableObject {
     }
     this.answerAsker(n.id,ask,text||MESSAGES.provided({contract:contractLine(c),reference:this.referenceLine(c.name,c,n.id)}),c.name);
   }
-  // The package p that manager m's row holds, granted to the asker: it is
-  // added to the packages of every row between m and the asker, so a piece's
-  // packages stay a part of its parent's, and the asker hears it. fresh: a
-  // package granted new at the top of the line, listed on m's row too.
-  async grantPackage(m, ask, p, {fresh=false}={}) {
+  // The package p manager m granted the asker: it is listed on every row of
+  // the asker's line that does not list it (m's and those above it too, for
+  // one m's row did not hold), so a piece's packages stay a part of its
+  // parent's and each level's box installs what its subtree uses; the asker hears it.
+  async grantPackage(m, ask, p) {
     const n=this.node(ask.worker);
     if(!n||!p)return;
-    for(let x=n.id;x&&(x!==m||fresh);x=x===m?null:this.agentAbove(x)) {
+    for(let x=n.id;x;x=this.agentAbove(x)) {
       const own=normalizePackages(parse(this.node(x)?.packages,[]));
       if(!own.some(q=>q.name===p.name))this.db().exec('UPDATE agents SET packages=? WHERE id=?',JSON.stringify(normalizePackages([...own,p])),x);
     }
@@ -9090,7 +9093,7 @@ export class ControlRoom extends DurableObject {
       const content=files.get(v.check.path);
       if(typeof content!=='string'||!content.trim()){const note=`${v.check.path} is ${typeof content==='string'?'empty':'missing'}`;return [v.id,{id:v.id,kind:'judge',frames:[],passed:false,detail:note,observed:{what:'local',note}}];}
       const says=v.says||(v.serves||[]).map(n=>contractOf.get(n)?.does).filter(Boolean).join('; ');
-      // A Clef error is infrastructure: the room holds and Continue compiles again.
+      // A judgement Clef could not give is infrastructure: the compiler runs it again, a turn of the room's budget each time.
       try {
         const j=await judgeRequirement(this.inferenceEnv(),{says,question:v.check.question,path:v.check.path,content});
         return [v.id,{id:v.id,kind:'judge',frames:[],passed:j.passed,p:j.p,detail:j.detail,observed:{what:'judge',p:j.p}}];
@@ -9149,13 +9152,14 @@ export class ControlRoom extends DurableObject {
       return {passed:true};
     };
     const due=v=>!this.passedOn(v,digest);
-    const runs=[...await this.pieceScope(id,all.filter(v=>here.has(v.id)&&due(v)),bundle,digest),...all.filter(v=>!here.has(v.id)&&due(v))],spec=this.specOf(runs);
+    const scope=await this.pieceScope(id,all.filter(v=>here.has(v.id)&&due(v)),bundle,digest),unjudged=scope.unjudged;
+    const runs=[...scope.runs,...all.filter(v=>!here.has(v.id)&&due(v))],spec=this.specOf(runs);
     // What of the piece no syntax step compiled, and the files whose issues stand.
     const standing=this.read(`compile_issues:${id}`,null),fresh=this.uncompiled(box);
     if(standing?.owned===owned)for(const p of standing.paths||[])if(box.has(p))fresh.add(p);
     // Code whose compile row the box's inventory has not confirmed yet: the box opens, and reports it.
     const asks=this.uncompilable(box).some(x=>x.unconfirmed);
-    if(!runs.length&&!fresh.size&&!asks)return finish({ran:0});
+    if(!runs.length&&!unjudged.length&&!fresh.size&&!asks)return finish({ran:0});
     const input=`${digest}:${all.map(v=>v.id).join(',')}`;
     if(this.read(`compile_blocked:${id}`,null)?.input===input){this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return {held:true};}
     if(runs.length)this.event(id,'checks_started',`Running ${runs.length} validation(s) on ${files.size} file(s) (snapshot ${digest.slice(0,14)}).`);
@@ -9172,6 +9176,8 @@ export class ControlRoom extends DurableObject {
     const [judged,run]=await Promise.all([judging,container?this.runChecks(id,input,box,plan,toolchains):null]);
     if(container)this.span('piece','piece_box',boxStart,Date.now(),{manager:id,depth,checks:plan.checks.length,files:files.size,compiled:plan.syntax.reduce((n,s)=>n+s.files.length,0),...(run?.infrastructure?{infrastructure:true}:{passed:!!run?.report?.passed})},id);
     for(const [vid,x] of judged)results.set(vid,x);
+    // What Clef gave no answer for, whether the piece runs it: not run, as a check the box could not run is.
+    for(const v of unjudged)results.set(v.id,{id:v.id,passed:false,infrastructure:true,detail:'not run: Clef gave no answer on whether this piece runs it'});
     const report=run?.report||null;
     if(report?.inventory)this.save('toolchain_inventory',report.inventory);
     for(const c of report?.checks||[])results.set(c.id,c);
@@ -9186,8 +9192,8 @@ export class ControlRoom extends DurableObject {
     // Each validation's status; the other levels' keep theirs.
     const status=this.read('validation_status',{}),issues=[...(report?.issues||[]),...parsed.issues],bad=new Set(issues.map(i=>i.path).filter(Boolean));
     if(!run?.infrastructure)this.save(`compile_issues:${id}`,{owned,digest,paths:[...bad],ts:Date.now()});
-    const passes=[];
-    for(const v of runs) {
+    const passes=[],kept=[...runs,...unjudged];
+    for(const v of kept) {
       const res=results.get(v.id),passed=!res||res.infrastructure?null:!!res.passed;
       status[v.id]=statusEntry(passed,digest,res?.detail||'not run');
       // A pass is for the exact bundle it ran on (its digest); a failure leaves this row none.
@@ -9197,9 +9203,8 @@ export class ControlRoom extends DurableObject {
     this.save('validation_status',status);
     const stale=moved({ran:runs.length,passed:passes.length});
     if(stale)return stale;
-    const kept=runs;
     const failed=kept.filter(v=>status[v.id].passed===false),untested=kept.filter(v=>status[v.id].passed===null);
-    const line=!runs.length?`${issues.length} file(s) do not compile`:`${kept.length-failed.length-untested.length} of ${kept.length} validation(s) pass`+(failed.length?`; failing: ${failed.map(v=>v.id).join(', ')}`:'')+(untested.length?`; not run: ${untested.map(v=>v.id).join(', ')}`:'')+(issues.length?`; ${issues.length} file(s) do not compile`:'');
+    const line=!kept.length?`${issues.length} file(s) do not compile`:`${kept.length-failed.length-untested.length} of ${kept.length} validation(s) pass`+(failed.length?`; failing: ${failed.map(v=>v.id).join(', ')}`:'')+(untested.length?`; not run: ${untested.map(v=>v.id).join(', ')}`:'')+(issues.length?`; ${issues.length} file(s) do not compile`:'');
     const blocked=untested.length>0||!!report?.infrastructure_issue||!!run?.infrastructure||!!notBuilt;
     if(!failed.length&&!untested.length&&!issues.length&&!blocked) {
       this.save(`compile_reported:${id}`,null);this.save(`compile_blocked:${id}`,null);this.set(`compile_infrastructure:${id}`,'');

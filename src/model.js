@@ -747,8 +747,8 @@ export async function vetBaseChanges(env, {assignment='', paths=[]}) {
 // language (CLEF.piece_reach), so the piece can be compiled and its checks
 // run as a piece (owner, 2026-10-15 22:22). One batched call per 12 checks:
 // state {piece: {name, contracts, files: [{path, content}]}, installed,
-// checks: [{slot, says, check}]}. [{id, p}]; a Clef error throws (the caller
-// rolls the checks up, which only delays them).
+// checks: [{slot, says, check}]}. [{id, p}], or {id, error} for a check
+// Clef gave no answer for (the compiler asks again on its next run).
 export const PIECE_REACH_BAR = 0.5;
 export async function pieceReach(env, {name='', contracts=[], files=[], installed=[], checks=[]}) {
   if (!checks.length) return [];
@@ -757,9 +757,7 @@ export async function pieceReach(env, {name='', contracts=[], files=[], installe
   if (!clef) throw new Error('unsupported Clef decision model');
   const shapeOf=check=>checkSummary(check);
   // v8 M3 review (L7): each answer is its own check's: one that is not a
-  // probability is asked once more, alone with the others like it, and one
-  // still invalid (or a call that fails twice) is that check's error
-  // ({id, error}), never its batch's.
+  // probability, or a call that fails, is that check's error ({id, error}).
   const ask=async group=>{
     const output=await clefRun(env,'pieceReach',selector,{model:clef,state:{piece:{name:String(name),contracts:contracts.map(String),files},
       installed,checks:group.map((r,i)=>({slot:i,says:String(r.says||''),check:shapeOf(r.check)}))},
@@ -769,9 +767,7 @@ export async function pieceReach(env, {name='', contracts=[], files=[], installe
   const once=async group=>{try{return await ask(group);}catch(e){return group.map(r=>({id:r.id,error:String(e?.message||e)}));}};
   const out=[];
   for(let start=0;start<checks.length;start+=12) {
-    const first=await once(checks.slice(start,start+12)),again=checks.filter(r=>first.some(x=>x.id===r.id&&x.error));
-    const second=again.length?await once(again):[];
-    out.push(...first.map(x=>x.error?second.find(y=>y.id===x.id)||x:x));
+    out.push(...await once(checks.slice(start,start+12)));
   }
   return out;
 }

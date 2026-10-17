@@ -149,6 +149,25 @@ test('every manager has a builder of its own; each validation is held by the low
   assert.equal(await shipsVerified(room, 'the toolkit'), true);
 });
 
+// Owner, 2026-10-15 22:22 / 2026-10-16 20:08: whether a piece runs a check is Clef's call; the runtime never decides it for Clef.
+test('when Clef gives no answer on whether a piece runs a check, the check is not rolled up and not run: the compiler asks again, a turn of the budget each time, and Clef\'s answer decides', {skip}, async () => {
+  const base = clefFor();
+  let silent = 0;
+  // Clef gives no probability for the first two piece-reach questions that reach Louder's piece.
+  const clef = input => { const out = base(input); if (input.state?.piece?.name === 'Louder' && silent < 2 && Object.keys(input.questions || {}).some(k => /^piece_reach_/.test(k))) { silent++; for (const k of Object.keys(out.answers)) out.answers[k] = {noul: null}; } return out; };
+  const {room} = await toolkit({clef});
+  assert.equal(room.get('status'), 'complete', tail(room));
+  const m = at(room);
+  assert.equal(silent, 2);
+  const unanswered = events(room, 'piece_clef_error').filter(e => e.actor === m.Louder);
+  assert.equal(unanswered.length, 2);
+  assert.match(unanswered[0].body, /^Clef gave no answer on whether the piece runs .+; the compiler asks again\.$/);
+  // Clef's answer, once given, rolled them up: the same placement as when it answers at once.
+  assert.ok(!events(room, 'check_rolled_up').some(e => /could not judge/.test(e.body)));
+  assert.deepEqual(room.read(`rolled:${m.Louder}`, []), [V.l1, V.l2]);
+  assert.deepEqual(statusOf(room), ALL_PASS);
+});
+
 // ------------------------------------------------------------------ a pass is for its exact bundle
 test('a pass holds for its exact bundle: waking every row of a finished run on the same bytes opens no box; a changed file runs its validations again in its piece and at every level above', {skip}, async () => {
   const {room, boxes} = await toolkit();

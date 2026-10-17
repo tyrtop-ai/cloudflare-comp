@@ -166,14 +166,15 @@ test('the base\'s files the box cannot hold (a binary) ship, with no hold, and t
   assert.equal(app.files.find(f => f.path === 'logo.bin').content_base64, bytes);
 });
 
-test('packages across pieces: each piece holds its parent\'s packages of its languages; a name a split gives that no row holds is the piece\'s ask; a worker\'s ask for a package its row holds is answered from its row, and one for a package it lacks goes to its manager, granted by the manager whose row holds it', {skip}, async () => {
+test('packages across pieces: each piece holds its parent\'s packages of its languages; a name a split gives that no row holds is the piece\'s ask; a worker\'s ask for a package its row holds is answered from its row, and one for a package it lacks goes to its manager, whose choice grants it (new, as any manager may) down the line', {skip}, async () => {
   const split = user => { const a = splitFor()(user); return {...a, pieces: a.pieces.map(p => p.label === 'Shouter' ? {...p, packages: ['pytest', 'numpy']} : p)}; };
   const asks = {loud: [{need: 'run tests', name: 'pytest'}], 'NOTES.md': [{need: 'run tests', name: 'pytest'}]};
   // Louder's ask is answered from its row within its session, so it goes on to done; Notes' ask goes to its manager, so it waits for the answer.
   // (R4-room/chrono-3: a worker's wait is its own call, and nothing wakes it but a message.)
   const leaf = leafOf({control: (user, n) => { const c = user.prompt.deliver.find(d => asks[d.name]); return c && n === 0 ? {summary: 'need', ...(c.name === 'loud' ? {done: true} : {wait: true}), ask: asks[c.name]} : null; }});
-  // A manager whose row holds the package grants it; one without it hands the ask up.
-  const clef = clefFor(undefined, {'^grant_\\d+$': 0.95, '^ask_parent$': (_k, state) => state.packages_offered ? 0.1 : 0.95});
+  // Clef: a package a row holds gives the need, and so does a name granted new as a Python package; as another language's it does not.
+  const grantP = (k, state) => { const o = state.packages_offered?.[Number(k.split('_')[1])]?.package || ''; return !/not yet installed/.test(o) || /a Python package/.test(o) ? 0.95 : 0.1; };
+  const clef = clefFor(undefined, {'^grant_\\d+$': grantP, '^ask_parent$': (_k, state) => state.packages_offered ? 0.1 : 0.95});
   const r = await toolkit({split, leaf, clef});
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
   const m = at(r.room), names = id => r.room.packagesOf(id).map(p => p.name), worker = label => r.room.children(m[label]).find(c => c.role === 'worker').id;
@@ -189,10 +190,10 @@ test('packages across pieces: each piece holds its parent\'s packages of its lan
   const louder = r.room.read(`fn_answers:${worker('Louder')}`, []);
   assert.deepEqual(louder.map(a => [a.key.replace(/ \([0-9a-f]{8}\)$/, ''), a.kind]), [['fn pytest', 'provided']]);
   assert.match(louder[0].text, /your packages hold pytest/i);
-  // Notes writes text: its rows hold no package; its worker's ask for pytest goes to its manager, which hands it up, and the room's manager grants it.
+  // Notes writes text: its rows hold no package; its worker's ask for pytest goes to its manager, which grants it new, as any manager may, listed on its whole line.
   assert.deepEqual(names(worker('Notes')), ['pytest']);
   assert.deepEqual(names(m.Notes), ['pytest'], 'every row between holds it too');
-  assert.match(events(r.room, 'package_granted').find(e => e.actor === m.Root).body, /granted pytest to "Notes"/);
-  assert.ok(events(r.room, 'manager_choice').some(e => e.actor === m.Root && /^On the ask for pytest: grant\(pytest\)/.test(e.body)), 'the grant is the room manager\'s choice');
+  assert.match(events(r.room, 'package_granted').find(e => e.actor === m.Notes).body, /granted pytest to "Notes"/);
+  assert.ok(events(r.room, 'manager_choice').some(e => e.actor === m.Notes && /^On the ask for pytest: grant\(pytest, Python\)/.test(e.body)), 'the grant is the Notes manager\'s choice');
   assert.equal(events(r.room, 'level_extend').length, 0);
 });
