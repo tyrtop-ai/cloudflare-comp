@@ -14,7 +14,7 @@ import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { liveRoom, events, rowId } from './helpers/room.js';
 import { lintText } from './helpers/prompt-lint.js';
-import { normalizePackages, needWords, readsModule, piecePackages, PACKAGES_MAX, installedPackages, stdlibHints } from '../src/packages.js';
+import { normalizePackages, piecePackages, installedPackages, stdlibRow } from '../src/packages.js';
 import { MESSAGES } from '../src/prompts.js';
 import { TOOLCHAINS } from '../src/toolchains.js';
 
@@ -68,9 +68,9 @@ const TOP = await rowId('v714-test', 1, 'manager');
 const BACKEND = await rowId(TOP, 1, 'manager');
 const SERVER = await rowId(BACKEND, 1, 'worker');
 const JSON_PIECE = await rowId(TOP, 2, 'manager');
-async function line(rootPackages = [PYTEST], {packages = 'none'} = {}) {
+async function line(rootPackages = [PYTEST]) {
   const {room} = liveRoom({});
-  room.save('settings', {...room.settings(), pipeline: 'v8', packages});
+  room.save('settings', {...room.settings(), pipeline: 'v8'});
   await room.provision(TOP, null, 'Root objective', 'a tracker', [], [], rootPackages, 'manager', {seq: 1});
   await room.provision(BACKEND, TOP, 'Backend', 'the backend', [{name: 'addTodo', kind: 'function', path: 'todo.py', does: 'adds a to-do'}], [], [PYTEST], 'manager', {seq: 1});
   await room.provision(SERVER, BACKEND, 'Server', 'the server', [{name: 'app.py', kind: 'file', path: 'app.py', does: 'the server'}], [], [], 'worker', {seq: 1});
@@ -107,39 +107,21 @@ test('M1: a module of the language\'s standard library is part of the language: 
   assert.ok(!('package_requests' in room.snapshot()));
   // The installed set and the rows' packages hold no standard library module; its modules are row data (stdlib_provides).
   assert.deepEqual(installedPackages().map(p => p.name), ['pytest']);
-  assert.ok(stdlibHints().some(p => p.name === 'http.server') && stdlibHints().some(p => p.name === 'node:http'));
+  assert.ok(stdlibRow('http.server') && stdlibRow('node:http'));
   assert.ok(TOOLCHAINS.every(r => !(r.packages || []).some(p => /^node:|^http\.server$/.test(p.name))));
 });
 
-test('M2: a run that could not find a module the rows know as a package\'s is missing_module; a project-like name is not', async () => {
-  const room = await line();
-  const bundle = {files: new Map([['job_queue.py', 'class JobQueue: pass\n'], ['app.py', 'from queue import JobQueue\n']]), glue: new Map()};
-  assert.equal(room.missingPackage('flask', bundle), true);
-  assert.equal(room.missingPackage('todo_store', bundle), false);
-});
-
-test('L5: the per-row cap is per language, so no language\'s packages are lost to another\'s', () => {
+test('L5: a row lists every package it is given, in every language: no count drops one', () => {
   const many = [...Array.from({length: 70}, (_, i) => ({name: `js${i}`, language: 'javascript'})), {name: 'pytest', language: 'python'}, {name: 'requests', language: 'python'}];
   const out = normalizePackages(many);
-  assert.equal(out.filter(p => p.language === 'javascript').length, PACKAGES_MAX);
+  assert.equal(out.filter(p => p.language === 'javascript').length, 70);
   assert.deepEqual(out.filter(p => p.language === 'python').map(p => p.name), ['pytest', 'requests']);
+  assert.equal(normalizePackages([{name: 'x', provides: 'y'.repeat(300)}])[0].provides.length, 300, 'what a package provides, whole');
 });
 
-test('L7: the toolchain words, the module prefix and how a file reads a module are row data', () => {
-  const go = {id: 'go', extensions: ['.go'], tool_words: ['go', 'golang'], module_reference: ['import\\s+"{module}"'], packages: [], stdlib_provides: [{name: 'net/http', provides: 'HTTP server'}]};
-  assert.deepEqual(needWords('a golang http server', [...TOOLCHAINS, go]), ['http', 'server']);
-  assert.deepEqual(needWords('a node http server'), ['http', 'server']);
-  assert.equal(readsModule('server.py', 'import json\nfrom flask import Flask\n', 'flask'), true);
-  assert.equal(readsModule('server.py', 'import flask_cors\n', 'flask'), false);
-  assert.equal(readsModule('server.js', "const express = require('express');\n", 'express'), true);
-  assert.equal(readsModule('server.js', "import fs from 'node:fs';\n", 'fs'), true);
-  for (const row of TOOLCHAINS.filter(r => r.id !== 'text')) assert.ok(Array.isArray(row.tool_words) && row.module_reference?.length && Array.isArray(row.stdlib_provides), row.id);
-});
-
-test('L8: a missing module\'s failure names what exists', () => {
-  const text = MESSAGES.missing_package({name: 'flask', answer: MESSAGES.package_language({need: 'HTTP server', names: 'http.server', many: false})});
-  assert.equal(text, 'The run looked for flask. For HTTP server, the language\'s standard library provides http.server: use it as it is.');
-  assert.deepEqual(lintText('message', MESSAGES.missing_package({name: 'x', answer: MESSAGES.package_language({need: 'a server', names: 'y', many: false})}), {room: true}), []);
+test('L7: the module prefix is row data; each code row says how its box installs packages', () => {
+  assert.equal(stdlibRow('node:fs')?.id, 'javascript');
+  for (const row of TOOLCHAINS.filter(r => r.id !== 'text')) assert.ok(Array.isArray(row.install?.argv) && row.install.argv.includes('{packages}') && row.install.tree, row.id);
 });
 
 test('L10: a splitter\'s named packages are read in the piece\'s language and added to its default set', () => {

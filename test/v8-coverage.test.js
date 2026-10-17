@@ -165,20 +165,22 @@ test('the base\'s files the box cannot hold (a binary, one past the box\'s bytes
   assert.equal(app.files.find(f => f.path === 'logo.bin').content_base64, bytes);
 });
 
-test('packages across pieces: each piece holds its parent\'s packages of its languages; a name a split gives that no row holds is the piece\'s ask; a worker\'s ask by a package\'s name is resolved up its line, granted where a row above holds it', {skip}, async () => {
+test('packages across pieces: each piece holds its parent\'s packages of its languages; a name a split gives that no row holds is the piece\'s ask; a worker\'s ask by a package\'s name is resolved up its line, granted where a row above holds it, or from the top', {skip}, async () => {
   const split = user => { const a = splitFor()(user); return {...a, pieces: a.pieces.map(p => p.label === 'Shouter' ? {...p, packages: ['pytest', 'numpy']} : p)}; };
   const asks = {loud: [{need: 'run tests', name: 'pytest'}, {need: 'fetch a page over HTTP', name: 'requests'}], 'NOTES.md': [{need: 'run tests', name: 'pytest'}]};
   const leaf = leafOf({control: (user, n) => { const c = user.prompt.deliver.find(d => asks[d.name]); return c && n === 0 ? {summary: 'need', wait: true, ask: asks[c.name]} : null; }});
   const r = await toolkit({split, leaf});
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
   const m = at(r.room), names = id => r.room.packagesOf(id).map(p => p.name), worker = label => r.room.children(m[label]).find(c => c.role === 'worker').id;
-  assert.deepEqual(names(m.Root), ['pytest'], 'the room\'s manager holds the installed set');
-  for (const label of ['Loud part', 'Quiet part', 'Shouter', 'Louder', 'Whisperer', 'Softener']) assert.deepEqual(names(m[label]), ['pytest'], label);
+  // Packages are allowed: a name no row holds (numpy for Shouter, requests for Louder's worker) is granted from the top, listed on every row of the asker's line.
+  assert.deepEqual(Object.fromEntries(['Root', 'Loud part', 'Quiet part', 'Shouter', 'Louder', 'Whisperer', 'Softener'].map(l => [l, names(m[l])])),
+    {Root: ['pytest', 'numpy', 'requests'], 'Loud part': ['pytest', 'numpy', 'requests'], 'Quiet part': ['pytest'], Shouter: ['pytest', 'numpy'], Louder: ['pytest', 'requests'], Whisperer: ['pytest'], Softener: ['pytest']});
   assert.match(events(r.room, 'packages_planned').find(e => e.actor === m['Loud part']).body, /"Shouter" gets pytest and asks for numpy/);
   assert.ok(events(r.room, 'package_answer').some(e => e.actor === m.Shouter && /^numpy: /.test(e.body)), 'the split\'s name no row holds is the piece\'s ask, answered');
   const louder = r.room.read(`fn_answers:${worker('Louder')}`, []);
   assert.deepEqual(louder.map(a => [a.key, a.kind, a.text.label]), [['fn pytest', 'broker', 'the installed packages'], ['fn requests', 'broker', 'the installed packages']]);
-  assert.match(louder[0].text.value, /your packages hold pytest/);
+  assert.match(louder[0].text.value, /^Your packages hold pytest/);
+  assert.match(louder[1].text.value, /^requests is now in your packages, and the box installs it/);
   // Notes writes text: its rows hold no package; its worker's ask for pytest goes up its line to the room's manager, which grants it.
   assert.deepEqual(names(worker('Notes')), ['pytest']);
   assert.deepEqual(names(m.Notes), ['pytest'], 'every row between holds it too');

@@ -197,11 +197,9 @@ export const MESSAGES = Object.freeze({
   // ------------------------------------------------------------ the broker
   available_note: () => 'available lists what you can ask for by name with ask: what you deliver, the names you may call, your installed packages, existing files open to you and parts of linked pages. Each answer is labelled with where it comes from.',
   available_package: ({provides}) => provides ? `an installed package for ${provides}` : 'an installed package',
-  package_yours: ({need, names, many}) => `For ${need}, your packages hold ${names}: use ${it(many)} as ${many ? 'they are' : 'it is'}.`,
-  package_granted: ({need, names, many}) => `For ${need}, ${names} ${many ? 'are' : 'is'} now in your packages: use ${it(many)}.`,
+  package_yours: ({names, many}) => `Your packages hold ${names}: use ${it(many)} as ${many ? 'they are' : 'it is'}.`,
+  package_granted: ({names, many}) => `${names} ${many ? 'are' : 'is'} now in your packages, and the box installs ${many ? 'them' : 'it'}: use ${it(many)}.`,
   package_stdlib: ({name}) => `${name} is part of the language's standard library: import it and use it as it is.`,
-  package_language: ({need, names, many}) => `For ${need}, the language's standard library provides ${names}: use ${it(many)} as ${many ? 'they are' : 'it is'}.`,
-  missing_package: ({name, answer}) => `The run looked for ${name}. ${answer}`,
   available_own: () => 'what you deliver',
   available_use: () => 'a name you may call',
   available_base: () => 'an existing file: the answer quotes its text',

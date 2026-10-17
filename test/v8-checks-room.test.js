@@ -209,6 +209,24 @@ test('repairs go on: validations that keep failing go back to the worker every r
   assert.deepEqual(lintRequests(room,calls),[]);
 });
 
+// Owner 2026-10-15 22:11-22:12: packages are listed on the rows, and allowed: the compiler's box installs what they list.
+test('a package granted to a worker is listed up its line, and the compiler\'s box installs it: the plan carries it, and the box opens with the internet for its install',{skip:!hasPython&&'python3 is not installed'},async()=>{
+  const requests=[];let room;
+  const executor={build:async req=>{requests.push(req);return verifyChecks({...req,plan:{...req.plan,install:[]},snapshot_hash:await snapshotHash(req.files)},{isolation:[]});}};
+  const ask=()=>{const w=room.agentRows().find(r=>r.role==='worker'&&r.interfaces.some(c=>c.name==='temp'));assert.equal(room.packageAsk(w.id,{name:'flask'}).how,'granted');return wrote('temp.py',RIGHT_TEMP);};
+  const made=v8Room({level:TEMP_LEVEL,splitWhen:t=>t.startsWith(TEMP_GOAL),executor,answers:{temp:[ask],'USAGE.md':[wrote('USAGE.md',USAGE_MD)]}});
+  room=made.room;
+  await room.start(TEMP_GOAL,30,{pipeline:'v8'});
+  await made.drain();
+  assert.equal(room.get('status'),'complete',tail(room));
+  assert.ok(requests.length>0);
+  for(const req of requests)assert.deepEqual(req.plan.install,[{toolchain:'python',packages:['flask']}]);
+  assert.ok(requests.every(req=>req.toolchains.some(r=>r.id==='python'&&r.install)));
+  // The boxes that compiled (a prewarmed box, opened before the grant with the internet off, was discarded unused).
+  const starts=made.boxes.boxes.filter(b=>b.container.log.some(x=>x[0]==='exec'&&x[1][0]==='timeout')).flatMap(b=>b.container.log.filter(x=>x[0]==='start'));
+  assert.ok(starts.length>0&&starts.every(([,o])=>o.enableInternet===true),JSON.stringify(starts));
+});
+
 // ------------------------------------------------------------ the holds, stale results, construction
 test('a Clef error while judging is infrastructure, as observed: the room holds checks_blocked, Continue compiles again, and the room completes',async()=>{
   let fail=1;

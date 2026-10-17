@@ -91,7 +91,7 @@ test('command checks: a Python CLI reads stdin, prints, exits; fixtures beside i
       {id:'R4',kind:'command',run:'python3 wc.py',stdin:'one two\n',expect:{stdout:'3'}},
       {id:'R5',kind:'command',run:'ratio.py',stdin:'',expect:{exit:0}},
       {id:'R6',kind:'command',run:"python3 -c \"print(open('in.txt').read().upper())\"",files:{'in.txt':'hello'},expect:{stdout:'HELLO'}},
-      {id:'R7',kind:'command',run:'rm -rf /',expect:{exit:0}},
+      {id:'R7',kind:'command',run:'no-such-tool-here --x',expect:{exit:0}},
       {id:'R8',kind:'command',run:'python3 -c "import time; time.sleep(30)"',expect:{exit:0}},
       {id:'R9',kind:'command',run:'python3 wc.py',files:{'wc.py':'print(1)'},expect:{exit:0}}]},
     {limits:{total_ms:120_000,check_ms:2000,step_ms:1000},isolation:[]});
@@ -102,7 +102,7 @@ test('command checks: a Python CLI reads stdin, prints, exits; fixtures beside i
   assert.match(c.R5.detail,/^ratio\.py: exit 1, expected 0; stderr: .*ZeroDivisionError: division by zero.* \(at ratio\.py:5\)$/);
   assert.deepEqual(c.R5.frames,[{path:'ratio.py',line:5,fn:'ratio'},{path:'ratio.py',line:7,fn:'<module>'}],'the raising frame first');
   assert.ok(!c.R5.output.includes(tmpdir()+'/checks-'),'the output names bundle paths, not the check folder');
-  assert.match(c.R7.detail,/^rm is neither a command deliverable, a bundle file nor an installed executable$/);
+  assert.match(c.R7.detail,/^no-such-tool-here --x: .*(ENOENT|No such file)/,'what the box does not have, the run observes');
   assert.match(c.R8.detail,/timed out after 2 s/);
   assert.equal(c.R9.detail,"fixture wc.py would replace the bundle's wc.py");
   for(const x of report.checks.filter(x=>!x.passed))short(x);
@@ -574,6 +574,39 @@ test('project checks run first as commands that must exit 0; the time budget mar
   assert.equal(byId(late).R2.detail,'not run: the verification\'s 1 s budget was spent');
 });
 
+// Owner 2026-10-15 05:16 ("Any code type"), 22:12 ("why are packages not allowed now?").
+test('any code type: a bundle file no row runs runs by its #! line; a command is any executable the box has',async()=>{
+  const files={'tool':'#!/bin/sh\necho "tool says $1"\n','notes.txt':'plain\n'};
+  const c=byId(await run(files,{checks:[
+    {id:'R1',kind:'command',run:'tool hi',expect:{stdout:'tool says hi'}},
+    {id:'R2',kind:'command',run:'sh -c "echo shell"',expect:{stdout:'shell'}},
+    {id:'R3',kind:'command',run:'notes.txt',expect:{exit:0}}]},{isolation:[]}));
+  assert.equal(c.R1.passed,true,c.R1.detail);
+  assert.equal(c.R2.passed,true,c.R2.detail);
+  assert.equal(c.R3.passed,false,'a file with no #! line does not start, as observed');
+  assert.match(c.R3.detail,/^notes\.txt: /);
+});
+
+test('install: the box installs the packages a plan lists, by the row\'s install command, into one read-only tree its checks find; a failed install is observed',{skip:!hasPython&&'python3 is not installed'},async()=>{
+  // A row whose install command writes a module into its tree, offline (the real rows run npm and pip).
+  const fake={...ROWS.find(r=>r.id==='python'),install:{argv:['sh','-c','for p do mkdir -p "$T/$p" && echo "NAME = \'$p\'" > "$T/$p/__init__.py"; done','sh','{packages}'],tree:'python-packages',env:{PYTHONPATH:'{tree}'}}};
+  fake.install.argv=['env','T={tree}',...fake.install.argv];
+  const files={'app.py':'import fakepkg\nprint(fakepkg.NAME)\n','scribble.py':'import fakepkg, os\nopen(os.path.join(os.path.dirname(fakepkg.__file__), "x.py"), "w").write("")\n'};
+  const report=await run(files,{install:[{toolchain:'python',packages:['fakepkg']}],checks:[
+    {id:'R1',kind:'command',run:'python3 app.py',expect:{stdout:'fakepkg'}},
+    {id:'R2',kind:'command',run:'python3 scribble.py',expect:{exit:0}}]},{toolchains:[fake],isolation:[]});
+  assert.deepEqual(report.installed,[{toolchain:'python',packages:['fakepkg'],passed:true}]);
+  assert.equal(report.stages.find(s=>s.name==='install:python')?.passed,true);
+  const c=byId(report);
+  assert.equal(c.R1.passed,true,c.R1.detail);
+  if(process.getuid?.()!==0)assert.equal(c.R2.passed,false,'the installed tree is read-only to a check');
+  const failed=await run(files,{install:[{toolchain:'python',packages:['fakepkg']}],checks:[{id:'R1',kind:'command',run:'python3 app.py',expect:{stdout:'fakepkg'}}]},
+    {toolchains:[{...fake,install:{argv:['sh','-c','echo "no such package: $1" >&2; exit 1','sh','{packages}'],tree:'python-packages',env:{PYTHONPATH:'{tree}'}}}],isolation:[]});
+  assert.equal(failed.installed[0].passed,false);
+  assert.match(failed.installed[0].detail,/^exit 1: no such package: fakepkg$/);
+  assert.match(byId(failed).R1.detail,/ModuleNotFoundError: No module named 'fakepkg'/,'the checks run on, and say what they saw');
+});
+
 test('helpers: words, commands from the rows, json_has, limits',()=>{
   assert.deepEqual(splitWords(`python3 -c "print('a b')" 'x y' z\\ w ""`),['python3','-c',"print('a b')",'x y','z w','']);
   const files={'cli.py':'','app.mjs':'','README.md':''};
@@ -581,8 +614,9 @@ test('helpers: words, commands from the rows, json_has, limits',()=>{
   assert.deepEqual(resolveCommand('app.mjs',{files,rows:ROWS}).argv,['node','app.mjs']);
   assert.deepEqual(resolveCommand('wc -l',{files,rows:ROWS,commands:{wc:['python3','cli.py']}}).argv,['python3','cli.py','-l']);
   assert.deepEqual(resolveCommand(['pytest','-q'],{files,rows:ROWS}).argv,['pytest','-q']);
-  assert.match(resolveCommand('README.md',{files,rows:ROWS}).error,/not a file this deployment can run/);
-  assert.match(resolveCommand('curl x',{files,rows:ROWS}).error,/^curl is neither/);
+  // No row for it: a bundle file runs by itself, and any other word is an executable of the box (no list of languages decides).
+  assert.deepEqual(resolveCommand('README.md',{files,rows:ROWS}),{argv:['./README.md'],direct:'README.md'});
+  assert.deepEqual(resolveCommand('go run main.go',{files,rows:ROWS}).argv,['go','run','main.go']);
   assert.equal(jsonHas({a:1,b:{c:2,d:3}},{b:{c:2}}),true);
   assert.equal(jsonHas([{id:1,t:'x'},{id:2,t:'y'}],{t:'y'}),true);
   assert.equal(jsonHas({tags:['a','b','c']},{tags:['c','a']}),true);

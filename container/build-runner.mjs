@@ -1,5 +1,5 @@
 // Runs only inside the isolated Cloudflare build container.
-import {readFile,mkdir,writeFile,rm,mkdtemp,readdir,stat,cp,realpath} from 'node:fs/promises';
+import {readFile,mkdir,writeFile,rm,mkdtemp,readdir,stat,cp,realpath,chmod} from 'node:fs/promises';
 import {createHash,randomBytes} from 'node:crypto';
 import {tmpdir,hostname as osHostname} from 'node:os';
 import path from 'node:path';
@@ -392,8 +392,8 @@ export async function verifyBuild(request,{runStage=run}={}) {
 }
 // ---------------------------------------------------------------------------
 // v8 verification of a level's validations (spec §4.1 step 4, §4.4-4.7): mode 'checks'. One exec
-// runs the stages in order: syntax per toolchain row, install (refused for
-// now: packages are 'none'), project checks, start the runs, command / call /
+// runs the stages in order: syntax per toolchain row, install (the
+// packages the agents' rows list), project checks, start the runs, command / call /
 // http checks, browser checks, stop the runs. Every check runs even after one
 // fails. Toolchain rows arrive as data in the request (src/toolchains.js);
 // nothing here branches on a language.
@@ -644,8 +644,10 @@ const extensionOf=p=>{const b=String(p).split('/').pop(),d=b.lastIndexOf('.');re
 const rowOfPath=(p,rows)=>rows.find(r=>(r.extensions||[]).includes(extensionOf(p)))||null;
 // A check's command line as argv (the check's argv, or its run text split
 // without a shell): a command deliverable's name (plan.commands maps it to
-// argv), a bundle file run by its row's run_file (never looked up on PATH),
-// or an executable one of the rows lists.
+// argv), a bundle file run by its row's run_file, or, with no row for it, by
+// itself (direct: its fresh copy is made executable, and its #! line or the
+// system runs it), or else any executable of the box, by its PATH. No list of
+// languages decides what runs: what the box does not have, the run observes.
 export function resolveCommand(run,{files,rows,commands={}}) {
   const words=Array.isArray(run)?run.map(String):splitWords(String(run||''));
   if(!words.length)return {error:'an empty command'};
@@ -654,11 +656,9 @@ export function resolveCommand(run,{files,rows,commands={}}) {
   if(Object.hasOwn(files,first)) {
     const row=rowOfPath(first,rows);
     if(row?.run_file)return {argv:[...row.run_file.map(x=>x==='{path}'?first:x),...rest],row};
-    return {error:`${first} is not a file this deployment can run`};
+    return {argv:[`./${first}`,...rest],direct:first};
   }
-  const row=rows.find(r=>(r.executables||[]).includes(first));
-  if(row)return {argv:words,row};
-  return {error:`${first} is neither a command deliverable, a bundle file nor an installed executable`};
+  return {argv:words,row:rows.find(r=>(r.executables||[]).includes(first))||null};
 }
 const freePort=()=>new Promise((resolve,reject)=>{const s=createNetServer();s.unref();s.on('error',reject);s.listen(0,'127.0.0.1',()=>{const {port}=s.address();s.close(()=>resolve(port));});});
 const commandText=run=>Array.isArray(run)?run.join(' '):String(run||'');
@@ -732,7 +732,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
   const began=Date.now(),deadline=began+limits.total_ms,left=()=>deadline-Date.now();
   const base=process.env.BUILD_RUNNER_WORKDIR||'/work';
   const scratch=await realpath(await mkdtemp(path.join(base,'checks-')));
-  const stages=[],checks=[],issues=[],runs=new Map();
+  const stages=[],checks=[],issues=[],runs=new Map(),installed=[];
   let infrastructure_issue='',ns=null;
   const inventory={node:process.versions.node,python:null,sh:null,bash:null,chromium:null,playwright:null,network:'on',runs_network:'on',limits:null,hostname:null,hostname_ok:null,hostname_longest_label:null,hostname_status:null,getfqdn:null};
   const env=checkEnvironment();
@@ -796,12 +796,28 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
         } finally {await box.dispose();}
       });
     }
-    // 3. Install: packages are 'none' (decision U4). An installed tree could
-    // not be copied fresh from memory into each check, so it is refused.
-    if(plan.install.length)await stage('install',async()=>{
-      infrastructure_issue||='package installs are not run when the validations run (packages: none); the checks ran on the standard library only';
-      return {passed:false,detail:'refused: packages are none'};
-    });
+    // 3. Install: the packages the agents' rows list (plan.install: per row,
+    // its names), each row by its install command, into one tree beside the
+    // fresh copies (install.tree, under the scratch folder: a folder above
+    // every copy, so the language's own lookup finds it, and install.env
+    // names it to the checks). The install has the box's network; the checks
+    // after it run as before (without it where the platform allows a network
+    // namespace). The tree is made read-only once installed. What the install
+    // printed is the stage's detail and the report's installed entry.
+    for(const x of plan.install) {
+      const row=rows.find(r=>r.id===x?.toolchain),names=(Array.isArray(x?.packages)?x.packages:[]).map(String).filter(Boolean);
+      if(!names.length)continue;
+      if(!Array.isArray(row?.install?.argv)){installed.push({toolchain:String(x?.toolchain||''),packages:names,passed:false,detail:`no install command for ${x?.toolchain||'this language'}`});continue;}
+      await stage('install:'+row.id,async()=>{
+        const tree=path.join(scratch,String(row.install.tree||`packages-${row.id}`)),fill=a=>String(a).replaceAll('{scratch}',scratch).replaceAll('{tree}',tree);
+        await mkdir(tree,{recursive:true});
+        const r=await execCheck(row.install.argv.flatMap(a=>a==='{packages}'?names:[fill(a)]),{cwd:scratch,env,prefix:limitPrefix,ms:Math.max(1000,left()-1000)});
+        const out=redact(`${r.stdout}\n${r.stderr}`).trim(),passed=r.code===0&&!r.timedOut;
+        if(passed){for(const [k,v] of Object.entries(row.install.env||{}))env[k]=String(v).replaceAll('{tree}',tree);await execCheck(['chmod','-R','a-w',tree],{cwd:scratch,env,ms:10_000});}
+        installed.push({toolchain:row.id,packages:names,passed,...(passed?{}:{detail:r.timedOut?`timed out after ${seconds(r.ms)}${out?`: ${out}`:''}`:`exit ${r.code}${out?`: ${out}`:''}`})});
+        return passed?{detail:names.join(' ')}:{passed:false,detail:installed.at(-1).detail};
+      });
+    }
     // 4. The project's own checks: each a command that must exit 0.
     const runCommand=async c=>{
       if(left()<=0)return notRun(c);
@@ -814,6 +830,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
           if(Object.hasOwn(files,name))return result(c,false,0,`fixture ${name} would replace the bundle's ${name}`,{observed:{what:'setup',note:`an input file of the check would replace the project's ${name}`}});
           const target=path.join(box.dir,name);await mkdir(path.dirname(target),{recursive:true});await writeFile(target,content,'utf8');
         }
+        if(resolved.direct)await chmod(path.join(box.dir,resolved.direct),0o755);
         const r=await execCheck(resolved.argv,{cwd:box.dir,env:box.env,prefix:checkPrefix,ms:Math.max(200,Math.min(limits.check_ms,left())),stdin:typeof c.stdin==='string'?c.stdin:''});
         const stdout=redact(r.stdout,box.dir,box.root),stderr=redact(r.stderr,box.dir,box.root);
         const output=clip(`exit ${r.code}${r.timedOut?' (timed out)':''}${r.strays?`; ${r.strays} process(es) it left behind were killed`:''}\n--- stdout\n${stdout.slice(-1500)}\n--- stderr\n${stderr.slice(-2000)}`,4000);
@@ -891,6 +908,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
       const base_url=`http://127.0.0.1:${port}/`,label=commandText(run),readyUrl=new URL(ready,base_url);
       // The box's own safety: it asks only its served origin.
       if(readyUrl.origin!==new URL(base_url).origin){await box.dispose();return {id:spec.id,error:`${label}: its ready path ${clip(ready,80)} leaves the served origin`};}
+      if(resolved.direct)await chmod(path.join(box.dir,resolved.direct),0o755);
       const argv=resolved.argv.map(x=>x.replaceAll('{port}',String(port)));
       const p=startProcess([...enter(),...limitPrefix,...argv],{cwd:box.dir,env:{...box.env,PORT:String(port)}});
       const w=await waitReady(p,readyUrl.href,until);
@@ -1046,13 +1064,15 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
     // Checks in the plan's order (project checks first).
     const order=new Map([...plan.project.map(p=>String(p.id||'P')),...plan.checks.map(c=>c.id)].map((id,i)=>[id,i]));
     checks.sort((a,b)=>(order.get(a.id)??1e9)-(order.get(b.id)??1e9));
-    return {fingerprint:request.fingerprint,snapshot_hash:request.snapshot_hash,mode:'checks',passed,stages,checks,issues,infrastructure_issue,inventory,ms:Date.now()-began,
+    return {fingerprint:request.fingerprint,snapshot_hash:request.snapshot_hash,mode:'checks',passed,stages,checks,issues,infrastructure_issue,inventory,installed,ms:Date.now()-began,
       log:[...stages.map(s=>`${s.name}: ${s.passed?'ok':'FAILED'}${s.detail?` (${s.detail})`:''}`),...checks.filter(c=>!c.passed).map(c=>`${c.id} ${c.kind}: ${c.detail}`)].join('\n').slice(-5000)};
   } finally {
     // 8. Stop the runs, their namespace and anything a check left behind.
     for(const r of runs.values()){r.process?.stop();await r.box?.dispose();}
     ns?.stop();
     if(runs.size)stages.push({name:'stop',passed:true,ms:0});
+    // The installed tree is read-only: writable again, so it is deleted with the rest.
+    if(installed.some(x=>x.passed))await execCheck(['chmod','-R','u+w',scratch],{cwd:tmpdir(),ms:10_000});
     await rm(scratch,{recursive:true,force:true});
   }
 }

@@ -1,7 +1,7 @@
 // v8 §4.5: the toolchain table is data, and its helpers are pure.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {TOOLCHAINS,STACKS,OTHER_MANIFESTS,toolchainOf,toolchainById,installed,renderImport,extractSurface,stackFrames,unresolvedNames,validIdentifier,manifestOf} from '../src/toolchains.js';
+import {TOOLCHAINS,STACKS,OTHER_MANIFESTS,toolchainOf,toolchainById,installed,renderImport,extractSurface,stackFrames,validIdentifier,manifestOf} from '../src/toolchains.js';
 
 test('the phase-1 rows: javascript, python and text, frozen, each extension in one row',()=>{
   assert.deepEqual(TOOLCHAINS.map(t=>t.id),['javascript','python','text']);
@@ -67,13 +67,6 @@ TypeError: boom`;
   assert.deepEqual(stackFrames(v8,new Map([['app.js',''],['components/store-1/store.js','']]),toolchainById('javascript')),[
     {path:'components/store-1/store.js',line:7,fn:'addTodo'},{path:'app.js',line:3,fn:null}]);
   assert.deepEqual(stackFrames(v8,{},toolchainById('text')),[]);
-});
-
-test('unresolvedNames reads the row\'s unresolved patterns, each finding once',()=>{
-  const py=toolchainById('python');
-  const out="ImportError: cannot import name 'count_word' from 'count_words' (/work/count_words.py)\nModuleNotFoundError: No module named 'wordz'\nNameError: name 'top_n' is not defined\nNameError: name 'top_n' is not defined";
-  assert.deepEqual(unresolvedNames(out,py),[{name:'count_word',module:'count_words'},{module:'wordz'},{name:'top_n'}]);
-  assert.deepEqual(unresolvedNames(out,toolchainById('javascript')),[]);
 });
 
 test('manifestOf: every row\'s manifests and the other toolchains\', at any depth, without case; a directory entry covers what lies under it',()=>{

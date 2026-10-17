@@ -64,8 +64,11 @@ export async function boxName(id) {
   return 'box-' + [...digest.slice(0, 8)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 // What one compile opens (S1): the check image, or the browser image when
-// the plan has browser checks; standard-1 as BuildExecutor; internet off.
-export const compileBoxSpec = plan => ({image: (plan?.checks || []).some(c => c?.kind === 'browser') ? 'browser' : 'check', instance: 'standard-1', internet: false});
+// the plan has browser checks; standard-1 as BuildExecutor; internet off,
+// unless the plan installs packages: then the box has the internet for its
+// install stage, and its checks run without it where the platform allows a
+// network namespace (container/build-runner.mjs).
+export const compileBoxSpec = plan => ({image: (plan?.checks || []).some(c => c?.kind === 'browser') ? 'browser' : 'check', instance: 'standard-1', internet: (plan?.install || []).some(x => x?.packages?.length)});
 
 const decode = bytes => new TextDecoder().decode(bytes || new Uint8Array());
 const clip = (v, n) => String(v ?? '').slice(0, n);

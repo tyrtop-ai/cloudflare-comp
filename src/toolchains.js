@@ -45,17 +45,18 @@ export const TOOLCHAINS = Object.freeze([
     // v8 live 4 (review): packages, what the image installs beyond the
     // language's standard library, as agents' rows list them (src/packages.js);
     // none here. The standard library is part of the language: always there,
-    // never listed or granted. stdlib_provides names a few of its modules by
-    // what each provides (since: the first runtime version that has it), to
-    // answer a run that looked for a module the project lacks, or an ask for
-    // a name no row holds ("For an HTTP server, JavaScript provides node:http").
-    // stands_for: a third-party name as the need it stands for.
-    // missing_package: how a run says a package is not there (group module).
-    // module_prefix: the prefix the runtime's own modules may carry (node:fs is
-    // fs); tool_words: the words that name the toolchain itself in a need;
-    // module_reference: how a file of this row reads a module ({module}).
-    packages:[], module_prefix:'node:', tool_words:['node','nodejs','js','javascript','npm','npx'],
-    module_reference:["require\\(\\s*['\"](?:node:)?{module}['\"]","from\\s+['\"](?:node:)?{module}['\"]","import\\s+['\"](?:node:)?{module}['\"]"],
+    // never listed or granted. stdlib_provides names a few of its modules
+    // (since: the first runtime version that has it), read with stdlib_names
+    // as the language's own. stands_for and third_party: third-party names
+    // the rows know as packages, so an ask by one is a package ask.
+    // module_prefix: the prefix the runtime's own modules may carry (node:fs
+    // is fs).
+    // install: how the compiler's box installs the packages an agent's row
+    // lists (container/build-runner.mjs, stage 3): its command ({packages}:
+    // the names; {scratch}: the folder above every fresh copy of the files),
+    // the tree it fills there, and what names that tree to a check (env).
+    install:{argv:['npm','install','--no-save','--no-package-lock','--ignore-scripts','--no-audit','--no-fund','--prefix','{scratch}','{packages}'], tree:'node_modules', env:{}},
+    packages:[], module_prefix:'node:',
     stdlib_provides:[{name:'node:http',provides:'HTTP server'},{name:'node:https',provides:'HTTPS server and client'},{name:'node:fs',provides:'files and folders'},{name:'node:path',provides:'file paths'},
       {name:'node:url',provides:'URL parsing'},{name:'node:querystring',provides:'query strings'},{name:'node:crypto',provides:'hashing and random ids'},{name:'node:test',provides:'tests'},
       {name:'node:assert',provides:'assertions for tests'},{name:'node:child_process',provides:'running commands'},{name:'node:events',provides:'events'},{name:'node:readline',provides:'reading input line by line'},
@@ -69,7 +70,6 @@ export const TOOLCHAINS = Object.freeze([
     // Other third-party names a run or a file may name: a package, never a part of the project.
     third_party:['react','react-dom','vue','angular','svelte','next','typescript','ts-node','nodemon','ws','socket.io','mongoose','mongodb','pg','mysql','mysql2','redis','sequelize','prisma','knex',
       'ejs','pug','handlebars','mustache','moment','dayjs','date-fns','chalk','inquirer','jsonwebtoken','bcrypt','bcryptjs','passport','multer','cheerio','puppeteer','playwright','sharp','winston','morgan','helmet','joi','zod','yup'],
-    missing_package:["Cannot find (?:module|package) '(?<module>(?:@[\\w.-]+/)?[\\w.-]+)(?:/[^']*)?'"],
     line_comment:'//', block_comment:['/*','*/'], strings:['"',"'",'`'], image:'build' }),
   Object.freeze({ id:'python', name:'Python', extensions:['.py'], native:null,
     manifests:['pyproject.toml','requirements.txt','setup.cfg','setup.py','Pipfile','Pipfile.lock','poetry.lock','tox.ini','pip.conf','.python-version','__pycache__/','.venv/','venv/'],
@@ -95,11 +95,10 @@ export const TOOLCHAINS = Object.freeze([
     stdlib_names:'__future__ _abc _aix_support _android_support _apple_support _ast _asyncio _bisect _blake2 _bz2 _codecs _codecs_cn _codecs_hk _codecs_iso2022 _codecs_jp _codecs_kr _codecs_tw _collections _collections_abc _colorize _compat_pickle _compression _contextvars _csv _ctypes _curses _curses_panel _datetime _dbm _decimal _elementtree _frozen_importlib _frozen_importlib_external _functools _gdbm _hashlib _heapq _imp _interpchannels _interpqueues _interpreters _io _ios_support _json _locale _lsprof _lzma _markupbase _md5 _multibytecodec _multiprocessing _opcode _opcode_metadata _operator _osx_support _overlapped _pickle _posixshmem _posixsubprocess _py_abc _pydatetime _pydecimal _pyio _pylong _pyrepl _queue _random _scproxy _sha1 _sha2 _sha3 _signal _sitebuiltins _socket _sqlite3 _sre _ssl _stat _statistics _string _strptime _struct _suggestions _symtable _sysconfig _thread _threading_local _tkinter _tokenize _tracemalloc _typing _uuid _warnings _weakref _weakrefset _winapi _wmi _zoneinfo abc aifc antigravity argparse array ast asynchat asyncio asyncore atexit audioop base64 bdb binascii bisect builtins bz2 cProfile calendar cgi cgitb chunk cmath cmd code codecs codeop collections colorsys compileall concurrent configparser contextlib contextvars copy copyreg crypt csv ctypes curses dataclasses datetime dbm decimal difflib dis distutils doctest email encodings ensurepip enum errno faulthandler fcntl filecmp fileinput fnmatch fractions ftplib functools gc genericpath getopt getpass gettext glob graphlib grp gzip hashlib heapq hmac html http idlelib imaplib imghdr imp importlib inspect io ipaddress itertools json keyword lib2to3 linecache locale logging lzma mailbox mailcap marshal math mimetypes mmap modulefinder msilib msvcrt multiprocessing netrc nis nntplib nt ntpath nturl2path numbers opcode operator optparse os ossaudiodev pathlib pdb pickle pickletools pipes pkgutil platform plistlib poplib posix posixpath pprint profile pstats pty pwd py_compile pyclbr pydoc pydoc_data pyexpat queue quopri random re readline reprlib resource rlcompleter runpy sched secrets select selectors shelve shlex shutil signal site sitecustomize smtpd smtplib sndhdr socket socketserver spwd sqlite3 sre_compile sre_constants sre_parse ssl stat statistics string stringprep struct subprocess sunau symtable sys sysconfig syslog tabnanny tarfile telnetlib tempfile termios test textwrap this threading time timeit tkinter token tokenize tomllib trace traceback tracemalloc tty turtle turtledemo types typing unicodedata unittest urllib usercustomize uu uuid venv warnings wave weakref webbrowser winreg winsound wsgiref xdrlib xml xmlrpc zipapp zipfile zipimport zlib zoneinfo',
     // Modules the image installs beside the standard library.
     site_modules:'pytest _pytest pluggy iniconfig packaging py',
-    unresolved:["cannot import name '(?<name>\\w+)' from '(?<module>[\\w.]+)'","No module named '(?<module>[\\w.]+)'","name '(?<name>\\w+)' is not defined"],
     // v8 live 4 (review): as the JavaScript row's. packages: what the image
     // installs beyond the standard library (site_modules), with what each provides.
-    packages:[{name:'pytest',provides:'tests'}], tool_words:['python','python3','py','cpython','pip','pip3','pipx'],
-    module_reference:["(?:^|\\n)\\s*(?:from\\s+{module}(?![\\w.])|import\\s+{module}(?![\\w.]))"],
+    install:{argv:['python3','-m','pip','install','--quiet','--no-input','--disable-pip-version-check','--no-warn-script-location','--break-system-packages','--target','{tree}','{packages}'], tree:'python-packages', env:{PYTHONPATH:'{tree}'}},
+    packages:[{name:'pytest',provides:'tests'}],
     stdlib_provides:[{name:'http.server',provides:'HTTP server'},{name:'urllib.request',provides:'HTTP client'},{name:'urllib.parse',provides:'URL parsing'},{name:'json',provides:'JSON'},
       {name:'sqlite3',provides:'database in a file'},{name:'csv',provides:'CSV files'},{name:'argparse',provides:'command-line arguments'},{name:'datetime',provides:'dates and times'},
       {name:'re',provides:'regular expressions'},{name:'pathlib',provides:'file paths'},{name:'os',provides:'environment, files and folders'},{name:'shutil',provides:'copying and moving files'},
@@ -116,7 +115,6 @@ export const TOOLCHAINS = Object.freeze([
       pydantic:'data classes',attrs:'data classes',yaml:'config files',toml:'config files',bs4:'reading web pages',lxml:'XML',numpy:'math'},
     third_party:['scipy','matplotlib','seaborn','pil','pillow','rich','colorama','tabulate','tqdm','boto3','redis','pymongo','celery','openai','scrapy','selenium','sklearn','scikit-learn',
       'tensorflow','torch','keras','nltk','spacy','marshmallow','wtforms','flask_sqlalchemy','flask_cors','flask_restful','flask_login','rest_framework','dotenv','termcolor','prettytable','pyfiglet','emoji','markdown','simplejson','ujson','orjson','six'],
-    missing_package:["No module named '(?<module>[\\w.]+)'"],
     call_adapter:['python3','-I','-X','utf8','/opt/adapters/call.py'], stack:'python', stdlib:'/opt/toolchain/python-stdlib.txt', image:'build' }),
   Object.freeze({ id:'text', name:'text', manifests:[], aliases:['html','htm','css','markdown','md','json','yaml','yml','toml','csv','svg','txt','plain','plaintext','doc','docs','documentation'], extensions:['.md','.txt','.html','.htm','.css','.json','.svg','.yml','.yaml','.toml','.csv'], native:null,
     syntax:null, executables:[], extractor:null, link:'placed', stack:null,
@@ -331,18 +329,6 @@ export function extractSurface(path, content) {
   for (const re of lineRegexes(row.defs)) for (const m of text.matchAll(re))
     if (m[1] && !(row.private_prefix && m[1].startsWith(row.private_prefix))) names.add(m[1]);
   return {toolchain: row.id, names: [...names]};
-}
-
-// The names and modules a build's error output says it could not resolve,
-// read with the row's unresolved patterns: [{name?, module?}], each once.
-export function unresolvedNames(text, row) {
-  const out = [], seen = new Set();
-  for (const source of row?.unresolved || []) for (const m of String(text ?? '').matchAll(new RegExp(source, 'gm'))) {
-    const hit = Object.fromEntries(Object.entries(m.groups || {}).filter(([, v]) => v));
-    const key = JSON.stringify(hit);
-    if (Object.keys(hit).length && !seen.has(key)) { seen.add(key); out.push(hit); }
-  }
-  return out;
 }
 
 // A name valid in the row's language: its identifier pattern, not reserved.

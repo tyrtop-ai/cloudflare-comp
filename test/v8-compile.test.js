@@ -1,5 +1,5 @@
-// v8 compiles, the parts that are data and pure functions: when a failure
-// rolls up (outsideFailure), the import closure a validation reaches, the
+// v8 compiles, the parts that are data and pure functions: the import
+// closure a validation reaches, the
 // language's own modules, the modes a JavaScript file and a page's scripts
 // parse in, and the compile rows a box's inventory installs. The rooms that
 // use them are test/v8-ship.test.js.
@@ -10,43 +10,9 @@ import {mkdtempSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {liveRoom} from './helpers/room.js';
-import {outsideFailure, installedModule, routeServes, importClosure} from '../src/piece.js';
+import {installedModule, importClosure} from '../src/piece.js';
 import {sourceParseError} from '../src/linker.js';
 import {TOOLCHAINS, COMPILE_ROWS, installed, codeRowOf, shebangOf, pageScripts, parseModeOf} from '../src/toolchains.js';
-
-
-// ------------------------------------------------------------------ M3
-test('M3: a failure rolls up only on evidence of an outside cause, never by its kind', () => {
-  // (a) The piece's own server exits on step 1, so step 2's request is refused: the piece's.
-  const crashed = {passed: false, detail: 'step 2 GET /items: no answer: connect ECONNREFUSED 127.0.0.1:20000 (the server exited)', output: '--- server output\nTypeError: Cannot read properties of undefined\n    at handler (server.js:12:5)', observed: {what: 'step', step: 2, server_exited: true}};
-  const http = {kind: 'http', serve: 'web', steps: [{path: '/items', method: 'POST'}, {path: '/items'}]};
-  assert.equal(outsideFailure(crashed, http, {routes: ['GET /items', 'POST /items']}), '');
-  // The piece's server never answered its own check: the piece's too.
-  assert.equal(outsideFailure({passed: false, detail: 'step 1 GET /items: no answer: connect ECONNREFUSED 127.0.0.1:20000', observed: {what: 'step', step: 1}}, http, {routes: ['GET /items']}), '');
-  // A call whose code connects to a server nothing in the piece runs: outside.
-  assert.match(outsideFailure({passed: false, detail: 'soft raised URLError: [Errno 111] Connection refused', output: 'ConnectionRefusedError: [Errno 111] Connection refused'}, {kind: 'call', steps: [{call: 'soft'}]}, {}), /server that does not run inside the piece/);
-  // (b) The piece serves GET /items/:id; its handler answers 404 for an item: the piece's, by the route's pattern, a saved reference too.
-  const one = {kind: 'http', serve: 'web', steps: [{path: '/items', method: 'POST', save: {it: 'body'}}, {path: '/items/{{it.id}}'}]};
-  const nf = step => ({passed: false, detail: `step ${step}: status 404`, observed: {what: 'status', step, status: 404}});
-  const outside = {names: new Set(), routes: ['GET /tags/:id'], paths: new Set(['about.html'])};
-  assert.equal(outsideFailure(nf(2), one, {routes: ['POST /items', 'GET /items/:id'], outside}), '');
-  assert.equal(outsideFailure(nf(1), {kind: 'http', serve: 'web', steps: [{path: '/items/1'}]}, {routes: ['GET /items/:id'], outside}), '');
-  // A request no contract inside serves and another piece's does: outside; one nobody serves stays the piece's.
-  assert.match(outsideFailure(nf(1), {kind: 'http', serve: 'web', steps: [{path: '/tags/3'}]}, {routes: ['GET /items/:id'], outside}), /another piece serves/);
-  assert.match(outsideFailure(nf(1), {kind: 'browser', serve: 'web', steps: [{goto: '/about.html'}]}, {routes: [], files: new Map([['index.html', '']]), outside}), /another piece serves/);
-  assert.equal(outsideFailure(nf(1), {kind: 'http', serve: 'web', steps: [{path: '/nowhere'}]}, {routes: ['GET /items/:id'], outside}), '');
-  assert.equal(routeServes('GET /items/:id', 'DELETE', '/items/3'), false);
-  assert.equal(routeServes('GET /items/{id}', 'get', '/items/3'), true);
-  // (c) A typo is a slip inside the piece; a name another piece's contract provides, or a module the piece does not hold, is outside.
-  const nameErr = n => ({passed: false, detail: `shout in shout.py raised NameError: name '${n}' is not defined`, output: ''});
-  const call = {kind: 'call', steps: [{call: 'shout'}]}, files = new Map([['components/p_a/shout.py', ''], ['components/p_a/whisper.py', '']]);
-  assert.equal(outsideFailure(nameErr('strr'), call, {files, names: new Set(['shout']), outside: {names: new Set(['loud'])}}), '');
-  assert.match(outsideFailure(nameErr('loud'), call, {files, names: new Set(['shout']), outside: {names: new Set(['loud'])}}), /the name loud is another piece's contract/);
-  assert.equal(outsideFailure(nameErr('shout'), call, {files, names: new Set(['shout']), outside: {names: new Set(['shout'])}}), '', 'a name the piece itself provides is its own');
-  const noMod = m => ({passed: false, detail: `No module named '${m}'`, output: `ModuleNotFoundError: No module named '${m}'`});
-  assert.match(outsideFailure(noMod('loud'), call, {files}), /loud/);
-  assert.equal(outsideFailure(noMod('whisper'), call, {files}), '', 'a module the piece holds is the piece\'s to repair');
-});
 
 
 // ------------------------------------------------------------------ L2, L6

@@ -52,7 +52,9 @@ export function callModule(check, files, placed = new Set()) {
 // placed: the bundle's placed paths. compile: the files the syntax step compiles, each
 // with the row that compiles it (a Map), when not every file of each row (a
 // file whose exact bytes compiled before is not compiled again). inventory:
-// the room needs the box's inventory, so the box opens.
+// the room needs the box's inventory, so the box opens. install: the
+// packages the box installs before the checks, per row ([{toolchain,
+// packages: [names]}]: the packages the agents' rows list beyond the image's).
 // What a call check observed when no file gives the function it calls: the
 // function contract's file is missing, or it holds no function a call reaches
 // by that name (a JavaScript file exports it; a Python file defines it).
@@ -62,7 +64,7 @@ function unreachable(c, contracts, files) {
   if (!files.has(path)) return `${path}, the file of ${name}, is missing`;
   return toolchainOf(path)?.extractor === 'acorn' ? `${path} does not export ${name}: a call reaches a function by the name its file exports` : `${path} defines no ${name} a call reaches`;
 }
-export function checkPlan(spec, files, {rows = TOOLCHAINS, placed = new Set(), compile = null, inventory = false} = {}) {
+export function checkPlan(spec, files, {rows = TOOLCHAINS, placed = new Set(), compile = null, inventory = false, install = []} = {}) {
   const all = rowsOf(rows), paths = [...files.keys()], list = spec?.validations || [], contracts = spec?.contracts || [];
   const commandsOf = new Map(contracts.filter(d => kindOf(d) === 'command' && d.path).map(d => [d.name, d]));
   const served = new Set(list.map(v => v.check?.serve).filter(Boolean)), runs = runsOf(contracts).filter(r => served.has(r.id));
@@ -78,6 +80,8 @@ export function checkPlan(spec, files, {rows = TOOLCHAINS, placed = new Set(), c
     // A compile row (one no contract names) goes to the box with the files it compiles.
     for (const {row} of steps.values()) if (!toolchains.some(r => r.id === row.id)) toolchains.push(row);
   } else for (const r of toolchains) if (Array.isArray(r.syntax) && r.syntax.length) steps.set(r.id, {row: r, files: paths.filter(p => toolchainOf(p)?.id === r.id)});
+  const installs = (install || []).filter(x => x?.packages?.length && all.some(r => r.id === x.toolchain && r.install));
+  for (const x of installs) if (!toolchains.some(r => r.id === x.toolchain)) toolchains.push(all.find(r => r.id === x.toolchain));
   const syntax = [...steps.values()].filter(s => s.files.length).map(s => ({toolchain: s.row.id, files: s.files}));
   // A command contract runs by its own path, through its row's run_file (never a PATH lookup).
   const commands = {};
@@ -100,7 +104,7 @@ export function checkPlan(spec, files, {rows = TOOLCHAINS, placed = new Set(), c
       checks.push({id: v.id, kind: 'call', ...at, steps: c.steps});
     } else checks.push({id: v.id, kind: c.kind, serve: c.serve, steps: c.steps});
   }
-  return {plan: {syntax, project: [], runs, commands, checks}, toolchains, local,
+  return {plan: {syntax, install: installs.map(x => ({toolchain: x.toolchain, packages: [...x.packages]})), project: [], runs, commands, checks}, toolchains, local,
     container: inventory || syntax.length > 0 || checks.length > 0};
 }
 

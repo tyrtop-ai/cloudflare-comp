@@ -6,9 +6,9 @@
 //     failed on the import. Packages are listed on each agent's row, as
 //     contracts are: the room's manager holds the installed set; a split
 //     gives each piece a part of its parent's; an ask for a package goes up
-//     the asker's line (granted from a row that holds it, or answered with
-//     what the line holds for the need); a run that needed a package the
-//     project lacks is missing_module and carries that answer.
+//     the asker's line (granted from a row that holds it, or, packages being
+//     allowed, granted from the top as asked); the compiler's box installs
+//     what the rows list.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
@@ -16,7 +16,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { liveRoom, events, rowId } from './helpers/room.js';
-import { installedPackages, installedLine, stdlibHints, heldForNeed, heldByName, packageLanguage, languageAnswer, missingModule, piecePackages } from '../src/packages.js';
+import { installedPackages, installedLine, heldByName, packageLanguage, stdlibRow, piecePackages } from '../src/packages.js';
 import { catalogue } from '../src/broker.js';
 import { MESSAGES, BROKER_LABEL } from '../src/prompts.js';
 import { TOOLCHAINS } from '../src/toolchains.js';
@@ -80,27 +80,16 @@ test('1: the adapter in real Chromium: expect_element passes when the page has a
 // v8 live 4 review: a language's standard library is part of the language
 // (never listed on a row, asked for or granted); a row's packages are what
 // the image installs beyond it.
-test('2: the installed set: what the rows install beyond their standard libraries; the standard library\'s modules are named by what they provide', () => {
+test('2: the installed set: what the rows install beyond their standard libraries; a name is a package\'s by the rows', () => {
   const held = installedPackages(TOOLCHAINS, {node: '24.22.0', python: '3.11.2'});
   assert.deepEqual(held, [{name: 'pytest', language: 'python', provides: 'tests'}]);
   assert.equal(installedLine(held, {python: '3.11.2'}), 'Python 3.11.2: pytest');
-  const hints = stdlibHints(TOOLCHAINS, {node: '24.22.0', python: '3.11.2'});
-  assert.ok(hints.some(p => p.name === 'http.server' && p.language === 'python' && p.provides === 'HTTP server'));
-  assert.ok(hints.some(p => p.name === 'node:sqlite'), 'node 24 has node:sqlite');
-  assert.ok(!stdlibHints(TOOLCHAINS, {node: '20.11.0', python: '3.11.2'}).some(p => p.name === 'node:sqlite'), 'node 20 has not');
-  // What a need is answered with, from the standard library's modules.
-  const py = hints.filter(p => p.language === 'python');
-  assert.deepEqual(heldForNeed(py, {name: 'flask'}).map(p => p.name), ['http.server']);
-  assert.deepEqual(heldForNeed(py, {need: 'an HTTP server library'}).map(p => p.name), ['http.server']);
-  assert.deepEqual(heldForNeed(py, {need: 'Install Flask'}).map(p => p.name), ['http.server']);
-  assert.deepEqual(heldForNeed(py, {name: 'requests'}).map(p => p.name), ['urllib.request']);
-  assert.deepEqual(heldForNeed(py, {need: 'parse command line options'}).map(p => p.name), ['argparse']);
-  assert.deepEqual(heldForNeed(py, {need: 'draw charts'}), []);
-  assert.deepEqual(heldByName(py, 'urllib').map(p => p.name), ['urllib.request', 'urllib.parse']);
-  assert.deepEqual(heldByName(hints, 'fs').map(p => p.name), ['node:fs'], 'the row\'s module_prefix');
-  assert.deepEqual(languageAnswer({name: 'flask'}), {language: 'python', names: ['http.server'], need: 'HTTP server', stdlib: false});
-  assert.deepEqual(languageAnswer({name: 'socket'}), {language: 'python', names: ['socket'], need: 'socket', stdlib: true});
-  assert.equal(languageAnswer({name: 'matplotlib', need: 'draw charts'}), null);
+  // The language's own modules.
+  assert.equal(stdlibRow('http.server')?.id, 'python');
+  assert.equal(stdlibRow('node:fs')?.id, 'javascript');
+  assert.equal(stdlibRow('flask'), null);
+  assert.deepEqual(heldByName([{name: 'urllib.request', language: 'python'}, {name: 'urllib.parse', language: 'python'}], 'urllib').map(p => p.name), ['urllib.request', 'urllib.parse']);
+  assert.deepEqual(heldByName([{name: 'node:fs', language: 'javascript'}], 'fs').map(p => p.name), ['node:fs'], 'the row\'s module_prefix');
   // A name is a package's by its name alone: the rows know it.
   assert.equal(packageLanguage('flask'), 'python');
   assert.equal(packageLanguage('json'), 'python');
@@ -108,10 +97,6 @@ test('2: the installed set: what the rows install beyond their standard librarie
   assert.equal(packageLanguage('express'), 'javascript');
   assert.equal(packageLanguage('parse_input'), '');
   assert.equal(packageLanguage('package.json'), '');
-  // A run's report of a missing package.
-  assert.deepEqual(missingModule("Traceback (most recent call last):\nModuleNotFoundError: No module named 'flask'"), {module: 'flask', row: 'python'});
-  assert.deepEqual(missingModule("Error: Cannot find package 'express' imported from /w/server.js"), {module: 'express', row: 'javascript'});
-  assert.equal(missingModule("Error: Cannot find module './store'"), null);
   // A piece's packages: its parent's of its language, with the names it was given; an unlisted name is an ask, a standard library's needs none.
   const parent = [...held, {name: 'requests', language: 'python', provides: 'HTTP client'}, {name: 'express', language: 'javascript', provides: 'HTTP server'}];
   const server = piecePackages({interfaces: [{name: 'app.py', kind: 'file', path: 'app.py'}], packages: ['pytest', 'json', 'flask']}, parent);
@@ -137,7 +122,7 @@ test('2: the room\'s manager is created with the installed set; a v7 room\'s row
   assert.deepEqual(v7.room.catalogue('root'), []);
 });
 
-test('2: an ask by a package\'s name goes up its line: a row that holds it grants it; a name no row holds is the language\'s, or a contract ask', async () => {
+test('2: an ask by a package\'s name goes up its line: a row that holds it grants it; a third party\'s name no row holds is granted from the top, on every row of the line; a standard library\'s is the language\'s', async () => {
   const {room} = liveRoom({});
   room.save('settings', {...room.settings(), pipeline: 'v8'});
   const pytest = {name: 'pytest', language: 'python', provides: 'tests'}, requests = {name: 'requests', language: 'python', provides: 'HTTP client'};
@@ -149,25 +134,29 @@ test('2: an ask by a package\'s name goes up its line: a row that holds it grant
   assert.equal(own.how, 'granted');
   assert.deepEqual(room.packagesOf(SERVER).map(p => p.name), ['pytest']);
   assert.match(events(room, 'package_granted').at(-1).body, /^"Backend" granted pytest to "Server" for pytest\.$/);
-  // httpx stands for an HTTP client: the manager holds none; Root's requests provides one, granted down the line.
-  const http = room.packageAsk(SERVER, {name: 'httpx', need: 'fetch a page'});
-  assert.equal(http.how, 'granted');
-  assert.equal(http.text, MESSAGES.package_granted({need: 'HTTP client', names: 'requests (HTTP client)', many: false}));
-  assert.ok(room.packagesOf(BACKEND).some(p => p.name === 'requests'), 'every row between holds it too');
-  assert.ok(room.packagesOf(SERVER).some(p => p.name === 'requests'));
-  assert.match(events(room, 'package_relayed').at(-1).body, /^"Backend" asked for httpx, beyond its own packages; asked "Root objective"\.$/);
   // Its own row's: pointed to.
   assert.equal(room.packageAsk(SERVER, {name: 'pytest'}).how, 'yours');
+  // httpx: no row holds it. Packages are allowed: it is granted as asked (never another package for its need), from the top, listed on every row of the line.
+  const http = room.packageAsk(SERVER, {name: 'httpx'});
+  assert.equal(http.how, 'granted');
+  assert.deepEqual(http.names, ['httpx']);
+  assert.equal(http.text, MESSAGES.package_granted({names: 'httpx', many: false}));
+  for (const row of [TOP, BACKEND, SERVER]) assert.ok(room.packagesOf(row).some(p => p.name === 'httpx' && p.language === 'python'), row);
+  assert.match(events(room, 'package_granted').at(-1).body, /^"Root objective" granted httpx to "Server" for httpx\.$/);
+  // The compiler's box installs what a row lists beyond the image and the standard library.
+  assert.deepEqual(room.packageInstalls(SERVER), [{toolchain: 'python', packages: ['httpx']}]);
+  assert.deepEqual(room.packageInstalls(TOP), [{toolchain: 'python', packages: ['requests', 'httpx']}]);
   // The language's standard library: named as part of it, never granted.
-  const socket = room.packageAsk(SERVER, {name: 'socket', need: 'raw TCP'});
+  const socket = room.packageAsk(SERVER, {name: 'socket'});
   assert.deepEqual([socket.how, socket.text], ['language', MESSAGES.package_stdlib({name: 'socket'})]);
   assert.ok(!room.packagesOf(SERVER).some(p => p.name === 'socket'));
-  // A name no row holds and no language answers: no package answer, so the ask goes on as a contract ask.
-  assert.equal(room.packageAsk(SERVER, {name: 'matplotlib', need: 'draw charts'}), null);
-  assert.equal(room.askKind(SERVER, 'matplotlib', 'draw charts').kind, 'contract');
+  // A name the rows do not know as a package's: no package answer, so the ask goes on as a contract ask.
+  assert.equal(room.packageAsk(SERVER, {name: 'parse_input'}), null);
+  assert.equal(room.askKind(SERVER, 'parse_input', 'reads the input').kind, 'contract');
   // A worker's control-block ask is answered as a labelled broker answer, never dropped.
   room.db().exec("UPDATE agents SET phase='implement' WHERE id=?", SERVER);
   assert.equal(room.askKind(SERVER, 'flask', 'the web framework').kind, 'package');
   assert.equal(room.brokerAnswer(SERVER, {key: 'fn flask', name: 'flask', question: 'the web framework'}), true);
   assert.equal(room.read(`fn_answers:${SERVER}`, []).at(-1).text.label, BROKER_LABEL.package);
+  assert.ok(room.packagesOf(SERVER).some(p => p.name === 'flask'), 'flask is granted, not redirected to the standard library');
 });

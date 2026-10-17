@@ -13,19 +13,14 @@
 //   function it calls, the run that serves its requests, the pages it opens.
 //   The import closure of those entries (importClosure) is the hard fact:
 //   inside the piece, an installed package or the language.
-// - outsideFailure: a failure in a piece's box with evidence of a cause
-//   outside the piece (a module the piece does not hold, a name another
-//   piece's contract provides, a connection the piece's own code made to a
-//   server that is not the check's own, a request another piece serves)
-//   rolls up instead of becoming a complaint; any other failure is the piece's.
 // - checkUses: the contracts a validation runs by (the contract that serves
 //   its requests, its command contract, the contract it calls), which name a
 //   pass with the validation.
-import { TOOLCHAINS, unresolvedNames, toolchainOf, validIdentifier } from './toolchains.js';
+import { TOOLCHAINS, toolchainOf, validIdentifier } from './toolchains.js';
 import { kindOf } from './contracts.js';
 import { callModule } from './checks.js';
 import { commandArgv, runsOf } from './validations.js';
-import { heldByName, missingModule, inStdlib } from './packages.js';
+import { heldByName, inStdlib } from './packages.js';
 import { moduleSpecifiers, importGroups, bindingText } from './linker.js';
 import { resolveLocal } from './assembly-gate.js';
 
@@ -228,63 +223,6 @@ export function checkEntries(r, spec, files, {placed = new Set()} = {}) {
   return {entries: [], missing: `a ${c.kind} check`};
 }
 
-// ------------------------------------------------------------ outside failures
-const REFUSED = /\bECONNREFUSED\b|connection refused/i;
-const ROUTE = /^([A-Z]+)\s+(\/\S*)$/, PARAM = /^(?::\w+|\{[^/{}]+\})$/, SAVED = /\{\{[^}]*\}\}/;
-// Whether a route contract (its name, "GET /items/:id") serves a request:
-// the same method, as many segments, and each one equal, or a parameter of
-// the contract (:x or {x}), or a segment of the step that holds a saved
-// reference ({{...}}), which any value may fill.
-export function routeServes(name, method, path) {
-  const m = ROUTE.exec(String(name || '').trim());
-  if (!m || method && m[1] !== String(method).toUpperCase()) return false;
-  const want = m[2].split(/[?#]/)[0].split('/'), got = String(path || '/').split(/[?#]/)[0].split('/');
-  return want.length === got.length && want.every((w, i) => PARAM.test(w) || SAVED.test(got[i]) || w === got[i]);
-}
-// Whether a module a reference names is one of the piece's files or
-// folders: read without a relative prefix and an extension, a dotted name
-// as a path ('pkg.mod' is pkg/mod), at the end of a file's path or as a
-// folder; an extension a row lists is no part of the name.
-export function moduleInPiece(module, files, rows = TOOLCHAINS) {
-  const raw = String(module ?? '').trim().replace(/^(?:\.\.?\/)+/, ''), ext = rows.flatMap(r => r.extensions || []).find(e => raw.toLowerCase().endsWith(e.toLowerCase()));
-  const m = ext ? raw.slice(0, -ext.length) : raw;
-  if (!m) return false;
-  const at = m.includes('/') ? m : m.replace(/\./g, '/');
-  return [...files.keys()].some(p => { const bare = p.replace(/\.[^./]+$/, ''); return bare === at || bare.endsWith(`/${at}`) || p.startsWith(`${at}/`) || p.includes(`/${at}/`); });
-}
-// Why a failed result is about something outside the piece ('' when it is
-// the piece's), by evidence of an outside cause, never by the kind of
-// error: a module the piece does not hold (a package nothing inside is, or
-// a part of the project elsewhere); a name another piece's contract
-// provides and no contract inside does (any other unresolved name is a
-// slip inside the piece); a refused connection the piece's code made,
-// unless it is the check's own request to the piece's own server (that
-// server exiting, or not answering, is the piece's); a 404 on a request no
-// contract or file inside serves and another piece's contract or file
-// does. res, the box's result; check, its check; routes, the route
-// contracts' names inside the piece; names, the contract names inside;
-// files, the piece's files; outside, what the other pieces provide
-// ({names, routes, paths}); rows, the installed toolchain rows.
-export function outsideFailure(res, check, {routes = [], names = new Set(), files = new Map(), outside = {}, rows = TOOLCHAINS} = {}) {
-  if (!res || res.passed || res.infrastructure) return '';
-  const text = `${res.detail || ''}\n${res.output || ''}`, o = res.observed || {}, others = outside.names || new Set();
-  const m = missingModule(text, rows);
-  if (m && !moduleInPiece(m.module, files, rows)) return `it needs ${m.module}, which nothing inside the piece is`;
-  for (const row of rows.filter(r => r.unresolved?.length)) for (const hit of unresolvedNames(text, row)) {
-    if (hit.module && !moduleInPiece(hit.module, files, rows)) return `the module ${hit.module} is not part of the piece`;
-    if (hit.name && others.has(hit.name) && !names.has(hit.name)) return `the name ${hit.name} is another piece's contract`;
-  }
-  const http = ['http', 'browser'].includes(check?.kind), ownRequest = http && (o.server_exited === true || !Number.isInteger(o.status));
-  if (REFUSED.test(text) && !ownRequest) return 'it connects to a server that does not run inside the piece';
-  if (o.status === 404 && http) {
-    const step = (Array.isArray(check.steps) ? check.steps : [])[(o.step || 1) - 1] || {}, path = String(step.path || step.goto || '/').split(/[?#]/)[0], method = step.goto ? 'GET' : step.method || 'GET';
-    const has = set => set.has(path.replace(/^\/+/, '')) || set.has(pagePath(path));
-    const served = routes.some(r => routeServes(r, method, path)) || has(files);
-    if (!served && ((outside.routes || []).some(r => routeServes(r, method, path)) || has(outside.paths || new Set()))) return `it requests ${path}, which another piece serves`;
-  }
-  return '';
-}
-export const routeNames = contracts => (contracts || []).filter(c => kindOf(c) === 'route').map(c => String(c.name || '').trim()).filter(n => ROUTE.test(n));
 // v8 M3 review (L1): the contracts a validation runs by: how the contract
 // that serves its requests runs (and the command contract that run starts),
 // the command contract its command line names, the contract it calls.
