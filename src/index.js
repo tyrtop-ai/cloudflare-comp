@@ -296,8 +296,7 @@ export const DEFAULT_ROOM_SETTINGS = Object.freeze({
 // first session and two more, each after the review's objection).
 export const SPLIT_ATTEMPTS = 3;
 // A splitter row's output: what its session called, with each result, and the level it declared (null when it ended without done).
-export const SPLIT_CALLS_KEPT = 200;
-export const splitterRecord = out => JSON.stringify({reason: out.reason, rounds: out.rounds, calls: out.transcript.slice(-SPLIT_CALLS_KEPT), level: out.level});
+export const splitterRecord = out => JSON.stringify({reason: out.reason, rounds: out.rounds, calls: out.transcript, level: out.level});
 // One room hold per row it names (a grant has one of its own).
 const holdKey = h => h.kind === 'base_confirm' ? 'base_confirm' : h.agent ? `agent:${h.agent}` : `kind:${h.kind}`;
 // v8: every row's id is <role>-<hex16>: the first 16 hex digits of the
