@@ -692,7 +692,7 @@ function benchResultsMarkup(run) {
   if(!run)return '';
   const a=run.aggregate||{},s=run.settings||{},d=run.dataset||{};
   const summary=`<div class="bench-summary"><span title="${esc(SCORED_NOTE)}">pass@1 <b>${benchRate(a)}</b> <span class="faint">(${count(a.pass)} passed of ${count(a.scored)} scored: pass + fail; ${count(a.error)} errors not scored)</span></span>${untilDoneNote(a)}<span>mean time <b>${secs(a.mean_ms)}</b></span><span>tokens <b>${count(a.tokens)}</b></span><span>Container <b>${a.container_s??0} s</b></span></div>`+
-    `<p class="helper">${esc(run.label||run.id)} · ${esc(run.status)} · managers ${esc(shortModel(s.model))} · workers ${esc(shortModel(s.worker_model))} · ${count(run.concurrency)} at once${run.concurrency_asked?` (asked ${count(run.concurrency_asked)}; ${count(run.executors)} Container slots)`:''} · keeps ${esc(run.keep_rooms||'failed')} rooms · budget ${count(run.budget)} turns${s.check_seconds?` · verification ${count(s.check_seconds)} s`:''} · dataset ${esc(d.source||'')}${d.digest?` · ${esc(d.digest.slice(0,12))}`:''}${d.skipped?.length?` · ${d.skipped.length} rows skipped`:''}</p>`;
+    `<p class="helper">${esc(run.label||run.id)} · ${esc(run.status)} · managers ${esc(shortModel(s.model))} · workers ${esc(shortModel(s.worker_model))} · ${count(run.concurrency)} at once${run.concurrency_asked?` (asked ${count(run.concurrency_asked)}; BENCH_EXECUTORS ${count(run.executors)})`:''} · keeps ${esc(run.keep_rooms||'failed')} rooms · budget ${count(run.budget)} turns${s.check_seconds?` · verification ${count(s.check_seconds)} s`:''} · dataset ${esc(d.source||'')}${d.digest?` · ${esc(d.digest.slice(0,12))}`:''}${d.skipped?.length?` · ${d.skipped.length} rows skipped`:''}</p>`;
   const row=t=>{const o=benchOutcome(t),first=t.once&&t.once!==o?` <span class="faint" title="its first grading (pass@1)">first ${esc(t.once)}</span>`:'',rounds=t.rounds>1?` <span class="faint">· ${count(t.rounds)} gradings</span>`:'';
     return `<tr><td class="mono">${esc(t.task_id)}</td><td><span class="req-chip ${esc(o)}"${t.detail?` title="${esc(t.detail)}"`:''}>${esc(o)}</span>${first}${rounds}</td><td class="num">${secs(t.wall_ms)}</td><td class="num">${count(t.tokens)}</td><td class="num">${t.container_ms?secs(t.container_ms):'–'}</td><td>${roomLink(t.room,t.room_deleted)}</td></tr>`;};
   return summary+`<table class="bench-table"><thead><tr><th>TASK</th><th>RESULT</th><th class="num">TIME</th><th class="num">TOKENS</th><th class="num">CONTAINER</th><th>ROOM</th></tr></thead><tbody>${(run.tasks||[]).map(row).join('')}</tbody></table>`;
@@ -710,7 +710,7 @@ function renderBench() {
   if(!$('bench-runs'))return;
   $('bench-runs').innerHTML=benchRunsMarkup(benchList,benchRun);
   if($('bench-results'))$('bench-results').innerHTML=benchCompare?benchCompareMarkup(benchCompare):benchResultsMarkup(benchData);
-  if($('bench-slots')&&benchSlots)$('bench-slots').textContent=`Rooms at once is capped at ${benchSlots}, the deployment's Container slots: each room builds on one executor of the run's pool.`;
+  if($('bench-slots')&&benchSlots)$('bench-slots').textContent=`Rooms at once is capped at ${benchSlots}, the deployment's BENCH_EXECUTORS setting. Each compile of a task room runs in its own fresh box.`;
   const options=benchList.map(r=>`<option value="${esc(r.id)}">${esc(r.label||r.id)} · ${esc(r.id)}</option>`).join('');
   for(const id of ['bench-a','bench-b']){const el=$(id);if(el){const keep=el.value;el.innerHTML=options;if(keep)el.value=keep;}}
 }
