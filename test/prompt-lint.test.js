@@ -136,7 +136,7 @@ test('the builder\'s functions are prompt texts too: each description and each p
     assert.doesNotMatch(text, /"\w+"\s*:\s*["\[{]/, `${name} holds a filled-in field`);
   }
   assert.ok(TOOLS.builder.every(t => t.parameters.type === 'object'));
-  assert.deepEqual(Object.fromEntries(TOOLS.builder.map(t => [t.name, t.parameters.required])), {read_file: ['path'], write_file: ['path', 'content'], delete_file: ['path'], rename: ['path', 'from', 'to'], done: ['summary']});
+  assert.deepEqual(Object.fromEntries(TOOLS.builder.map(t => [t.name, t.parameters.required])), {read_file: ['path'], write_file: ['path', 'content'], delete_file: ['path'], rename: ['path', 'from', 'to', 'name_characters'], done: ['summary']});
   assert.match(FORMAT.builder, /^Answer by calling your functions/);
   assert.doesNotMatch(FORMAT.builder + ROLE.builder, /json|edits|issues|find|replace/i, 'no answer format to write');
   assert.ok(!('linker' in ROLE) && !('linker' in FORMAT) && !('json' in RETRY), 'no linker prompt and no answer to retry');

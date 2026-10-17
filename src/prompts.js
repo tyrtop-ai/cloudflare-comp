@@ -20,7 +20,7 @@ export const ROLE = Object.freeze({
 
 export const FORMAT = Object.freeze({
   splitter: 'Answer by calling your functions, one or several at a time. Each result says what was stored, or exactly why nothing was: a call that stored nothing can be made again as its result describes. Names match exactly as declared, and level shows everything declared so far.',
-  worker: 'Answer by calling your functions, one or several at a time. Each result says what was done, or exactly why nothing was. read_file shows a file of yours, write_file stores a whole file, and run_examples runs your examples on your files as they stand and says what each observed. Call done once your files deliver everything your prompt asks, or wait while something you asked for is not answered yet.',
+  worker: 'Answer by calling your functions, one or several at a time. Each result says what was done, or exactly why nothing was. read_file shows a file of yours, write_file stores a whole file, and run_examples runs your examples on your files as they stand and says what each observed. Call done once your files deliver everything your prompt asks, or wait, there while something you asked for is not answered yet.',
   builder: 'Answer by calling your functions, one or several at a time. Each result says what was done, or exactly why nothing was. read_file shows a file as it stands now, write_file stores a whole file of your own, delete_file removes one of yours, rename changes one name or reference path throughout one file, and done ends your turn.'
 });
 
@@ -110,11 +110,11 @@ export const TOOLS = Object.freeze({
       parameters: {type: 'object', properties: {path: text('The relative path of the file, inside your files.'), content: text('The complete text of the file.')}, required: ['path', 'content']}},
     {name: 'run_examples', description: 'Runs the examples of what you deliver on your files as they stand now, in a fresh box with the internet off, the way they are run once you are done. The result gives each example with what was observed: pass, or what happened instead.',
       parameters: {type: 'object', properties: {}, required: []}},
-    {name: 'ask', description: 'Asks for something your prompt and what is available do not give. Each ask is sent as you make it, and the result says it is sent: its answer arrives at the start of your next turn. Something available by name is answered at once.',
+    {name: 'ask', description: 'Asks for something your prompt and what is available do not give. What you deliver, your packages, and the existing files and parts of linked pages given to you are answered at once, by name. Any other ask, a name you may call included, is sent as you make it, and the result says it is sent: its answer arrives at the start of your next turn.',
       parameters: {type: 'object', properties: {need: text('What you need, in one line.'), name: text('The name you expect it under, or the name of something available.')}, required: ['need']}},
     {name: 'done', description: 'Ends your turn with your files delivering everything your prompt asks.',
       parameters: {type: 'object', properties: {summary: text('What you did, in one line.')}, required: ['summary']}},
-    {name: 'wait', description: 'Ends your turn before your files deliver everything, such as while something you asked for is not answered yet.',
+    {name: 'wait', description: 'Ends your turn while something you asked for is not answered yet. The answer starts your next turn.',
       parameters: {type: 'object', properties: {summary: text('What you did and what you wait for, in one line.')}, required: ['summary']}}
   ]),
   // The builder's functions (src/builder.js): the files it joins, its own
@@ -126,8 +126,9 @@ export const TOOLS = Object.freeze({
       parameters: {type: 'object', properties: {path: text('The relative path of the file.'), content: text('The complete text of the file.')}, required: ['path', 'content']}},
     {name: 'delete_file', description: 'Removes one file of your own. The result says it is removed, or that you have no file at that path, with the paths of yours.',
       parameters: {type: 'object', properties: {path: text('The relative path of the file of yours.')}, required: ['path']}},
-    {name: 'rename', description: 'Renames one name or reference path throughout one file: every place where from stands whole, with no letter, digit, _ or $ right before or after it, becomes to. The result shows each line it changed, or why nothing changed.',
-      parameters: {type: 'object', properties: {path: text('The relative path of the file.'), from: text('The name or reference path as the file has it.'), to: text('The name or reference path it becomes.')}, required: ['path', 'from', 'to']}},
+    {name: 'rename', description: 'Renames one name or reference path throughout one file: every place where from stands whole, as the file\'s language delimits its names, becomes to. It stands whole where no letter, digit or one of name_characters is right before or after it. The result shows each line it changed, or why nothing changed.',
+      parameters: {type: 'object', properties: {path: text('The relative path of the file.'), from: text('The name or reference path as the file has it.'), to: text('The name or reference path it becomes.'),
+        name_characters: text('Every character besides letters and digits that the file\'s language allows inside a name, written together; empty for none.')}, required: ['path', 'from', 'to', 'name_characters']}},
     {name: 'done', description: 'Ends your turn with every reference among the files reaching what it names.',
       parameters: {type: 'object', properties: {summary: text('What you did, in one line.')}, required: ['summary']}}
   ])
@@ -187,9 +188,9 @@ export const MESSAGES = Object.freeze({
   // ------------------------------------------------- what the builder's functions say
   builder_no_file: ({path, paths}) => paths ? `There is no file ${path}. The files: ${paths}.` : `There is no file ${path}, and no files yet.`,
   builder_not_yours: ({path, paths}) => paths ? `You have no file at ${path}. Yours: ${paths}.` : `You have no file at ${path}, and none of your own yet.`,
-  builder_no_name: ({name, path}) => `${name} does not stand whole anywhere in ${path}: a rename finds it only where no letter, digit, _ or $ is right before or after it.`,
+  builder_no_name: ({name, path, inside}) => `${name} does not stand whole anywhere in ${path}: a rename finds it only where no letter${inside ? `, digit or one of ${inside}` : ' or digit'} is right before or after it.`,
   // ------------------------------------------------------------ answers to asks
-  provided: ({contract}) => `${contract}. Use it rather than writing your own.`,
+  provided: ({contract}) => `${contract}.`,
   own_contract: ({contract}) => `${contract} is in your own prompt: write it in your files under exactly that name.`,
   // ------------------------------------------------------------ the broker
   available_note: () => 'available lists what you can ask for by name with ask: what you deliver, the names you may call, your installed packages, existing files open to you and parts of linked pages. Each answer is labelled with where it comes from.',

@@ -40,18 +40,23 @@ test('the builder\'s functions: each does exactly what it is given or says exact
   assert.deepEqual(call('read_file', {path: 'README.md'}).result, {error: MESSAGES.builder_no_file({path: 'README.md', paths: 'report.js, store.js'})}, 'an existing file is outside its world');
   assert.deepEqual(call('read_file', {path: 'store.js', lines: 2}).result, {error: 'read_file has no field "lines"; its fields are path'});
   // rename: every place the name stands whole, never inside a longer name; each changed line shown.
-  assert.deepEqual(call('rename', {path: 'report.js', from: './createTicket', to: './store.js'}).result,
+  assert.deepEqual(call('rename', {path: 'report.js', from: './createTicket', to: './store.js', name_characters: '_$'}).result,
     {renamed: 'report.js', from: './createTicket', to: './store.js', lines: [{line: 1, before: "const { createTicket } = require('./createTicket');", after: "const { createTicket } = require('./store.js');"}]});
-  assert.deepEqual(call('rename', {path: 'report.js', from: 'createTicket', to: 'fileTicket'}).result.lines.map(l => l.after),
+  assert.deepEqual(call('rename', {path: 'report.js', from: 'createTicket', to: 'fileTicket', name_characters: '_$'}).result.lines.map(l => l.after),
     ["const { fileTicket } = require('./store.js');", "console.log(fileTicket('x').id);"], 'createTicketLater is another name');
   assert.equal(w.files.get('report.js'), "const { fileTicket } = require('./store.js');\nconst createTicketLater = 1;\nconsole.log(fileTicket('x').id);\n");
-  assert.deepEqual(call('rename', {path: 'report.js', from: 'ticket', to: 'item'}).result, {error: MESSAGES.builder_no_name({name: 'ticket', path: 'report.js'})});
-  assert.equal(call('rename', {path: 'store.js', from: 'title', to: '$title'}).result.lines[0].after, 'function createTicket($title) { return {id: 1, $title}; }', 'a name with $ in it is the name as given');
-  assert.equal(call('rename', {path: 'store.js', from: '$title', to: 'title'}).result.renamed, 'store.js');
-  assert.deepEqual(call('rename', {path: 'report.js', from: 'a + b', to: 'c'}).result, {error: 'from is one name or reference path: letters, digits and _ $ . / @ : - only'});
-  assert.deepEqual(call('rename', {path: 'report.js', from: 'x', to: 'f(x)'}).result, {error: 'to is one name or reference path: letters, digits and _ $ . / @ : - only'});
-  assert.deepEqual(call('rename', {path: 'report.js', from: 'x', to: 'x'}).result, {error: 'from and to are the same'});
-  assert.deepEqual(call('rename', {path: 'nope.js', from: 'x', to: 'y'}).result, {error: MESSAGES.builder_no_file({path: 'nope.js', paths: 'report.js, store.js'})});
+  assert.deepEqual(call('rename', {path: 'report.js', from: 'ticket', to: 'item', name_characters: '_$'}).result, {error: MESSAGES.builder_no_name({name: 'ticket', path: 'report.js', inside: '_$'})});
+  assert.equal(call('rename', {path: 'store.js', from: 'title', to: '$title', name_characters: '_$'}).result.lines[0].after, 'function createTicket($title) { return {id: 1, $title}; }', 'a name with $ in it is the name as given');
+  assert.equal(call('rename', {path: 'store.js', from: '$title', to: 'title', name_characters: '_$'}).result.renamed, 'store.js');
+  assert.deepEqual(call('rename', {path: 'report.js', from: '', to: 'c', name_characters: '_$'}).result, {error: 'from is the text of one name or reference path'});
+  assert.deepEqual(call('rename', {path: 'report.js', from: 'x', to: 'y'}).result.error.startsWith('name_characters is'), true);
+  // Any language, as it delimits its names (owner 2026-10-15 05:16, "Any code type"): the builder says which characters its names hold.
+  const other = builderWorld({files: new Map([['store.clj', '(defn ticket [] 1)\n(ticket-store (ticket))\n'], ['store.rb', 'def valid?; end\nvalid? or valid\n'], ['store.py', 'größe = 1\nprint(größe_x, größe)\n']])});
+  assert.deepEqual(builderCall(other, 'rename', {path: 'store.clj', from: 'ticket', to: 'case', name_characters: '-?!*<>=/+'}).result.lines.map(l => l.after), ['(defn case [] 1)', '(ticket-store (case))'], 'ticket-store is another name');
+  assert.deepEqual(builderCall(other, 'rename', {path: 'store.rb', from: 'valid?', to: 'ok?', name_characters: '_?!'}).result.lines.map(l => l.after), ['def ok?; end', 'ok? or valid']);
+  assert.deepEqual(builderCall(other, 'rename', {path: 'store.py', from: 'größe', to: 'size', name_characters: '_'}).result.lines.map(l => l.after), ['size = 1', 'print(größe_x, size)']);
+  assert.deepEqual(call('rename', {path: 'report.js', from: 'x', to: 'x', name_characters: '_$'}).result, {error: 'from and to are the same'});
+  assert.deepEqual(call('rename', {path: 'nope.js', from: 'x', to: 'y', name_characters: '_$'}).result, {error: MESSAGES.builder_no_file({path: 'nope.js', paths: 'report.js, store.js'})});
   // write_file: a file of its own at any path; the same bytes again say so.
   assert.deepEqual(call('write_file', {path: 'createTicket.js', content: "module.exports = require('./store.js');\n"}).result, {written: 'createTicket.js', characters: 40});
   assert.deepEqual(call('read_file', {path: 'createTicket.js'}).result, {path: 'createTicket.js', content: "module.exports = require('./store.js');\n"});
@@ -68,7 +73,7 @@ test('the builder\'s functions: each does exactly what it is given or says exact
   assert.deepEqual(call('read_file', {path: './.config//up file.js'}).result, {path: '.config/up file.js', content: 'x'});
   assert.deepEqual(call('write_file', {path: 'a.js'}).result, {error: 'content is the complete text of the file'});
   // A rename in a file of its own changes that file; its copies of the delivered files keep their renames apart.
-  assert.equal(call('rename', {path: 'createTicket.js', from: './store.js', to: './store'}).result.renamed, 'createTicket.js');
+  assert.equal(call('rename', {path: 'createTicket.js', from: './store.js', to: './store', name_characters: '_$'}).result.renamed, 'createTicket.js');
   assert.equal(w.glue.get('createTicket.js'), "module.exports = require('./store');\n");
   assert.deepEqual([...w.renamed], [['report.js', [{from: './createTicket', to: './store.js'}, {from: 'createTicket', to: 'fileTicket'}]], ['store.js', [{from: 'title', to: '$title'}, {from: '$title', to: 'title'}]]]);
   assert.deepEqual([w.written, w.unchanged, w.removed], [['createTicket.js', 'Store.js', '.config/up file.js'], ['createTicket.js'], ['README.md']]);
@@ -84,7 +89,7 @@ test('the builder\'s functions: each does exactly what it is given or says exact
 
 test('what the room keeps of a session: each renamed file\'s text for the exact text it was made from, and the builder\'s own files; a rename whose text changed since is not kept', () => {
   const w = worldOf();
-  builderCall(w, 'rename', {path: 'report.js', from: './createTicket', to: './store.js'});
+  builderCall(w, 'rename', {path: 'report.js', from: './createTicket', to: './store.js', name_characters: '_$'});
   builderCall(w, 'write_file', {path: 'z.js', content: 'z'});
   builderCall(w, 'write_file', {path: 'a.js', content: 'a'});
   const base = p => textHash(p === 'report.js' ? REPORT : STORE);
@@ -92,7 +97,7 @@ test('what the room keeps of a session: each renamed file\'s text for the exact 
   assert.deepEqual(kept, {renamed: {'report.js': {base: textHash(REPORT), text: REPORT.replace("'./createTicket'", "'./store.js'"), renames: [{from: './createTicket', to: './store.js'}]}}, glue: {'a.js': 'a', 'z.js': 'z'}});
   // A later session over the same delivered text adds to the renames; one over a changed text starts again.
   const next = builderWorld({files: new Map([['report.js', kept.renamed['report.js'].text], ['store.js', STORE]]), glue: new Map(Object.entries(kept.glue))});
-  builderCall(next, 'rename', {path: 'report.js', from: 'createTicket', to: 'fileTicket'});
+  builderCall(next, 'rename', {path: 'report.js', from: 'createTicket', to: 'fileTicket', name_characters: '_$'});
   assert.deepEqual(builderWork(next, kept, base).renamed['report.js'].renames.map(r => r.to), ['./store.js', 'fileTicket']);
   const changed = builderWorld({files: new Map([['report.js', REPORT + '\n'], ['store.js', STORE]])});
   assert.deepEqual(builderWork(changed, kept, p => textHash(p === 'report.js' ? REPORT + '\n' : STORE)), {renamed: {}, glue: {}}, 'a rename made for another text, and files it no longer has, are not kept');
@@ -105,7 +110,7 @@ test('a delivered file and one of the builder\'s own at one path are both in its
   assert.equal(w.glue.get('wire.js'), 'mine 2\n');
   assert.equal(w.files.get('wire.js'), 'delivered\n');
   // A rename at that path changes its own file, the one the piece holds there.
-  assert.equal(builderCall(w, 'rename', {path: 'wire.js', from: 'mine', to: 'ours'}).result.renamed, 'wire.js');
+  assert.equal(builderCall(w, 'rename', {path: 'wire.js', from: 'mine', to: 'ours', name_characters: '_$'}).result.renamed, 'wire.js');
   assert.deepEqual([w.glue.get('wire.js'), w.files.get('wire.js')], ['ours 2\n', 'delivered\n']);
   // Its own file at a delivered file's path is its to write; removed, the delivered file is the one there.
   assert.deepEqual(builderCall(w, 'write_file', {path: 'store.js', content: 'wired\n'}).result, {written: 'store.js', characters: 6});
@@ -148,7 +153,7 @@ const GLUE = [
   ['write_file', {path: 'components/__init__.py', content: ''}], ['write_file', {path: `components/${D1}/__init__.py`, content: ''}], ['write_file', {path: `components/${D2}/__init__.py`, content: ''}],
   ['write_file', {path: 'count_words.py', content: `from components.${D1}.counter import count_words  # noqa: F401\n`}],
   ['write_file', {path: 'top_words.py', content: `from components.${D2}.ranking import top_words  # noqa: F401\n`}],
-  ['rename', {path: COUNTER, from: 'textutil', to: '.textutil'}]];
+  ['rename', {path: COUNTER, from: 'textutil', to: '.textutil', name_characters: '_'}]];
 const joined = () => {
   const w = builderWorld({files: new Map(Object.entries(SOURCES))});
   for (const [name, args] of GLUE) assert.ok(!builderCall(w, name, args).result.error, name);

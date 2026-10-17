@@ -63,9 +63,10 @@ test('v8: the worker\'s session is ROLE.worker with its functions, its request t
   assert.match(system,/^Answer by calling your functions/m);
   assert.doesNotMatch(system,/LEAF CODE WRITER|Node\.js|require\(|JavaScript|=== FILE|control block/);
   assert.deepEqual(JSON.parse(requests[0].messages[1].content),view);
-  for(const r of requests)assert.deepEqual(r.tools,TOOLS.worker);
+  // Nothing it asked for is open, so wait is not among its functions: a turn it ends waits for an answer that comes.
+  for(const r of requests)assert.deepEqual(r.tools,TOOLS.worker.filter(t=>t.name!=='wait'));
   // The file blocks written as prose in the first reply are never read: nothing is written until write_file.
-  assert.deepEqual(requests[1].messages.slice(2),[{role:'assistant',content:''},{role:'user',content:'No function was called. The functions are: read_file, write_file, run_examples, ask, done, wait.'}]);
+  assert.deepEqual(requests[1].messages.slice(2),[{role:'assistant',content:''},{role:'user',content:'No function was called. The functions are: read_file, write_file, run_examples, ask, done.'}]);
   assert.deepEqual([...written],[['format.py','def format_title(item):\n    return str(item["title"])\n']]);
   assert.deepEqual(out.end,{done:true,wait:false,summary:'Formats titles'});
 });

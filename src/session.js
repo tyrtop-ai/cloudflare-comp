@@ -43,7 +43,9 @@ export function argumentsOf(raw) {
 export const noCall = names => `No function was called. The functions are: ${names.join(', ')}.`;
 
 // One session. tools: [{name, description, parameters: {type: 'object',
-// properties, required}}]. handle(name, args) → {result, end?} (async or
+// properties, required}}], or a function giving the functions offered as
+// they stand now: each round offers them, and each call is to one of them
+// as they stand when it is made. handle(name, args) → {result, end?} (async or
 // not): result is what the model reads; end, when present, ends the session
 // with that value after this call (calls later in the same response are not
 // run). mock(round, messages) → calls ([{name, arguments}]) stands in for the
@@ -57,10 +59,10 @@ export const noCall = names => `No function was called. The functions are: ${nam
 // room's turn budget, false means the budget is spent.
 // transcript: [{name, arguments, result}] per call, in order.
 export async function session(env, {system, user, tools, handle, role = '', call = 'session', maxTokens = 4096, noThink = false, mock = null, spend = null}) {
-  const selected = model(env), names = tools.map(t => t.name), known = new Set(names), transcript = [];
+  const selected = model(env), transcript = [], offered = typeof tools === 'function' ? tools : () => tools;
   const messages = [{role: 'system', content: system}, {role: 'user', content: String(user)}];
-  const toolText = JSON.stringify(tools).length;
   for (let round = 1; ; round++) {
+    const now = offered(), toolText = JSON.stringify(now).length;
     if (round > 1 && spend && !spend()) return {ended: false, reason: 'budget', rounds: round - 1, transcript};
     let output;
     if (env.MOCK_AI === 'true') {
@@ -72,12 +74,12 @@ export async function session(env, {system, user, tools, handle, role = '', call
       // The context window is full: the session ends there (a resource limit).
       if (tight) return {ended: false, reason: 'context', rounds: round - 1, transcript};
       const sent = suffix ? messages.map((m, i) => i === 1 ? {...m, content: m.content + suffix} : m) : messages;
-      output = await traced(env, {kind: 'model', name: call, role, model: selected, round, tools: tools.length, max_tokens: params.max_tokens ?? params.max_completion_tokens, no_think: !!noThink, thinking},
-        () => env.AI.run(selected, {messages: sent, tools, ...params}), o => ({tool_calls: toolCallsOf(o, round).length}));
+      output = await traced(env, {kind: 'model', name: call, role, model: selected, round, tools: now.length, max_tokens: params.max_tokens ?? params.max_completion_tokens, no_think: !!noThink, thinking},
+        () => env.AI.run(selected, {messages: sent, tools: now, ...params}), o => ({tool_calls: toolCallsOf(o, round).length}));
     }
     const calls = toolCallsOf(output, round);
     if (!calls.length) {
-      messages.push({role: 'assistant', content: ''}, {role: 'user', content: noCall(names)});
+      messages.push({role: 'assistant', content: ''}, {role: 'user', content: noCall(now.map(t => t.name))});
       continue;
     }
     const asked = [], results = [];
@@ -85,7 +87,8 @@ export async function session(env, {system, user, tools, handle, role = '', call
     for (const c of calls) {
       const parsed = argumentsOf(c.arguments);
       let result;
-      if (!known.has(c.name)) result = {error: `There is no function "${c.name.slice(0, 60)}". The functions are: ${names.join(', ')}.`};
+      const names = offered().map(t => t.name);
+      if (!names.includes(c.name)) result = {error: `There is no function "${c.name.slice(0, 60)}". The functions are: ${names.join(', ')}.`};
       else if (parsed.error) result = {error: parsed.error};
       else { const r = await handle(c.name, parsed.args); result = r?.result; if (r && 'end' in r) end = {value: r.end}; }
       asked.push({id: c.id, type: 'function', function: {name: c.name, arguments: JSON.stringify(parsed.args ?? null)}});

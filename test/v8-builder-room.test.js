@@ -102,7 +102,7 @@ const wfBuilder = ({renames = []} = {}) => (user, n, system, ctx) => {
   return [{name: 'write_file', arguments: {path: 'components/__init__.py', content: ''}}, ...dirs.map(d => ({name: 'write_file', arguments: {path: `${d}/__init__.py`, content: ''}})),
     {name: 'write_file', arguments: {path: 'count_words.py', content: `from ${mod(counter)} import count_words  # noqa: F401\n`}},
     {name: 'write_file', arguments: {path: 'top_words.py', content: `from ${mod(ranking)} import top_words  # noqa: F401\n`}},
-    ...renames.map(([file, from, to]) => ({name: 'rename', arguments: {path: at(file), from, to}}))];
+    ...renames.map(([file, from, to]) => ({name: 'rename', arguments: {path: at(file), from, to, name_characters: '_'}}))];
 };
 
 test('A4: a split Python project whose pieces import each other completes: the builders write the glue as files of their own and rename a read of a file beside; the export carries what they wrote', {skip: !hasPython && 'python3 is not installed'}, async () => {
