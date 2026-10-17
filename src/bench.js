@@ -311,16 +311,13 @@ export async function loadDataset(dataset, {fetch, policy, limit = null, format 
 
 // --- results ------------------------------------------------------------------------
 
-const HOLD_ERROR = new Set(['checks_blocked']);
-const HOLD_FAIL = new Set(['checks_failed', 'split_failed']);
 // One task room's state from its summary (ControlRoom.benchSummary), or
 // null while it is still going:
 //  - complete: the room completed on its own validations, so the run
 //    grades what it ships (gradeOutcome);
-//  - error, never scored: validations that could not run (checks_blocked),
-//    the room's own error, an observer's stop;
-//  - fail: an agent failed, the room held where only the person can go on,
-//    or the turn budget ended.
+//  - error, never scored: the room's own error, an observer's stop;
+//  - fail: an agent failed, the room holds (whatever the hold, named by its
+//    kind), or the turn budget ended.
 export function roomOutcome(s) {
   if (!s) return {outcome: 'error', detail: 'the room gave no summary'};
   const terminal = ['complete', 'failed', 'error'].includes(s.status) || (s.status === 'paused' && !s.busy);
@@ -328,10 +325,9 @@ export function roomOutcome(s) {
   const kind = s.pause?.kind, out = (outcome, detail) => ({outcome, detail: clip(detail, 300)});
   if (s.status === 'complete') return out('complete', '');
   if (s.status === 'error') return out('error', s.failure || 'the room stopped with an error');
-  if (HOLD_ERROR.has(kind)) return out('error', `${kind}: ${s.pause.text || ''}`);
   if (s.stopped) return out('error', 'the room was stopped by an observer');
   if (s.status === 'failed') return out('fail', s.failure || 'the room failed');
-  if (HOLD_FAIL.has(kind)) return out('fail', `${kind}: ${s.pause.text || ''}`);
+  if (kind) return out('fail', `${kind}: ${s.pause.text || ''}`);
   return out('fail', s.pause?.text || 'the turn budget ended before the task was solved');
 }
 // The grader's result as an outcome: pass, fail (what it observed, whole:

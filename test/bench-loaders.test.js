@@ -328,7 +328,7 @@ test('roomOutcome: a completed room is graded; otherwise its status and hold dec
   assert.equal(roomOutcome(base).outcome, 'complete');
   assert.equal(roomOutcome({...base, status: 'paused', pause: {kind: 'checks_failed', text: 'x'}}).outcome, 'fail');
   assert.equal(roomOutcome({...base, status: 'paused', pause: {kind: 'split_failed', text: 'x'}}).outcome, 'fail');
-  assert.equal(roomOutcome({...base, status: 'paused', pause: {kind: 'checks_blocked', text: 'x'}}).outcome, 'error');
+  assert.equal(roomOutcome({...base, status: 'paused', pause: {kind: 'base_confirm', text: 'x'}}).detail, 'base_confirm: x', 'any hold, by its kind');
   assert.equal(roomOutcome({...base, status: 'paused', pause: null}).outcome, 'fail');
   assert.equal(roomOutcome({...base, status: 'failed', failure: 'root.1 failed'}).detail, 'root.1 failed');
   assert.equal(roomOutcome({...base, status: 'error'}).outcome, 'error');
@@ -429,10 +429,10 @@ test('the dataset digest covers the tasks used, not the text fetched: the same t
   assert.equal(await bench.taskDigest(a.tasks[3]), await bench.taskDigest(c.tasks[3]), 'but each shared task digests the same');
 });
 
-test('a room\'s outcome is what the room observed, never a reading of its error text: blocked checks and an observer stop are errors; a hold or a spent budget is a fail', () => {
+test('a room\'s outcome is what the room observed, never a reading of its error text: an observer stop is an error; a hold of any kind or a spent budget is a fail', () => {
   const base = {busy: false, turns: 20};
   const o = s => roomOutcome({...base, ...s});
-  assert.equal(o({status: 'paused', pause: {kind: 'checks_blocked', text: 'x'}}).outcome, 'error');
+  assert.equal(o({status: 'paused', pause: {kind: 'compile_blocked', text: 'x'}}).outcome, 'fail');
   assert.equal(o({status: 'paused', stopped: true}).outcome, 'error');
   assert.equal(o({status: 'error', failure: 'AiError: 3040: Capacity temporarily exceeded'}).outcome, 'error');
   // Owner 2026-10-16 05:39: "text heuristics - I don't understand what this is for". No error text decides an outcome.
