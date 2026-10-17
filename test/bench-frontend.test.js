@@ -184,7 +184,7 @@ test('pasted or uploaded JSON lines are sent as text; the runs list views, stops
 
 test('the panel names the Container slots it is capped at, keeps the label off huggingface.co file URLs, and Delete removes a run', async () => {
   assert.match(html, /<select id="bench-keep">[\s\S]*<option value="failed">Keep the rooms that did not pass, delete the passed ones \(default\)<\/option>[\s\S]*<option value="none">/);
-  assert.match(html, /Dataset URL <span class="faint">\(a JSON lines file on raw\.githubusercontent\.com, or a datasets-server\.huggingface\.co rows URL\)/);
+  assert.match(html, /Dataset URL <span class="faint">\(a JSON lines file, or a datasets-server\.huggingface\.co rows URL, on any host FETCH_ALLOW allows\)/);
   const requests = [];
   const p = page(async (url, init) => {
     requests.push({url: String(url), method: init?.method || 'GET'});

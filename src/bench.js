@@ -29,10 +29,6 @@ export const BENCH_LIMITS = Object.freeze({
   pageRows: 100,              // the datasets-server rows API's page size
   concurrency: [1, 16], budget: [1, 100000]
 });
-// Only these hosts are fetched for datasets, and only when the owner's
-// FETCH_ALLOW (or its default) covers them too: the bench narrows the owner's
-// list, never widens it. huggingface.co covers datasets-server.huggingface.co.
-export const BENCH_HOSTS = Object.freeze(['huggingface.co', 'raw.githubusercontent.com']);
 export const BENCH_FORMATS = Object.freeze(['humaneval', 'mbpp', 'multipl-e', 'generic']);
 // Every toolchain row the box knows, code rows and compile rows alike.
 const ROWS = [...TOOLCHAINS, ...COMPILE_ROWS];
@@ -132,7 +128,7 @@ function runCommands(extensions = []) {
 // The two languages whose harness checks the tests from inside the
 // solution's process (counted assertions, a token-signed report).
 const HARNESSED = new Set(['python', 'javascript']);
-const taskId = (format, row, index) => clip(str(row.task_id) || str(row.name) || str(row.id) || `${format}-${index}`, 80)
+const taskId = (format, row, index) => (str(row.task_id) || str(row.name) || str(row.id) || `${format}-${index}`)
   .replace(/^(\d+)$/, format === 'mbpp' ? 'MBPP/$1' : '$1');
 
 // The grader of one task: a command check that runs the harness against the
@@ -206,8 +202,8 @@ export function loadTasks(rows, {limit = null, format = null, nonce = null} = {}
   for (const [i, row] of rows.entries()) {
     if (tasks.length >= cap) break;
     const t = taskFromRow(row, i, {format, nonce: typeof nonce === 'function' ? nonce(i) : nonce});
-    if (t.skip) { if (skipped.length < 50) skipped.push({id: t.id || `row ${i + 1}`, reason: t.skip}); continue; }
-    if (seen.has(t.id)) { if (skipped.length < 50) skipped.push({id: t.id, reason: 'a task with this id came earlier'}); continue; }
+    if (t.skip) { skipped.push({id: t.id || `row ${i + 1}`, reason: t.skip}); continue; }
+    if (seen.has(t.id)) { skipped.push({id: t.id, reason: 'a task with this id came earlier'}); continue; }
     seen.add(t.id);
     tasks.push(t);
   }
@@ -229,10 +225,10 @@ async function sha256(text) {
 export const taskDigest = async t => (await sha256(JSON.stringify([t.prompt, t.grader?.check?.files?.[FIXTURE.tests] ?? '']))).slice(0, 16);
 export const tasksDigest = tasks => sha256(JSON.stringify(tasks.map(t => [t.id, t.prompt, t.grader?.check?.files?.[FIXTURE.tests] ?? ''])));
 // The policy for dataset fetches: the owner's allowlist (FETCH_ALLOW, or the
-// fetcher's default) narrowed to BENCH_HOSTS, the deployment's own hosts
-// refused, archives (a .jsonl.gz served as octet-stream) allowed.
+// fetcher's default) as it is, the deployment's own hosts refused, archives
+// (a .jsonl.gz served as octet-stream) allowed.
 export function benchPolicy({allow, selfHosts = [], ...limits} = {}) {
-  return fetchPolicy({allow, room: [...BENCH_HOSTS], selfHosts, requireSelfHosts: true, archive: true, ...limits});
+  return fetchPolicy({allow, selfHosts, requireSelfHosts: true, archive: true, ...limits});
 }
 // A datasets-server rows URL: its pages are fetched up to `want` rows, or all of them.
 const rowsApi = u => u.hostname === 'datasets-server.huggingface.co' && u.pathname === '/rows';

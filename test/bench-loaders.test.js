@@ -17,7 +17,8 @@ const {checkPlan} = await import('../src/checks.js');
 const {snapshotHash} = await import('../src/build-verification.js');
 const {TOOLCHAINS} = await import('../src/toolchains.js');
 const bench = await import('../src/bench.js');
-const {parseRows, detectFormat, taskFromRow, loadTasks, loadDataset, fetchDataset, benchPolicy, roomOutcome, gradeOutcome, aggregate, compareRuns, BENCH_LIMITS, BENCH_HOSTS, FIXTURE, PASS_MARK} = bench;
+const {DEFAULT_ALLOW} = await import('../src/fetcher.js');
+const {parseRows, detectFormat, taskFromRow, loadTasks, loadDataset, fetchDataset, benchPolicy, roomOutcome, gradeOutcome, aggregate, compareRuns, BENCH_LIMITS, FIXTURE, PASS_MARK} = bench;
 
 import { HUMANEVAL, MBPP, MULTIPLE_JS, MULTIPLE_RB, GENERIC } from './helpers/bench-fixtures.js';
 const jsonl = rows => rows.map(r => JSON.stringify(r)).join('\n') + '\n';
@@ -151,6 +152,12 @@ test('the task limit, duplicate ids, and a fresh nonce per task; a task\'s tests
   const dup = loadTasks([HUMANEVAL[0], HUMANEVAL[0]]);
   assert.equal(dup.tasks.length, 1);
   assert.match(dup.skipped[0].reason, /came earlier/);
+  // A task's id is used as written: ids that differ only after many characters are two tasks.
+  const stem = 'Toy/' + 'x'.repeat(200);
+  const twins = loadTasks([{...HUMANEVAL[0], task_id: `${stem}a`}, {...HUMANEVAL[0], task_id: `${stem}b`}]);
+  assert.deepEqual(twins.tasks.map(t => t.id), [`${stem}a`, `${stem}b`]);
+  // Every skipped row is listed.
+  assert.equal(loadTasks(Array.from({length: 120}, () => ({question: 1}))).skipped.length, 120);
   const [a, b] = loadTasks(HUMANEVAL).tasks.map(t => t.grader.check.files[FIXTURE.nonce]);
   assert.match(a, /^[0-9a-f]{32}$/);
   assert.notEqual(a, b);
@@ -250,12 +257,11 @@ function fakeFetch(routes) {
 const body = (text, type = 'text/plain; charset=utf-8') => () => new Response(text, {status: 200, headers: {'content-type': type}});
 const policy = (extra = {}) => benchPolicy({selfHosts: ['cp.example.org'], ...extra});
 
-test('the bench policy narrows the owner allowlist to the dataset hosts and refuses the deployment itself', () => {
-  assert.deepEqual(BENCH_HOSTS, ['huggingface.co', 'raw.githubusercontent.com']);
-  assert.deepEqual(policy().allow, ['huggingface.co', 'raw.githubusercontent.com']);
-  assert.ok(!policy().allow.includes('github.com') && !policy().allow.includes('en.wikipedia.org'));
-  // An owner list without the dataset hosts allows none of them; the bench never widens it.
-  assert.deepEqual(policy({allow: 'docs.python.org'}).allow, []);
+test('the bench policy is the owner allowlist as it is and refuses the deployment itself', () => {
+  assert.deepEqual(policy().allow, [...DEFAULT_ALLOW]);
+  assert.ok(policy().allow.includes('github.com') && policy().allow.includes('gist.githubusercontent.com'));
+  // The owner's list is the bound: a host he adds is fetched, one he leaves out is not.
+  assert.deepEqual(policy({allow: 'docs.python.org,datasets.example.org'}).allow, ['docs.python.org', 'datasets.example.org']);
   assert.deepEqual(policy({allow: 'raw.githubusercontent.com'}).allow, ['raw.githubusercontent.com']);
   assert.throws(() => benchPolicy({}), /selfHosts/);
 });

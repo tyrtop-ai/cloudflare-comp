@@ -159,7 +159,7 @@
         <section class="panel bench-panel" id="bench-panel">
           <div class="section-head"><span class="counter">06</span><h2>Benchmarks</h2><span class="right-note">One v8 room per task · room settings from the pickers on the left</span></div>
           <div class="bench-form">
-            <label for="bench-url">Dataset URL <span class="faint">(a JSON lines file on raw.githubusercontent.com, or a datasets-server.huggingface.co rows URL)</span></label>
+            <label for="bench-url">Dataset URL <span class="faint">(a JSON lines file, or a datasets-server.huggingface.co rows URL, on any host FETCH_ALLOW allows)</span></label>
             <input id="bench-url" class="mono" spellcheck="false" autocomplete="off" placeholder="https://datasets-server.huggingface.co/rows?dataset=openai%2Fopenai_humaneval&amp;config=openai_humaneval&amp;split=test" />
             <label for="bench-text">Or paste or upload JSON lines <span class="faint">(HumanEval, MBPP, MultiPL-E in any language, or {"id", "language", "prompt", "tests"})</span></label>
             <textarea id="bench-text" class="mono bench-text" rows="3" spellcheck="false" placeholder='{"id": "t1", "language": "python", "prompt": "Write a function triple(n)…", "entry": "triple", "tests": "assert triple(2) == 6"}'></textarea>
