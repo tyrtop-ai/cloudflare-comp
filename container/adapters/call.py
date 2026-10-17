@@ -74,7 +74,7 @@ def supervise():
                     clean[key] = record[key]
             emit(clean)
         elif record.get("load") is False:
-            emit({"load": False, "error": str(record.get("error", ""))[:2000], "stack": str(record.get("stack", ""))[-4000:]})
+            emit({"load": False, "error": str(record.get("error", "")), "stack": str(record.get("stack", ""))})
     code = worker.wait()
     if code != 0:
         emit({"worker_exit": code})
@@ -105,7 +105,7 @@ def work():
     try:
         module = load(module_path)
     except BaseException as e:  # SyntaxError, ImportError, SystemExit at import
-        emit({"load": False, "error": error_text(e), "stack": traceback.format_exc()[-4000:]})
+        emit({"load": False, "error": error_text(e), "stack": traceback.format_exc()})
         emit({"done": True})
         return
     loop = None  # one event loop for every awaited step, made on first use
@@ -115,7 +115,7 @@ def work():
         fn = getattr(module, name, None) if isinstance(name, str) else None
         if not callable(fn):
             names = [n for n, v in vars(module).items() if callable(v) and not n.startswith("_")
-                     and getattr(v, "__module__", None) == module.__name__][:12]
+                     and getattr(v, "__module__", None) == module.__name__]
             emit({"step": i, "ok": False, "missing": True,
                   "error": f"{module_path} has no function {name} (it defines: {', '.join(names) or 'no functions'})", "stack": ""})
             continue
@@ -132,7 +132,7 @@ def work():
                 saved[step["save"]] = value
             emit({"step": i, "ok": True, "value": plain(value)})
         except BaseException as e:  # a step's SystemExit is its failure, not the adapter's end
-            emit({"step": i, "ok": False, "error": error_text(e), "stack": traceback.format_exc()[-4000:]})
+            emit({"step": i, "ok": False, "error": error_text(e), "stack": traceback.format_exc()})
     emit({"done": True})
 
 
