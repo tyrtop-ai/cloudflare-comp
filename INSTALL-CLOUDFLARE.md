@@ -49,7 +49,7 @@ npx wrangler artifacts repos delete artifacts-probe --namespace default
 npx wrangler artifacts namespaces get default
 ```
 
-If `repos create` fails, every run would also fail when it creates Root's repository: check that Artifacts is enabled for the account you deploy to. To use another namespace, change `namespace` in `wrangler.jsonc` before you deploy, and use that name in the commands in this guide.
+If `repos create` fails, every run would also fail when it creates its first repository: check that Artifacts is enabled for the account you deploy to. To use another namespace, change `namespace` in `wrangler.jsonc` before you deploy, and use that name in the commands in this guide.
 
 ## 4. Deploy
 
@@ -145,7 +145,7 @@ Under v8 every manager runs the checks it holds in its piece's own fresh box as 
 "BOX_CONCURRENCY": "4"
 ```
 
-A run opens its first compile's box early, while the card is written, so that compile doesn't wait 9 to 13 s for a cold box. That prewarmed box counts against `BOX_CONCURRENCY` too, and stops when no compile takes it ([docs/trying-v8.md](docs/trying-v8.md#63-the-prewarmed-box)).
+A run opens its first compile's box early, as soon as its first level is admitted, so that compile doesn't wait 9 to 13 s for a cold box. That prewarmed box counts against `BOX_CONCURRENCY` too, and stops when no compile takes it ([docs/trying-v8.md](docs/trying-v8.md#63-the-prewarmed-box)).
 
 ## 6. Verify the deployment
 
@@ -188,22 +188,22 @@ In the answer, `items.hostname.runner_named` should be `true`, and `items.hostna
 
    The generative model is chosen here, per room, or with `settings.model` in the API. Rooms do not read the `MODEL_NAME` variable in `wrangler.jsonc`, so editing it does not change the model.
 
-   **The v8 pipeline (experimental).** v7 is the default and is unchanged. With **v8**, Root first turns the goal into a project card (deliverables, plus a check for each requirement), workers may write any text file in Node or Python, and the Container runs the card's checks. It has not had a live run yet. [docs/trying-v8.md](docs/trying-v8.md) is a checklist for the first ones, and [docs/how-it-works.md](docs/how-it-works.md#v8-experimental) explains it. **Start from** works only in v8 rooms.
+   **The v8 pipeline (experimental).** v7 is the default and is unchanged. With **v8** there is no Root: the room creates one manager from your prompt, every manager's splitter declares its level's contracts and validations through functions and Clef decides whether its split is valid, managers route with Clef and never write code, workers write any text file in Node or Python, and each level's compiler runs the validations in a fresh box. [docs/trying-v8.md](docs/trying-v8.md) is a checklist for a run, and [docs/how-it-works.md](docs/how-it-works.md#v8-experimental) explains it. **Start from** works only in v8 rooms.
 
-5. Press **Start**. This clears the room's state and creates Root. In a v7 room, the runtime appends one requirement to your problem statement, so you do not need to write it:
+5. Press **Start**. This clears the room's state and creates Root (in a v8 room, the manager the room creates from your prompt). In a v7 room, the runtime appends one requirement to your problem statement, so you do not need to write it:
    > The finished application has one entry module that exports start(); start() takes no arguments and returns an object with one method per operation named above. Modules get what they need from other modules only by importing it. Importing a module does no work at load: no reading process.argv, starting a server or prompting.
 
    The splitters assign that requirement like any other, and Root promises `start`: its split must give `start` to exactly one child. While the run is going, **Start** becomes **Stop**. Stop starts no new turns; the running ones finish, and then the room pauses (**Stopping** until then). **Continue** resumes it.
 
 The dashboard loads one full snapshot, then asks for what changed every second (`/api/delta`). It shows:
-- **The ownership tree**, as circles coloured by role: managers, workers and the compiler. A manager's circle splits in half while its builder works on the branch. Green lines mark a branch whose agents are all done, and a green ring marks one its builder has linked. Click a circle to see, below the tree, its task and a `promises:` line with the functions it promised.
+- **The agent graph**: every agent is a node joined to the agent that made it, coloured by role. Managers and workers are circles; splitters, builders and compilers are squares. A builder that is linking has a thin band scrolling left to right across its square. Green lines mark a branch whose agents are all done, and a green ring marks one its builder has linked. Click a node to see, below the graph, its task and what it promised or delivers.
 - **Agent traffic:** the latest 300 events, newest first.
 - **The files** the room has recorded, committed or staged for the current turn's commit. Click one to read its content from the room's index of Artifacts writes.
 - **The Container build panel**, with the latest Container report.
-- In a v8 room, the **Project card** panel (deliverables, requirements with a pass, fail or untested chip, decisions, and why the room is held) and the **Sources and base** panel.
+- In a v8 room, the **Levels** panel (each validation with a pass, fail or untested chip, each manager's level file, each splitter step with Clef's verdict, and why the room is held), the **Sources and base** panel and the **Prompts** queue.
 
 A run ends in one of three states:
-- **complete**, when the compiler's runner test passes on the current source and every agent is done (in a v8 room: when every requirement on the card passes);
+- **complete**, when the compiler's runner test passes on the current source and every agent is done (in a v8 room: when the compiler of the manager the room created has every validation of its subtree passing on its exact bundle);
 - **failed**, when an agent fails for good, for example when Root runs out of repair rounds;
 - **paused**, when the budget is spent or every remaining agent is waiting.
 
@@ -227,7 +227,7 @@ A run ends in one of three states:
 - every problem with its decisions, and every repair ticket;
 - each manager's linking state and the compiler's state;
 - every event, and every timing span (model calls, Clef gates, git phases, Container runs, dispatch delays);
-- in a v8 room, the card and its revisions, the requirement results, the sources read and the base.
+- in a v8 room, each manager's level file, the validations and their results, the splitter steps, the sources read and the base.
 
 **The agents' Artifacts remote URLs in the export include your Cloudflare account ID.** Don't commit an export to a repository or post it publicly.
 
@@ -248,9 +248,9 @@ node -e "require('./glue/index.js').start().then(app=>console.log(Object.keys(ap
 node glue/smoke.js
 ```
 
-In a v8 room there is no `glue/index.js` or runner test. The export is the project at its own paths (on top of the base, when the room started from one), plus `.recursive/RUN.md` (how to run it, and the requirement table with the digest of the files it was checked on) and `.recursive/card.json`. The runtime never writes the project's own `README.md`.
+In a v8 room there is no `glue/index.js` or runner test. The export is the project at its own paths (on top of the base, when the room started from one), plus `.recursive/RUN.md` (how to run it, and the validation table with the digest of the files it was checked on), `.recursive/validations.json` (the levels' contracts and validations) and each manager's level file at `.recursive/levels/<manager>.json`. The runtime never writes the project's own `README.md`.
 
-Before there is an application (Root's builder has not linked one, the compiler has not written its loader, or an atomic Root has not written code) these routes return `409` with `No application yet`. A complete or failed room that never had one returns `409` with `No application to export`; start a new room.
+Before there is an application (in a v7 room, Root's builder has not linked one, the compiler has not written its loader, or an atomic Root has not written code; in a v8 room, no piece has delivered a file yet) these routes return `409` with `No application yet`. A complete or failed room that never had one returns `409` with `No application to export`; start a new room.
 
 ### Using the API directly
 
@@ -259,13 +259,13 @@ Every route takes the token as `Authorization: Bearer <APP_TOKEN>`. A room ID is
 | Route | Purpose |
 |---|---|
 | `GET /api/state?room=` | Dashboard snapshot |
-| `GET /api/delta?room=&since=&agents_since=&files_since=&exports=&run=&card_rev=` | What changed since the cursor a snapshot or delta returned: new events (up to 300), changed agents and files, the export list when it changed, the card when `card_rev` differs, and the small state whole. A cursor from another run gets the full snapshot. The dashboard polls this every second |
+| `GET /api/delta?room=&since=&agents_since=&files_since=&exports=&run=` | What changed since the cursor a snapshot or delta returned: new events (up to 300), changed agents and files, the export list when it changed, and the small state whole. A cursor from another run gets the full snapshot. The dashboard polls this every second |
 | `GET /api/export?room=` | Full export |
 | `GET /api/file?room=&agent=&path=` | One file an agent wrote, from the room's index of its Artifacts writes |
 | `POST /api/run` | `{room, goal, budget, settings, base?}`: start a new run. The goal must be 8–4000 characters. `base` needs `settings.pipeline: "v8"`: `{repo: "owner/name", ref?}` for a public GitHub repo (`ref` is a branch, tag or commit; the default branch when left out), or `{room: "<room id>"}` for another room's previous v8 result. The base is read before the room is cleared, so a base that cannot be read refuses the Start and leaves the room as it was |
 | `POST /api/continue` | `{room, budget, settings}`: resume a run |
-| `POST /api/amend` | `{room, text, budget?}`: v8 only. Apply a follow-up now: a complete, failed or paused room runs again for it, and a running room takes it as an adjustment. Returns `{status, goal_rev, card_rev}`, or `{error}` (409 while another change is being applied) |
-| `GET /api/prompts?room=` · `POST /api/prompts` | List the prompts, the queue's policy and the card's revisions; `{room, text, budget?}` adds a prompt to the end of the queue. When the room completes, the alarm applies the next queued prompt |
+| `POST /api/amend` | `{room, text, budget?}`: v8 only. Apply a follow-up now: a complete, failed or paused room runs again for it, and a running room takes it as an adjustment. Returns `{status, goal_rev}`, or `{error}` (409 while another change is being applied) |
+| `GET /api/prompts?room=` · `POST /api/prompts` | List the prompts, the queue's policy and the goal's revision; `{room, text, budget?}` adds a prompt to the end of the queue. When the room completes, the alarm applies the next queued prompt |
 | `POST /api/prompts/edit` · `/reorder` · `/remove` · `/skip` | `{room, id, text?, budget?}`, `{room, order: [ids]}` (every queued id once), `{room, id}`: queued prompts only, 409 otherwise |
 | `POST /api/prompts/policy` | `{room, queue_on_fail?: 'stop' \| 'continue', resume?: true}`: what the queue does when a prompt fails (default `stop`), or let a stopped queue go on |
 | `POST /api/stop` | `{room}`: stop a run. No new turns start; the running ones finish, then the room pauses (`status: paused`, event `stopped`) and the snapshot's `stopping` is `true` until then. Returns `{status: "stopping"}`, or `{error: "Nothing is running"}`; `/api/continue` resumes it |
@@ -278,14 +278,14 @@ Benchmark runs have their own routes, behind the same token. They take no `room`
 
 | Route | Purpose |
 |---|---|
-| `POST /api/bench` | `{dataset, limit?, format?, settings?, concurrency?, budget?, label?, task_timeout_minutes?, keep_rooms?}`: start a benchmark run. `dataset` is a URL (a JSON lines file on `raw.githubusercontent.com`, or a `datasets-server.huggingface.co` rows URL) or the JSON lines themselves. `format` is `humaneval`, `mbpp`, `multipl-e` or `generic` (`{id, prompt, tests}`), detected when left out. `limit` defaults to 20 (at most 500), `concurrency` to 2 (at most 16, and never more than `BENCH_EXECUTORS`), `budget` to 60 turns per task, the task timeout to 30 minutes. `keep_rooms` is `failed` (default: keep the rooms that did not pass), `all` or `none`. Every task room runs the v8 pipeline whatever `settings` says. Returns the run's `id` |
+| `POST /api/bench` | `{dataset, limit?, format?, settings?, concurrency?, budget?, label?, task_timeout_minutes?, keep_rooms?, feedback?}`: start a benchmark run. `dataset` is a URL (a JSON lines file on `raw.githubusercontent.com`, or a `datasets-server.huggingface.co` rows URL) or the JSON lines themselves. `format` is `humaneval`, `mbpp`, `multipl-e` or `generic` (`{id, prompt, tests}`), detected when left out. `limit` defaults to 20 (at most 500), `concurrency` to 2 (at most 16, and never more than `BENCH_EXECUTORS`), `budget` to 60 turns per task, the task timeout to 30 minutes. `keep_rooms` is `failed` (default: keep the rooms that did not pass), `all` or `none`. `feedback` is `until_done` (the default: a failed grade goes back into the room as a complaint, and the room is graded again each time it completes, until the task passes or its budget is spent) or `once` (only the room's first completion is graded: pass@1 with no test feedback). Every task room runs the v8 pipeline whatever `settings` says. Returns the run's `id` |
 | `GET /api/bench` | The runs, and the deployment's executor slots |
 | `GET /api/bench?id=` | One run: progress, pass@1, cost and time, and one row per task (outcome, room id, wall time, tokens, Container time). It holds no remote URLs or account IDs |
 | `GET /api/bench/compare?a=&b=` | Two runs on the tasks they share |
 | `POST /api/bench/stop`, `POST /api/bench/resume` | `{id}`: stop or resume a run |
 | `DELETE /api/bench/<id>` | Delete the run and the rooms it still keeps |
 
-pass@1 counts only scored tasks. A task that could not be scored for platform reasons (the Container could not run, a stop, a card hold) is an error and is left out. A task whose room ran out of turns counts as a failure.
+pass@1 counts only scored tasks. A task that could not be scored for platform reasons (a box could not run, a stop, a hold) is an error and is left out. A task whose room ran out of turns counts as a failure.
 
 ```bash
 URL=https://qwen-control-plane-v4.<your-subdomain>.workers.dev
@@ -321,7 +321,7 @@ curl -sS -X POST "$URL/api/export/github" -H "Authorization: Bearer $APP_TOKEN" 
 - **`Experiment already running`**: a run is in progress in this room. Wait for it to pause, or use another room.
 - **Status stays paused with a builder or the compiler `waiting`**: its problems are with its manager (`problems_reported`, then `problem_assigned` or `problem_escalated`) and nothing has changed yet, or the runner could not write a valid test (`runner_failed`). **Continue** relinks waiting builders with a fresh relink budget, runs the compiler again, and has every manager decide the problems it still holds.
 - **`repair_exhausted` and a failed run**: a manager ran out of repair rounds (6 per manager, and 8 plus 2 per manager for the run, at most 40), or a problem was closed without a fix while its reporter waited on it, for example after a worker answered it twice without changing a file. The `problem_exhausted` and `problem_escalated` events before it say which. Start a new experiment.
-- **A v8 room held at `card_blocked`, `card_failed`, `checks_failed`, `checks_blocked` or `checks_exhausted`**: the **Project card** panel says why. `card_blocked` means the goal needs something this deployment cannot do (a language that is not installed, or an edit with no repo given); start again with a different goal or a base. `checks_blocked` means the checks could not run (the Container, Chromium or Clef failed); it retries itself after 30 s, 2 minutes and 10 minutes, then waits for **Continue**. For the others, **Continue** runs the card writer or the checks again, with fresh repair rounds after `checks_exhausted`.
+- **A v8 room held**: the **Levels** panel says why. `checks_blocked` means the validations could not run (the box, Chromium or Clef failed); it retries itself after 30 s, 2 minutes and 10 minutes, then waits for **Continue**. `base_confirm` waits for you to grant changing an existing file. `checks_untested` lists files that would ship without a compile or a box, and **Continue** accepts them. `split_capacity` means a manager couldn't create its children within the room's agent or depth limit: raise it and press **Continue**. Any other hold is something nothing below could settle: its text says what, and **Continue** wakes the row it names.
 - **`checks_blocked` with "The box's environment, not the code"**: a check failed because of something the box's own inventory reports, for example a host name Python can't resolve (`hostname_ok: false`) or no Python. No worker is asked to fix it. Run the probe's `hostname` item (step 6). A deploy that rebuilt the box images (`container/Dockerfile.box`) fixes the host name; **Continue** then runs the checks again in a new box.
 - **`This room was started by a version before v7.14 and is not migrated`**: **Continue** refuses rooms from earlier versions. **Start** resets the room.
 

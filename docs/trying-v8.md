@@ -1,6 +1,6 @@
 # Trying v8
 
-v8 has only run offline so far, against scripted models. This is a checklist for the first live runs, and what to look for in each one.
+A checklist for a live v8 run, and what to look for in each one. [how-it-works.md](how-it-works.md#v8-experimental) describes how a v8 run goes.
 
 ## 1. Deploy
 
@@ -19,38 +19,38 @@ If you serve the Worker on your own domain, set `SELF_HOSTS` first ([INSTALL-CLO
 
 Use a new room for each goal. Set **Pipeline** to **v8** before pressing **Start**. A room keeps the pipeline it started with, and Continue can't change it. Leave the other settings at their defaults, with a turn budget of 100.
 
-Root's first turn writes the project card. The **Project card** panel then shows the deliverables, the requirements (each with a pass, fail or untested chip) and the decisions the card writer made for you. If the room holds, the panel says why:
+The room creates one manager from your prompt, and the manager's splitter states its level through functions. The **Levels** panel then shows each validation (with a pass, fail or untested chip), each manager's level file (a button that opens it), and each splitter step with Clef's verdict on it. The graph shows every agent: managers and workers as circles, splitters, builders and compilers as squares. If the room holds, the panel says why:
 
 | Hold | Meaning | What to do |
 |---|---|---|
-| `card_blocked` | The goal needs something this deployment can't do (a language that isn't installed, or an edit with no repo given) | Read the text. Start again with a base or a different goal |
-| `card_failed` | The card writer's answer didn't validate twice | Continue retries it |
-| `checks_failed` | A requirement failed and no piece could fix it | Continue runs the checks again |
-| `checks_blocked` | The checks couldn't run (Container, Chromium, Clef) | Retries itself after 30 s, 2 min and 10 min, then waits for Continue |
-| `checks_exhausted` | The repair rounds ran out | Continue gives a fresh set of rounds |
-| `checks_untested` | Everything that runs passed, but a requirement about a page, command, function or route has no check that runs (the card writer's check was refused twice) | Continue accepts the project as it is (logged as `untested_accepted`), or send a follow-up prompt to change the card |
+| `base_confirm` | A contract would change a file of the repo the room started from, and only you can grant that | Select the files to grant and press Continue, or send a follow-up prompt that leaves the file out |
+| `checks_blocked` | The validations couldn't run (the box, Chromium, Clef) | Retries itself after 30 s, 2 min and 10 min, then waits for Continue |
+| `checks_untested` | Everything that runs passed, but some files would ship without a compile or a box | Continue accepts the project as it is (logged as `unchecked_accepted`), or send a follow-up prompt |
+| `split_capacity` | A manager couldn't create its children within the room's agent or depth limit | Raise the limit and press Continue |
+| `clef_blocked` | Clef couldn't answer a manager's choice or a review | Continue asks again |
+| any other | Something nothing below could settle reached the room; its text says what | Read the text. Continue wakes the row it names, or send a follow-up prompt |
 
 ## 3. Try these goals
 
 **"Add a README explaining how to run it."** Set **Start from** to a public GitHub repo, a small one of yours.
 - The **Sources and base** panel should show how many files were read and what was skipped.
-- The card should have `README.md` as a doc deliverable with a judge check (Clef reads it and answers yes or no).
-- If the repo already has a README, look for `card_base_dropped` or `base_change_refused`: Clef has to agree the goal asks to change that file.
+- The level should have `README.md` as a doc contract with a judge validation (Clef reads the file and answers its question yes or no).
+- If the repo already has a README, the room holds at `base_confirm`: only you grant changing an existing file.
 - **Download app (.zip)** should be the repo plus the new README. `.recursive/RUN.md` lists what wasn't carried over.
-- Optional: run the same goal with **Start from** set to nothing. It should stop at `card_blocked` and ask for a repo.
 
 **"A Python CLI that converts temperatures."**
-- The card should list `python`, a command deliverable and command checks.
-- If a check fails, open the worker's repair ticket in the traffic panel. It should say what the program did, never what the check expected.
-- In the export, check `state.toolchain_inventory`: it shows the Python and Node versions, and whether checks ran with the network off (`network`). The network can only be turned off where the Container allows user namespaces, and that has not been tested on a live Container yet.
+- The level should have a command contract and command validations, with three different examples for the command.
+- If a validation fails, open the worker's complaint in the traffic panel. It is what the compiler observed, as it observed it.
+- In the export, check `state.toolchain_inventory`: it shows the Python and Node versions, and whether checks ran with the network off (`network`).
 - The same inventory shows the box's host name (`hostname`, which should be `box-` and 16 hex characters) and `getfqdn`, which should be `{"ok": true, "value": "box-…"}` with the same name (section 6.2).
 
 **"A static web page with a to-do list."**
-- The card should have a page deliverable (`index.html`), a static run, and browser checks.
-- The browser checks are the most likely to hit infrastructure problems (Chromium starting on `standard-1`). A `checks_blocked` hold, or a check marked `infrastructure`, means the Container side failed, not the page.
+- The level should have a page contract (`index.html`) served as it is, and browser validations.
+- The browser validations are the most likely to hit infrastructure problems (Chromium starting on `standard-1`). A `checks_blocked` hold, or a validation marked `infrastructure`, means the box side failed, not the page.
 
 **"Build a small issue tracker that lets someone create, view, update, and delete tickets."** (the old default)
-- No `start()` requirement is added in v8. The card writer chooses a shape and writes the choice under **decisions**.
+- No `start()` requirement is added in v8. The splitter chooses the shape, and the contracts it declares (routes, a page, a command) say what it chose.
+- Watch the graph: each piece is a manager of its own, with its own splitter steps, builder and compiler.
 - If you have time, run the same goal in a v7 room to compare wall time, repair rounds and whether you'd use the result.
 
 ## 4. A small benchmark
@@ -58,42 +58,43 @@ Root's first turn writes the project card. The **Project card** panel then shows
 In the **Benchmarks** panel:
 - **Dataset URL:** the HumanEval rows URL shown in the field's placeholder (datasets-server.huggingface.co).
 - **Tasks:** 10. **Rooms at once:** 2. **Keep task rooms:** the default (keeps the ones that didn't pass).
+- **Grading:** the default, **Until done**: a failed grade goes back into the room as a complaint, and the room works on it until the task passes or its budget is spent. **Once** grades only what each room ships the first time it completes (pass@1 with no test feedback).
 - Use the same model pickers and turn budget as for the rooms above.
 
-Press **Run benchmark**. It keeps going with the page closed. Most HumanEval tasks should be atomic: Root writes the function itself. pass@1 counts only scored tasks. Errors (a Container that couldn't run, a stop, a card hold) are counted separately, so a high error count points at the platform, not the model.
+Press **Run benchmark**. It keeps going with the page closed. A task room is an ordinary room whose prompt is the task's prompt: for most HumanEval tasks Clef's pre-grade should keep the level whole, so one worker writes the function. pass@1 counts only scored tasks. Errors (a box that couldn't run, a stop, a hold) are counted separately, so a high error count points at the platform, not the model.
 
 ## 5. What to send back
 
-- **For each room:** **Export observation JSON**. It contains the card and its revisions, the requirement results, the problems and tickets, every event and every span. The spans are what the speed analysis reads: each model call (role, model, tokens), each Clef gate, each git phase, each Container run (cold or warm, and each check's ms), and dispatch delays. Every v8 compile now opens its own fresh box (section 6), so its container span carries `box: {fresh: true, internet: false, start_ms, ready_ms, image, name}` instead of `cold`; `start_ms` is that compile's start cost. A run's first compile normally runs in a box opened earlier (section 6.3): its span adds `prewarmed: true`, `waited_ms` and `prewarm_ms`, and a `box` span named `prewarm` records that box's own start.
+- **For each room:** **Export observation JSON**. It contains each manager's level file, the validations and their results, the splitter steps, the complaints and asks, every event and every span. The spans are what the speed analysis reads: each model call (role, model, tokens), each Clef gate, each git phase, each box run (each check's ms), and dispatch delays. Every v8 compile opens its own fresh box (section 6), so its container span carries `box: {fresh: true, internet: false, start_ms, ready_ms, image, name}`; `start_ms` is that compile's start cost. A run's first compile normally runs in a box opened earlier (section 6.3): its span adds `prewarmed: true`, `waited_ms` and `prewarm_ms`, and a `box` span named `prewarm` records that box's own start.
 - **For the benchmark:** the JSON from `GET /api/bench?id=<run id>` (task outcomes, times, tokens, room ids), plus the room exports of one or two failed tasks.
 
 **The room export contains your Cloudflare account id**, inside the Artifacts remote URLs. Don't commit it to this repo or post it anywhere public; send it privately. The benchmark status JSON contains no remote URLs or account ids.
 
 ## 6. Capability boxes: every v8 compile in its own box
 
-A v8 room no longer shares one Container across its compiles, and benchmark rooms no longer share the `bench-pool-<i>` executors. Each compile opens a **fresh, single-use box**: a new Durable Object (`Box`) with its own VM, started with the internet off, which runs the same build runner on the same request and is destroyed afterwards. The runner's own isolation still runs inside the box. If a box can't be opened (for example, if the platform refuses `enableInternet: false`, or the image isn't deployed), the compile holds at `checks_blocked` with its usual automatic retries. It never falls back to the shared Container. v7 rooms keep `BuildExecutor` unchanged.
+A v8 room runs each compile in a **fresh, single-use box**: a new Durable Object (`Box`) with its own VM, started with the internet off, which runs the build runner on the compile's request and is destroyed afterwards. A worker's `run_examples` and a benchmark's grading each open one too, and no two benchmark tasks share one. The runner's own isolation still runs inside the box. If a box can't be opened (for example, if the platform refuses `enableInternet: false`, or the image isn't deployed), the compile holds at `checks_blocked` with its usual automatic retries; there is no shared Container to fall back to. v7 rooms keep `BuildExecutor` unchanged.
 
 The boxes come from a second Container application in `wrangler.jsonc`. It uses the `durable_object` scheduling policy (public beta) and has three images: `check` (Node, Python), `browser` (`check` plus Chromium) and `fetch` (Node only). The first `npm run deploy` builds all three, so it takes longer.
 
-The first box of a run is slow to start: its image is pulled, so it takes 9 to 15 s to become ready instead of about 1 s. The span records it with `cold: true` (any box whose `ready_ms` is over 5 s). Later compiles start warm. Since v8 live 5 the room opens that first box early, while the card is still being written (section 6.3), so the first compile normally finds it ready.
+The first box of a run is slow to start: its image is pulled, so it takes 9 to 15 s to become ready instead of about 1 s. The span records it with `cold: true` (any box whose `ready_ms` is over 5 s). Later compiles start warm. The room opens that first box early, as soon as its first level is admitted (section 6.3), so the first compile normally finds it ready.
 
 ### 6.2 The box's host name
 
-The platform names each box's VM with a label longer than the 63 characters a host name label may have. On such a name Python's `socket.getfqdn` fails (`UnicodeError: encoding with 'idna' codec failed (UnicodeError: label too long)`), and so does `http.server`'s `HTTPServer`, which calls it when it binds. In the live 5 issue tracker run every Python server crashed this way, and the worker was told to fix it for five rounds.
+The platform names each box's VM with a label longer than the 63 characters a host name label may have. On such a name Python's `socket.getfqdn` fails (`UnicodeError: encoding with 'idna' codec failed (UnicodeError: label too long)`), and so does `http.server`'s `HTTPServer`, which calls it when it binds, so every Python server would crash.
 
-The box image now runs the build runner under `/opt/box/hostname.py`. It gives the runner, and everything it starts, the box's own name in a user namespace of its own: `box-` followed by the first 16 hex characters of the SHA-256 of the box's Durable Object id (for example `box-3f9a0c27d18e4b65`), with an `/etc/hosts` that resolves it, so `getfqdn` answers without asking DNS. It needs no root: it uses the same user namespaces the runner already uses to turn the checks' network off. The same name is in the compile's span (`box.name`), in the inventory and in the probe's report.
+The box image runs the build runner under `/opt/box/hostname.py`. It gives the runner, and everything it starts, the box's own name in a user namespace of its own: `box-` followed by the first 16 hex characters of the SHA-256 of the box's Durable Object id (for example `box-3f9a0c27d18e4b65`), with an `/etc/hosts` that resolves it, so `getfqdn` answers without asking DNS. It needs no root: it uses the same user namespaces the runner already uses to turn the checks' network off. The same name is in the compile's span (`box.name`), in the inventory and in the probe's report.
 
-If the box can't set its name, the runner still runs and its inventory says so: `hostname_ok: false`, `hostname_status` with the reason (for example `unshare: EPERM`) and `getfqdn` with the error. Every check that then fails in that box is the box's problem, not the code's: the room holds at `checks_blocked` with a `compile_infrastructure` text that starts with "The box's environment, not the code", logs a `box_environment` event, and gives no worker a repair. The same rule covers the other environment facts the inventory reports, for example a check that couldn't start `python3` in a box that reports no Python.
+If the box can't set its name, the runner still runs and its inventory says so: `hostname_ok: false`, `hostname_status` with the reason (for example `unshare: EPERM`) and `getfqdn` with the error. Every check that then fails in that box is the box's problem, not the code's: the room holds at `checks_blocked` with a `compile_infrastructure` text that starts with "The box's environment, not the code", logs a `box_environment` event, and sends no worker a complaint. The same rule covers the other environment facts the inventory reports, for example a check that couldn't start `python3` in a box that reports no Python.
 
 After deploying, run the probe's `hostname` item once (section 6.1) and check that `runner_named` is `true`.
 
 ### 6.3 The prewarmed box
 
-A run's first compile used to wait 9 to 13 s for a cold box (9 of the 33 s of the temperature CLI run). Now the room opens that box as soon as it knows which image the card's checks need: when the card writer's first card is read, before Clef's review and vetting, so the box starts while the card is finished and the first worker turn runs. A benchmark task room, whose card is given, opens it at its start.
+The room opens the box its first compile will use as soon as it knows which image the first level's validations need: when the first level is admitted, so the box starts while the first workers write.
 
-The prewarmed box is like any other box: a new Durable Object, internet off, `standard-1`, the `check` image (or `browser` when the card has browser checks), and it runs one compile. Only the first compile that needs exactly that image takes it. If the card changes and now needs the other image, or a piece's compile runs only some of the checks and needs the other image, the prewarmed box is stopped unused and the compile opens its own. The box counts against `BOX_CONCURRENCY` from the moment it opens, and the room opens none when no slot is free. A prewarmed box that no compile takes within 4 minutes, or that is still open when the run ends, stops, and a `box` span named `prewarm_unused` records why.
+The prewarmed box is like any other box: a new Durable Object, internet off, `standard-1`, the `check` image (or `browser` when the level has browser validations), and it runs one compile. Only the first compile that needs exactly that image takes it. If a compile needs the other image (a level added validations, or a piece's compile runs only some of them), the prewarmed box is stopped unused and the compile opens its own. The box counts against `BOX_CONCURRENCY` from the moment it opens, and the room opens none when no slot is free. A prewarmed box that no compile takes within 4 minutes, or that is still open when the run ends, stops, and a `box` span named `prewarm_unused` records why.
 
-In the export, compare the `prewarm` span with the first `card` span. The prewarm should end before or soon after the compile starts, and the compile's `box.waited_ms` should be well under its `prewarm_ms`.
+In the export, compare the `prewarm` span with the first compile's container span. The prewarm should end before or soon after the compile starts, and the compile's `box.waited_ms` should be well under its `prewarm_ms`.
 
 ### 6.1 The S0 probe: run it once after deploying
 

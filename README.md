@@ -21,7 +21,7 @@ Open the `workers.dev` URL that Wrangler prints, paste in your token and press *
 
 The idea behind it is that many small agents beat one big orchestrator agent with limited context. Context windows are a hard limit, so instead of fighting them with bigger models, the architecture keeps every agent's context small: no agent here ever holds the whole project.
 
-The second intuition is that many small agents working on the same distributed problem will independently come up with solutions that are similar enough to need only minimal tape-up. So the pieces are joined by a builder that is only allowed to rename things, never to write code.
+The second intuition is that many small agents working on the same distributed problem will independently come up with solutions that are similar enough to need only minimal tape-up. So in v7 the pieces are joined by a builder that is only allowed to rename things, never to write code; in v8 the builder also writes the glue between their interfaces.
 
 And the architecture should be symmetrical: problems and solutions are mirrors of each other. The same tree and the same plan that build the code are what route a failure back to the agent that has to fix it.
 
@@ -88,21 +88,23 @@ The yes/no questions go to Clef, a classifier that answers with a probability, s
 
 ## v8 (experimental)
 
-v7 can only build one kind of thing: a JavaScript app whose entry exports `start()`. v8 is a second pipeline you pick per room, meant to build whatever the goal asks for.
+v7 can only build one kind of thing: a JavaScript app whose entry exports `start()`. v8 is a second pipeline you pick per room, meant to build whatever the prompt asks for. It follows the owner's rulings ([docs/owner/rulings.md](docs/owner/rulings.md)):
 
-- First the goal becomes a project card: the deliverables, plus a check for each requirement, all written before any code.
-- Workers can write any text file, in any language the Container has installed. Today that's Node and Python.
-- The checks run in the Container: files, commands, function calls, HTTP requests and a headless browser. Docs get a reader instead: Clef reads the file and answers yes or no.
-- When a check fails, it goes back as a repair to the piece that serves that requirement, the same way v7 routes a failed test.
-- Links written in the goal are read once at the start. A run can also start from a public GitHub repo or the room's previous result.
-- Follow-up prompts queue up in a Prompts panel: each one, when the room completes, becomes a change to the card that is routed like a failed check, and **Adjust now** applies one to a running room.
-- A benchmark mode runs HumanEval, MBPP or MultiPL-E tasks, one room per task, with the tests hidden from every agent.
+- There is no Root. The room creates one manager from your prompt, named `manager-` and 16 hex digits like every row, and no agent knows it is the top. The room is done when that manager's compiler has every validation of its subtree passing on the bundle it ships.
+- Every manager tries to split, the same way at every level. Its splitter declares the level's contracts, the validations that check them and the pieces, through functions, and Clef decides whether the split is valid.
+- Managers are Clef routers and never write code. Where an ask, a complaint or a change goes is a manager's choice among its functions, and Clef makes it.
+- Only workers write code, in any language the box has installed (today Node and Python). A worker gets its prompt, with examples rendered from the validations of what it delivers, the complaints routed to it, and what exists for it by name. It never sees the goal, its siblings or a validation itself.
+- Every model works through functions: the runtime never parses a model's prose. There are no blocklists and no path rules: each agent has its world, and code runs only in fresh, single-use boxes with the internet off.
+- At every level a builder joins the children's work, writing the glue between their interfaces, and a compiler runs the validations in a fresh box. A failure goes back down to the worker responsible, as the compiler observed it, until the level passes.
+- Links written in the prompt are read once at the start. A run can also start from a public GitHub repo or the room's previous result.
+- Follow-up prompts queue up in a Prompts panel: each one, when the room completes, goes to the room's manager as a change, and the managers route it. **Adjust now** applies one to a running room.
+- A benchmark mode runs HumanEval, MBPP or MultiPL-E tasks, one ordinary room per task. The grader sits outside the room, and by default its failures go back into the room until the task passes.
 
 ## Where it's at
 
 The issue tracker works end to end on v7. A bigger goal, a network diagnostics engine with 20 rules, splits, links and runs, but doesn't pass its test yet.
 
-v8 is built and tested offline, with scripted models standing in for Workers AI and the real Container scripts running in Node. It hasn't had a live run yet. [docs/trying-v8.md](docs/trying-v8.md) is the checklist for the first ones.
+v8 is tested offline, with scripted models standing in for Workers AI and the real Container scripts running in Node, and it has had live runs: [CHANGELOG-v8.md](CHANGELOG-v8.md) says what each set found. [docs/trying-v8.md](docs/trying-v8.md) is the checklist for a run.
 
 The history of live runs and fixes is in [docs/how-it-works.md](docs/how-it-works.md#status).
 
@@ -110,8 +112,8 @@ The history of live runs and fixes is in [docs/how-it-works.md](docs/how-it-work
 
 - [docs/how-it-works.md](docs/how-it-works.md): the full mechanism (v7 and v8), the Cloudflare products, every live run, known limitations and the repository layout.
 - [INSTALL-CLOUDFLARE.md](INSTALL-CLOUDFLARE.md): deploying, the API and exports.
-- [CHANGELOG-v8.md](CHANGELOG-v8.md): the v8 slices and what each review changed.
-- [docs/trying-v8.md](docs/trying-v8.md): a checklist for the first live v8 runs.
+- [CHANGELOG-v8.md](CHANGELOG-v8.md): the v8 slices, and what each review and live run changed.
+- [docs/trying-v8.md](docs/trying-v8.md): a checklist for a live v8 run.
 - [CHANGELOG-v7.15.md](CHANGELOG-v7.15.md), [v7.14](CHANGELOG-v7.14.md), [v7.13](CHANGELOG-v7.13.md): what changed, with the evidence behind each change.
 - [docs/history/](docs/history/): earlier changelogs and READMEs.
 - [docs/diagrams/](docs/diagrams/): Excalidraw scenes (open at excalidraw.com); after an edit, export light and dark SVGs with fonts embedded.
