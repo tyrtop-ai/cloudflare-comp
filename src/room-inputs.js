@@ -1,5 +1,6 @@
 // v8 S8b: what a room starts from beside its goal (v8 spec §7.1,
-// polyglot-bench §2a): the links written in the goal, fetched once, cut into
+// polyglot-bench §2a): the links written in each prompt the room takes (the
+// start prompt, a change, a queued prompt), each fetched once, cut into
 // chunks and summarised; and an existing project (a public
 // GitHub repo, or a room's previous result) whose files are the base the
 // pieces build on. The room (src/index.js) stores both and decides who sees
@@ -156,22 +157,24 @@ export async function loadBase(base, {fetch, readApp, limits = {}} = {}) {
 // goal's link can never reach this deployment through another of its names.
 export const selfHostsOf = env => String(env?.SELF_HOSTS ?? '').split(/[,\s]+/).map(h => h.trim().replace(/^[a-z]+:\/\//i, '').replace(/[/?#].*$/, '')).filter(Boolean);
 
-// Fetch every URL of the goal and summarise it. A failure never throws: its
+// Fetch every URL of a prompt and summarise it. A failure never throws: its
 // row carries the error. note and more: the room's reader and its budget
 // (sourceSummaries). allow: the owner's FETCH_ALLOW value;
-// selfHosts: the deployment's own host(s), never fetched.
+// selfHosts: the deployment's own host(s), never fetched. known: the URLs
+// earlier prompts linked (already sources, not fetched again); first: the
+// number of the first new source's id (S<first>...).
 // Result: {rows: [{id, url, final_url, title, sha256, bytes, truncated,
 // error, status, content_type, summary}], chunks: [{ref, source, n, text}]}.
-export async function loadSources(goal, {fetch, allow, selfHosts = [], note, more} = {}) {
-  const urls = goalUrls(goal);
+export async function loadSources(goal, {fetch, allow, selfHosts = [], note, more, known = [], first = 1} = {}) {
+  const urls = goalUrls(goal).filter(u => !known.includes(u));
   if (!urls.length) return {rows: [], chunks: []};
   let fetched;
   try {
     const policy = fetchPolicy({allow, selfHosts, requireSelfHosts: true});
-    fetched = await fetchGoalSources(goal, {fetch, policy});
+    fetched = await fetchGoalSources(goal, {fetch, policy, urls, first});
   } catch (e) {
     const error = `source_refused: ${clip(e?.message || e, 200)}`;
-    fetched = urls.map((url, i) => ({id: `S${i + 1}`, url, final_url: null, title: '', text: '', bytes: 0, truncated: false, sha256: null, error}));
+    fetched = urls.map((url, i) => ({id: `S${first + i}`, url, final_url: null, title: '', text: '', bytes: 0, truncated: false, sha256: null, error}));
   }
   let summaries = [];
   try { summaries = await sourceSummaries(fetched, {note, more, chunkChars: CHUNK_CHARS}); } catch {}

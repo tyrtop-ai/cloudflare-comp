@@ -330,10 +330,11 @@ export async function fetchSource(goal, url, {fetch, policy = fetchPolicy(), max
   return result;
 }
 
-// Every URL in the goal, ids S1…Sn, each read whole, all at the same time.
-export async function fetchGoalSources(goal, {fetch, policy = fetchPolicy(), redact} = {}) {
-  const urls = goalUrls(goal);
-  return Promise.all(urls.map(async (url, i) => ({id: `S${i + 1}`, ...await fetchSource(goal, url, {fetch, policy, urls, redact})})));
+// Every URL in the goal (or those of urls, which the goal writes), ids
+// S<first>…, each read whole, all at the same time.
+export async function fetchGoalSources(goal, {fetch, policy = fetchPolicy(), redact, urls = goalUrls(goal), first = 1} = {}) {
+  const written = goalUrls(goal);
+  return Promise.all(urls.map(async (url, i) => ({id: `S${first + i}`, ...await fetchSource(goal, url, {fetch, policy, urls: written, redact})})));
 }
 
 // --- sources for models -----------------------------------------------------------

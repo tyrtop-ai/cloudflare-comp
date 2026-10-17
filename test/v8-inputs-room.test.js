@@ -1,5 +1,6 @@
-// v8 S8b on levels: what a room starts from beside its prompt. The prompt's
-// links are fetched once (a fake fetch; the network is never reached),
+// v8 S8b on levels: what a room starts from beside its prompt. The links of
+// each prompt it takes (the start prompt, a change, a queued prompt) are
+// fetched once each (a fake fetch; the network is never reached),
 // stored in the sources table and as chunks, and summarised; the room's
 // manager holds the first chunks, its splitter reads the summaries and cites
 // chunk refs on its pieces (a child holds a subset of its parent's), and a
@@ -193,7 +194,7 @@ const LINKS_LEVEL = {contracts: DOCS,
   pieces: [{label: 'Guide writer', task: 'Write GUIDE.md, the guide to the format', contracts: ['GUIDE.md'], refs: ['S1#1', 'S1#2', 'S1#3']},
     {label: 'Questions writer', task: 'Write FAQ.md, the questions about the format', contracts: ['FAQ.md'], refs: ['S1#2']}]};
 
-test('links in the prompt: fetched once with the owner\'s allowlist, stored and summarised, cited by the split, and each worker reads only its chunks', async () => {
+test('links in the start prompt: fetched with the owner\'s allowlist, stored and summarised, cited by the split, and each worker reads only its chunks', async () => {
   const fetch = fakeFetch({'https://docs.example.com/widget-format': () => new Response(PAGE, {headers: {'content-type': 'text/markdown; charset=utf-8'}})});
   const {room, calls, drain} = inputsRoom({level: LINKS_LEVEL, splitWhen: t => t.startsWith(LINKS_GOAL), source: sourceModel, fetch, allow: 'docs.example.com',
     answers: {'GUIDE.md': [wrote([['GUIDE.md', GUIDE_MD]])], 'FAQ.md': [wrote([['FAQ.md', FAQ_MD]])]}});
@@ -258,6 +259,94 @@ test('links in the prompt: fetched once with the owner\'s allowlist, stored and 
   for (const r of readers) assert.match(r.id, /^reader-[0-9a-f]{16}$/);
   assert.equal(new Set(readers.map(r => r.id)).size, readers.length);
   assert.deepEqual(lintRequests(room, calls), []);
+});
+
+// Owner 2026-10-15 05:16 / 05:21: point the room at links, and queue or adjust prompts. A follow-up's links are read as
+// the start prompt's are: fetched under the allowlist, read by readers, stored as the next sources, carried with the change.
+const ERRORS_PAGE = '# Widget errors\n\n' + SECTION('Errors', 'error');
+const ERRORS_URL = 'https://docs.example.com/widget-errors', FORMAT_URL = 'https://docs.example.com/widget-format';
+const FOLLOW_UP = `Also list the errors in FAQ.md, from ${ERRORS_URL} and ${FORMAT_URL} again.`;
+const PLAIN_FOLLOW_UP = 'Also list the errors in FAQ.md.';
+const md = body => () => new Response(body, {headers: {'content-type': 'text/markdown; charset=utf-8'}});
+// A room on one worker that read FORMAT_URL at its start and has completed; its alarm a test fires, as the Durable Object's would.
+async function linkedRoom() {
+  const fetch = fakeFetch({[FORMAT_URL]: md(PAGE), [ERRORS_URL]: md(ERRORS_PAGE)});
+  const r = inputsRoom({level: {...LINKS_LEVEL, pieces: []}, source: sourceModel, fetch, allow: 'docs.example.com',
+    answers: {'GUIDE.md,FAQ.md': [wrote([['GUIDE.md', GUIDE_MD], ['FAQ.md', FAQ_MD]])]}});
+  const alarms = [];
+  r.ctx.storage.setAlarm = at => { alarms.push(at); r.ctx.storage.alarm = at; };
+  r.ctx.storage.getAlarm = () => r.ctx.storage.alarm ?? null;
+  await r.room.start(`Write GUIDE.md and FAQ.md for the widget format described at ${FORMAT_URL} as two short documents.`, 40, {pipeline: 'v8'}, '', {selfHosts: ['control.example.com']});
+  await r.drain();
+  assert.equal(r.room.get('status'), 'complete', trace(r.room));
+  return {...r, fetch, alarms, fire: async () => { r.ctx.storage.alarm = null; await r.room.alarm(); await r.drain(); }};
+}
+// What a follow-up's links did: fetched once each (a link the start prompt had is not fetched again), read, stored as S2,
+// held by the room's manager, and carried with the change to the worker it was routed to, whose next turn reads them.
+function followedUp({room, calls, fetch}, {readers: before, leaves}) {
+  assert.equal(room.get('status'), 'complete', trace(room));
+  assert.deepEqual(fetch.calls.map(c => c.url), [FORMAT_URL, ERRORS_URL]);
+  assert.deepEqual(room.sourceRows().map(r => [r.id, r.url, r.error]), [['S1', FORMAT_URL, null], ['S2', ERRORS_URL, null]]);
+  assert.equal(room.sourceRows()[1].summary.title, 'Widget format', 'S2 was read by readers, as the start prompt\'s link was');
+  const added = room.db().exec("SELECT ref FROM source_chunks WHERE source='S2' ORDER BY n").toArray().map(r => r.ref);
+  assert.ok(added.length >= 1);
+  const readers = room.snapshot().readers;
+  assert.deepEqual(readers.slice(before).map(r => r.ref).sort(), [...added, 'S2'].sort());
+  for (const r of readers) assert.match(r.id, /^reader-[0-9a-f]{16}$/);
+  assert.equal(new Set(readers.map(r => r.id)).size, readers.length, 'the new readers go on from the start prompt\'s');
+  // The room's manager holds every chunk of every source; the change's chunks go with it to the row it is handed to.
+  const m = room.roomManager(), w = theWorker(room);
+  assert.deepEqual(room.sourceRefs(m), ['S1#1', 'S1#2', 'S1#3', ...added]);
+  assert.match(events(room, 'change_routed').at(-1).body, /^The change concerns "/);
+  for (const ref of added) assert.ok(room.sourceRefs(w.id).includes(ref), `${ref} reaches the worker`);
+  const next = calls.leaf.slice(leaves);
+  assert.ok(next.length >= 1, trace(room));
+  assert.deepEqual(next.at(-1).world.sources.filter(s => s.ref.startsWith('S2#')).map(s => s.ref), added);
+  assert.match(events(room, 'sources_read').at(-1).body, /^The prompt's 1 new link\(s\).*S2 Widget errors/);
+  assert.deepEqual(lintRequests(room, calls), []);
+  return readers.slice(before);
+}
+
+test('links in a change: the new link is fetched, read and stored as S2, the start prompt\'s link is not fetched again, and the change carries its chunks to the row it is routed to', async () => {
+  const r = await linkedRoom();
+  const was = {readers: r.room.snapshot().readers.length, leaves: r.calls.leaf.length};
+  const out = await r.room.amend(FOLLOW_UP);
+  assert.ok(!out.error, out.error);
+  await r.drain();
+  followedUp(r, was);
+});
+
+test('links in a queued prompt: read when the queue applies it, as a change\'s are', async () => {
+  const r = await linkedRoom();
+  const was = {readers: r.room.snapshot().readers.length, leaves: r.calls.leaf.length};
+  const kicked = r.alarms.length;
+  assert.equal((await r.room.addPrompt(FOLLOW_UP)).prompt.status, 'queued');
+  assert.equal(r.alarms.length, kicked + 1, 'the room had finished: the alarm takes the prompt');
+  assert.deepEqual(r.fetch.calls.map(c => c.url), [FORMAT_URL], 'nothing is fetched before the queue applies the prompt');
+  await r.fire();
+  followedUp(r, was);
+  assert.deepEqual(r.room.snapshot().prompts.map(p => p.status), ['done']);
+});
+
+test('the readers of a change\'s links take their turns from the run that takes the change up', async () => {
+  const left = async text => {
+    const r = await linkedRoom();
+    const before = r.room.snapshot().readers.length;
+    assert.ok(!(await r.room.amend(text, {budget: 30})).error);
+    await r.drain();
+    assert.equal(r.room.get('status'), 'complete', trace(r.room));
+    return {left: Number(r.room.get('budget_left')), readers: r.room.snapshot().readers.slice(before)};
+  };
+  const plain = await left(PLAIN_FOLLOW_UP), linked = await left(FOLLOW_UP);
+  assert.equal(plain.readers.length, 0);
+  const turns = linked.readers.reduce((a, x) => a + x.rounds, 0);
+  assert.ok(turns >= 2, 'a part\'s reader and the page\'s');
+  assert.equal(linked.left, plain.left - turns, 'the change\'s run spent the readers\' turns besides its own');
+  // A run whose turns are spent reads no further: with one turn, one reader starts and the rest are not run.
+  const r = await linkedRoom(), before = r.room.snapshot().readers.length;
+  assert.ok(!(await r.room.amend(FOLLOW_UP, {budget: 1})).error);
+  await r.drain();
+  assert.equal(r.room.snapshot().readers.length - before, 1);
 });
 
 test('a link that cannot be read never blocks the room, and the deployment\'s own host is never fetched', async () => {

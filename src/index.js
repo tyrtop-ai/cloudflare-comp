@@ -630,6 +630,8 @@ export class ControlRoom extends DurableObject {
   }
   heldDigest(id) { return this.holdsBase(id)?this.read(`base_digest:${id}`,null)??this.read('base',null)?.digest??null:null; }
   allRefs() { return query(this.db(),'SELECT ref FROM source_chunks ORDER BY CAST(SUBSTR(source,2) AS INTEGER),n').map(r=>r.ref); }
+  // A row is also given the chunks of a change handed to it (its links').
+  holdRefs(id, refs) { if(refs?.length&&this.node(id))this.save(`source_refs:${id}`,[...new Set([...this.sourceRefs(id),...refs])]); }
   assignRefs(child, parent, refs) {
     if(!Array.isArray(refs)||!this.v8())return;
     this.save(`source_refs:${child}`,refs);
@@ -645,25 +647,28 @@ export class ControlRoom extends DurableObject {
     const sources=mode==='summaries'?summariesFor(rows,held):chunksFor(rows,ref=>query(this.db(),'SELECT ref,source,n,text FROM source_chunks WHERE ref=?',ref)[0]||null,held);
     return sources.length?{sources_note:SOURCE_CLAUSE,sources}:{};
   }
-  // §2a.1: the URLs written in the prompt, fetched once per run under the
-  // owner's allowlist (FETCH_ALLOW), never this deployment's own host, and
-  // read (each source a summary and an outline) by readers on the compiler's
-  // model. A link that cannot be read is recorded with why, and the run goes
-  // on without it. budget: the run's turns; returns the turns the readers took.
-  async loadSources(budget) {
-    if(this.get('sources_loaded'))return 0;
-    const goal=this.userGoal(),started=Date.now();
+  // §2a.1: the URLs written in a prompt the room takes (the start prompt, a
+  // change, a queued prompt), each fetched under the owner's allowlist
+  // (FETCH_ALLOW), never this deployment's own host, and read (each source a
+  // summary and an outline) by readers on the compiler's model. A link that
+  // cannot be read is recorded with why, and the run goes on without it. A
+  // URL an earlier prompt linked is the source it already is; new ones go on
+  // from the last source's number (S<n>). more(calls): whether the run's
+  // budget allows another reader, given the turns the readers took so far.
+  // Returns those turns and the refs of the chunks read.
+  async loadSources(text, more) {
+    const known=this.sourceRows(),started=Date.now();
     // S8b review: the owner's list as written (URL forms, :443, a JSON array); one with no usable entry is said.
     const given=this.env.FETCH_ALLOW,report=given!=null&&String(given).trim()?allowReport(given):null;
-    if(report&&!report.allow.length)this.event('room','fetch_allow_unreadable',clip(`FETCH_ALLOW has no usable host suffix (${report.dropped.join(', ')||String(given)}), so every link is refused; set it to host names such as docs.example.com.`,600));
     // Every host this deployment answers on (the request's and SELF_HOSTS) is refused.
     const selfHosts=[...this.read('fetch_self_hosts',[]),...selfHostsOf(this.env)];
     // Each reader's model calls count against the run's budget, as a manager's do; the readings go on while the budget lasts.
     // Each reader is an agent of the room, named reader-<hex16> as every row
     // is (rowId): recorded as it starts and as it ends (source_readers), so
     // the dashboard draws it with the others.
-    let calls=0,named=0;
-    const room=this.get('room_id',''),readers=[],read=sourceModel(this.inferenceEnv('compiler')),note=async args=>{
+    const room=this.get('room_id',''),readers=this.read('source_readers',[]),read=sourceModel(this.inferenceEnv('compiler'));
+    let calls=0,named=readers.length;
+    const note=async args=>{
       // The readers run at the same time: each takes its number, and counts its first model call, before any await.
       calls++;
       const n=++named,x={id:await rowId(room,n,'reader'),ref:args.ref,role:args.role,started_at:Date.now(),ended_at:null,noted:false,rounds:0};
@@ -671,14 +676,18 @@ export class ControlRoom extends DurableObject {
       try {const r=await read(args);calls+=Math.max(0,r.rounds-1);Object.assign(x,{noted:!!r.noted,rounds:r.rounds});return r.noted;}
       finally {x.ended_at=Date.now();this.save('source_readers',readers);}
     };
-    const {rows,chunks}=await loadSources(goal,{fetch:this.fetcher(),allow:report?report.allow:given,selfHosts,note,more:()=>calls<budget});
-    if(report&&!report.allow.length)for(const r of rows)if(r.error&&/allowlist/.test(r.error))r.error=clip(`${r.error} (FETCH_ALLOW has no usable entry)`,300);
+    const {rows,chunks}=await loadSources(text,{fetch:this.fetcher(),allow:report?report.allow:given,selfHosts,note,more:()=>more(calls),
+      known:known.map(r=>r.url),first:1+Math.max(0,...known.map(r=>Number(String(r.id).slice(1))||0))});
+    if(!rows.length)return {calls,refs:[]};
+    if(report&&!report.allow.length) {
+      this.event('room','fetch_allow_unreadable',clip(`FETCH_ALLOW has no usable host suffix (${report.dropped.join(', ')||String(given)}), so every link is refused; set it to host names such as docs.example.com.`,600));
+      for(const r of rows)if(r.error&&/allowlist/.test(r.error))r.error=clip(`${r.error} (FETCH_ALLOW has no usable entry)`,300);
+    }
     for(const r of rows)this.db().exec('INSERT INTO sources(id,url,final_url,title,sha256,bytes,truncated,error,status,content_type,summary,fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',
       r.id,r.url,r.final_url,r.title,r.sha256,r.bytes,r.truncated?1:0,r.error,r.status,r.content_type,r.summary?JSON.stringify(r.summary):null,Date.now());
     for(const c of chunks)this.db().exec('INSERT INTO source_chunks(ref,source,n,text) VALUES (?,?,?,?) ON CONFLICT(ref) DO NOTHING',c.ref,c.source,c.n,c.text);
-    this.set('sources_loaded','1');
-    if(rows.length)this.event('room','sources_read',clip(`The prompt's ${rows.length} link(s), in ${Date.now()-started} ms: ${rows.map(r=>r.error?`${r.id} not read (${r.error})`:`${r.id} ${r.title||r.url} (${r.bytes} bytes, ${chunks.filter(c=>c.source===r.id).length} part(s))`).join('; ')}.`,1500));
-    return calls;
+    this.event('room','sources_read',clip(`The prompt's ${rows.length}${known.length?' new':''} link(s), in ${Date.now()-started} ms: ${rows.map(r=>r.error?`${r.id} not read (${r.error})`:`${r.id} ${r.title||r.url} (${r.bytes} bytes, ${chunks.filter(c=>c.source===r.id).length} part(s))`).join('; ')}.`,1500));
+    return {calls,refs:chunks.map(c=>c.ref)};
   }
   // v7: a provided answer, the function's promise and its import line.
   providedFor(f, owner) { return providedText(f,owner); }
@@ -7672,13 +7681,15 @@ export class ControlRoom extends DurableObject {
       this.activeTurns.delete(id); this.turnSteps.delete(id);
     }
   }
-  // spentBefore: turns this run already spent before its first dispatch (v8: the linked pages' readings, openRoom).
+  // spentBefore: turns this run already spent before its first dispatch (v8: the linked pages' readings, openRoom);
+  // with them, the turns the readers of a change's links took while the room waited for this run (turns_read, applyPrompt).
   async drive(budget, spentBefore=0) {
     let cap=normalizeTurnBudget(budget);
     // v8 S9 review: turns the user gave with a change (budget_added) join this run's budget, also while it runs.
     const added=()=>{const a=Number(this.get('budget_added','0'))||0;if(a>0){cap+=a;this.set('budget_added','0');this.set('budget',cap);}};
     this.set('budget',cap);added();
-    let spent=spentBefore;
+    let spent=spentBefore+(Number(this.get('turns_read','0'))||0);
+    this.set('turns_read','0');
     const active=new Set();
     // A manager turn that asked its model adds to spent (spentExtra); once
     // the budget is spent, managers still run but ask no model (budgetSpent).
@@ -7686,6 +7697,8 @@ export class ControlRoom extends DurableObject {
     this.spentExtra=0;this.budgetSpent=false;
     // A splitter's session counts each model call after the first (its turn) against the budget, while it runs: none once the budget is spent.
     this.spendCall=()=>{added();if(spent+(this.spentExtra||0)>=cap)return false;this.spentExtra=(this.spentExtra||0)+1;return true;};
+    // The turns this run has left (a change's link readers, applyPrompt).
+    this.turnsLeft=()=>{added();return cap-spent-(this.spentExtra||0);};
     try {
       // Work-conserving: replace each completed slot immediately, without
       // waiting for slower inferences from the same dispatch wave.
@@ -7731,7 +7744,7 @@ export class ControlRoom extends DurableObject {
         failed ? `Run failed: ${this.failedDescendantReason(this.v8()?this.roomManager():this.topId())}` : held ? `Paused (${held.kind}${more?` and ${more} more`:''}): ${held.text}` : 'Inference budget ended or strands are waiting; continue to resume.');
     } catch(e) { this.set('status','error'); this.event('system','error',clip(e?.message||e,1500)); }
     finally {
-      this.busy=false;this.budgetSpent=false;this.spendCall=null;
+      this.busy=false;this.budgetSpent=false;this.spendCall=null;this.turnsLeft=null;
       // v8 live 5: a prewarmed box no compile of this run took is stopped.
       this.prewarm?.discard('the run ended before a compile took it');
       // v8 S9 review: what this run left of its budget.
@@ -8079,7 +8092,27 @@ export class ControlRoom extends DurableObject {
     this.event('system','amend_received',clip(`${running?'Adjustment while running':'Change'}: ${text}`,1300));
     // A failed or finished room's parts get another chance with the change.
     if(!running&&(status!=='paused'||failedRoom))this.resetForAmendment();
-    const applied=this.applyChange(id,text);
+    // The prompt's links are read as the start prompt's are (loadSources),
+    // their readers' turns counted against the run that takes the change
+    // up: a running room's own (spentExtra), or the run a finished room
+    // makes for it, or Continue makes for a paused one (turns_read, drive),
+    // while the turns it has (a paused room's: what its run left, with the
+    // turns given with the change) last. The manager the room created holds
+    // every chunk of every source, and the change carries its links' chunks
+    // to each row it is handed to (routeChange).
+    const m=this.roomManager(),own=running&&this.turnsLeft,given=explicit&&budget>0?budget:0,left=Number(this.get('budget_left','0'))||0;
+    let linked=[];
+    if(m&&this.node(m)) {
+      // A finished room is running from here: what it reads is for the run it makes for the change.
+      if(!running&&!waits)this.busy=true;
+      try {
+        const {calls,refs}=await this.loadSources(text,calls=>own?this.turnsLeft?.()>calls:calls<(waits?left+given:base));
+        if(own)this.spentExtra=(this.spentExtra||0)+calls;
+        else this.set('turns_read',String((Number(this.get('turns_read','0'))||0)+calls));
+        linked=refs;this.holdRefs(m,refs);
+      } catch(e) { if(!running&&!waits)this.busy=false; throw e; }
+    }
+    const applied=this.applyChange(id,text,linked);
     if(applied.error) {
       this.event('system','amend_failed',clip(applied.error,900));
       this.finishPrompt(id,'failed',{error:applied.error});
@@ -8174,7 +8207,7 @@ export class ControlRoom extends DurableObject {
   // its own record of which manager it created.
   // Returns the turns the linked pages' readers took (loadSources).
   async openRoom(prompt, budget) {
-    const read=await this.loadSources(normalizeTurnBudget(budget));
+    const cap=normalizeTurnBudget(budget),{calls:read}=await this.loadSources(this.userGoal(),calls=>calls<cap);
     const all=this.allRefs(),base=this.read('base',null),label=clip(String(prompt).split(/(?<=[.!?])\s|\n/)[0],60)||'Prompt';
     const m=await this.provision(await rowId(this.get('room_id',''),1,'manager'),null,label,prompt,[],[],this.installedSet(),'manager',{seq:1});
     this.set('room_manager',m.id);this.set('levels_format',LEVELS_FORMAT);
@@ -8586,12 +8619,13 @@ export class ControlRoom extends DurableObject {
   }
   // A change the person gives (a follow-up prompt, or the queue's next): a
   // change on the row of the manager the room created, which routes it.
-  applyChange(id, text) {
+  // refs: the chunks of the change's own links, which go with it.
+  applyChange(id, text, refs=[]) {
     const m=this.roomManager();
     if(!m||!this.node(m))return {error:'Start a run first: a change applies to a run that exists.'};
     const rev=this.goalRev()+1;
     this.recordGoal(rev,id,text,effectiveGoal(this.baseGoal(),[...this.goalChanges(),text]));
-    this.insertProblem({holder:m,kind:'change',stage:'change',source:'room',input:id,parties:[],detail:text,facts:{text},flags:{change:id}});
+    this.insertProblem({holder:m,kind:'change',stage:'change',source:'room',input:id,parties:[],detail:text,facts:{text,...(refs.length?{refs}:{})},flags:{change:id}});
     this.event('room','change_given',clip(`The change goes to "${this.node(m).label}" as a change on its row: ${text}`,900),m);
     this.wake(m);
     return {goal_rev:rev,to:m};
@@ -8636,7 +8670,7 @@ export class ControlRoom extends DurableObject {
     for(const p of this.problemsHeld(id)) {
       if(!this.moveProblem(p,{status:'closed',outcome:'routed'}))continue;
       if(p.kind==='escalation'){this.escalate(id,p.facts.kind||p.stage,p.detail,p.facts.origin||p.source);continue;}
-      if(p.kind==='change'){await this.routeChange(id,p.facts.text||p.detail,p.flags||{});continue;}
+      if(p.kind==='change'){await this.routeChange(id,p.facts.text||p.detail,p.flags||{},p.facts.refs||[]);continue;}
       if(p.kind==='ask'){await this.routeAsk(id,p.facts);continue;}
       // A walk an earlier version held here (Clef could not answer it) is the same ask, at this manager.
       if(p.kind==='walk'){const a=p.facts.ask||{};await this.routeAsk(id,{worker:p.facts.worker,key:a.key,need:a.question||'',name:a.name||'',request_id:''});continue;}
@@ -8916,8 +8950,9 @@ export class ControlRoom extends DurableObject {
   // it, m's choice hands it to a child (route_to), verbatim, or to its
   // splitter, which extends the level (extend). A worker it reaches takes it
   // into its assignment, as m does before its split: its prompt says it from
-  // then on.
-  async routeChange(m, text, flags={}) {
+  // then on. refs: the chunks of the change's own links, which go with it
+  // to the row it is handed to.
+  async routeChange(m, text, flags={}, refs=[]) {
     // Before its level: the change joins its assignment, on its row, which its splitter reads (assignmentOf).
     if(!this.levelIndex(m)){this.revise(m,text);this.event(m,'change_taken','The change is part of its assignment, which its splitter reads.');return;}
     const held={kind:'change',stage:'change',source:flags.change?'room':m,input:flags.change||'',parties:[],detail:text,facts:{text},flags};
@@ -8930,8 +8965,9 @@ export class ControlRoom extends DurableObject {
     }
     const c=this.node(pick.child.id);
     this.event(m,'change_routed',clip(`The change concerns "${c.label}": ${text}`,900),c.id);
+    this.holdRefs(c.id,refs);
     if(this.isWorker(c)){this.revise(c.id,text);this.event(c.id,'change_taken','The change is part of its assignment: its prompt says it.');this.wake(c.id);}
-    else {this.insertProblem({holder:c.id,kind:'change',stage:'change',source:m,input:'',parties:[],detail:text,facts:{text},flags});this.wake(c.id);}
+    else {this.insertProblem({holder:c.id,kind:'change',stage:'change',source:m,input:'',parties:[],detail:text,facts:{text,...(refs.length?{refs}:{})},flags});this.wake(c.id);}
   }
   // A change taken into a row's assignment: recorded on its row (revisions:<id>), its prompt says it after what its entry says.
   revise(id, text) { this.save(`revisions:${id}`,[...this.read(`revisions:${id}`,[]),text]); }
