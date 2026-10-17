@@ -101,7 +101,7 @@
           </select>
           <div class="range-control"><label for="split-threshold">Minimum YES probability <output id="split-threshold-value" for="split-threshold">70%</output></label>
             <input id="split-threshold" type="range" min="20" max="80" step="5" value="70" /></div>
-          <p class="helper" id="model-hint">Clef decides YES/NO. If YES, the agent model proposes a split. Leaf agents implement. All inference stays on Workers AI.</p>
+          <p class="helper" id="model-hint">All models run on Cloudflare Workers AI.</p>
           <button class="primary" id="start" title="Start">Start <span>↗</span></button>
           <button class="secondary" id="continue">Continue current experiment</button>
           <button class="secondary" id="export">Export observation JSON</button>
@@ -114,7 +114,7 @@
           <button class="secondary" id="reset">Clear room state</button>
           <p id="error" class="error" role="alert"></p>
           <p id="export-result" class="helper export-result" aria-live="polite"></p>
-          <p class="helper">Start creates a new root repository. Each delegated child receives its own real Cloudflare Artifacts repository. New sessions do not delete old repositories.</p>
+          <p class="helper">Start begins a new run. Every agent gets its own real Cloudflare Artifacts repository. New sessions do not delete old repositories.</p>
         </section>
       </aside>
       <section class="workspace">
@@ -128,7 +128,7 @@
         </div>
         <section class="panel" id="build-panel">
           <div class="section-head"><h2>Container build</h2><span class="right-note" id="build-verdict">Not run</span></div>
-          <pre id="build-evidence" class="build-evidence">Root assembly has not been verified yet.</pre>
+          <pre id="build-evidence" class="build-evidence">The assembled project has not been verified yet.</pre>
         </section>
         <section class="panel levels-panel" id="levels-panel">
           <div class="section-head"><h2>Levels</h2><span class="right-note" id="levels-verdict">Not stated yet</span></div>

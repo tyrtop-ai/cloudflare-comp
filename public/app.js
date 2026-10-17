@@ -397,7 +397,7 @@ function render(s) {
       ...(b.artifacts||[]).map(a=>`OUTPUT ${a.path} · ${a.bytes} bytes · ${a.sha256.slice(0,12)}`),
       ...(b.issues||[]).map(x=>`ERROR ${x.path||'(unknown owner)'}: ${x.detail}`),
       b.preview?`Artifact preview:\n${b.preview}`:''].filter(Boolean):[];
-    $('build-evidence').textContent=s.build_infrastructure||lines.join('\n').slice(0,7000)||'Waiting for Root assembly and build verification.';
+    $('build-evidence').textContent=s.build_infrastructure||lines.join('\n').slice(0,7000)||'Waiting for the assembled project and its build verification.';
   }
   const fileRows=[...(s.files||[]),...(s.exports||[]).map(f=>({...f,virtual:true,revision:1}))];
   $('file-count').textContent=fileRows.length;
@@ -508,16 +508,21 @@ const applySnapshotSettings=s=>{
   if($('pipeline')) $('pipeline').value=c.pipeline||'v7';
   updateModelHint();
 };
+// What the models do in the room's pipeline. v8: every manager's splitter
+// proposes a split, on the worker model, and Clef decides whether it is valid;
+// there is no root and no test writer.
 const updateModelHint=()=>{
-  $('model-hint').textContent=[$('model').value,$('worker-model').value,$('compiler-model').value].some(v=>String(v).includes('1b-instruct')) ?
-    'Experimental 1B implementers: expect weaker code and JSON reliability. Clef decides YES/NO; Llama guesses and codes.' :
+  const small=[$('model').value,$('worker-model').value,$('compiler-model').value].some(v=>String(v).includes('1b-instruct'));
+  $('model-hint').textContent=$('pipeline')?.value==='v8' ?
+    `${small?'Experimental 1B models: expect weaker code and function calls. ':''}Every manager's splitter proposes a split, on the worker model, and Clef decides whether it is valid; Clef also makes each manager's routing choices. The worker model writes the code. No model writes tests: the splitters' validations are the checks. All models run on Cloudflare Workers AI.` :
+    small ? 'Experimental 1B implementers: expect weaker code and JSON reliability. Clef decides YES/NO; Llama guesses and codes.' :
     'Clef scores YES/NO; the manager model proposes the split when YES, the worker model writes the code and the compiler model writes the test. All models run on Cloudflare Workers AI.';
 };
 $('model').addEventListener('change',()=>{controlsDirty=true;updateModelHint();});
 $('worker-model').addEventListener('change',()=>{controlsDirty=true;updateModelHint();});
 $('compiler-model').addEventListener('change',()=>{controlsDirty=true;updateModelHint();});
 $('split-model').addEventListener('change',()=>{controlsDirty=true;});
-$('pipeline')?.addEventListener('change',()=>{controlsDirty=true;});
+$('pipeline')?.addEventListener('change',()=>{controlsDirty=true;updateModelHint();});
 $('split-threshold').addEventListener('input',()=>{controlsDirty=true;});
 updateModelHint();
 // v8 S8b: the Start-from field: a public GitHub repo (and a ref), or this room's previous result.
