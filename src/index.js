@@ -304,11 +304,6 @@ export const splitterRecord = out => JSON.stringify({reason: out.reason, rounds:
 // v8: a Clef mark below this reads as a doubt about a validation: shown
 // beside it, and first in a hold's text; the validation is never removed.
 export const VALIDATION_DOUBT_BAR = 0.5;
-// v8: the turns a run may take in a row that call no model (managers,
-// builders, compilers: none spends the budget), per live row and in all
-// beyond that; past it the room holds (turns_without_model) with the rows
-// that took them. A manager loop that asks no model can never spin.
-export const FREE_TURNS_PER_ROW = 8, FREE_TURNS_BASE = 40;
 // One room hold per row it names (a grant has one of its own).
 const holdKey = h => h.kind === 'base_confirm' ? 'base_confirm' : h.agent ? `agent:${h.agent}` : `kind:${h.kind}`;
 // v8: every row's id is <role>-<hex16>: the first 16 hex digits of the
@@ -821,8 +816,6 @@ export class ControlRoom extends DurableObject {
   // A model or Clef call's record (src/model.js traced), as a span.
   traceCall(r, envRole) {
     const {kind,name,start_ms,end_ms,...attrs}=r||{};
-    // The run's generative model calls so far (drive's bound on turns that ask none).
-    if((kind||'model')==='model')this.generated=(this.generated||0)+1;
     this.span(kind||'model',name||'call',start_ms||Date.now(),end_ms||Date.now(),{...attrs,model_role:envRole});
   }
   spans(after=0, limit=1000) { return query(this.db(),'SELECT id,ts,agent,step,kind,name,start_ms,end_ms,attrs FROM spans WHERE id>? ORDER BY id LIMIT ?',after,limit).map(spanRow); }
@@ -7883,10 +7876,7 @@ export class ControlRoom extends DurableObject {
       // Work-conserving: replace each completed slot immediately, without
       // waiting for slower inferences from the same dispatch wave.
       // A stop request dispatches nothing new; turns already running finish.
-      const stopping=()=>this.get('stop_requested')==='1'||spinning;
-      // v8: the turns in a row that called no model, by row (FREE_TURNS_PER_ROW).
-      const v8=this.v8(),free=new Map();
-      let spinning=false,calls=this.generated;
+      const stopping=()=>this.get('stop_requested')==='1';
       while (tally(), active.size || !stopping()&&(spent<cap || this.read('queue',[]).some(id=>!this.spendsTurn(id)&&this.node(id)?.status==='ready'))) {
         while (!stopping() && active.size<this.settings().parallel) {
           tally();
@@ -7901,19 +7891,6 @@ export class ControlRoom extends DurableObject {
           // Manager routing is local bookkeeping + optional cheap Clef. Do not
           // spend a generative inference turn or block a finished hierarchy.
           if(this.spendsTurn(id)){spent++;this.budgetSpent=spent>=cap;}
-          else if(v8) {
-            if(this.generated!==calls){calls=this.generated;free.clear();}
-            free.set(id,(free.get(id)||0)+1);
-            const n=[...free.values()].reduce((a,b)=>a+b,0),bound=FREE_TURNS_BASE+FREE_TURNS_PER_ROW*this.liveSubtree(this.roomManager()||id).length;
-            if(n>bound) {
-              spinning=true;
-              this.save('queue',addFirst(this.read('queue',[]),id));this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
-              const top=[...free].sort((a,b)=>b[1]-a[1]),row=this.node(top[0][0]);
-              this.set(`escalated:${row.id}`,'turns_without_model');
-              this.holdRoom('turns_without_model',clip(`The room took ${n-1} turns in a row that asked no model (most by "${row.label}": ${top[0][1]}; ${top.slice(1,5).map(([x,k])=>`"${this.node(x)?.label||x}": ${k}`).join(', ')||'no other row'}), so it stops for you to look. Continue goes on from where it stopped.`,900),{agent:row.id});
-              break;
-            }
-          }
           this.event('system','dispatch',`Launching agent ${id} in free slot (${active.size+1}/${this.settings().parallel}).`);
           const task=this.runSelectedTurn(id,step);
           active.add(task);

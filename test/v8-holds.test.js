@@ -2,8 +2,8 @@
 // answers them all (no-card review F6); a row whose escalation is
 // outstanding waits for Continue, no manager is done while one from its
 // subtree is outstanding, and the room never completes with a change that
-// has not landed (F2); a manager loop that asks no model always ends at a
-// hold (F3). The stop probes of the card era (crosswait, selfwait,
+// has not landed (F2); the runtime holds no room for the turns that ask no
+// model (F3: the owner set no such bound). The stop probes of the card era (crosswait, selfwait,
 // waitprobe2) are ported to the levels: a complaint a worker leaves its
 // files as they were for stays its, and the repairs and rebuilds go on until
 // the room's turn budget ends, with nothing held; Continue goes on.
@@ -11,7 +11,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {choiceP} from './helpers/levels.js';
 import {toolkit, liveRoom, events, again, clefFor, splitFor, leafOf, logged, at, tail, runsBy, live, exported, call, FILES, GOAL, skip} from './helpers/toolkit.js';
-const {FREE_TURNS_BASE, FREE_TURNS_PER_ROW} = await import('../src/index.js');
 
 const BAD = {shout: 'def shout(s):\n    return str(s).upper()\n', whisper: 'def whisper(s):\n    return str(s).lower()\n'};
 const holds = room => room.roomHolds().map(h => [h.kind, h.agent]);
@@ -106,12 +105,14 @@ test('a rebuild cycle (every rebuilt worker asks again for what no manager cover
   assert.ok(Number(r.room.get('step')) - steps <= 60 && events(r.room).length - count <= 600, 'bounded by the budget Continue gives');
 });
 
-test('a manager that queues itself again and again asking no model stops at a room hold naming it, after a bounded number of turns; Continue goes on, and the room completes once it no longer loops', {skip}, async () => {
+test('a manager that queues itself again and again asking no model is never held for it: the room goes on past the bound it once had, and completes once it no longer loops', {skip}, async () => {
   const r = liveRoom({split: splitFor(), leaf: leafOf(), clef: clefFor(), executor: logged([]), room_id: 'spin'});
   const turn = r.room.levelManagerTurn.bind(r.room);
-  let spins = 0, spinning = true;
+  // Past the old bound (40 turns and 8 per live row) for this room's rows.
+  let spins = 0;
+  const SPINS = 200;
   r.room.levelManagerTurn = async id => {
-    if (spinning && r.room.node(id)?.label === 'Louder' && r.room.levelDesign(id)) {
+    if (spins < SPINS && r.room.node(id)?.label === 'Louder' && r.room.levelDesign(id)) {
       spins++;
       r.room.db().exec("UPDATE agents SET status='ready' WHERE id=?", id);
       r.room.save('queue', [...r.room.read('queue', []), id]);
@@ -121,13 +122,7 @@ test('a manager that queues itself again and again asking no model stops at a ro
   };
   await r.room.start(GOAL, 80, {pipeline: 'v8'}, 'spin');
   await r.drain();
-  const m = at(r.room), rows = r.room.liveSubtree(m.Root).length;
-  assert.equal(r.room.get('status'), 'paused', tail(r.room));
-  assert.deepEqual(holds(r.room), [['turns_without_model', m.Louder]]);
-  assert.match(r.room.roomHolds()[0].text, /asked no model \(most by "Louder"/);
-  assert.ok(spins <= FREE_TURNS_BASE + FREE_TURNS_PER_ROW * rows, `bounded: ${spins} turns`);
-  spinning = false;
-  await again(r, 40);
+  assert.equal(spins, SPINS);
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
   assert.deepEqual(r.room.roomHolds(), []);
 });
