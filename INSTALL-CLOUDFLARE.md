@@ -63,7 +63,7 @@ This one command:
 - uploads the Worker `qwen-control-plane-v4` (`src/index.js`) and the dashboard in `public/` as static assets;
 - creates the four SQLite-backed Durable Object classes `ControlRoom`, `ManagerShard`, `BuildExecutor` and `BenchRun` (benchmark runs);
 - binds Workers AI (`AI`) and Artifacts (`ARTIFACTS`);
-- builds the Container image from `container/Dockerfile` and deploys it on `standard-1` instances, up to 4. The image holds Node (the LTS channel, not a pinned version), Python 3 with pytest, Playwright's Chromium headless shell, `build-runner.mjs` and the v8 check adapters. It is about 0.9 GB unpacked and 0.35 GB compressed. No versions are pinned: each v8 check run records the versions it used.
+- builds the Container image from `container/Dockerfile` and deploys it on `standard-1` instances, up to 4. The image holds Node (the LTS channel, not a pinned version), Python 3 with pytest, Playwright's Chromium headless shell and v7's `build-runner.mjs`. It is about 0.9 GB unpacked and 0.35 GB compressed. No versions are pinned. v8's boxes are a second Container application (`Box`, images `check`, `browser` and `fetch`, from `container/Dockerfile.box` and `container/Dockerfile.fetch`): the `check` image starts with Node, Python 3, Go, gcc and g++, a Java JDK, Ruby, PHP, Rust and their package managers, `browser` adds Chromium, and an agent installs anything else it needs in its own box.
 
 Wrangler prints the Worker URL, `https://qwen-control-plane-v4.<your-subdomain>.workers.dev`. Cloudflare provisions the Container separately, so it can take a few minutes after a successful deploy before it is ready:
 
@@ -125,11 +125,11 @@ A URL, a `:443` port or a JSON array of hosts is read too. A value with no usabl
 
 A run started on one of them then never reads the other.
 
-A repo is read from `api.github.com` and `codeload.github.com` without a token (`GITHUB_TOKEN` is never used to read). The room sets no count or size on a repo's files. Every regular file is read, whatever its directory. Its text files are what the room builds and checks; a file whose content is not text (a NUL byte, or not UTF-8) is carried into the export as bytes, untouched, and never built. `.git/` and links are left out; a repo's own `glue/` and `.recursive/` files are its files like any other, and there is no read deadline or path-length rule. One file is held in one row of the room's Durable Object storage, so a file larger than 2 MB (Cloudflare's row limit) cannot be held and is not carried. `.recursive/RUN.md` lists the files carried untouched and anything that was not carried. GitHub limits requests without a token; when the default-branch lookup is refused, give a branch, tag or commit to start from. A room's previous result can be a base when that room ran the v8 pipeline and is not running; one that had not passed its checks is marked `unverified`. A link that cannot be read is listed in the dashboard's **Sources and base** panel and the run goes on without it. A base that cannot be read refuses the Start. One `APP_TOKEN` reads every room, so any room's result can be a base.
+A repo is read from `api.github.com` and `codeload.github.com` without a token (`GITHUB_TOKEN` is never used to read). The room sets no count or size on a repo's files. Every regular file is read, whatever its directory. Its text files are what the room builds and checks; a file whose content is not text (a NUL byte, or not UTF-8) is carried into the export as bytes, untouched, and never built. `.git/` is left out, and a symbolic link is kept as a link (its target); a repo's own `glue/` and `.recursive/` files are its files like any other, and there is no read deadline or path-length rule. One file is held in one row of the room's Durable Object storage, so a file larger than 2 MB (Cloudflare's row limit) cannot be held and is not carried. `.recursive/RUN.md` lists the files carried untouched and anything that was not carried. GitHub limits requests without a token; when the default-branch lookup is refused, give a branch, tag or commit to start from. A room's previous result can be a base when that room ran the v8 pipeline and is not running; one that had not passed its checks is marked `unverified`. A link that cannot be read is listed in the dashboard's **Sources and base** panel and the run goes on without it. A base that cannot be read refuses the Start. One `APP_TOKEN` reads every room, so any room's result can be a base.
 
 ### Optional: how many benchmark rooms run at once
 
-A benchmark run starts one room per task, a few at a time. Each compile of a task room runs in its own fresh box (the `Box` Container application, which has no `max_instances`), so tasks share no Container. `BENCH_EXECUTORS` in `vars` caps the run's **Rooms at once** (4 by default):
+A benchmark run starts one room per task, a few at a time. Each compiler session and each worker session that runs a command in a task room has its own single-use box (the `Box` Container application, which has no `max_instances`), and so does each grading, so tasks share no Container. `BENCH_EXECUTORS` in `vars` caps the run's **Rooms at once** (4 by default):
 
 ```jsonc
 "BENCH_EXECUTORS": "4"
@@ -139,13 +139,13 @@ To run more benchmark rooms at once, raise it, then deploy. Each running box is 
 
 ### Optional: how many boxes a room opens at once
 
-Under v8 every manager runs the checks it holds in its piece's own fresh box as soon as its subtree is done, so a room can have several boxes open at the same time. `BOX_CONCURRENCY` in `vars` bounds them (4 by default, at most 64); the top's checks and every piece's share this one setting:
+Under v8 every worker session that runs a command has a box of its own, and every manager's compiler runs the validations it holds in a box of its own as soon as its subtree is done, so a room can have several boxes open at the same time. `BOX_CONCURRENCY` in `vars` bounds them (4 by default, at most 64); every worker's and every compiler's box share this one setting:
 
 ```jsonc
 "BOX_CONCURRENCY": "4"
 ```
 
-A run opens its first compile's box early, as soon as its first level is admitted, so that compile doesn't wait 9 to 13 s for a cold box. That prewarmed box counts against `BOX_CONCURRENCY` too, and stops when no compile takes it ([docs/trying-v8.md](docs/trying-v8.md#63-the-prewarmed-box)).
+A run opens the box its first session will use early (a worker's first command, or a compiler's), as soon as its first level is admitted, so that session doesn't wait 9 to 13 s for a cold box. That prewarmed box counts against `BOX_CONCURRENCY` too, and stops when no session takes it ([docs/trying-v8.md](docs/trying-v8.md#63-the-prewarmed-box)).
 
 ## 6. Verify the deployment
 
@@ -156,7 +156,7 @@ npx wrangler artifacts repos list --namespace default   # empty until the first 
 npx wrangler tail qwen-control-plane-v4 --format pretty # live logs, leave running during a run
 ```
 
-For v8, check once that a box's checks run under a valid host name. Deploy with the probe on, ask for its `hostname` item, then deploy again with the probe off:
+For v8, you can check how a box's host name reads. An agent's commands run as the box's root without the host-name wrapper (`/opt/box/hostname.py`); the probe still runs it. Deploy with the probe on, ask for its `hostname` item, then deploy again with the probe off:
 
 ```bash
 npx wrangler deploy --var BOX_PROBE:1
@@ -166,7 +166,7 @@ curl -sS -X POST "https://<your worker host>/api/dev/box-probe" \
 npx wrangler deploy
 ```
 
-In the answer, `items.hostname.runner_named` should be `true`, and `items.hostname.runner` should show `hostname` and `getfqdn.value` both equal to `name` (`box-` and 16 hex characters). `platform` is the name the platform gave the VM. Its `labels` lists the length of each label, and a label over 63 is what breaks Python servers. If `runner_named` is `false`, `runner.status` says why (for example `unshare: EPERM`). A Python server in a v8 room's box then fails when it binds, and the compiler reports that failure as it observed it, like any other (see [docs/trying-v8.md](docs/trying-v8.md#62-the-boxs-host-name)). The first room's export shows the same facts in `state.toolchain_inventory` (`hostname`, `hostname_ok`, `hostname_status`, `getfqdn`).
+In the answer, `items.hostname.runner_named` should be `true`, and `items.hostname.runner` should show `hostname` and `getfqdn.value` both equal to `name` (`box-` and 16 hex characters). `platform` is the name the platform gave the VM. Its `labels` lists the length of each label, and a label over 63 is what breaks Python servers. If `runner_named` is `false`, `runner.status` says why (for example `unshare: EPERM`). On the platform's name, a Python server in a v8 box (`http.server`) fails when it binds unless the agent works around it in its box; the compiler reports what it observed, like any other result (see [docs/trying-v8.md](docs/trying-v8.md#62-the-boxs-host-name)). A new room records no `state.toolchain_inventory`; only a room from before the compiler agent has one.
 
 ## 7. Start a run
 
@@ -182,17 +182,17 @@ In the answer, `items.hostname.runner_named` should be `true`, and `items.hostna
    | Total agents | 64 | 2–100,000 | Workers and managers in the tree. Builders, compilers and retired agents do not count. |
    | Recursion depth | 10 | 1–1,000 | Maximum tree depth. |
    | Pieces per split | 7 | 2–64 | The most pieces one split may have. |
-   | Verification time (v8) | 200 s | 1–86,400 s | How long one compile's checks of a level may run in all. The box's waits derive from it. What the project does within it is what the checks observe: a command still running or a page that never showed what a step expects goes back to its worker as a failure. |
+   | Verification time (v8) | 200 s | 1–86,400 s | How long one command in a worker's or a compiler's box may run; past it the command's result says it ran out of time. A box's ready wait and its backstop life (three times this) derive from it, and a benchmark's grading command gets the same time. |
    | Manager model | Qwen3 A3B | Qwen3 A3B, Llama 4 Scout, Qwen2.5 Coder 32B, DeepSeek V4 Flash, Mistral Small 3.1, Qwen 3.8 27B, Llama 3.2 1B | v7: splits and their promised functions, managers' decisions and link edits. v8: the splitters and the builders. |
    | Worker model | Qwen3 A3B | the same list | The workers, which write the code. |
-   | Compiler model | Qwen3 A3B | the same list | v7: the API coverage mapping, triage and the runner's test. v8: the reader of the goal's linked pages. |
-   | Split decision model | Clef-flash | Clef-flash, Clef | Answers the YES/NO questions as probabilities. v7: the split gate, each child's scope, each function name a split adds, routing, the prune walk, which function answers a worker's request, and a retask's new task. v8: every manager's choice among its functions, the split's pre-grade and review, and the document checks. |
+   | Compiler model | Qwen3 A3B | the same list | v7: the API coverage mapping, triage and the runner's test. v8: the compiler agents, and the readers of the prompts' linked pages. |
+   | Split decision model | Clef-flash | Clef-flash, Clef | Answers the YES/NO questions as probabilities. v7: the split gate, each child's scope, each function name a split adds, routing, the prune walk, which function answers a worker's request, and a retask's new task. v8: every manager's choice among its functions, the split's pre-grade and review, and whether a piece's own compile runs a validation it holds. |
    | Minimum YES probability | 70% | 20–80% | Clef split threshold. |
    | Pipeline | v7 | v7, v8 | Which pipeline the room runs. Fixed when the room starts: Continue keeps it (event `pipeline_kept`). |
 
    The models are chosen here, per room, or with `settings.model`, `settings.worker_model` and `settings.compiler_model` in the API. Rooms do not read the `MODEL_NAME` variable in `wrangler.jsonc`, so editing it does not change the model.
 
-   **The v8 pipeline (experimental).** v7 is the default and is unchanged. With **v8** there is no Root: the room creates one manager from your prompt, every manager's splitter declares its level's contracts and validations through functions and Clef decides whether its split is valid, managers route with Clef and never write code, workers write any text file (the box runs the languages its image installs, and installs C# and JSX/TSX when a level uses them, before the checks, as it installs packages; a function contract in a file it has no call adapter for is refused at declaration), and each level's compiler runs the validations in a fresh box. [docs/trying-v8.md](docs/trying-v8.md) is a checklist for a run, and [docs/how-it-works.md](docs/how-it-works.md#v8-experimental) explains it. **Start from** works only in v8 rooms.
+   **The v8 pipeline (experimental).** v7 is the default and is unchanged. With **v8** there is no Root: the room creates one manager from your prompt, every manager's splitter declares its level's contracts and validations through functions and Clef decides whether its split is valid, managers route with Clef and never write code, workers write any text file and can install, build and try their code in a box of their own, and each level's compiler is an agent that runs the validations in a single-use box of its own. The runtime knows no language: the agents install whatever their files need, so any language can be used (none has been tested end to end through the compiler agent yet). [docs/trying-v8.md](docs/trying-v8.md) is a checklist for a run, and [docs/how-it-works.md](docs/how-it-works.md#v8-experimental) explains it. **Start from** works only in v8 rooms.
 
 5. Press **Start**. This clears the room's state and creates Root (in a v8 room, the manager the room creates from your prompt). In a v7 room, the runtime appends one requirement to your problem statement, so you do not need to write it:
    > The finished application has one entry module that exports start(); start() takes no arguments and returns an object with one method per operation named above. Modules get what they need from other modules only by importing it. Importing a module does no work at load: no reading process.argv, starting a server or prompting.
@@ -332,12 +332,12 @@ curl -sS -X POST "$URL/api/export/github" -H "Authorization: Bearer $APP_TOKEN" 
 ### In a v8 room
 
 - **The room held**: the **Levels** panel says why. `split_capacity` means an extension added a worker to a room already at its agent limit (a division, hand-down or rebuild within the limits is always created): raise it and press **Continue**. Any other hold is something nothing below could settle: its text says what, and **Continue** wakes the row it names. The room is done only when the compiler of the manager it created observes every validation passing; nothing else completes it.
-- **A check that could not run** (`build_infrastructure`: the box or Chromium could not start it): no worker gets a complaint for it. A check still running when the room's Verification time runs out is the project's failure, not this. The compiler runs it again until it can observe it, each run a turn of the room's budget, with no hold. When the budget is spent the room pauses, and **Continue** runs it again with the new budget.
-- **A check failed on the box itself**, for example a Python server that cannot bind because the box's host name does not resolve (`hostname_ok: false` in `state.toolchain_inventory`): the compiler reports the failure as it observed it, like any other. Run the probe's `hostname` item (step 6). A deploy that rebuilds the box images (`container/Dockerfile.box`) fixes the host name.
+- **A validation with no result** (`build_infrastructure`: the compiler gave it none, for example because its box did not open): no worker gets a complaint for it. The compiler runs again until it gives one, each run a turn of the room's budget, with no hold. When the budget is spent the room pauses, and **Continue** runs it again with the new budget.
+- **A validation failed on the box itself**, for example a Python server that cannot bind because the platform's host name has a label over 63 characters: the compiler reports the failure as it observed it, like any other, and it goes to the worker. Run the probe's `hostname` item (step 6) to see the name.
 
 ## Costs and cleanup
 
-Every run creates one Artifacts repository per agent, builders and the compiler included, named `rc-<random>-<agent id>`. Neither the app nor **Clear room state** ever deletes them. A run also makes many Workers AI calls and starts a Container for the compiler: Qwen for splits, code, links, managers' decisions, the coverage mapping and tests, and Clef for each gate, each level of the prune walk, and each function request a manager cannot answer by name. All of this is billed to your account. A benchmark run deletes the repositories of the task rooms it does not keep (by default, the ones that passed), and `DELETE /api/bench/<id>` deletes the rest. To find and delete old repositories:
+Every run creates one Artifacts repository per agent, builders and the compiler included, named `rc-<random>-<agent id>`. Neither the app nor **Clear room state** ever deletes them. A run also starts Containers (in v7 one for the compiler; in v8 a box for each compiler session and each worker session that runs a command) and makes many Workers AI calls: Qwen for splits, code, links, managers' decisions, the coverage mapping and tests, and Clef for each gate, each level of the prune walk, and each function request a manager cannot answer by name. All of this is billed to your account. A benchmark run deletes the repositories of the task rooms it does not keep (by default, the ones that passed), and `DELETE /api/bench/<id>` deletes the rest. To find and delete old repositories:
 
 ```bash
 npx wrangler artifacts repos list --namespace default

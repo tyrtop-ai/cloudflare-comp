@@ -30,19 +30,19 @@ The room creates one manager from your prompt, and the manager's splitter states
 
 **"Add a README explaining how to run it."** Set **Start from** to a public GitHub repo, a small one of yours.
 - The **Sources and base** panel should show how many files were read and what was skipped.
-- The level should have `README.md` as a doc contract with a judge validation (Clef reads the file and answers its question yes or no).
+- The level should have `README.md` as a doc contract with a judge validation (the compiler agent reads the file and gives its verdict on the question).
 - If the repo already has a README, the worker whose contract names it rewrites it: the room changes its own copy, and the export is a new branch.
 - **Download app (.zip)** should be the repo plus the new README. `.recursive/RUN.md` lists what wasn't carried over.
 
 **"A Python CLI that converts temperatures."**
 - The level should have a command contract and command validations, with three different examples for the command.
 - If a validation fails, open the worker's complaint in the traffic panel. It is what the compiler observed, as it observed it.
-- In the export, check `state.toolchain_inventory`: it shows the version of each toolchain the box had, and whether checks ran with the network off (`network`).
-- The same inventory shows the box's host name (`hostname`, which should be `box-` and 16 hex characters) and `getfqdn`, which should be `{"ok": true, "value": "box-…"}` with the same name (section 6.2).
+- In the traffic panel, each `compiler_session` event says how many calls the compiler made, how many commands it ran in its box, how many results it gave and how it ended; each worker's `session` event says how many commands it ran in its own box. A compiler that ran no command judged the CLI without running it.
+- No language list is involved: watch what the compiler and the workers install and run in their boxes.
 
 **"A static web page with a to-do list."**
 - The level should have a page contract (`index.html`) served as it is, and browser validations.
-- The browser validations are the most likely to hit infrastructure problems (Chromium starting on `standard-1`). A validation marked `infrastructure` means the box itself could not run it (Chromium or the box failed to start): no worker gets a complaint for it, and the compiler runs it again until it can observe it, each run a turn of the room's budget, with no hold. A page that never shows what a step expects within the room's **Verification time** is the page's failure, and goes back to its worker.
+- A level with browser validations gets the `browser` image (with Chromium); the compiler agent drives the page however it judges (Playwright is installed globally in that image). A validation the compiler gave no result for has none: no worker gets a complaint for it, and the compiler runs again, each run a turn of the room's budget, with no hold. A failed result goes back to its worker with what the compiler observed.
 
 **"Build a small issue tracker that lets someone create, view, update, and delete tickets."** (the old default)
 - No `start()` requirement is added in v8. The splitter chooses the shape, and the contracts it declares (routes, a page, a command) say what it chose.
@@ -61,36 +61,36 @@ Press **Run benchmark**. It keeps going with the page closed. A task room is an 
 
 ## 5. What to send back
 
-- **For each room:** **Export observation JSON**. It contains each manager's level file, the validations and their results, the splitter steps, the complaints and asks, every event and every span. The spans are what the speed analysis reads: each model call (role, model, tokens), each Clef gate, each git phase, each box run (each check's ms), and dispatch delays. Every v8 compile opens its own fresh box (section 6), so its container span carries `box: {fresh: true, internet: false, start_ms, ready_ms, image, name}`; `start_ms` is that compile's start cost. A run's first compile normally runs in a box opened earlier (section 6.3): its span adds `prewarmed: true`, `waited_ms` and `prewarm_ms`, and a `box` span named `prewarm` records that box's own start.
+- **For each room:** **Export observation JSON**. It contains each manager's level file, the validations and their results, the splitter steps, the complaints and asks, every event and every span. The spans are what the speed analysis reads: each model call (role, model, tokens), each Clef gate, each git phase, each box session, and dispatch delays. Every compiler session, and every worker session that runs a command, has its own box (section 6), so its container span (named `compiler` or `worker`) carries `commands` and `box: {fresh: true, internet: true, image, instance, name, start_ms, ready_ms, cold}`; `start_ms` is that box's start cost. A run's first session normally runs in a box opened earlier (section 6.3): its span adds `prewarmed: true` and `waited_ms`, and a `box` span named `prewarm` records that box's own start.
 - **For the benchmark:** the JSON from `GET /api/bench?id=<run id>` (task outcomes, times, tokens, room ids), plus the room exports of one or two failed tasks.
 
 **The room export contains your Cloudflare account id**, inside the Artifacts remote URLs. Don't commit it to this repo or post it anywhere public; send it privately. The benchmark status JSON contains no remote URLs or account ids.
 
-## 6. Capability boxes: every v8 compile in its own box
+## 6. Capability boxes: every v8 session in its own box
 
-A v8 room runs each compile in a **fresh, single-use box**: a new Durable Object (`Box`) with its own VM, started with the internet off, which runs the build runner on the compile's request and is destroyed afterwards. A worker's `run_examples` and a benchmark's grading each open one too, and no two benchmark tasks share one. The runner's own isolation still runs inside the box. If a box can't be opened (for example, if the platform refuses `enableInternet: false`, or the image isn't deployed), the compile runs again until a box opens, within the room's turn budget; there is no shared Container to fall back to. v7 rooms keep `BuildExecutor` unchanged.
+A v8 room gives each compiler session, and each worker session that runs a command, a **single-use box**: a new Durable Object (`Box`) with its own VM, started with the internet on, opened on the session's first command, holding the session's files in `/work`, and destroyed when the session ends. Each command runs there as the box's root, with no environment but a fixed `PATH`, so the agent installs whatever it needs (`src/box-session.js`). A benchmark's grading opens one of its own with the internet off, and no two benchmark tasks share one. If a box can't be opened (for example, if the image isn't deployed), each `run` says so to the agent; a validation the compiler then gives no result for has none, and the compiler runs again within the room's turn budget. There is no shared Container to fall back to. v7 rooms keep `BuildExecutor` unchanged.
 
-The boxes come from a second Container application in `wrangler.jsonc`. It uses the `durable_object` scheduling policy (public beta) and has three images: `check` (Node, Python and the toolchains of the other languages the box runs), `browser` (`check` plus Chromium) and `fetch` (Node only). The first `npm run deploy` builds all three, so it takes longer.
+The boxes come from a second Container application in `wrangler.jsonc`. It uses the `durable_object` scheduling policy (public beta) and has three images: `check` (Node, Python 3, Go, gcc and g++, a Java JDK, Ruby, PHP, Rust and their package managers, so a session that needs one of these doesn't wait for its install), `browser` (`check` plus Chromium) and `fetch` (Node only). The first `npm run deploy` builds all three, so it takes longer.
 
-The first box of a run is slow to start: its image is pulled, so it takes 9 to 15 s to become ready instead of about 1 s. The span records it with `cold: true` (any box whose `ready_ms` is over 5 s). Later compiles start warm. The room opens that first box early, as soon as its first level is admitted (section 6.3), so the first compile normally finds it ready.
+The first box of a run is slow to start: its image is pulled, so it takes 9 to 15 s to become ready instead of about 1 s. The span records it with `cold: true` (any box whose `ready_ms` is over 5 s). Later boxes start warm. The room opens that first box early, as soon as its first level is admitted (section 6.3), so the first session normally finds it ready.
 
 ### 6.2 The box's host name
 
 The platform names each box's VM with a label longer than the 63 characters a host name label may have. On such a name Python's `socket.getfqdn` fails (`UnicodeError: encoding with 'idna' codec failed (UnicodeError: label too long)`), and so does `http.server`'s `HTTPServer`, which calls it when it binds, so every Python server would crash.
 
-The box image runs the build runner under `/opt/box/hostname.py`. It gives the runner, and everything it starts, the box's own name in a user namespace of its own: `box-` followed by the first 16 hex characters of the SHA-256 of the box's Durable Object id (for example `box-3f9a0c27d18e4b65`), with an `/etc/hosts` that resolves it, so `getfqdn` answers without asking DNS. It needs no root: it uses the same user namespaces the runner already uses to turn the checks' network off. The same name is in the compile's span (`box.name`), in the inventory and in the probe's report.
+The image holds `/opt/box/hostname.py`, which runs a command under the box's own name in a user namespace of its own: `box-` followed by the first 16 hex characters of the SHA-256 of the box's Durable Object id (for example `box-3f9a0c27d18e4b65`), with an `/etc/hosts` that resolves it, so `getfqdn` answers without asking DNS. The same name is in each session's span (`box.name`) and in the probe's report.
 
-The name is valid by construction. Whatever a check then observes in the box, the compiler reports as it observed it.
+An agent's commands do not run under it: they run as the box's root under the platform's name, and the agent can use the wrapper or set the name itself if a server of its needs it. Whatever the compiler then observes in its box, it reports as it observed it. Whether a Python server binds in a live compiler's box has not been observed since the redesign.
 
-After deploying, run the probe's `hostname` item once (section 6.1) and check that `runner_named` is `true`.
+After deploying, you can run the probe's `hostname` item once (section 6.1): `runner_named` says whether the wrapper works in this deployment's boxes.
 
 ### 6.3 The prewarmed box
 
-The room opens the box its first compile will use as soon as it knows which image the first level's validations need: when the first level is admitted, so the box starts while the first workers write.
+The room opens the box its first session will use (a worker's first command, or a compiler's) as soon as it knows which image the first level's validations need: when the first level is admitted, so the box starts while the first workers write.
 
-The prewarmed box is like any other box: a new Durable Object, internet off, `standard-1`, the `check` image (or `browser` when the level has browser validations), and it runs one compile. Only the first compile that needs exactly that image takes it. If a compile needs the other image (a level added validations, or a piece's compile runs only some of them), the prewarmed box is stopped unused and the compile opens its own. The box counts against `BOX_CONCURRENCY` from the moment it opens, and the room opens none when no slot is free. A prewarmed box that no compile takes is stopped at the end of its life, which is three times the room's **Verification time**, or when the run ends if that comes first, and a `box` span named `prewarm_unused` records why.
+The prewarmed box is like any other session's box: a new Durable Object, internet on, `standard-1`, the `check` image (or `browser` when the level has browser validations), and one session runs in it. Only the first session that needs exactly that box takes it. If a session needs the other image (a worker whose validations have no browser check, a level that added validations, or a piece's compile that runs only some of them), the prewarmed box is stopped unused and the session opens its own. The box counts against `BOX_CONCURRENCY` from the moment it opens, and the room opens none when no slot is free. A prewarmed box that no session takes is stopped at the end of its life, which is three times the room's **Verification time**, or when the run ends if that comes first, and a `box` span named `prewarm_unused` records why.
 
-In the export, compare the `prewarm` span with the first compile's container span. The prewarm should end before or soon after the compile starts, and the compile's `box.waited_ms` should be well under its `prewarm_ms`.
+In the export, compare the `prewarm` span with the container span of the first session that took it (`box.prewarmed: true`). The prewarm should end before or soon after that session starts, and its `box.waited_ms` should be well under the `prewarm` span's length.
 
 ### 6.1 The S0 probe: run it once after deploying
 
@@ -112,10 +112,10 @@ The full probe opens about 70 boxes and takes a few minutes; keep `curl` waiting
 |---|---|---|
 | `start` | start→ready p50/p95 per image and instance | whether a warm pool is needed (p95 above 1.5 s) |
 | `exec` | exec round trip from a Durable Object, and inside the box | per-check box cost (S2) |
-| `network` | with the internet off: TCP 1.1.1.1:53 and :443, DNS, HTTP 80/443, ICMP; plus a control box with the internet on | that `enableInternet: false` really holds |
-| `caps`, `unshare` | `CapEff` of an exec (default user, uid 10001, uid 0), and which namespaces `unshare` may create | which in-runner measures still work inside a box |
+| `network` | with the internet off: TCP 1.1.1.1:53 and :443, DNS, HTTP 80/443, ICMP; plus a control box with the internet on | that `enableInternet: false` really holds (a benchmark's grading box) |
+| `caps`, `unshare` | `CapEff` of an exec (default user, uid 10001, uid 0), and which namespaces `unshare` may create | what an agent's commands (uid 0) may do inside a box |
 | `env` | environment variable names of an exec and of PID 1 | that nothing secret reaches a box |
-| `hostname` | the platform's host name (scrubbed like any id, with each label's length) and Python's `getfqdn` of it; the name the runner runs under through `/opt/box/hostname.py` (`runner_named`: it is the box's name, and `getfqdn` answers it); whether uid 0 could set the platform's name itself | that the runner's checks run under a valid host name (section 6.2) |
+| `hostname` | the platform's host name (scrubbed like any id, with each label's length) and Python's `getfqdn` of it; the name a command runs under through `/opt/box/hostname.py` (`runner_named`: it is the box's name, and `getfqdn` answers it); whether uid 0 could set the platform's name itself | whether an agent's server can get a valid host name in its box (section 6.2) |
 | `snapshot` | `snapshotContainer` time and size, and the restore start | the install box hand-over (S9) |
 | `browser` | Chromium loading `http://app.internal/` through interception, and a WebSocket back | the server box and client box split (S2) |
 | `relay` | a line relayed box A → Durable Object → box B | the bench split's call protocol (S4) |
