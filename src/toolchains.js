@@ -16,11 +16,8 @@ export const TOOLCHAINS = Object.freeze([
     run_file:['node','{path}'], test:['npm','test'], project_test_markers:['package.json#scripts.test'],
     identifier:'^[A-Za-z_$][A-Za-z0-9_$]{0,63}$', reserved:'await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield',
     names_look_like:'camelCase',
-    // v8 S3 review: the names a splitter may give this toolchain, and the
-    // commands that fetch packages (package_runners: no v8 code reads them;
-    // packages are allowed, and the box installs them by the row's install).
+    // v8 S3 review: the names a splitter may give this toolchain.
     aliases:['js','node','nodejs','javascript','ecmascript','mjs','cjs'],
-    package_runners:[['npx'],['npm','exec'],['npm','x'],['npm','install'],['npm','i'],['npm','ci'],['npm','add']],
     extractor:'acorn', link:'js-path-rewrite', 
     // v8 live 4 (review): packages, what the image installs beyond the
     // language's standard library, as agents' rows list them (src/packages.js);
@@ -46,7 +43,6 @@ export const TOOLCHAINS = Object.freeze([
     identifier:'^[A-Za-z_][A-Za-z0-9_]{0,63}$', reserved:'False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield',
     names_look_like:'snake_case',
     aliases:['py','python','python3','cpython'],
-    package_runners:[['pip'],['pip3'],['pipx'],['uv'],['uvx'],['python3','-m','pip'],['python3','-m','pipx'],['python3','-m','ensurepip']],
     extractor:'line', defs:['^(?:async\\s+)?def\\s+([A-Za-z_]\\w*)\\s*\\(','^class\\s+([A-Za-z_]\\w*)','^([A-Za-z_]\\w*)\\s*='],
     imports:['^from\\s+([\\w.]+)\\s+import\\s+(.+)$','^import\\s+([\\w., ]+)$'], private_prefix:'_',
     line_comment:'#', strings:['"""',"'''",'"',"'"],
