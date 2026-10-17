@@ -34,13 +34,6 @@ export const INPUT_SCHEMA = Object.freeze([
 // budget, counted again on what is kept), cut as sourceSummaries cuts it.
 export const SOURCE_STORE_BYTES = LIMITS.roomBytes;
 export const CHUNK_CHARS = 6000;
-export const MAX_SOURCE_CHUNKS = 40;
-// What a worker reads of its cited chunks (about 2,000 tokens), whole chunks
-// first; the rest of its refs come as their gists.
-export const SOURCE_BUDGET = 8000;
-export const MAX_REFS = 16;
-// The outline entry sourceSummaries writes for a chunk past its gist budget: never shown to a model.
-export const UNSUMMARISED = /^\(not summarised/;
 
 const clip = (v, n = 300) => String(v ?? '').slice(0, n);
 const REF = /^S([1-9]\d{0,2})(?:#([1-9]\d{0,3}))?$/;
@@ -173,12 +166,12 @@ export async function loadBase(base, {fetch, readApp, limits = {}} = {}) {
 // --- sources ----------------------------------------------------------------
 
 // Fetch every URL of the goal and summarise it. A failure never throws: its
-// row carries the error. callModel({role, system, user}) is the room's model
-// call (role 'source'). allow: the owner's FETCH_ALLOW value;
+// row carries the error. note and more: the room's reader and its budget
+// (sourceSummaries). allow: the owner's FETCH_ALLOW value;
 // selfHosts: the deployment's own host(s), never fetched.
 // Result: {rows: [{id, url, final_url, title, sha256, bytes, truncated,
 // error, status, content_type, summary}], chunks: [{ref, source, n, text}]}.
-export async function loadSources(goal, {fetch, allow, selfHosts = [], callModel, maxChunks = MAX_SOURCE_CHUNKS} = {}) {
+export async function loadSources(goal, {fetch, allow, selfHosts = [], note, more} = {}) {
   const urls = goalUrls(goal, LIMITS.maxUrls);
   if (!urls.length) return {rows: [], chunks: []};
   let fetched;
@@ -197,7 +190,7 @@ export async function loadSources(goal, {fetch, allow, selfHosts = [], callModel
     left -= byteLength(s.text);
   }
   let summaries = [];
-  try { summaries = await sourceSummaries(fetched, {callModel, maxChunks, chunkChars: CHUNK_CHARS}); } catch {}
+  try { summaries = await sourceSummaries(fetched, {note, more, chunkChars: CHUNK_CHARS}); } catch {}
   const chunks = [];
   for (const s of fetched) if (!s.error && s.text) for (const [i, text] of chunkText(s.text, CHUNK_CHARS).entries()) chunks.push({ref: `${s.id}#${i + 1}`, source: s.id, n: i + 1, text});
   const rows = fetched.map(s => ({id: s.id, url: clip(s.url, 2000), final_url: s.final_url ? clip(s.final_url, 2000) : null, title: clip(s.title, 200),
@@ -215,35 +208,23 @@ function cutBytes(text, n) {
 // S2 its parent holds. {kept, dropped} in the order given.
 export function narrowRefs(raw, held) {
   const have = held instanceof Set ? held : new Set(held || []), kept = [], dropped = [];
-  for (const r of (Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []).slice(0, 64)) {
+  for (const r of Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []) {
     const ref = String(r ?? '').trim(), m = REF.exec(ref);
     const hits = !m ? [] : m[2] ? (have.has(ref) ? [ref] : []) : [...have].filter(x => x.startsWith(`S${m[1]}#`));
     if (!hits.length) { if (ref) dropped.push(clip(ref, 40)); continue; }
-    for (const h of hits) if (!kept.includes(h) && kept.length < MAX_REFS) kept.push(h);
+    for (const h of hits) if (!kept.includes(h)) kept.push(h);
   }
   return {kept, dropped};
 }
-// v8 S8b review: the refs the room's manager holds, at most MAX_REFS like
-// any piece: the ones cited, else the first chunks of each source in turn.
-export function rootRefs(cited, all) {
-  const have = [...all];
-  const {kept} = narrowRefs(cited || [], new Set(have));
-  if (kept.length) return kept;
-  const by = new Map();
-  for (const ref of have) { const s = ref.split('#')[0]; by.set(s, [...(by.get(s) || []), ref]); }
-  const out = [], lists = [...by.values()];
-  for (let i = 0; out.length < MAX_REFS && lists.some(l => i < l.length); i++) for (const l of lists) if (i < l.length && out.length < MAX_REFS) out.push(l[i]);
-  return out;
-}
 
 // The source summaries as a splitter reads them: each quoted, its outline
-// cut to the refs held and to the entries with a gist (a chunk past the gist
-// budget is never listed); a summary with none is left out.
+// cut to the refs held (each with the reader's note on it, when it has
+// one); a summary with none held is left out.
 export function summariesFor(rows, held) {
   const have = held instanceof Set ? held : new Set(held || []);
   return rows.filter(r => r.summary).map(r => {
-    const outline = (r.summary.outline || []).filter(o => have.has(o.ref) && o.gist && !UNSUMMARISED.test(o.gist)).map(o => ({ref: o.ref, gist: sanitizeText(o.gist).slice(0, 300)}));
-    return outline.length ? {...quoteSource({id: r.id, url: r.final_url || r.url, title: r.summary.title || r.title, text: r.summary.summary}, {maxChars: 1200}), outline} : null;
+    const outline = (r.summary.outline || []).filter(o => have.has(o.ref)).map(o => ({ref: o.ref, ...(o.gist ? {gist: sanitizeText(o.gist)} : {})}));
+    return outline.length ? {...quoteSource({id: r.id, url: r.final_url || r.url, title: r.summary.title || r.title, text: r.summary.summary}), outline} : null;
   }).filter(Boolean);
 }
 
@@ -266,24 +247,16 @@ export function namedIn(path, text) {
   return false;
 }
 
-// The chunks a worker cites, quoted, whole while they fit in the budget;
-// the rest as their gists, and a chunk with no gist is left out. chunk(ref)
-// → {ref, source, text} or null (the room reads one stored chunk at a time;
-// a Map or an array serves too).
-export function chunksFor(rows, chunk, refs, budget = SOURCE_BUDGET) {
+// The chunks a worker cites, each quoted whole. chunk(ref) → {ref, source,
+// text} or null (the room reads one stored chunk at a time; a Map or an
+// array serves too).
+export function chunksFor(rows, chunk, refs) {
   const get = typeof chunk === 'function' ? chunk : (m => ref => m.get(ref) ?? null)(chunk instanceof Map ? chunk : new Map((chunk || []).map(c => [c.ref, c])));
   const bySource = new Map(rows.map(r => [r.id, r]));
-  const gist = (src, ref) => { const g = src.summary?.outline?.find(o => o.ref === ref)?.gist || ''; return UNSUMMARISED.test(g) ? '' : g; };
-  let left = budget;
   const out = [];
-  for (const ref of refs.slice(0, MAX_REFS)) {
-    const src = bySource.get(String(ref).split('#')[0]);
-    if (!src) continue;
-    const at = {id: src.id, ref, url: src.final_url || src.url, title: src.summary?.title || src.title};
-    const c = left > 0 ? get(ref) : null;
-    if (c && c.text.length <= left) { left -= c.text.length; out.push(quoteSource({...at, text: c.text}, {maxChars: budget})); continue; }
-    const g = gist(src, ref);
-    if (g) out.push({...quoteSource({...at, text: g}, {maxChars: 300}), gist_only: true});
+  for (const ref of refs) {
+    const src = bySource.get(String(ref).split('#')[0]), c = src ? get(ref) : null;
+    if (c) out.push(quoteSource({id: src.id, ref, url: src.final_url || src.url, title: src.summary?.title || src.title, text: c.text}));
   }
   return out;
 }

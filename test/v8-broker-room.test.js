@@ -60,8 +60,8 @@ function fakeFetch() {
   fn.calls = calls;
   return fn;
 }
-const sourceModel = (user, system) => system.startsWith('Summarise') ? `Gist of ${user.sources[0].ref}: how widget records are kept.` :
-  {title: /guide/.test(JSON.stringify(user)) ? 'Widget guide' : 'Widget format', summary: 'How the widget is laid out and used.'};
+const sourceModel = (user, system) => system.startsWith('You read one part') ? {says: `Gist of ${user.sources[0].ref}: how widget records are kept.`} :
+  {title: /guide/.test(JSON.stringify(user)) ? 'Widget guide' : 'Widget format', says: 'How the widget is laid out and used.'};
 // Clef: the room's manager divides and nothing else does; every other question passes.
 const clefFor = goal => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul:
   k === 'should_split' ? (String(input.state.assignment).startsWith(goal) ? 0.9 : 0.05) : 0.9}]))});
@@ -142,7 +142,7 @@ test('broker: a worker reads its granted file, a chunk it holds, and the neutral
 
   // ---- a held chunk: whole, labelled with the page it was fetched from; another page's chunk is none
   const chunks = chunkText(GUIDE_PAGE, 6000), held = turns('NOTES.md');
-  assert.ok(held[0].sources.find(s => s.ref === 'S2#3').gist_only, 'the world carried only its gist');
+  assert.equal(held[0].sources.find(s => s.ref === 'S2#3').excerpt, chunks[2], 'the world carries every chunk it holds, whole');
   const after = answered('NOTES.md'), byName = name => after.find(a => a && typeof a === 'object' && a.name === name);
   assert.deepEqual(byName('S2#3'), {name: 'S2#3', label: `untrusted: fetched from ${GUIDE_URL}`, value: chunks[2]});
   assert.deepEqual(byName('package.json'), {name: 'package.json', label: BROKER_LABEL.none, value: noneText('package.json', room.catalogue(notes.id))});

@@ -211,7 +211,7 @@ export class BenchRun extends DurableObject {
   async grade(t) {
     let app;
     try { app = await this.env.ROOMS.getByName(t.room).appFiles(); } catch (e) { return {infrastructure: clip(`the room's files could not be read: ${e?.message || e}`)}; }
-    if (!app || app.error) return {passed: false, detail: clip(`the room shipped no files: ${app?.error || 'no answer'}`)};
+    if (!app || app.error) return {passed: false, detail: `the room shipped no files: ${app?.error || 'no answer'}`};
     const files = new Map((app.files || []).filter(f => typeof f?.content === 'string' && !f.path.startsWith('.recursive/')).map(f => [f.path, f.content]));
     return gradeBundle(this.env, parse(t.grader, null), files);
   }
@@ -349,19 +349,21 @@ export class BenchRun extends DurableObject {
 
 // The grader on a bundle, in a fresh single-use box with the internet off:
 // its command check, run as a level's validations run (src/checks.js
-// checkPlan, mode 'checks'). {passed, detail} or {infrastructure}.
+// checkPlan, mode 'checks'). {passed, detail} or {infrastructure}; detail is
+// the box's whole observation of a failed grading (what it says failed, then
+// the exit, stdout and stderr it reports), the complaint the room gets.
 export async function gradeBundle(env, grader, files) {
   if (!grader?.check) return {infrastructure: 'the task has no grader'};
   if (!env?.BOXES) return {infrastructure: 'BOXES binding unavailable: the grader runs only in a fresh box with the internet off'};
   let snapshot;
-  try { snapshot = validateBoxFiles(files); } catch (e) { return {passed: false, detail: clip(`the shipped files cannot be carried: ${e?.message || e}`)}; }
+  try { snapshot = validateBoxFiles(files); } catch (e) { return {passed: false, detail: `the shipped files cannot be carried: ${e?.message || e}`}; }
   const {plan, toolchains} = checkPlan({contracts: [], validations: [grader]}, files, {rows: TOOLCHAINS}), run = {...plan, syntax: []};
   try {
     const {box: opened, ...report} = await freshBox(env.BOXES).compile(compileBoxSpec(run), {fingerprint: await snapshotHash(files), files: Object.fromEntries(snapshot), mode: 'checks', plan: run, toolchains, limits: CHECK_LIMITS}) || {};
     if (opened?.fresh !== true || opened?.internet !== false) return {infrastructure: 'the box did not confirm a fresh start with the internet off'};
     const r = classifyEnvironment(report), c = (r.checks || []).find(x => x?.id === grader.id);
     if (!c || c.infrastructure) return {infrastructure: clip(c?.detail || r.infrastructure_issue || 'the grader did not run')};
-    return {passed: !!c.passed, detail: c.detail || ''};
+    return {passed: !!c.passed, detail: c.passed ? '' : [c.detail, c.output].filter(Boolean).join('\n')};
   } catch (e) { return {infrastructure: clip(e?.message || e)}; }
 }
 

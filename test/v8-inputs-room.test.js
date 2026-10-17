@@ -15,7 +15,7 @@ import {liveRoom, events, fileBlocks} from './helpers/room.js';
 import {lintRequests, crashAt, reopen} from './helpers/levels.js';
 import {SOURCE_CLAUSE, SOURCE_LABEL, chunkText} from '../src/fetcher.js';
 import {BASE_LABEL, MESSAGES} from '../src/prompts.js';
-import {normalizeBase, narrowRefs, keepBaseFiles, summariesFor, chunksFor, baseFromApp, loadBase, rootRefs} from '../src/room-inputs.js';
+import {normalizeBase, narrowRefs, keepBaseFiles, summariesFor, chunksFor, baseFromApp, loadBase} from '../src/room-inputs.js';
 import {splitterState, splitterCall} from '../src/splitter.js';
 // After helpers/room.js has registered the cloudflare: loader.
 const {default: worker} = await import('../src/index.js');
@@ -140,16 +140,17 @@ test('refs: a child keeps only refs its parent holds; a bare source id cites eve
   assert.deepEqual(narrowRefs(['S1'], held), {kept: ['S1#1', 'S1#2', 'S1#3'], dropped: []});
   assert.deepEqual(narrowRefs('S3#1', held), {kept: ['S3#1'], dropped: []});
   assert.deepEqual(narrowRefs(null, held), {kept: [], dropped: []});
-  // A splitter reads the summaries cut to its refs; a worker the chunks, whole within the budget, the rest as gists.
-  const rows = [{id: 'S1', url: 'https://docs.example.com/a', title: 'A', summary: {title: 'A', summary: 'sum', outline: [{ref: 'S1#1', gist: 'g1'}, {ref: 'S1#2', gist: 'g2'}]}},
+  // No count of refs: a split may cite every chunk its parent holds.
+  const many = new Set(Array.from({length: 40}, (_, i) => `S1#${i + 1}`));
+  assert.equal(narrowRefs(['S1'], many).kept.length, 40);
+  // A splitter reads the summaries cut to its refs (a part with no note is listed all the same); a worker every chunk it holds, whole.
+  const rows = [{id: 'S1', url: 'https://docs.example.com/a', title: 'A', summary: {title: 'A', summary: 'sum', outline: [{ref: 'S1#1', gist: 'g1'}, {ref: 'S1#2', gist: 'g2'}, {ref: 'S1#3'}]}},
     {id: 'S2', url: 'https://docs.example.com/b', error: 'source_refused: http 404', summary: null}];
-  assert.deepEqual(summariesFor(rows, ['S1#2']).map(c => [c.source_id, c.label, c.excerpt, c.outline]), [['S1', SOURCE_LABEL, 'sum', [{ref: 'S1#2', gist: 'g2'}]]]);
+  assert.deepEqual(summariesFor(rows, ['S1#2', 'S1#3']).map(c => [c.source_id, c.label, c.excerpt, c.outline]), [['S1', SOURCE_LABEL, 'sum', [{ref: 'S1#2', gist: 'g2'}, {ref: 'S1#3'}]]]);
   assert.deepEqual(summariesFor(rows, ['S3#1']), []);
-  const chunks = [{ref: 'S1#1', source: 'S1', text: 'x'.repeat(60)}, {ref: 'S1#2', source: 'S1', text: 'y'.repeat(60)}];
-  const out = chunksFor(rows, chunks, ['S1#1', 'S1#2'], 100);
-  assert.deepEqual(out.map(c => [c.ref, c.excerpt.length, !!c.gist_only]), [['S1#1', 60, false], ['S1#2', 2, true]]);
-  assert.equal(out[1].excerpt, 'g2');
-  assert.deepEqual(rootRefs([], ['S1#1', 'S1#2', 'S2#1', 'S2#2', 'S3#1']), ['S1#1', 'S2#1', 'S3#1', 'S1#2', 'S2#2']);
+  const chunks = [{ref: 'S1#1', source: 'S1', text: 'x'.repeat(9000)}, {ref: 'S1#2', source: 'S1', text: 'y'.repeat(9000)}];
+  const out = chunksFor(rows, chunks, ['S1#1', 'S1#2']);
+  assert.deepEqual(out.map(c => [c.ref, c.excerpt]), [['S1#1', chunks[0].text], ['S1#2', chunks[1].text]]);
 });
 
 test('loadBase from a fake GitHub tarball: no token, the digest names the files; a repo that cannot be read is an error', async () => {
@@ -172,8 +173,8 @@ const SECTION = (title, word) => `## ${title}\n\n` + Array.from({length: 70}, (_
 const PAGE = `# Widget format\n\n${SECTION('Layout', 'layout')}\n${SECTION('Fields', 'field')}\n${SECTION('Questions', 'question')}`;
 const LINKS_GOAL = 'Write GUIDE.md and FAQ.md for the widget format described at https://docs.example.com/widget-format and https://docs.example.com/missing-page, see also https://elsewhere.example.net/notes.';
 const DOCS = [{name: 'GUIDE.md', kind: 'doc', path: 'GUIDE.md', does: 'explains the widget format'}, {name: 'FAQ.md', kind: 'doc', path: 'FAQ.md', does: 'answers common questions about the format'}];
-const sourceModel = (user, system) => system.startsWith('Summarise') ? `Gist of ${user.sources[0].ref}: how widget records are laid out.` :
-  {title: 'Widget format', summary: 'How widget files are laid out.\nEach section names one rule.'};
+const sourceModel = (user, system) => system.startsWith('You read one part') ? {says: `Gist of ${user.sources[0].ref}: how widget records are laid out.`} :
+  {title: 'Widget format', says: 'How widget files are laid out.\nEach section names one rule.'};
 const GUIDE_MD = '# Guide\n\n## Layout\n\nOne record per line.\n', FAQ_MD = '# FAQ\n\n## Questions\n\nWhat is a record? One line.\n';
 const LINKS_LEVEL = {contracts: DOCS,
   validations: [has('g1', 'GUIDE.md', '## Layout'), has('g2', 'GUIDE.md', '# Guide'), has('g3', 'GUIDE.md', 'One record per line'),
@@ -221,13 +222,12 @@ test('links in the prompt: fetched once with the owner\'s allowlist, stored and 
   assert.deepEqual(room.sourceRefs(guide.id), ['S1#1', 'S1#2', 'S1#3']);
   assert.deepEqual(room.sourceRefs(faq.id), ['S1#2']);
   assert.match(events(room, 'refs_assigned').map(e => e.body).join('\n'), /"Questions writer" reads S1#2; not held here, so not given: S9#1, S2#1/);
-  // A worker reads only the chunks it holds, whole within the budget, the rest as gists, in its world.
+  // A worker reads only the chunks it holds, each whole, in its world.
   const asked = name => calls.leaf.find(u => u.prompt.deliver.some(c => c.name === name));
   const g = asked('GUIDE.md').world, q = asked('FAQ.md').world;
   assert.equal(g.sources_note, SOURCE_CLAUSE);
-  assert.deepEqual(g.sources.map(s => [s.ref, s.label, !!s.gist_only]), [['S1#1', SOURCE_LABEL, false], ['S1#2', SOURCE_LABEL, false], ['S1#3', SOURCE_LABEL, true]]);
-  assert.equal(g.sources[0].excerpt, chunks[0].text);
-  assert.equal(g.sources[2].excerpt, 'Gist of S1#3: how widget records are laid out.');
+  assert.deepEqual(g.sources.map(s => [s.ref, s.label]), [['S1#1', SOURCE_LABEL], ['S1#2', SOURCE_LABEL], ['S1#3', SOURCE_LABEL]]);
+  assert.deepEqual(g.sources.map(s => s.excerpt), chunks.map(c => c.text));
   assert.deepEqual(q.sources.map(s => s.ref), ['S1#2']);
   assert.equal(q.sources[0].excerpt, chunks[1].text);
   assert.ok(!JSON.stringify(asked('FAQ.md')).includes(chunks[0].text), 'a chunk not held by the worker never reaches it');
@@ -556,25 +556,30 @@ test('S8b review M2: a base holding components/ moves the pieces\' folder to rcp
   assert.deepEqual(stated({name: 'readme.md', kind: 'doc', path: 'readme.md', does: 'x'}), {stored: 'readme.md', kind: 'doc'});
 });
 
-// ------------------------------------------------------------ M4: the room's manager holds at most 16 refs; no placeholder reaches a model
-const BIG_PAGE = Array.from({length: 30}, (_, i) => `## Part ${i + 1}\n\n` + `Rule ${i + 1} of the widget format keeps one record per line. `.repeat(58)).join('\n');
+// ------------------------------------------------------------ M4: a linked page reaches the agents whole, bounded only by the room's budget
+const BIG_PAGE = Array.from({length: 12}, (_, i) => `## Part ${i + 1}\n\n` + `Rule ${i + 1} of the widget format keeps one record per line. `.repeat(58)).join('\n');
 const BIG_GOAL = 'Write NOTES.md from https://docs.example.com/widget-format as notes.';
 const NOTES_LEVEL = {contracts: [{...NOTES, does: 'notes on the format'}], validations: [has('a', 'NOTES.md', '# '), has('b', 'NOTES.md', 'Notes'), has('c', 'NOTES.md', '\n')], pieces: []};
 
-test('S8b review M4: the room\'s manager holds at most 16 refs, the first chunks; gist calls follow the budget, and no unsummarised placeholder reaches a model', async () => {
+test('S8b review M4: the room\'s manager holds every chunk, the splitter sees every part, the worker reads every chunk it holds whole; the readings count against the room\'s budget', async () => {
   const fetch = fakeFetch({'https://docs.example.com/widget-format': () => new Response(BIG_PAGE, {headers: {'content-type': 'text/markdown'}})});
   const {room, calls, drain} = inputsRoom({level: NOTES_LEVEL, fetch, allow: 'docs.example.com', source: sourceModel, answers: {'NOTES.md': [wrote([['NOTES.md', '# Notes\n']])]}});
-  await room.start(BIG_GOAL, 20, {pipeline: 'v8'}, '', {selfHosts: ['control.example.com']});
+  await room.start(BIG_GOAL, 30, {pipeline: 'v8'}, '', {selfHosts: ['control.example.com']});
   await drain();
   assert.equal(room.get('status'), 'complete', trace(room));
-  assert.equal(room.allRefs().length, 30);
-  assert.equal(calls.source.length, 11, 'a budget of 20 reads 10 gists, then the summary');
-  assert.equal(calls.split[0].sources[0].outline.length, 10, 'the splitter sees only the outline entries with a gist');
-  assert.deepEqual(room.sourceRefs(room.roomManager()), Array.from({length: 16}, (_, i) => `S1#${i + 1}`));
-  const world = calls.leaf[0].world;
-  assert.deepEqual(world.sources.map(s => [s.ref, !!s.gist_only]), [['S1#1', false], ['S1#2', false], ...Array.from({length: 8}, (_, i) => [`S1#${i + 3}`, true])]);
-  for (const r of calls.raw) assert.doesNotMatch(r.text, /not summarised/);
-  assert.ok(calls.raw.every(r => r.text.length < 30000), 'every request stays small');
+  const all = Array.from({length: 12}, (_, i) => `S1#${i + 1}`);
+  assert.deepEqual(room.allRefs(), all);
+  assert.equal(calls.source.length, 13, 'every part read, then the page');
+  assert.deepEqual(calls.split[0].sources[0].outline.map(o => o.ref), all);
+  assert.deepEqual(room.sourceRefs(room.roomManager()), all);
+  const chunks = room.db().exec('SELECT text FROM source_chunks ORDER BY n').toArray().map(c => c.text);
+  assert.deepEqual(calls.leaf[0].world.sources.map(s => s.excerpt), chunks);
+  // A budget the readings outlast: the parts past it are listed with no gist.
+  const small = inputsRoom({level: NOTES_LEVEL, fetch, allow: 'docs.example.com', source: sourceModel, answers: {'NOTES.md': [wrote([['NOTES.md', '# Notes\n']])]}});
+  await small.room.start(BIG_GOAL, 5, {pipeline: 'v8'}, '', {selfHosts: ['control.example.com']});
+  await small.drain();
+  const outline = small.room.sourceRows()[0].summary.outline;
+  assert.deepEqual([outline.length, outline.filter(o => o.gist).length, small.calls.source.length], [12, 5, 5]);
 });
 
 // ------------------------------------------------------------ M5: the export is the base plus the changes
