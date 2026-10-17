@@ -397,8 +397,9 @@ export function storageExample(label, name, record = []) {
 }
 // A piece's uses, the functions its siblings promise that its code calls:
 // names, from an array of names or {name} items, or one string of them.
-// v8: a contract name of any kind (README.md, GET /items, a command).
-// v8 (opts.v8) only: a contract name of any kind (README.md, GET /items, a command).
+// opts.v8 (src/protocol.js normalizeAction's v8 keys only): a contract name
+// of any kind (README.md, GET /items, a command). A v8 room never reads a
+// piece's uses through this: it keeps them exactly as piece() declared them.
 export const normalizeUses = (raw, {v8 = false} = {}) => [...new Set((Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[\s,;]+/) : [])
   .map(u => typeof u === 'string' ? u.replace(/^`+|`+$/g, '').replace(/\(.*$/, '') : u?.name ?? u?.function).map(v => validName(v) || (v8 ? otherName(v) : '')).filter(Boolean))].slice(0, 8);
 // Only a name another piece of the split promises is kept, never its own.

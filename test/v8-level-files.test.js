@@ -610,3 +610,15 @@ test('a v8 room made before hex row ids (root, root.1; no depth or sequence): th
   assert.equal((await now.fileContent(w.id, 'convert.js')).content, CONVERT_JS);
   await assert.rejects(now.fileContent('root.1', 'convert.js'), /Invalid agent or file path/);
 });
+
+// ------------------------------------------------------------ a piece's uses, as declared
+test('a piece\'s uses are kept exactly as declared: every name, however many and whatever its shape, is the worker\'s to call', async () => {
+  const {room} = liveRoom({room_id: 'uses-room'});
+  room.configure({pipeline: 'v8'});
+  room.set('run_nonce', 'n1');
+  const top = await room.provision(await rowId('uses-room', 1, 'manager'), null, 'Top', 'the whole', [], [], [], 'manager', {seq: 1});
+  const uses = ['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'a8', 'a9', 'a10', 'Geometry::area', 'parse_line(text)', 'GET /items'];
+  const [w] = await room.spawn(top.id, [{label: 'W', task: 'write it', role: 'worker', uses}], 'k0');
+  assert.deepEqual(JSON.parse(room.node(w.id).uses), uses);
+  assert.deepEqual(room.designOf(w.id).calls, uses);
+});

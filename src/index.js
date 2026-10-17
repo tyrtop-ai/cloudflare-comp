@@ -1462,7 +1462,7 @@ export class ControlRoom extends DurableObject {
     const v8=this.v8(),name = v8?await this.repoName(id):`rc-${crypto.randomUUID().replaceAll('-','').slice(0,20)}-${id.replaceAll('.','-')}`;
     const repo = await this.timed('git','repo_create',()=>this.store().create(name, `Recursive agent ${id}: ${label}`),{child:id});
     this.db().exec('INSERT INTO agents(id,parent,label,task,summary,status,turn,repo_name,remote,branch,phase,interfaces,uses,packages,role,depth,seq) VALUES (?,?,?,?,?,\'ready\',0,?,?,?,\'decompose\',?,?,?,?,?,?)',
-      id, parent, v8?String(label??''):clip(label,70), v8?String(task??''):clip(task,parent&&!isHandler(parent)?2000:GOAL_LIMIT+Math.max(1+GOAL_START_REQUIREMENT.length,task.length-stripStartRequirement(task).length)), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces,this.contractOpts())), JSON.stringify(normalizeUses(uses,{v8})),
+      id, parent, v8?String(label??''):clip(label,70), v8?String(task??''):clip(task,parent&&!isHandler(parent)?2000:GOAL_LIMIT+Math.max(1+GOAL_START_REQUIREMENT.length,task.length-stripStartRequirement(task).length)), '', repo.name, repo.remote, repo.branch, JSON.stringify(normalizeInterfaces(interfaces,this.contractOpts())), JSON.stringify(v8?uses:normalizeUses(uses)),
       JSON.stringify(v8?normalizePackages(packages):[]),role,v8?(parent?this.depthOf(parent)+1:0):null,v8?seq:null);
     if (role && role!=='manager') this.db().exec("UPDATE agents SET phase='implement' WHERE id=?",id);
     this.save('queue', addLast(this.read('queue',[]), id));
@@ -8285,7 +8285,7 @@ export class ControlRoom extends DurableObject {
       return {label:entry.label,prompt:entry.prompt,contracts:entry.delivers.map(name=>level.contracts.find(c=>c.name===name)).filter(Boolean),calls:entry.calls};
     }
     const n=this.node(id);
-    return n?{label:n.label,prompt:n.task,contracts:this.promisedOf(id),calls:normalizeUses(parse(n.uses,[]),{v8:this.v8()})}:{label:'',prompt:'',contracts:[],calls:[]};
+    return n?{label:n.label,prompt:n.task,contracts:this.promisedOf(id),calls:this.v8()?parse(n.uses,[]):normalizeUses(parse(n.uses,[]))}:{label:'',prompt:'',contracts:[],calls:[]};
   }
   // A change to one child's entry in its manager's level file (its prompt,
   // the names it may call): change(entry) gives the fields that change, read
@@ -8476,7 +8476,7 @@ export class ControlRoom extends DurableObject {
     if(!batch){this.reserveValidations(id,0);return void this.escalate(id,'split_capacity',`"${n.label}" could not create its ${specs.length} children (the room's agent or depth limit); raise the limit and Continue.`);}
     // Its level file: the level's contracts, its children (their ids follow from the reservation), its validations, added to the file as it stands when it is written.
     const made=await this.batchIds(id,batch),added=normalizeInterfaces(contracts,this.contractOpts());
-    const entry=(s,i)=>({id:made[i],role:roleOf(s)||'manager',label:s.label,prompt:s.task,delivers:(s.interfaces||[]).map(c=>c.name),calls:normalizeUses(s.uses||[],{v8:true})});
+    const entry=(s,i)=>({id:made[i],role:roleOf(s)||'manager',label:s.label,prompt:s.task,delivers:(s.interfaces||[]).map(c=>c.name),calls:s.uses||[]});
     const entries=specs.map(entry),written=level.validations.map(v=>({id:ids.get(v.id),serves:v.serves,check:v.check,...(v.says?{says:v.says}:{})}));
     // A commit that fails leaves the level as it was: its reservations are released (a restart's are, by the next admission).
     let landed=false;
@@ -8829,7 +8829,7 @@ export class ControlRoom extends DurableObject {
       // Its manager calls it too, so the levels between them link it.
       for(let x=this.agentAbove(n.id);x&&!this.levelContracts(x).some(f=>f.name===c.name);x=this.agentAbove(x))callers.push(x);
       for(const x of callers) {
-        const uses=normalizeUses(parse(this.node(x)?.uses,[]),{v8:true});
+        const uses=parse(this.node(x)?.uses,[]);
         if(uses.includes(c.name))continue;
         this.db().exec('UPDATE agents SET uses=? WHERE id=?',JSON.stringify([...uses,c.name]),x);
         await this.amendEntry(x,e=>({calls:[...new Set([...e.calls,c.name])]}));
