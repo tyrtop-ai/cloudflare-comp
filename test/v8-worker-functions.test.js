@@ -286,16 +286,17 @@ test('a change is one manager choice too: route_to the child it concerns, or ext
   assert.match(events(room, 'change_routed').at(-1).body, /^The change concerns "Page": Make the page dark$/);
 });
 
-test('a worker\'s session that ends with neither done nor wait (its context window full) is a failed turn; three in a row are its stuck hold, which names it', async () => {
+test('a worker\'s session that ends with neither done nor wait (its context window full) goes on next turn in a new session, with its files as it wrote them; the room\'s turn budget is its only bound', async () => {
   // A model that never ends its turn: it reads its file again and again until the window is full.
   const leaf = (_u, _n, _s, {round}) => round === 1 ? [{name: 'write_file', arguments: {path: 'convert.js', content: CONVERT_JS + '// ' + 'x'.repeat(9000) + '\n'}}] : [{name: 'read_file', arguments: {path: 'convert.js'}}];
-  const {room, calls} = await levelRoom({prompt: CLI, split: () => CLI_LEVEL, leaf, clef: caught(), budget: 20});
+  const {room, calls} = await levelRoom({prompt: CLI, split: () => CLI_LEVEL, leaf, clef: caught(), budget: 4});
   const w = room.allNodes().find(n => n.role === 'worker');
-  assert.equal(calls.leaf.length, 3, 'three sessions, each to the end of its window; then it waits for Continue');
-  assert.equal(events(room, 'session_unfinished').length, 3);
-  assert.match(events(room, 'session').at(-1).body, /ended without done or wait \(its context window was full\)\.$/);
-  assert.deepEqual(room.roomHolds().map(h => [h.kind, h.agent]), [['agent_stuck', w.id]]);
-  assert.equal(room.node(w.id).status, 'waiting');
-  // Its writes were committed all the same: its files are what it wrote.
-  assert.ok(room.files(w.id).some(f => f.path === 'convert.js'));
+  assert.ok(calls.leaf.length >= 2, `${calls.leaf.length} sessions`);
+  assert.ok(events(room, 'session').every(e => /ended without done or wait \(its context window was full\)\.$/.test(e.body)));
+  assert.match(events(room, 'session')[1].body, /unchanged convert\.js/, 'the next session started from the files as written');
+  assert.deepEqual(calls.leaf[1].files, ['convert.js']);
+  assert.deepEqual(room.roomHolds(), [], 'no hold: nothing failed');
+  assert.equal(room.get('status'), 'paused');
+  assert.match(events(room, 'paused').at(-1)?.body || room.get('pause_reason', '') || '', /budget/i);
+  assert.equal(room.node(w.id).status, 'ready');
 });

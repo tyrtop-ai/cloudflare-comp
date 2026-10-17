@@ -167,11 +167,9 @@ const PROBLEM_JSON = ['parties','facts','evidence','directive','flags','trail'];
 // rejected, not the infrastructure (an Artifacts commit, a network error).
 // v8 S1: missing_deliverable replaces missing_code (still read in rooms
 // stored before it); non_code_rejected is gone: any text file is a deliverable.
-// A v8 worker's session that ended with neither done nor wait (its context
-// window was full) is session_unfinished.
-const CODE_GATE = /^(?:missing_deliverable|missing_code|split_rejected|code_retry|ask_unheard|session_unfinished)\b|Worker artifact rejected|Leaf cannot finish without|Bad (?:decomposition|action) response/;
+const CODE_GATE = /^(?:missing_deliverable|missing_code|split_rejected|code_retry|ask_unheard)\b|Worker artifact rejected|Leaf cannot finish without|Bad (?:decomposition|action) response/;
 // The events a stuck worker's manager reads as its last failures.
-const FAILURE_EVENTS = ['error','missing_deliverable','missing_code','split_rejected','code_retry','ask_unheard','session_unfinished'];
+const FAILURE_EVENTS = ['error','missing_deliverable','missing_code','split_rejected','code_retry','ask_unheard'];
 const surfacesOf = files => new Map([...files].filter(([p])=>LINKABLE.test(p)).map(([p,c])=>[p,exportSurface(p,c)]));
 // v7.15.13 (run20): the parameters of a function a module exports, from its
 // surface (a named export, a default function, a default object's member, a
@@ -9285,7 +9283,7 @@ export class ControlRoom extends DurableObject {
   // still owes once the session ended (its commit, its messages read, its
   // status as done or wait said) is a plan kept with a cursor, so a restart
   // finishes it. A session that ended with neither (its context window was
-  // full) is a failed turn.
+  // full) goes on next turn in a new session, as the room's budget allows.
   async levelWorkerTurn(id) {
     const n=this.node(id);
     let saved=query(this.db(),'SELECT payload,cursor FROM pending_turns WHERE agent=?',id)[0],plan;
@@ -9316,9 +9314,13 @@ export class ControlRoom extends DurableObject {
       async () => {this.acknowledge(id,inbox);},
       async () => {
         const node=this.node(id);
-        if(!node||['archived','failed','retired'].includes(node.status)||!end)return;
+        if(!node||['archived','failed','retired'].includes(node.status))return;
         const open=query(this.db(),'SELECT topic FROM route_workers WHERE worker=?',id).map(r=>r.topic);
-        if(end.done) {
+        // A session its context window ended goes on in a new session next turn, with its files as it wrote them; the room's turn budget bounds it.
+        if(!end) {
+          this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
+          this.save('queue',addLast(this.read('queue',[]),id));
+        } else if(end.done) {
           this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
           this.event(id,'done','Delivered its files.');
           this.complete(id);
@@ -9333,8 +9335,7 @@ export class ControlRoom extends DurableObject {
       catch(e) {this.event(id,'error',`Operation ${i+1}/${operations.length} failed: ${clip(String(e?.message||e),1100)}`);this.incrementFailures(id,String(e?.message||e));return;}
     }
     this.db().exec('DELETE FROM pending_turns WHERE agent=?',id);
-    if(!end){this.event(id,'session_unfinished',`Its session ended without done or wait (${plan.reason}).`);this.incrementFailures(id,'session_unfinished');}
-    else this.clearFailures(id);
+    this.clearFailures(id);
     const unread=this.receive(id);
     if(!['archived','retired'].includes(this.node(id)?.status)&&(unread.some(m=>!/^\[route:/.test(m.body))||unread.length&&!query(this.db(),'SELECT topic FROM route_workers WHERE worker=? LIMIT 1',id).length))this.wake(id);
   }
