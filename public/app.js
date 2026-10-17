@@ -23,7 +23,7 @@ function eventMarkup(e) {
 // Ownership graph: every agent is a node, joined to the agent that made it,
 // laid out by forces (a settled cloud, round as it grows) and dragged, panned
 // and zoomed by hand. Colour is the role; managers and workers are circles,
-// splitters, builders and compilers squares; solid means done, a pulse
+// link readers, splitters, builders and compilers squares; solid means done, a pulse
 // means running, and a band scrolls left to right across a builder that is
 // linking. A branch's lines turn green once every producer under it is done.
 let selectedNode='';
@@ -31,13 +31,14 @@ let selectedNode='';
 const isBuilder=n=>n.role?n.role==='builder':n.label==='Temporary builder';
 const isCompiler=n=>n.role?n.role==='compiler':n.label==='Compiler';
 const isSplitter=n=>n.role==='splitter';
-const SQUARE=new Set(['splitter','builder','compiler']);
+const isReader=n=>n.role==='reader';
+const SQUARE=new Set(['reader','splitter','builder','compiler']);
 // v8: siblings by their spawn's sequence (a v8 row's id says nothing of where it stands); v7 by its dotted id.
 const idOrder=(a,b)=>{if(a.seq!=null&&b.seq!=null)return a.seq-b.seq;const x=a.id.split('.').map(Number),y=b.id.split('.').map(Number);for(let i=0;i<Math.max(x.length,y.length);i++)if((x[i]??-1)!==(y[i]??-1))return (x[i]??-1)-(y[i]??-1);return 0;};
 // A row's depth: a v8 row's depth column, a v7 row's dotted id.
 const depthOf=n=>n.depth??n.id.split('.').length-1;
 // A manager's children in the order the level runs: its splitter steps, the pieces, its builder, its compiler.
-const stage=n=>isSplitter(n)?0:isBuilder(n)?2:isCompiler(n)?3:1;
+const stage=n=>isReader(n)||isSplitter(n)?0:isBuilder(n)?2:isCompiler(n)?3:1;
 function treeIndex(agents) {
   const kids=new Map(),byId=new Map(agents.map(n=>[n.id,n]));
   for(const n of agents)if(n.parent)kids.set(n.parent,[...(kids.get(n.parent)||[]),n]);
@@ -45,13 +46,15 @@ function treeIndex(agents) {
   const producers=id=>(kids.get(id)||[]).filter(c=>stage(c)===1);
   // A retasked sub-manager's old builder is retired with its branch; the live one is the next generation.
   const builderOf=id=>(kids.get(id)||[]).find(c=>isBuilder(c)&&c.status!=='retired')||null;
-  const role=n=>isSplitter(n)?'splitter':isBuilder(n)?'builder':isCompiler(n)?'compiler':(n.phase==='manager'||producers(n.id).length)?'manager':'worker';
+  const role=n=>isReader(n)?'reader':isSplitter(n)?'splitter':isBuilder(n)?'builder':isCompiler(n)?'compiler':(n.phase==='manager'||producers(n.id).length)?'manager':'worker';
   return {kids,byId,producers,builderOf,role};
 }
 // v8: the agents the room keeps beside its rows: each splitter step (its
 // manager's, by attempt: running while its session runs, done once Clef admitted
 // its pieces, waiting on Clef's review once it called done, failed when its
 // session ended without done or its pieces were not admitted) and each level's compiler. Only under a manager the tree has.
+// And each link reader the room ran on the prompt's links (a part's or a page's, running until it ends, done when it
+// noted, failed when it ended without a note), joined to the manager the room created, which its notes go to.
 function levelNodes(s) {
   const has=new Set((s?.agents||[]).map(n=>n.id));
   const splitter=x=>({id:x.id,parent:x.manager,role:'splitter',level:true,seq:x.attempt,label:`Splitter · attempt ${x.attempt}`,
@@ -59,7 +62,10 @@ function levelNodes(s) {
     task:`State its manager's level through its functions (${x.kind} attempt ${x.attempt}).`,step:x});
   const compiler=x=>({id:x.id,parent:x.manager,role:'compiler',level:true,label:'Compiler',status:x.state,
     task:'Verify the level\'s piece, as its builder joined it, on its exact bundle in a fresh box.',record:x});
-  return [...(s?.splitters||[]).map(splitter),...(s?.compilers||[]).map(compiler)].filter(n=>n.id&&has.has(n.parent));
+  const reader=(x,i,all)=>({id:x.id,seq:i-all.length,parent:has.has(s.room_manager)?s.room_manager:null,role:'reader',level:true,label:`Link reader · ${x.ref}`,
+    status:!x.ended_at?'running':x.noted?'done':'failed',
+    task:x.role==='source_summary'?`Read the notes on the parts of linked page ${x.ref} and note its title and what it says.`:`Read part ${x.ref} of a linked page and note what it says.`,reading:x});
+  return [...(s?.readers||[]).map(reader),...[...(s?.splitters||[]).map(splitter),...(s?.compilers||[]).map(compiler)].filter(n=>n.id&&has.has(n.parent))];
 }
 function treeAgents(s) { return [...(s?.agents||[]),...levelNodes(s)]; }
 // Who a node can talk to, its inference path: its parent and its direct
@@ -194,6 +200,9 @@ function nodeDetail(n,index) {
   } else if(role==='compiler') {
     const record=current?.compiler?.id===n.id?current.compiler:{},last=[...(current?.events||[])].reverse().find(e=>e.actor===n.id);
     more=`<p class="faint">entry ${esc(record.entry||'not chosen yet')} · ${(record.id?record.passed:n.status==='done')?'passed':'not passed'}${record.input?` · bundle ${esc(record.input.slice(0,12))}`:''}</p>${last?`<p class="faint">last result: ${esc(last.kind)} · ${esc(String(last.body).slice(0,400))}</p>`:''}`;
+  } else if(role==='reader') {
+    const x=n.reading;
+    more=`<p class="faint">${esc(x.ended_at?x.noted?'noted':'ended without a note':'running')} · ${esc(x.rounds)} model call${x.rounds===1?'':'s'}${x.ended_at?` · ${((x.ended_at-x.started_at)/1000).toFixed(1)} s`:''}</p>`;
   } else if(role==='splitter') {
     const x=n.step;
     more=`<p class="faint">${esc(x.ended_at?x.outcome||'ended':'running')}${x.verdict?` · ${esc(x.verdict)}`:''}${x.ended_at&&x.spawned_at?` · ${((x.ended_at-x.spawned_at)/1000).toFixed(1)} s`:''}</p>`;
@@ -335,7 +344,7 @@ function treeSvg(agents) {
   if(placeNodes(model,pos))settle(model,pos);
   const css=(k,d)=>{try{return getComputedStyle(document.documentElement).getPropertyValue(k).trim()||d;}catch{return d;}};
   const C={bg:css('--bg','#ffffff'),fg:css('--fg','#1a1a1a'),line:css('--border','#cfcfcf'),muted:css('--muted','#6b6b6b'),manager:css('--link','#0b57c9'),worker:css('--fg','#1a1a1a'),
-    builder:css('--visited','#6a3fa0'),compiler:css('--muted','#6b6b6b'),splitter:css('--splitter','#0e8a7e'),bad:css('--bad','#c4473f'),ok:css('--ok','#1f883d')};
+    builder:css('--visited','#6a3fa0'),compiler:css('--muted','#6b6b6b'),splitter:css('--splitter','#0e8a7e'),reader:css('--reader','#9a6700'),bad:css('--bad','#c4473f'),ok:css('--ok','#1f883d')};
   const ps=nodes.map(n=>pos.get(n.id)),P=40,minX=Math.min(...ps.map(p=>p.x))-P,minY=Math.min(...ps.map(p=>p.y))-P;
   const w=Math.round(Math.max(...ps.map(p=>p.x))-minX+P),h=Math.round(Math.max(...ps.map(p=>p.y))-minY+P+14),at=id=>{const p=pos.get(id);return {x:fmt(p.x-minX),y:fmt(p.y-minY)};};
   const lines=edges.map(([s,t])=>{const a=at(s),b=at(t);return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"/>`;}).join('');
@@ -431,11 +440,14 @@ function mergeDelta(base,d) {
   const agents=new Map((base?.agents||[]).map(a=>[a.id,a])),fileKey=f=>f.agent+'/'+f.path,files=new Map((base?.files||[]).map(f=>[fileKey(f),f]));
   for(const a of d.agents||[])agents.set(a.id,a);
   for(const f of d.files||[])files.set(fileKey(f),f);
-  const events=d.events_truncated?d.events||[]:[...(base?.events||[]),...(d.events||[])].slice(-300);
+  // A v8 room keeps its whole history (every event, every file); a v7 room
+  // keeps the snapshot's window of the latest 300 events and 240 files.
+  const v8=d.settings?.pipeline==='v8',all=[...(base?.events||[]),...(d.events||[])];
+  const events=d.events_truncated?d.events||[]:v8?all:all.slice(-300);
   const {full,events_truncated,agents:_a,files:_f,events:_e,...head}=d;
-  return {...base,...head,agents:[...agents.values()],events,
-    // As the snapshot's ORDER BY agent,path sorts (agent first: root.1 before root.1.2), so both keep the same 240.
-    files:[...files.values()].sort((a,b)=>a.agent<b.agent?-1:a.agent>b.agent?1:a.path<b.path?-1:a.path>b.path?1:0).slice(0,240)};
+  // As the snapshot's ORDER BY agent,path sorts (agent first: root.1 before root.1.2), so both keep the same files.
+  const sorted=[...files.values()].sort((a,b)=>a.agent<b.agent?-1:a.agent>b.agent?1:a.path<b.path?-1:a.path>b.path?1:0);
+  return {...base,...head,agents:[...agents.values()],events,files:v8?sorted:sorted.slice(0,240)};
 }
 async function refresh() {
   if (!token() || inflight) return;
@@ -658,10 +670,12 @@ const shortModel=m=>String(m||'').split('/').pop();
 let benchRun='',benchData=null,benchList=[],benchCompare=null,benchFileName='',benchSlots=0;
 const benchOutcome=t=>t.outcome||(t.status==='running'?'running':'queued');
 // pass@1 is each task's first grading, over the scored tasks only: pass ÷
-// (pass + fail). Errors (a grader or room that could not run) are left out.
+// (pass + fail). Errors (a room that could not run, an observer's stop) are
+// left out; a grading that could not run settles nothing and is graded again
+// until it observes.
 // Until done is the pass rate once the grader's failures went back to the
 // rooms, and the mean gradings it took.
-const SCORED_NOTE='pass@1 = first gradings passed ÷ scored tasks (pass + fail); errors (a grader or room that could not run, an observer\'s stop) are not scored';
+const SCORED_NOTE='pass@1 = first gradings passed ÷ scored tasks (pass + fail); errors (a room that could not run, an observer\'s stop) are not scored; a grading that could not run is graded again until it observes';
 const benchRate=a=>pct(a?.pass_at_1);
 const UNTIL_DONE_NOTE='the grader\'s failures go back to each room as complaints until a grading passes or the room ends';
 const untilDoneNote=a=>a?.until_done?`<span title="${esc(UNTIL_DONE_NOTE)}">until done <b>${pct(a.until_done.pass_rate)}</b> <span class="faint">(${count(a.until_done.pass)} of ${count(a.until_done.scored)}; mean ${a.until_done.mean_rounds_to_done??'–'} gradings)</span></span>`:'';

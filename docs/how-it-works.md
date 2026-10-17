@@ -374,7 +374,7 @@ v8 is a room setting: **Pipeline** in the dashboard, or `settings.pipeline: "v8"
 
    The level file is the design artifact. The builder places files by it, and every change to the level (an extension, a rebuild, an archive) is a new commit of it. The manager routes without reading it.
 6. **A worker gets its prompt, and nothing about the structure.** Its session's message holds:
-   - its prompt: its task, each thing to deliver under its name and path with every example rendered from the validations that serve it, and the names it may call with how to refer to each;
+   - its prompt: its task, each thing to deliver under its name and path with every example rendered from the validations that serve it, and each contract it may call as declared (its name, kind, path, what it does, its inputs, outputs and effects), from which it writes its own reference;
    - the paths of its own files;
    - the complaints routed to it, verbatim;
    - its world: what is available to it by name (packages, linked-page chunks, the existing files it was given) and the answers it has.
@@ -426,7 +426,7 @@ The export of a v8 room is the project at its own paths, plus `.recursive/RUN.md
 - **What models see.** A splitter, and a worker whose line holds the base, see a listing of the repo's files: each path and its size, and the files carried untouched. Both read any of them whole with `read_file` (a worker's own file at the same path comes first). A worker also gets the text of each existing file it was granted, quoted as data, in its world.
 - **Export.** The export is the base plus the changes. `POST /api/export/github` with `onto_base: true` commits just the changes on top of the exact commit the room started from.
 
-Links written in the prompt are read once, when the room opens, from hosts on the owner's allowlist (`FETCH_ALLOW`). Their text is cut into chunks, and the reader, on the compiler model, states what each chunk and each page says through its `note` function. A splitter reads the pages' summaries, a piece cites the chunks it needs, and a worker reads only the chunks cited for it. A link that can't be read is listed in the **Sources and base** panel, and the run goes on without it.
+Links written in the prompt are read once, when the room opens, from hosts on the owner's allowlist (`FETCH_ALLOW`). Their text is cut into chunks, and a reader of its own for each chunk and each page, on the compiler model, states what it says through its `note` function. Each reader is a node of the agent graph. A splitter reads the pages' summaries, a piece cites the chunks it needs, and a worker reads only the chunks cited for it. A link that can't be read is listed in the **Sources and base** panel, and the run goes on without it.
 
 ### Follow-up prompts and the queue
 
@@ -482,7 +482,7 @@ The bigger items from the speed analysis are not done yet: moving git pushes off
 The page served from `public/` shows the run as a graph of agents. It is observer-only: no agent reads it.
 
 - **Every agent is a node**, joined to the agent that made it, and a force layout settles them into a round cloud. Drag a node and the others give way; drag the background to pan, scroll to zoom, and double-click to fit. **Save as SVG** writes the layout as it stands, with every node labelled.
-- **Shape and colour are the role.** Managers (blue) and workers (ink) are circles. Splitters (teal), builders (purple) and compilers (grey) are squares. A v8 level's splitter steps, pieces, builder and compiler are drawn under their manager, in the order the level runs.
+- **Shape and colour are the role.** Managers (blue) and workers (ink) are circles. Link readers (amber), splitters (teal), builders (purple) and compilers (grey) are squares. A v8 level's splitter steps, pieces, builder and compiler are drawn under their manager, in the order the level runs; each link reader the room ran on the prompt's links (one per part, one per page) is drawn under the manager the room created, which its notes go to: running until its session ends, done when it noted, failed when it ended without a note.
 - **State.** A light fill is working, and a solid one is done. A pulse means the agent is running inference. A builder that is linking has a thin band scrolling left to right across its square. A faded node is retired, and a red one has failed.
 - **Green marks finished branches.** The lines under a manager turn green once everything below it is done and its builder has yet to link. When the builder has linked, the manager gets a green ring.
 - **Details.** Hover a node for its name. Click it to see, below the graph, its task, what it promised or delivers, its repository and summary, and who it talks to.
@@ -494,8 +494,8 @@ Around the graph, the dashboard shows:
 - a status strip;
 - the **Container build** panel with the latest Container report;
 - in a v8 room, the **Levels** panel (each validation with its last result, each manager's level file, each splitter step), **Sources and base**, and the **Prompts** queue;
-- the agent traffic, newest first (the latest 300 events);
-- the files the room has recorded, which you can click to read;
+- the agent traffic, newest first: every event of the run in a v8 room, scrolling down to the first (the latest 300 in a v7 room);
+- the files the room has recorded, which you can click to read (every one in a v8 room, the first 240 in a v7 room);
 - the **Benchmarks** panel.
 
 The default problem statement is just the product: "Build a small issue tracker that lets someone create, view, update, and delete tickets." In a v7 room the runtime appends the `start()` requirement itself.

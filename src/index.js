@@ -697,8 +697,15 @@ export class ControlRoom extends DurableObject {
     // Every host this deployment answers on (the request's and SELF_HOSTS) is refused.
     const selfHosts=[...this.read('fetch_self_hosts',[]),...selfHostsOf(this.env)];
     // Each reader's model calls count against the run's budget, as a manager's do; the readings go on while the budget lasts.
+    // Each reader is an agent of the room: recorded as it starts and as it
+    // ends (source_readers), so the dashboard draws it with the others.
     let calls=0;
-    const read=sourceModel(this.inferenceEnv('compiler')),note=async args=>{const r=await read(args);calls+=r.rounds;return r.noted;};
+    const readers=[],read=sourceModel(this.inferenceEnv('compiler')),note=async args=>{
+      const x={id:`reader-${String(args.ref).replace('#','-')}`,ref:args.ref,role:args.role,started_at:Date.now(),ended_at:null,noted:false,rounds:0};
+      readers.push(x);this.save('source_readers',readers);
+      try {const r=await read(args);calls+=r.rounds;Object.assign(x,{noted:!!r.noted,rounds:r.rounds});return r.noted;}
+      finally {x.ended_at=Date.now();this.save('source_readers',readers);}
+    };
     const {rows,chunks}=await loadSources(goal,{fetch:this.fetcher(),allow:report?report.allow:given,selfHosts,note,more:()=>calls<budget});
     if(report&&!report.allow.length)for(const r of rows)if(r.error&&/allowlist/.test(r.error))r.error=clip(`${r.error} (FETCH_ALLOW has no usable entry)`,300);
     for(const r of rows)this.db().exec('INSERT INTO sources(id,url,final_url,title,sha256,bytes,truncated,error,status,content_type,summary,fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',
@@ -1146,16 +1153,19 @@ export class ControlRoom extends DurableObject {
   }
   // Only the human-facing observer can inspect the full tree. No model context
   // is constructed from snapshot(), avoiding accidental descendant leakage.
+  // Under v8 the dashboard gets the room's whole history: every event and
+  // every committed file; v7 keeps its window of the latest 300 events and
+  // 240 files.
   snapshot() {
-    const cursor=this.stateCursor();
+    const cursor=this.stateCursor(),v8=this.v8();
     return {
       ...this.stateHead(),
       agents: this.versioned?this.agentRows():this.stampAgents(cursor.agents).map(x=>x.row),
-      files: query(this.db(), 'SELECT agent,path,revision,commit_hash,updated_at FROM artifact_files ORDER BY agent,path LIMIT 240'),
+      files: query(this.db(), 'SELECT agent,path,revision,commit_hash,updated_at FROM artifact_files ORDER BY agent,path'+(v8?'':' LIMIT 240')),
       exports: this.exportList(),
       // v8 live 4: the prompt handlers above the top, each spawned and ended, each prompt whole (v8 M2 review: under v8 a delta carries them too, stateHead).
       ...(this.v8()?{}:{prompt_handlers:this.promptHandlers()}),
-      events: query(this.db(), 'SELECT id,ts,step,actor,kind,recipient,body,path FROM events ORDER BY id DESC LIMIT 300').reverse(),
+      events: query(this.db(), 'SELECT id,ts,step,actor,kind,recipient,body,path FROM events ORDER BY id DESC'+(v8?'':' LIMIT 300')).reverse(),
       cursor
     };
   }
@@ -1185,10 +1195,11 @@ export class ControlRoom extends DurableObject {
   // serves, its check in a few words, Clef's marks, the row that holds it and
   // its last result (a result older than the last change to a delivered file
   // is marked stale); the manager the room created; each manager's level
-  // file (what it holds, in counts); each splitter step.
+  // file (what it holds, in counts); each splitter step; each link reader
+  // (source_readers).
   levelsHead() {
     const status=this.validationStatus(),held=new Map(query(this.db(),"SELECT key,value FROM meta WHERE key LIKE 'checks:%'").flatMap(r=>parse(r.value,[]).map(v=>[v,r.key.slice('checks:'.length)])));
-    return {room_manager:this.roomManager(),validation_status:status,
+    return {room_manager:this.roomManager(),validation_status:status,readers:this.read('source_readers',[]),
       validations:this.validationRows().map(v=>({id:v.id,level:v.level,held:held.get(v.id)||'',serves:v.serves,kind:v.check?.kind||'',check:checkSummary(v.check),...(v.says?{says:v.says}:{})})),
       levels:this.levelFiles().map(f=>{const l=this.levelDesign(f.manager);return {...f,label:this.node(f.manager)?.label||'',children:l?.children.length||0,archived:l?.archived.length||0,contracts:l?.contracts.length||0,validations:l?.validations.length||0};}),
       splitters:this.splitterRows().map(x=>({...x,verdict:this.read(`split_attempts:${x.manager}`,[]).findLast(a=>a.splitter===x.id)?.outcome||''})),
@@ -1286,13 +1297,13 @@ export class ControlRoom extends DurableObject {
     // Review: every file changed since the cursor, or the whole snapshot when there are too many to send as a delta.
     const files=whole?[]:query(this.db(),'SELECT agent,path,revision,commit_hash,updated_at FROM artifact_files WHERE updated_at>=? ORDER BY agent,path LIMIT 1001',files_since);
     if(whole||files.length>1000)return {...this.snapshot(),full:true};
-    const events=query(this.db(),'SELECT id,ts,step,actor,kind,recipient,body,path FROM events WHERE id>? ORDER BY id DESC LIMIT 300',since).reverse();
+    const v8=this.v8(),events=query(this.db(),'SELECT id,ts,step,actor,kind,recipient,body,path FROM events WHERE id>? ORDER BY id DESC'+(v8?'':' LIMIT 300'),since).reverse();
     return {
       ...this.stateHead(),full:false,
       agents:this.versioned?this.agentRows(agents_since):this.stampAgents(cursor.agents).filter(x=>x.at>agents_since).map(x=>x.row),
       files,
       ...(String(exports)!==cursor.exports?{exports:this.exportList()}:{}),
-      events,events_truncated:events.length>=300&&events[0].id>since+1,
+      events,events_truncated:!v8&&events.length>=300&&events[0].id>since+1,
       cursor
     };
   }
@@ -1358,7 +1369,7 @@ export class ControlRoom extends DurableObject {
       try {files.push({...f,content:await this.indexedContent(f.agent,f.path)});}
       catch(e) {files.push({...f,read_error:String(e?.message||e)});}
     }
-    // The dashboard shows the last 300 events; an export keeps the full run,
+    // A v7 dashboard shows the last 300 events; an export keeps the full run,
     // every event and span, paged (exportRows), so early split and capacity
     // decisions can be diagnosed.
     const cursors=Object.fromEntries(Object.keys(EXPORT_TABLES).map(t=>[t,query(this.db(),`SELECT COALESCE(MAX(id),0) AS id FROM ${t}`)[0].id]));
@@ -8572,9 +8583,11 @@ export class ControlRoom extends DurableObject {
   }
   // Continue at the room's holds: a pending grant (base_confirm) first,
   // which grants the files it lists (or those selected), and the other holds
-  // wait for the next Continue; otherwise Continue answers every hold that
-  // reached the room: each hold (the validations, a split, an escalation) gives
-  // the row it names a fresh set of split attempts, and wakes it.
+  // wait for the next Continue; otherwise Continue clears every hold that
+  // reached the room (the validations, a split, an escalation) and wakes the
+  // row each one names (the room's manager when it names none) if that row is
+  // waiting or ready. It also forgets which compile reports and escalations
+  // were already sent, and runs again a prompt the hold failed.
   continueHold({grants=null}={}) {
     const all=this.roomHolds();
     if(all.some(h=>h.kind==='base_confirm')&&this.read('base_pending',[]).length)return void this.confirmBase(grants);

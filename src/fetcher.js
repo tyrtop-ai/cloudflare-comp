@@ -667,22 +667,23 @@ export const NOTE_PAGE = Object.freeze({role: 'source_summary', call: 'sourceSum
 
 // Each fetched source read into {id, url, title, summary, outline:[{ref,
 // gist}]}: each part noted by a reader of its own, then the page from those
-// notes. `note({role, call, system, user, tool})` is injected: it runs the
-// reader's session and resolves with what it noted (the call's arguments),
+// notes. `note({role, call, system, user, tool, ref})` is injected: it runs the
+// reader's session (ref: the part it reads, S1#2, or the page, S1) and
+// resolves with what it noted (the call's arguments),
 // or null when it noted nothing. The quoted text only ever travels in
 // `user`, as JSON. `more()` says whether the room's budget allows another
 // reading; a part not read has no gist, and is listed all the same.
 export async function sourceSummaries(sources, {note, more = () => true, chunkChars = 6000} = {}) {
-  const read = async (kind, sources) => { try { return await note({...kind, user: JSON.stringify({sources})}); } catch { return null; } };
+  const read = async (kind, sources, ref) => { try { return await note({...kind, ref, user: JSON.stringify({sources})}); } catch { return null; } };
   const out = [];
   for (const src of sources) {
     if (src.error || !src.text) continue;
     const outline = [];
     for (const [i, chunk] of chunkText(src.text, chunkChars).entries()) {
-      const ref = `${src.id}#${i + 1}`, noted = more() ? await read(NOTE_PART, [quoteSource({...src, ref, text: chunk})]) : null;
+      const ref = `${src.id}#${i + 1}`, noted = more() ? await read(NOTE_PART, [quoteSource({...src, ref, text: chunk})], ref) : null;
       outline.push({ref, ...(noted ? {gist: noted.says} : {})});
     }
-    const noted = more() ? await read(NOTE_PAGE, [{...quoteSource({...src, text: ''}), outline: outline.filter(o => o.gist)}]) : null;
+    const noted = more() ? await read(NOTE_PAGE, [{...quoteSource({...src, text: ''}), outline: outline.filter(o => o.gist)}], src.id) : null;
     out.push({id: src.id, url: clip(sanitizeText(src.final_url || src.url), 500), title: noted?.title || sanitizeText(src.title), summary: noted?.says || '',
       outline, sha256: src.sha256 ?? null});
   }

@@ -19,7 +19,7 @@ If you serve the Worker on your own domain, set `SELF_HOSTS` first ([INSTALL-CLO
 
 Use a new room for each goal. Set **Pipeline** to **v8** before pressing **Start**. A room keeps the pipeline it started with, and Continue can't change it. Leave the other settings at their defaults, with a turn budget of 100.
 
-The room creates one manager from your prompt, and the manager's splitter states its level through functions. The **Levels** panel then shows each validation (with a pass, fail or untested chip), each manager's level file (a button that opens it), and each splitter step with Clef's verdict on it. The graph shows every agent: managers and workers as circles, splitters, builders and compilers as squares. The room is done when its manager's compiler observes every validation passing; nothing else completes it. If the room holds, the panel says why:
+The room creates one manager from your prompt, and the manager's splitter states its level through functions. The **Levels** panel then shows each validation (with a pass, fail or untested chip), each manager's level file (a button that opens it), and each splitter step with Clef's verdict on it. The graph shows every agent: managers and workers as circles, link readers, splitters, builders and compilers as squares. The room is done when its manager's compiler observes every validation passing; nothing else completes it. If the room holds, the panel says why:
 
 | Hold | Meaning | What to do |
 |---|---|---|
@@ -89,7 +89,7 @@ After deploying, run the probe's `hostname` item once (section 6.1) and check th
 
 The room opens the box its first compile will use as soon as it knows which image the first level's validations need: when the first level is admitted, so the box starts while the first workers write.
 
-The prewarmed box is like any other box: a new Durable Object, internet off, `standard-1`, the `check` image (or `browser` when the level has browser validations), and it runs one compile. Only the first compile that needs exactly that image takes it. If a compile needs the other image (a level added validations, or a piece's compile runs only some of them), the prewarmed box is stopped unused and the compile opens its own. The box counts against `BOX_CONCURRENCY` from the moment it opens, and the room opens none when no slot is free. A prewarmed box that no compile takes within 4 minutes, or that is still open when the run ends, stops, and a `box` span named `prewarm_unused` records why.
+The prewarmed box is like any other box: a new Durable Object, internet off, `standard-1`, the `check` image (or `browser` when the level has browser validations), and it runs one compile. Only the first compile that needs exactly that image takes it. If a compile needs the other image (a level added validations, or a piece's compile runs only some of them), the prewarmed box is stopped unused and the compile opens its own. The box counts against `BOX_CONCURRENCY` from the moment it opens, and the room opens none when no slot is free. A prewarmed box that no compile takes is stopped at the end of its life, which is three times the room's **Verification time**, or when the run ends if that comes first, and a `box` span named `prewarm_unused` records why.
 
 In the export, compare the `prewarm` span with the first compile's container span. The prewarm should end before or soon after the compile starts, and the compile's `box.waited_ms` should be well under its `prewarm_ms`.
 

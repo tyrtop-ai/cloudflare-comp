@@ -200,9 +200,9 @@ In the answer, `items.hostname.runner_named` should be `true`, and `items.hostna
    The splitters assign that requirement like any other, and Root promises `start`: its split must give `start` to exactly one child. While the run is going, **Start** becomes **Stop**. Stop starts no new turns; the running ones finish, and then the room pauses (**Stopping** until then). **Continue** resumes it.
 
 The dashboard loads one full snapshot, then asks for what changed every second (`/api/delta`). It shows:
-- **The agent graph**: every agent is a node joined to the agent that made it, coloured by role. Managers and workers are circles; splitters, builders and compilers are squares. A builder that is linking has a thin band scrolling left to right across its square. Green lines mark a branch whose agents are all done, and a green ring marks one its builder has linked. Click a node to see, below the graph, its task and what it promised or delivers.
-- **Agent traffic:** the latest 300 events, newest first.
-- **The files** the room has recorded, committed or staged for the current turn's commit. Click one to read its content from the room's index of Artifacts writes.
+- **The agent graph**: every agent is a node joined to the agent that made it, coloured by role. Managers and workers are circles; link readers, splitters, builders and compilers are squares. In a v8 room each link reader (one per part of a linked page, and one per page) is drawn under the manager the room created, which its notes go to. A builder that is linking has a thin band scrolling left to right across its square. Green lines mark a branch whose agents are all done, and a green ring marks one its builder has linked. Click a node to see, below the graph, its task and what it promised or delivers.
+- **Agent traffic:** newest first. A v8 room shows every event of the run, so you can scroll down to the first; a v7 room shows the latest 300.
+- **The files** the room has recorded, committed or staged for the current turn's commit (in a v7 room, the first 240). Click one to read its content from the room's index of Artifacts writes.
 - **The Container build panel**, with the latest Container report.
 - In a v8 room, the **Levels** panel (each validation with a pass, fail or untested chip, each manager's level file, each splitter step with Clef's verdict, and why the room is held), the **Sources and base** panel and the **Prompts** queue.
 
@@ -263,10 +263,10 @@ Every route takes the token as `Authorization: Bearer <APP_TOKEN>`. A room ID is
 | Route | Purpose |
 |---|---|
 | `GET /api/state?room=` | Dashboard snapshot |
-| `GET /api/delta?room=&since=&agents_since=&files_since=&exports=&run=` | What changed since the cursor a snapshot or delta returned: new events (up to 300), changed agents and files, the export list when it changed, and the small state whole. A cursor from another run gets the full snapshot. The dashboard polls this every second |
+| `GET /api/delta?room=&since=&agents_since=&files_since=&exports=&run=` | What changed since the cursor a snapshot or delta returned: new events (every one since the cursor in a v8 room, up to 300 in a v7 room), changed agents and files, the export list when it changed, and the small state whole. A cursor from another run gets the full snapshot. The dashboard polls this every second |
 | `GET /api/export?room=` | Full export |
 | `GET /api/file?room=&agent=&path=` | One file an agent wrote, from the room's index of its Artifacts writes |
-| `POST /api/run` | `{room, goal, budget, settings, base?}`: start a new run. The goal must have at least 8 characters; a v7 goal also has at most 4000, and a v8 goal has no upper limit. `base` needs `settings.pipeline: "v8"`: `{repo: "owner/name", ref?}` for a public GitHub repo (`ref` is a branch, tag or commit; the default branch when left out), or `{room: "<room id>"}` for another room's previous v8 result. The base is read before the room is cleared, so a base that cannot be read refuses the Start and leaves the room as it was |
+| `POST /api/run` | `{room, goal, budget, settings, base?}`: start a new run. A v8 goal has no length limit: only an empty one is refused. A v7 goal must have 8–4000 characters. `base` needs `settings.pipeline: "v8"`: `{repo: "owner/name", ref?}` for a public GitHub repo (`ref` is a branch, tag or commit; the default branch when left out), or `{room: "<room id>"}` for another room's previous v8 result. The base is read before the room is cleared, so a base that cannot be read refuses the Start and leaves the room as it was |
 | `POST /api/continue` | `{room, budget, settings}`: resume a run |
 | `POST /api/amend` | `{room, text, budget?}`: v8 only. Apply a follow-up now: a complete, failed or paused room runs again for it, and a running room takes it as an adjustment. Returns `{status, goal_rev}`, or `{error}` (409 while another change is being applied) |
 | `GET /api/prompts?room=` · `POST /api/prompts` | List the prompts and the goal's revision; `{room, text, budget?}` adds a prompt to the end of the queue. When the room's run ends (it completes or fails), the alarm applies the next queued prompt |
