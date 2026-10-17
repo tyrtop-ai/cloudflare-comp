@@ -6,7 +6,11 @@
 // (its staged writes included), how a file is stored, how its examples run
 // and how an ask is sent. done and wait end the session with the summary
 // given; the room records the turn's end as the function said it.
-import { pathError } from '../container/build-path.mjs';
+// A path names a place among the worker's own files, as a rooted file
+// system reads it (rootedPath): '..' from the top is the top, so no path
+// reaches past them.
+import { rootedPath } from '../container/build-path.mjs';
+import { unheldPath } from './validations.js';
 import { session } from './session.js';
 import { systemPrompt, TOOLS, MESSAGES } from './prompts.js';
 
@@ -29,25 +33,29 @@ export const workerTools = () => TOOLS.worker;
 
 // ------------------------------------------------------------ the functions
 const paths = w => [...w.files.keys()].sort();
+// The place a path names among the worker's files: '' when it names none (the top itself).
+const placeOf = a => isText(a.path) ? rootedPath(a.path) : '';
 function readFile(w, a) {
   const bad = fieldsOf('read_file', a, ['path']);
   if (bad) return {error: bad};
-  if (!isText(a.path) || !a.path) return {error: 'path is the text of a relative path'};
-  if (!w.files.has(a.path)) return {error: MESSAGES.no_file({path: a.path, paths: paths(w).join(', ')})};
-  return {path: a.path, content: w.files.get(a.path)};
+  const path = placeOf(a);
+  if (!path) return {error: 'path is the text of a relative path'};
+  if (!w.files.has(path)) return {error: MESSAGES.no_file({path, paths: paths(w).join(', ')})};
+  return {path, content: w.files.get(path)};
 }
 async function writeFile(w, a) {
   const bad = fieldsOf('write_file', a, ['path', 'content']);
   if (bad) return {error: bad};
-  if (!isText(a.path) || !a.path) return {error: 'path is the text of a relative path'};
+  const path = placeOf(a);
+  if (!path) return {error: 'path is the text of a relative path'};
   if (!isText(a.content)) return {error: 'content is the complete text of the file'};
-  const why = pathError(a.path, {own: true});
-  if (why) return {error: MESSAGES.not_inside({path: a.path, why: why.replace(/^.*?: /, '')})};
-  if (w.files.get(a.path) === a.content) { w.unchanged.push(a.path); return {unchanged: a.path, says: MESSAGES.unchanged({path: a.path})}; }
-  await w.write(a.path, a.content);
-  w.files.set(a.path, a.content);
-  if (!w.written.includes(a.path)) w.written.push(a.path);
-  return {written: a.path, characters: a.content.length};
+  const unheld = unheldPath(path);
+  if (unheld) return {error: unheld};
+  if (w.files.get(path) === a.content) { w.unchanged.push(path); return {unchanged: path, says: MESSAGES.unchanged({path})}; }
+  await w.write(path, a.content);
+  w.files.set(path, a.content);
+  if (!w.written.includes(path)) w.written.push(path);
+  return {written: path, characters: a.content.length};
 }
 async function runExamples(w, a) {
   const bad = fieldsOf('run_examples', a, []);

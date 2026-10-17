@@ -6,7 +6,7 @@
 // themselves are test/splitter.test.js.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {commandArgv, urlPathError, readCheck, runOf, runsOf, servedRun, renderExample, checkExamples, contractExamples, checkSummary, internalCandidate,
+import {commandArgv, readCheck, runOf, runsOf, servedRun, renderExample, checkExamples, contractExamples, checkSummary, internalCandidate,
   EXAMPLES_PER_CONTRACT} from '../src/validations.js';
 
 const ctx = (extra = {}) => ({paths: new Set(['README.md', 'convert.py', 'conv.py', 'index.html']), functions: new Set(['to_f', 'to_c', 'other']),
@@ -25,13 +25,10 @@ test('commandArgv: words split by spaces, quotes group, nothing is shell syntax;
   assert.match(commandArgv(Array.from({length: 41}, () => 'a').join(' ')).error, /more than 40 arguments/);
 });
 
-test('urlPathError: a path on the served site is one "/" and a plain name', () => {
-  for (const ok of ['/', '/items', '/items/3?x=1', '/a.html#top']) assert.equal(urlPathError(ok), '', ok);
-  assert.match(urlPathError('items'), /single "\/"/);
-  assert.match(urlPathError('//evil.example'), /single "\/"/);
-  assert.match(urlPathError('/a b'), /plain path/);
-  assert.match(urlPathError('/a/%2e%2e/b'), /plain path/);
-  assert.match(urlPathError('/../etc'), /step up/);
+test('a path a check requests is sent as written: no path rule; the box keeps each request on its served origin and each file in its folder', () => {
+  for (const path of ['/', '/items', '/items/3?x=1', '/a.html#top', 'items', '/a b', '/a/%2e%2e/b', '/../etc', '//elsewhere.example'])
+    assert.deepEqual(readCheck({kind: 'http', serve: 'api', steps: [{method: 'GET', path}]}, ctx()).check.steps[0].path, path, path);
+  for (const goto of ['/', 'page.html', '/../x', '/.well-known/x']) assert.deepEqual(readCheck({kind: 'browser', serve: 'index.html', steps: [{goto}]}, ctx()).check.steps, [{goto}], goto);
 });
 
 test('readCheck: each kind held to what can run: a path the level places, a command or program the box has, a declared function, a served contract; one call check runs one file', () => {
@@ -41,14 +38,15 @@ test('readCheck: each kind held to what can run: a path the level places, a comm
   assert.deepEqual(readCheck({kind: 'command', run: 'convert 100 C', expect: {stdout_has: ['212']}}, ctx()).check, {kind: 'command', run: 'convert 100 C', argv: ['convert', '100', 'C'], expect: {stdout_has: ['212']}});
   assert.deepEqual(readCheck({kind: 'command', run: 'python3 convert.py'}, ctx()).check.expect, {exit: 0}, 'no expectation: it exits 0');
   assert.equal(readCheck({kind: 'command', run: 'ruby x.rb'}, ctx()).error, 'the command check runs "ruby", which is neither a command contract declared so far nor a program the box has (python3, node)');
-  assert.match(readCheck({kind: 'command', run: 'convert', files: {'../x': 'a'}}, ctx()).error, /input file "\.\.\/x" that is not a relative path/);
+  // An input file sits at the place its path names beside the command, as a rooted file system reads it.
+  assert.deepEqual(readCheck({kind: 'command', run: 'convert', files: {'../x': 'a', 'in/./b.txt': 'b'}}, ctx()).check.files, {x: 'a', 'in/b.txt': 'b'});
+  assert.match(readCheck({kind: 'command', run: 'convert', files: {'/': 'a'}}, ctx()).error, /input file "\/" that is not a file's path/);
   assert.deepEqual(readCheck({kind: 'call', steps: [{call: 'to_f', args: [100], expect: 212}, {call: 'to_c', args: [212], save: 'c'}]}, ctx()).check,
     {kind: 'call', steps: [{call: 'to_f', args: [100], expect: 212}, {call: 'to_c', args: [212], save: 'c'}]});
   assert.equal(readCheck({kind: 'call', steps: [{call: 'nope'}]}, ctx()).error, 'step 1 of the call check calls "nope", which is not a function contract declared so far (to_f, to_c, other)');
   assert.match(readCheck({kind: 'call', steps: [{call: 'to_f'}, {call: 'other'}]}, ctx()).error, /calls functions of different files \(conv\.py, other\.py\); one call check runs the functions of one file/);
   assert.deepEqual(readCheck({kind: 'browser', serve: 'index.html', steps: [{goto: '/'}, {click: {role: 'button', name: 'Add'}}, {expect_count: {role: 'listitem', n: 1}}]}, ctx()).check.steps.length, 3);
   assert.equal(readCheck({kind: 'browser', serve: 'site', steps: [{goto: '/'}]}, ctx()).error, 'the browser check serves "site", which is not a declared contract that states how it runs (index.html, api)');
-  assert.match(readCheck({kind: 'http', serve: 'api', steps: [{method: 'GET', path: '/a b'}]}, ctx()).error, /plain path on the served site/);
   assert.equal(readCheck({kind: 'http', serve: 'api', steps: [{method: 'TRACE', path: '/'}]}, ctx()).error, 'step 1 of the http check: its method "TRACE" is not one of "GET", "POST", "PUT", "PATCH", "DELETE"');
   assert.equal(readCheck({kind: 'smell'}, ctx()).error, 'the check\'s kind "smell" is not one of "file", "judge", "command", "call", "http", "browser"');
 });
@@ -61,12 +59,12 @@ test('readCheck takes a check only as written: other kind words, field aliases, 
   assert.equal(readCheck({kind: 'command', run: 'convert 1 C', expect: {exit_code: 0}}, ctx()).error, 'the command check: its expect has the field "exit_code"; its fields are "exit", "stdout", "stdout_has", "stderr_has", "stderr"');
   assert.equal(readCheck({kind: 'command', run: 'convert 1 C', expect: {stdout_has: '33.8'}}, ctx()).error, 'the command check: stdout_has is a list of texts');
   assert.equal(readCheck({kind: 'file', path: 'README.md', contains: '## Run'}, ctx()).error, 'the file check has the field "contains"; its fields are "kind", "path", "has", "json"');
-  assert.equal(readCheck({kind: 'file', path: './README.md'}, ctx()).error, 'the file check reads "./README.md", which no declared contract places and the existing files do not hold');
+  // A path names the place it does, as a rooted file system reads it: ./README.md is README.md.
+  assert.deepEqual(readCheck({kind: 'file', path: './README.md'}, ctx()).check, {kind: 'file', path: 'README.md'});
   assert.equal(readCheck({kind: 'call', steps: [{call: 'to_f', args: 212}]}, ctx()).error, 'step 1 of the call check: args is the list of arguments');
   // {"throws": true} inside expect is the value it expects, as written.
   assert.deepEqual(readCheck({kind: 'call', steps: [{call: 'to_f', args: ['x'], expect: {throws: true}}]}, ctx()).check.steps[0], {call: 'to_f', args: ['x'], expect: {throws: true}});
-  assert.equal(readCheck({kind: 'http', serve: 'api', steps: [{method: 'GET', path: 'items'}]}, ctx()).error, 'step 1 of the http check: its path "items": it must start with a single "/"');
-  assert.equal(readCheck({kind: 'http', serve: 'api', steps: [{method: 'GET', path: 'http://localhost:8000/items'}]}, ctx()).error, 'step 1 of the http check: its path "http://localhost:8000/items": it must start with a single "/"');
+  assert.equal(readCheck({kind: 'http', serve: 'api', steps: [{method: 'GET', path: 'http://localhost:8000/items'}]}, ctx()).check.steps[0].path, 'http://localhost:8000/items', 'a whole URL is kept literally: the box asks only its served origin');
   assert.match(readCheck({kind: 'browser', serve: 'index.html', steps: [{goto: '/', expect_text: 'Milk'}]}, ctx()).error, /^step 1 of the browser check: a browser step is an object with exactly one of .*; this one has "goto", "expect_text"$/);
   assert.match(readCheck({kind: 'browser', serve: 'index.html', steps: [{action: 'click', target: 'Add'}]}, ctx()).error, /this one has "action", "target"$/);
   assert.deepEqual(readCheck({kind: 'browser', serve: 'index.html', steps: [{expect_text: '<li class="item">Milk</li>'}]}, ctx()).check.steps, [{expect_text: '<li class="item">Milk</li>'}], 'markup in a text is text');
@@ -78,7 +76,8 @@ test('runOf: only a page, a route or a command is started, by the run it states 
   assert.deepEqual(runOf({static: true}, {name: 'index.html', kind: 'page'}, world), {run: {static: true}});
   assert.deepEqual(runOf({run: 'python3 app.py', ready: '/health'}, {name: 'GET /items', kind: 'route'}, world), {run: {run: 'python3 app.py', argv: ['python3', 'app.py'], ready: '/health'}});
   assert.deepEqual(runOf({run: 'serve'}, {name: 'api', kind: 'route'}, world), {run: {run: 'serve', argv: ['serve']}});
-  assert.equal(runOf({run: 'serve', ready: 'health'}, {name: 'api', kind: 'route'}, world).error, 'its ready path: it must start with a single "/"');
+  assert.deepEqual(runOf({run: 'serve', ready: 'health'}, {name: 'api', kind: 'route'}, world), {run: {run: 'serve', argv: ['serve'], ready: 'health'}}, 'a ready path is kept as written');
+  assert.equal(runOf({run: 'serve', ready: 3}, {name: 'api', kind: 'route'}, world).error, 'its ready path is a path');
   assert.equal(runOf({run: 'ruby app.rb'}, {name: 'GET /items', kind: 'route'}, world).error, 'its run starts "ruby", which is neither a command contract declared so far nor a program the box has (python3)');
   assert.equal(runOf('python3 app.py', {name: 'GET /items', kind: 'route'}, world).error, 'run is an object: static true, or run (a command line) with ready (a path)');
   assert.equal(runOf({run: 'python3 cli.py', argv: ['python3', 'cli.py'], port: true}, {name: 'convert', kind: 'command'}, world).error, 'run has the fields "argv", "port"; its fields are "run", "ready"');

@@ -11,8 +11,7 @@
 import {fetchGoalSources, fetchPolicy, chunkText, quoteSource, sanitizeText, sourceSummaries, goalUrls, SOURCE_CLAUSE, LIMITS} from './fetcher.js';
 import {fetchGithubRepo, parseRepoUrl, repoDigest, REPO_LIMITS, byteLength} from './base.js';
 import {runtimeOwned} from './code-work.js';
-import {isAssemblyMetadata} from './assembly.js';
-import {buildPathError} from '../container/build-path.mjs';
+import {boxPathError} from '../container/build-path.mjs';
 import {fromBase64} from './zip.js';
 
 export {SOURCE_CLAUSE};
@@ -78,21 +77,18 @@ export function normalizeBase(raw) {
   return {error: 'base must be {"repo": "owner/name", "ref": "…"} or {"room": "<room id>"}'};
 }
 
-// Why a path is never carried: the runtime's own paths (.recursive/, glue/),
-// memory and assembly metadata, which the runtime writes again for each run.
+// Why a path is never carried: the runtime's own paths of an earlier run's
+// export (.recursive/, glue/), which the runtime writes again for each run.
+// Any other path is the project's, memory/ and the like too.
 export function notCarried(path) {
-  if (runtimeOwned(path)) return 'the runtime writes this path for each run';
-  if (/^memory(?:\/|$)/i.test(path) || isAssemblyMetadata(path)) return 'the runtime keeps this path for itself';
-  return null;
+  return runtimeOwned(path) ? 'the runtime writes this path for each run' : null;
 }
-// Why a path is not a base file the room builds (it is carried instead), or null.
-export const basePathRefusal = path => notCarried(path) || (buildPathError(path) ? 'a path the build cannot carry' : null);
 
 // Sort the base: entries [{path, text} | {path, bytes, reason}] with a mode
 // each. Kept as base files, within U8's limits (≤ 400 text files, ≤ 2 MB, ≤
-// 256 KB each): text at a path the build carries. Carried untouched (within
-// passMaxFiles and passMaxBytes): what is bytes already, a path the build
-// cannot carry, a binary, a file over a cap. Never carried, and listed: the
+// 256 KB each): text at a path inside the box's folder. Carried untouched
+// (within passMaxFiles and passMaxBytes): what is bytes already, a path
+// outside the box's folder, a binary, a file over a cap. Never carried, and listed: the
 // runtime's paths, and a second file whose path equals another's apart from
 // case (a case-insensitive file system holds one of them). Result: {files:
 // Map(path → text), modes: Map(path → mode), passthrough: [{path, bytes,
@@ -117,7 +113,7 @@ export function keepBaseFiles(entries, limits = {}) {
     seen.set(low, path);
     if (e.bytes instanceof Uint8Array) { carry(path, e.bytes, e.mode, e.reason || 'carried untouched'); continue; }
     const text = String(e.text ?? '');
-    if (buildPathError(path)) { carry(path, utf8.encode(text), e.mode, 'a path the build cannot carry'); continue; }
+    if (boxPathError(path)) { carry(path, utf8.encode(text), e.mode, 'a path outside the box\'s folder'); continue; }
     if (text.slice(0, 8192).includes('\u0000')) { carry(path, utf8.encode(text), e.mode, 'binary'); continue; }
     const size = byteLength(text);
     if (size > L.maxFileBytes) { carry(path, utf8.encode(text), e.mode, 'too large'); continue; }

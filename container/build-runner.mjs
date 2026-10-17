@@ -7,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {builtinModules,createRequire} from 'node:module';
 import {spawn} from 'node:child_process';
 import {createServer as createNetServer} from 'node:net';
-import {buildPathError} from './build-path.mjs';
+import {buildPathError,boxPathError} from './build-path.mjs';
 import {stackFrames} from './stack-frames.mjs';
 import {jsonHas,localRequest} from './adapters/http-check.mjs';
 import {readdirSync,readFileSync} from 'node:fs';
@@ -265,14 +265,16 @@ export function buildOptions(raw) {
   const o=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw:{};
   return {describe_api:o.describe_api===true,prechecked:o.prechecked===true};
 }
-function validate(raw) {
+// unsafe: v7's build path rule, the one the Worker's gate and
+// validateBuildFiles share (build-path.mjs); a v8 box's checks take its own
+// safety alone (boxPathError), every file inside its folder.
+function validate(raw,unsafe=buildPathError) {
   if(!raw||typeof raw.fingerprint!=='string'||typeof raw.snapshot_hash!=='string'||!raw.files||typeof raw.files!=='object')throw Error('Malformed build request');
   const entries=Object.entries(raw.files).sort(([a],[b])=>a.localeCompare(b));
   if(!entries.length||entries.length>1600)throw Error('Invalid number of files');
   let size=0;
   for(const [name,content] of entries) {
-    // The one path rule the Worker's gate and validateBuildFiles share (build-path.mjs).
-    if(typeof content!=='string'||buildPathError(name))throw Error('Unsafe file path '+name);
+    if(typeof content!=='string'||unsafe(name))throw Error('Unsafe file path '+name);
     size+=Buffer.byteLength(content);
   }
   if(size>4*1024*1024)throw Error('Build request too large');
@@ -719,7 +721,7 @@ function validateCheckPlan(raw) {
   // the plan's.
   const paths={};
   for(const [name,dirs] of Object.entries(plan.paths&&typeof plan.paths==='object'?plan.paths:{}))
-    if(/^[A-Z][A-Z0-9_]{0,30}PATH$/.test(name)&&Array.isArray(dirs))paths[name]=dirs.filter(d=>typeof d==='string'&&(d==='.'||!buildPathError(d))).slice(0,8);
+    if(/^[A-Z][A-Z0-9_]{0,30}PATH$/.test(name)&&Array.isArray(dirs))paths[name]=dirs.filter(d=>typeof d==='string'&&(d==='.'||!boxPathError(d))).slice(0,8);
   return {syntax:list(plan.syntax),install:list(plan.install),project:list(plan.project),runs,checks,commands,paths};
 }
 async function writeTree(dir,files) {
@@ -730,7 +732,7 @@ async function writeTree(dir,files) {
 // limits (the prlimit prefix), runNamespace (false: runs keep the network).
 export async function verifyChecks(request,{isolation,limits:limitOption,runNamespace=true}={}) {
   // The pristine bundle: in memory only, never re-read from disk.
-  const files=Object.freeze(Object.fromEntries(validate(request)));
+  const files=Object.freeze(Object.fromEntries(validate(request,boxPathError)));
   const rows=(Array.isArray(request.toolchains)?request.toolchains:[]).filter(r=>r&&typeof r.id==='string');
   const plan=validateCheckPlan(request.plan),limits=checkLimits(request.limits);
   // S5: only a variable a row's glue names as its module path (never a loader's).
@@ -817,7 +819,7 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
       const box=await fresh('check');
       try {
         for(const [name,content] of Object.entries(c.files&&typeof c.files==='object'?c.files:{})) {
-          if(buildPathError(name)||typeof content!=='string')return result(c,false,0,`fixture ${clip(name,60)} is not a safe relative path`,{observed:{what:'setup',note:'an input file of the check is not a safe relative path'}});
+          if(boxPathError(name)||typeof content!=='string')return result(c,false,0,`fixture ${clip(name,60)} is not a safe relative path`,{observed:{what:'setup',note:'an input file of the check is not a safe relative path'}});
           if(Object.hasOwn(files,name))return result(c,false,0,`fixture ${name} would replace the bundle's ${name}`,{observed:{what:'setup',note:`an input file of the check would replace the project's ${name}`}});
           const target=path.join(box.dir,name);await mkdir(path.dirname(target),{recursive:true});await writeFile(target,content,'utf8');
         }
@@ -894,11 +896,13 @@ export async function verifyChecks(request,{isolation,limits:limitOption,runName
       }
       const run=spec.argv??spec.run,resolved=resolveCommand(run,{files,rows,commands:plan.commands});
       if(resolved.error){await box.dispose();return {id:spec.id,error:resolved.error};}
-      const port=ns?nsPorts++:await freePort(),ready=typeof spec.ready==='string'&&spec.ready.startsWith('/')?spec.ready:'/';
+      const port=ns?nsPorts++:await freePort(),ready=typeof spec.ready==='string'?spec.ready:'/';
+      const base_url=`http://127.0.0.1:${port}/`,label=commandText(run),readyUrl=new URL(ready,base_url);
+      // The box's own safety: it asks only its served origin.
+      if(readyUrl.origin!==new URL(base_url).origin){await box.dispose();return {id:spec.id,error:`${label}: its ready path ${clip(ready,80)} leaves the served origin`};}
       const argv=resolved.argv.map(x=>x.replaceAll('{port}',String(port)));
       const p=startProcess([...enter(),...limitPrefix,...argv],{cwd:box.dir,env:{...box.env,PORT:String(port)}});
-      const base_url=`http://127.0.0.1:${port}/`,label=commandText(run);
-      const w=await waitReady(p,new URL(ready,base_url).href,until);
+      const w=await waitReady(p,readyUrl.href,until);
       if(!w.ready) {
         await sleep(50);
         const out=redact(p.log(),box.dir,box.root),frames=framesOf(p.log(),files,rows,box.dir),code=p.exited()?.code;

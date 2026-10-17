@@ -21,7 +21,7 @@
 //   ctx.container.destroy(), ctx.container.running
 import {DurableObject} from 'cloudflare:workers';
 import {execAfterStartup, waitForBuildOutput, buildRequestOptions, checksRequestFields} from './build-executor.js';
-import {snapshotHash, validateBuildFiles} from './build-verification.js';
+import {snapshotHash, validateBoxFiles} from './build-verification.js';
 
 export const BOX_IMAGES = Object.freeze(['check', 'browser', 'fetch']);
 // `basic` is not accepted under the durable_object policy (scheduling-policy docs).
@@ -284,7 +284,7 @@ export class Box extends DurableObject {
       const opened = await this.compileBox(raw);
       if (opened.gone) return {prewarm_closed: true};
       if (typeof fingerprint !== 'string' || fingerprint.length > 240) throw new BoxError('bad_request', 'Invalid build fingerprint');
-      const entries = validateBuildFiles(files);
+      const entries = validateBoxFiles(files);
       const snapshot_hash = await snapshotHash(entries);
       const input = JSON.stringify({fingerprint, snapshot_hash, files: Object.fromEntries(entries), options: buildRequestOptions(options), ...checksRequestFields(checks)});
       const c = this.container(), began = Date.now();

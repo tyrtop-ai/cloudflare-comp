@@ -114,17 +114,16 @@ test('base: owner/name or a github.com URL, or a room id; anything else is refus
     assert.ok(normalizeBase(bad).error, JSON.stringify(bad));
 });
 
-test('base files: built text within 400 files and 2 MB; what the build cannot carry is carried untouched; the runtime\'s paths and case twins are not carried', () => {
+test('base files: built text within 400 files and 2 MB, at any path inside the box\'s folder; the rest is carried untouched; the runtime\'s paths and case twins are not carried', () => {
   const t = (path, text, mode = 0o644) => ({path, text, mode});
   const kept = keepBaseFiles([t('README.md', '# x\n'), t('.recursive/RUN.md', 'notes'), t('glue/index.js', 'x'), t('memory/public.json', '{}'), t('a b.txt', 'x'),
     t('.github/workflows/ci.yml', 'on: push'), t('.gitignore', 'node_modules\n'), t('data.bin', 'a\u0000b'), t('big.txt', 'x'.repeat(300 * 1024)), t('bin/run.sh', 'echo hi\n', 0o755),
     t('readme.md', 'a twin\n'), {path: 'logo.png', bytes: new Uint8Array([1, 2, 3]), mode: 0o644, reason: 'binary'}]);
-  assert.deepEqual([...kept.files.keys()], ['.gitignore', 'README.md', 'bin/run.sh']);
+  assert.deepEqual([...kept.files.keys()], ['.github/workflows/ci.yml', '.gitignore', 'README.md', 'a b.txt', 'bin/run.sh', 'memory/public.json']);
   assert.equal(kept.modes.get('bin/run.sh'), 0o755);
-  assert.deepEqual(kept.passthrough.map(p => [p.path, p.reason]), [['.github/workflows/ci.yml', 'a path the build cannot carry'], ['a b.txt', 'a path the build cannot carry'],
-    ['big.txt', 'too large'], ['data.bin', 'binary'], ['logo.png', 'binary']]);
+  assert.deepEqual(kept.passthrough.map(p => [p.path, p.reason]), [['big.txt', 'too large'], ['data.bin', 'binary'], ['logo.png', 'binary']]);
   assert.deepEqual(kept.not_carried.map(s => [s.path, s.reason]), [['.recursive/RUN.md', 'the runtime writes this path for each run'], ['glue/index.js', 'the runtime writes this path for each run'],
-    ['memory/public.json', 'the runtime keeps this path for itself'], ['readme.md', 'the same path as README.md apart from letter case']]);
+    ['readme.md', 'the same path as README.md apart from letter case']]);
   const many = keepBaseFiles(Array.from({length: 410}, (_, i) => t(`f${String(i).padStart(3, '0')}.txt`, 'x\n')));
   assert.deepEqual([many.files.size, many.passthrough.length, many.skipped_count], [400, 10, 0]);
   const over = keepBaseFiles(Array.from({length: 410}, (_, i) => t(`f${String(i).padStart(3, '0')}.txt`, 'x\n')), {passMaxFiles: 4});
@@ -531,7 +530,7 @@ test('a restart after the level file is committed and before the base-file confi
 });
 
 // ------------------------------------------------------------ M2: a base with components/ of its own
-test('S8b review M2: a base holding components/ moves the pieces\' folder to rcp_parts, so no piece replaces a base file; a level names a repo\'s components/ files exactly', async () => {
+test('S8b review M2: a base holding components/ moves the pieces\' folder to rcp_parts, so no piece replaces a base file; a level places a file at any path, with no path rule', async () => {
   const files = {'README.md': '# W\n', 'components/Button.js': 'module.exports = {Button: 1};\n', 'components/p_notes_writer_0000000000/helper.js': '// the project\'s own file\nmodule.exports = "base";\n'};
   const level = {contracts: [NOTES], validations: [has('n1', 'NOTES.md', '# Notes'), has('n2', 'NOTES.md', 'notes'), has('n3', 'NOTES.md', 'widget')], pieces: []};
   const {room, drain} = inputsRoom({level, fetch: fakeFetch(repoRoutes(files)),
@@ -546,16 +545,15 @@ test('S8b review M2: a base holding components/ moves the pieces\' folder to rcp
   for (const [p, t] of Object.entries(files)) assert.equal(bundle.get(p), t, `the base file ${p} stays`);
   assert.equal(bundle.get(packagePath(w.label, 'helper.js', w.id, 'rcp_parts')), 'module.exports = "piece";\n');
   assert.equal(partsRoot(['rcp_parts/x', 'Components/y']), 'rcp_parts_2');
-  // Contracts name a repo's own components/ file exactly; the parts root and case twins are refused.
+  // No path rule: a contract places its file at the path it names, the parts root and another case of a base file too.
   const facts = {...room.contractFacts()};
   const errs = list => contractErrors([{label: 'P', task: 'x', interfaces: list}], [], {facts}).map(e => e.text);
-  assert.deepEqual(errs([{name: 'components/Button.js', kind: 'file', path: 'components/Button.js', does: 'the button'}]), []);
-  assert.match(errs([{name: 'components/button.js', kind: 'file', path: 'components/button.js', does: 'x'}])[0], /differs only in letter case from the existing file components\/Button\.js/);
-  assert.match(errs([{name: 'rcp_parts/x.md', kind: 'doc', path: 'rcp_parts/x.md', does: 'x'}])[0], /keeps rcp_parts\//);
-  // The splitter's contract function answers the same: stored, or why not.
+  for (const path of ['components/Button.js', 'components/button.js', 'rcp_parts/x.md'])
+    assert.deepEqual(errs([{name: path, kind: path.endsWith('.md') ? 'doc' : 'file', path, does: 'x'}]), [], path);
+  // The splitter's contract function answers the same: stored.
   const stated = c => splitterCall(splitterState({base: ['README.md', 'components/Button.js']}), 'contract', c).result;
   assert.deepEqual(stated({name: 'components/Button.js', kind: 'file', path: 'components/Button.js', does: 'the button'}), {stored: 'components/Button.js', kind: 'file'});
-  assert.match(stated({name: 'readme.md', kind: 'doc', path: 'readme.md', does: 'x'}).error, /differs only in letter case from the existing file README\.md/);
+  assert.deepEqual(stated({name: 'readme.md', kind: 'doc', path: 'readme.md', does: 'x'}), {stored: 'readme.md', kind: 'doc'});
 });
 
 // ------------------------------------------------------------ M4: the room's manager holds at most 16 refs; no placeholder reaches a model
@@ -608,19 +606,19 @@ test('S8b review M5: files the room does not build are carried untouched (bytes,
   const {room, drain} = inputsRoom({level: README_LEVEL, judge: readmeJudge, fetch, answers: {'README.md': [wrote([['README.md', GOOD_README]])]}});
   await room.start(README_GOAL, 20, {pipeline: 'v8'}, 'room-m5m5-0001', {base: {repo: 'acme-example/widget'}, selfHosts: ['c.example.com']});
   await drain();
-  // A carried file that is text at a path the box holds (dist/bundle.js) ships in the bundle, so its box held it and its syntax step
-  // compiled it; the others (a dotfile path, a path with a space, a binary) the box cannot hold, so the room holds for the person with
-  // them listed, and Continue accepts them.
+  // Text at any path inside the box's folder (a dotfile path, a path with a space) is a base file; a carried file that is text
+  // (dist/bundle.js) ships in the bundle, so its box held it and its syntax step compiled it; a binary the box cannot hold, so the
+  // room holds for the person with it listed, and Continue accepts it.
   assert.equal(room.snapshot().pause?.kind, 'checks_untested', trace(room));
-  assert.match(room.snapshot().pause.text, /3 file\(s\) that ship were never compiled or never in the box[\s\S]*\.github\/workflows\/ci\.yml[\s\S]*docs\/my notes\.md[\s\S]*logo\.png \(carried untouched \(binary\), and it is not UTF-8 text\)/);
+  assert.match(room.snapshot().pause.text, /1 file\(s\) that ship were never compiled or never in the box[\s\S]*logo\.png \(carried untouched \(binary\), and it is not UTF-8 text\)/);
   assert.equal(room.runFinished(), false);
   await room.resume(20);
   await drain();
   assert.equal(room.get('status'), 'complete', trace(room));
   const app = await room.appFiles();
   assert.equal(app.passed, true);
-  assert.deepEqual(app.unchecked, ['.github/workflows/ci.yml', 'docs/my notes.md', 'logo.png']);
-  assert.match(app.note, /but for 3 the person accepted shipping unchecked/);
+  assert.deepEqual(app.unchecked, ['logo.png']);
+  assert.match(app.note, /but for 1 the person accepted shipping unchecked/);
   const at = p => app.files.find(f => f.path === p);
   assert.deepEqual(app.files.filter(f => !f.path.startsWith('.recursive/')).map(f => f.path).sort(), ['.github/workflows/ci.yml', 'README.md', 'bin/widget.js', 'dist/bundle.js', 'docs/my notes.md', 'logo.png', 'package.json', 'src/shout.js']);
   assert.equal(at('dist/bundle.js').from_base, 'unchanged');
@@ -629,12 +627,12 @@ test('S8b review M5: files the room does not build are carried untouched (bytes,
   assert.equal(at('src/shout.js').content, BOM_SHOUT, 'the byte order mark survives');
   assert.deepEqual([at('bin/widget.js').mode, at('bin/widget.js').from_base, at('README.md').from_base], ['100755', 'unchanged', undefined]);
   assert.deepEqual([...fromBase64(at('logo.png').content_base64)], [...PNG]);
-  assert.deepEqual(app.files.filter(f => f.passthrough).map(f => [f.path, f.reason]), [['.github/workflows/ci.yml', 'a path the build cannot carry'],
-    ['docs/my notes.md', 'a path the build cannot carry'], ['logo.png', 'binary']]);
+  assert.deepEqual(app.files.filter(f => f.passthrough).map(f => [f.path, f.reason]), [['logo.png', 'binary']]);
+  assert.deepEqual([at('.github/workflows/ci.yml').from_base, at('docs/my notes.md').from_base], ['unchanged', 'unchanged']);
   const notes = at('.recursive/RUN.md').content;
-  assert.match(notes, /Carried untouched, never built, run or checked \(3\):[\s\S]*`logo\.png` \(binary\)/);
+  assert.match(notes, /Carried untouched, never built, run or checked \(1\):[\s\S]*`logo\.png` \(binary\)/);
   assert.match(notes, /Not carried[\s\S]*`glue\/loader\.js` \(the runtime writes this path for each run\)/);
-  assert.equal(room.snapshot().base.passthrough, 4);
+  assert.equal(room.snapshot().base.passthrough, 2);
   // The ZIP holds the bytes and the exec bit.
   const zip = zipFiles(app.files);
   const hasExec = [...zip.keys()].some(i => zip[i] === 0x00 && zip[i + 1] === 0x00 && zip[i + 2] === 0xed && zip[i + 3] === 0x81);

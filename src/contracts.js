@@ -14,7 +14,6 @@
 // Pure: no room, no model.
 import { PROTECTED_NAMES, noValue } from './linker.js';
 import { isPath } from './protocol.js';
-import { caseTwin } from '../container/build-path.mjs';
 import { toolchainOf, extractSurface, renderImport } from './toolchains.js';
 
 export const CONTRACT_KINDS = Object.freeze(['function', 'file', 'page', 'route', 'command', 'doc', 'data']);
@@ -22,12 +21,10 @@ const KINDS = new Set(CONTRACT_KINDS);
 // Kinds whose contract fixes a project path (a placed file).
 export const PLACED_KINDS = new Set(['file', 'page', 'doc', 'data', 'command']);
 // Kinds named by their path.
-const PATH_NAMED = new Set(['file', 'page', 'doc', 'data']);
+export const PATH_NAMED = new Set(['file', 'page', 'doc', 'data']);
 // C3: at most this many contracts per piece; normalize keeps 8 so C3 still fires.
 export const MAX_CONTRACTS = 5;
 const KEEP = 8, MAX_INPUTS = 6, MAX_EXAMPLES = 4, MAX_SERVES = 32;
-// Paths the runtime owns or keeps for itself; no contract places a file there.
-export const RUNTIME_PREFIXES = Object.freeze(['components/', 'memory/', '.recursive/', 'glue/']);
 export const ROUTE_NAME = /^(?:GET|POST|PUT|PATCH|DELETE) \/\S*$/;
 // Underscores too (a script's stem, such as convert_temp, is a fine command name).
 export const COMMAND_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
@@ -51,9 +48,6 @@ const stop = s => s.replace(/[.\s]+$/, '');
 const plain = v => v && typeof v === 'object' && !Array.isArray(v);
 
 export const kindOf = c => KINDS.has(c?.kind) ? c.kind : 'function';
-// A project path a placed contract may take: a valid relative path outside
-// the runtime's own directories.
-export const placeablePath = p => isPath(p) && !RUNTIME_PREFIXES.some(x => p.startsWith(x));
 // A contract name of a kind other than function, as a use or a request may
 // give it: a route, a command, or a path with an extension.
 export const otherName = v => {
@@ -325,12 +319,6 @@ export function nameError(c, facts = null) {
   if (kind === 'command' && facts?.argvCommands && !COMMAND_WORD.test(name)) return `command "${name}": name it with one word of letters, digits and _.+@%-, starting with a letter or digit, so it runs as typed`;
   if (kind === 'command' && !facts?.argvCommands && !COMMAND_NAME.test(name)) return `"${name}" is not a command name: lowercase letters, digits, hyphens and underscores, starting with a letter`;
   if (!c.path) return `${kind} "${name}" needs the path of ${kind === 'command' ? 'the file that implements it' : 'its file'}`;
-  // v8 S8b: an existing project file is named exactly (a repo's own components/ too); a
-  // path equal to one apart from case, or under the pieces' parts root, is refused.
-  const base = facts?.base, twin = caseTwin(c.path, base);
-  if (twin && twin !== c.path) return `${kind} "${name}" differs only in letter case from the existing file ${twin}; name ${twin} exactly`;
-  if (!twin && facts?.parts && c.path.toLowerCase().startsWith(String(facts.parts).toLowerCase() + '/')) return `${kind} "${name}" cannot be placed at ${c.path}; the runtime keeps ${facts.parts}/ for the pieces' files`;
-  if (!twin && !placeablePath(c.path)) return `${kind} "${name}" cannot be placed at ${c.path}; choose a project path outside ${RUNTIME_PREFIXES.join(', ')}`;
   if (PATH_NAMED.has(kind) && name !== c.path) return `${kind} "${name}" must be named by its path ${c.path}`;
   return '';
 }

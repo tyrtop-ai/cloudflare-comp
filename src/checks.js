@@ -240,7 +240,7 @@ export function runNotes(app, spec, status = {}) {
     if (row?.run_file) run.push(`- \`${d.name}\`: \`${setup(row)}${row.run_file.map(x => x === '{path}' ? d.path : x).join(' ')}\`${d.does ? `: ${d.does}` : ''}`);
   }
   for (const d of contracts.filter(d => ['doc', 'page', 'file', 'data'].includes(kindOf(d)) && d.path)) run.push(`- \`${d.path}\` (${kindOf(d)})${d.does ? `: ${d.does}` : ''}`);
-  if (app?.paths && Object.keys(app.paths).length) run.push(`- The runtime's script under \`glue/\` puts the project folder on the module path for files that sit in a folder of their own.`);
+  if (app?.paths && Object.keys(app.paths).length) run.push(`- The runtime's script in this folder puts the project folder on the module path for files that sit in a folder of their own.`);
   lines.push('## How to run', '', ...(run.length ? run : ['- See the files.']), '');
   // A result from another snapshot than these files is stale, never shown as current.
   const list = spec?.validations || [], state = v => { const s = status?.[v.id]; return !s || typeof s.passed !== 'boolean' ? 'untested' : s.digest && app?.digest && s.digest !== app.digest ? 'stale' : s.passed ? 'pass' : 'fail'; };

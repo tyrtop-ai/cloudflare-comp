@@ -27,7 +27,7 @@ import { verifyBuilderCandidate, verifyBuilderBundle, verifySource } from './ass
 import { baselineFromManifest } from './baseline-linker.js';
 import { LINKABLE, parseSource, parseError, exportSurface, surfaceText, unresolvedImports, componentImports, importMismatches, importReads, importRefs, providedNames, exportsStart, autoLink, shapeFixes, applyEdits, linkRenames, tokenNames, tokenEstimate, chooseEntry, entryLoader, NO_START, RUNTIME_PACKAGE, normalizeEditPaths, entryCandidate, branchBoundary, likelyTargets, excerptRanges, editHits, errorTarget, importOffers, missingExports, splitImports, moduleSpecifiers, boundNames, swappedCalls, isInterfaceError } from './linker.js';
 import { normalizeInterfaces, normalizeSpawn, interfaceErrors, repairInterfaces, duplicateNames, labelNames, performsOp, goalOps, planPerformers, goalLeft, sameOp, placePromised, GENERIC_NAMES, signature, promiseText, validName, requestNames, requestKey, nameMatch, ids, MAX_REQUESTS, normalizeUses, planUses, usePairs, storageFunction, operationPieces, pieceOps, usesText, labelWrites, testPieces, testPiecesText } from './interfaces.js';
-import { snapshotHash, validateBuildFiles, BUILD_LIMITS, normalizeBuildResult, nextDirectChild } from './build-verification.js';
+import { snapshotHash, validateBuildFiles, validateBoxFiles, BUILD_LIMITS, normalizeBuildResult, nextDirectChild } from './build-verification.js';
 import { isAssemblyMetadata, isBuilderGluePath, isDelegatedEntrypoint, materializedPath, sha256, manifestText, estimateBuilderTokens, BUILDER_CONTEXT_BUDGET, BOUNDARY, COMPILE_MANIFEST } from './assembly.js';
 import { MAX_RELINKS, MANAGER_MAX_STALLED, MAX_REPAIR_ROUNDS_TOTAL, reportProgress, failureHead, failureKey, MAX_PROBLEMS_PER_REPORT, MAX_HOPS, MAX_MANAGER_MODEL_CALLS, COMPILER_TASK, DEFAULT_ROLE, problemSignature, placeParties, lowestCommon, deterministicDecision, validateDecision, modelTrigger, clusterForModel, validateManagerActions, keepPromise, instructionsFor, repairText, readRequirement, requirementRoute, requirementText } from './problems.js';
 import { PUBLIC_KNOWLEDGE, PRIVATE_KNOWLEDGE, OWNERSHIP_MEMORY, isPrivatePath, parseKnowledge, mergeKnowledge } from './knowledge.js';
@@ -48,7 +48,7 @@ import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, narro
 import { allowReport } from './fetcher.js';
 import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, noneAnswer, nextHeld, viewAnswer, packageAnswer } from './broker.js';
 import { normalizePackages, installedPackages, heldByName, heldForNeed, packageLanguage, languageAnswer, externalModule, readsModule, piecePackages, packageLine, needOf } from './packages.js';
-import { caseTwin, pathError } from '../container/build-path.mjs';
+import { caseTwin, boxPathError } from '../container/build-path.mjs';
 import { contractExamples, checkSummary, checkExamples, renderExample } from './validations.js';
 import { splitLevel } from './splitter.js';
 import { workerWorld, workerSession } from './worker.js';
@@ -610,8 +610,7 @@ export class ControlRoom extends DurableObject {
   // How a stored contract row is read: under v8 with its kind, path and serves.
   contractOpts() { return this.v8()?{v8:true,serves:true}:{}; }
   // The facts contract name rules read under v8 (§2.2): the toolchain rows and the languages the levels' contracts are written in.
-  // v8 S8b: with a base, its paths (an existing file is named exactly) and the pieces' parts root.
-  contractFacts() { const base=this.v8()?this.basePaths():null; return {rows:this.installedToolchains(),languages:this.v8()?contractLanguages(this.treeContracts()):[],...(base?.size?{base,parts:this.partsRoot()}:{})}; }
+  contractFacts() { return {rows:this.installedToolchains(),languages:this.v8()?contractLanguages(this.treeContracts()):[]}; }
   // The languages a code piece delivers in: v7 links and runs JavaScript;
   // under v8 those of the levels' contracts (their paths' code rows), or,
   // with none stated yet, every installed code toolchain.
@@ -723,7 +722,7 @@ export class ControlRoom extends DurableObject {
   referenceFacts(id=null) {
     const facts={...this.contractFacts(),browser:browserProject(this.treeContracts())},own=id?this.promisedOf(id):[];
     if(!id)return facts;
-    const paths=[...own.map(c=>c.path).filter(Boolean),...deliveredFiles(this.files(id)).map(f=>f.path)];
+    const paths=[...own.map(c=>c.path).filter(Boolean),...this.deliveredOf(id).map(f=>f.path)];
     return {...facts,reader:[...new Set(paths.map(p=>toolchainOf(p)?.id).filter(Boolean))],page_reader:own.some(c=>contractKind(c)==='page')};
   }
   // v7: a provided answer, the function's promise and its import line.
@@ -946,6 +945,8 @@ export class ControlRoom extends DurableObject {
     return this.indexedContent(owner,path);
   }
   files(id) { return query(this.db(), 'SELECT agent,path,revision,commit_hash,updated_at FROM artifact_files WHERE agent=? ORDER BY path', id); }
+  // What a worker delivered: under v8 every file of its own repository; v7's rule leaves out memory/ and the runtime's paths.
+  deliveredOf(id) { return this.v8()?this.files(id):deliveredFiles(this.files(id)); }
   async ownFiles(id) {
     const n = this.node(id);
     if (!n) throw new Error('Unknown agent');
@@ -1203,8 +1204,8 @@ export class ControlRoom extends DurableObject {
   validationStatus() {
     const st=this.read('validation_status',{});
     if(!Object.keys(st).length)return st;
-    // A manager's level file is no delivered file.
-    const last=query(this.db(),"SELECT COALESCE(MAX(updated_at),0) AS t FROM artifact_files WHERE path NOT LIKE 'memory/%' AND NOT (path=? AND agent IN (SELECT id FROM agents WHERE role='manager'))",LEVEL_FILE)[0].t;
+    // A manager's level file is no delivered file; under v8 every file a worker writes is (v7 keeps memory/ apart).
+    const last=query(this.db(),`SELECT COALESCE(MAX(updated_at),0) AS t FROM artifact_files WHERE ${this.v8()?'':"path NOT LIKE 'memory/%' AND "}NOT (path=? AND agent IN (SELECT id FROM agents WHERE role='manager'))`,LEVEL_FILE)[0].t;
     return Object.fromEntries(Object.entries(st).map(([k,v])=>[k,v&&last>v.ts?{...v,stale:true}:v]));
   }
   inputsHead() {
@@ -1443,8 +1444,9 @@ export class ControlRoom extends DurableObject {
     const levels=[];
     for(const f of this.levelFiles())levels.push({...f,content:await this.indexedContent(f.manager,LEVEL_FILE)});
     app.levels=levels.map(({content:_,...f})=>f);
+    // The runtime's notes go where the project holds no file: a file the agents placed there is the one that ships.
     const notes=[{path:'.recursive/RUN.md',content:runNotes(app,spec,status)+baseNotes(meta,pass)},{path:'.recursive/validations.json',content:JSON.stringify({contracts:spec.contracts,validations:spec.validations.map(({notes:_,...v})=>v)},null,2)+'\n'},
-      ...levels.map(f=>({path:f.export_path,content:f.content}))];
+      ...levels.map(f=>({path:f.export_path,content:f.content}))].filter(f=>!files.has(f.path));
     const carried=pass.map(r=>({path:r.path,content_base64:toBase64(new Uint8Array(r.bytes)),mode:gitMode(r.mode),passthrough:true,reason:r.reason}));
     return {...app,files:[...notes,...own,...carried]};
   }
@@ -3667,13 +3669,13 @@ export class ControlRoom extends DurableObject {
       held:this.passthroughPaths()});
     const bundle={files:link.files,origin,placed,glue:link.glue,link,contracts,top,raw:files};
     if(this.holdsBase(top))this.addCarried(bundle);
-    // A piece's file at a path the box does not hold (a hidden or tool file) ships, never in the box: what the person accepts unchecked.
-    const hidden=[...bundle.files.keys()].filter(p=>buildPathError(p));
-    if(hidden.length)bundle.unsent=[...(bundle.unsent||[]),...hidden.map(p=>({path:p,why:'its path is one the box does not hold (a hidden or tool file)',sha256:textHash(String(bundle.files.get(p)??''))}))];
+    // A file at a path outside the box's folder (the box's own safety, boxPathError) ships, never in the box: what the person accepts unchecked.
+    const hidden=[...bundle.files.keys()].filter(p=>boxPathError(p));
+    if(hidden.length)bundle.unsent=[...(bundle.unsent||[]),...hidden.map(p=>({path:p,why:'its path is outside the box\'s folder',sha256:textHash(String(bundle.files.get(p)??''))}))];
     return bundle;
   }
-  // The files of a bundle the box holds (every one but those at a path it does not hold).
-  boxHeld(files) { return [...files.keys()].some(p=>buildPathError(p))?new Map([...files].filter(([p])=>!buildPathError(p))):files; }
+  // The files of a bundle the box holds (every one but those at a path outside its folder).
+  boxHeld(files) { return [...files.keys()].some(p=>boxPathError(p))?new Map([...files].filter(([p])=>!boxPathError(p))):files; }
   passthroughPaths() { return new Set(query(this.db(),'SELECT path FROM base_passthrough').map(r=>r.path)); }
   // v8 ship-verified (M1): the base's files carried untouched (never built,
   // never seen by a model) ship with the bundle of the row that holds the
@@ -3692,7 +3694,7 @@ export class ControlRoom extends DurableObject {
       const data=new Uint8Array(r.bytes);
       let text=null;
       try {text=decode.decode(data);} catch {}
-      const why=text===null?'it is not UTF-8 text':buildPathError(r.path)?'its path is one the box does not hold (a hidden or tool file)':
+      const why=text===null?'it is not UTF-8 text':boxPathError(r.path)?'its path is outside the box\'s folder':
         files.size+1>BUILD_LIMITS.files||bytes+data.length>BUILD_LIMITS.bytes?`the box holds at most ${BUILD_LIMITS.files} files and ${BUILD_LIMITS.bytes/1048576} MiB in all`:'';
       if(why){bundle.unsent.push({path:r.path,why:`carried untouched (${r.reason||'not built'}), and ${why}`,sha256:r.sha256});continue;}
       files.set(r.path,text);bundle.carried.add(r.path);bytes+=data.length;
@@ -3758,11 +3760,10 @@ export class ControlRoom extends DurableObject {
         continue;
       }
       const placing=design.get(c.id)||this.designOf(c.id),own=new Set(placing.contracts.map(x=>x.path).filter(Boolean));
-      for(const f of deliveredFiles(this.files(c.id))) {
-        // A file the box cannot hold still joins: the compile lists it as never in the box (boxHeld).
-        if(pathError(f.path,{own:true})||RUNTIME_GLUE.includes(f.path)&&!own.has(f.path))continue;
+      // Every file of the worker's own repository is its own, at the path it wrote.
+      for(const f of this.files(c.id)) {
         // v8 S4b review: a copy of a path another piece's contract places is
-        // never shipped (the gate refuses new ones; this is a file written before).
+        // never shipped.
         if(!own.has(f.path)&&placedBy.has(f.path)&&placedBy.get(f.path).id!==c.id){stray.push(`${f.path} (written by ${c.label}, placed by ${placedBy.get(f.path).label})`);continue;}
         const place=own.has(f.path),at=place?f.path:packagePath(placing.label,f.path,c.id,this.partsRoot());
         take(at,await this.indexedContent(c.id,f.path),{owner:c.id,owner_path:f.path},place);
@@ -3783,7 +3784,7 @@ export class ControlRoom extends DurableObject {
   // base it holds. A pass recorded on a piece holds while this is unchanged.
   ownedDigest(id) {
     const parts=[];
-    for(const leaf of this.pieceLeaves(id))for(const f of deliveredFiles(this.files(leaf.id))) {
+    for(const leaf of this.pieceLeaves(id))for(const f of this.files(leaf.id)) {
       const c=query(this.db(),'SELECT content FROM artifact_contents WHERE agent=? AND path=?',leaf.id,f.path)[0]?.content;
       parts.push(`${leaf.id}\n${f.path}\n${textHash(c??`revision ${f.revision}`)}`);
     }
@@ -3903,7 +3904,7 @@ export class ControlRoom extends DurableObject {
     for(const l of this.treeLeaves()) {
       if(inside.has(l.id))continue;
       for(const c of this.designOf(l.id).contracts){if(!mine.has(c.name))names.add(c.name);if(contractKind(c)==='route')routes.push(c.name);if(c.path){paths.add(c.path);stems.add(stem(c.path));}}
-      for(const f of deliveredFiles(this.files(l.id)))stems.add(stem(f.path));
+      for(const f of this.files(l.id))stems.add(stem(f.path));
     }
     return {names,routes,paths,stems};
   }
@@ -4267,11 +4268,11 @@ export class ControlRoom extends DurableObject {
   }
   async runChecksBox(id, input, files, plan, toolchains, warm=null) {
     let snapshot;
-    try {snapshot=validateBuildFiles(files);}
+    try {snapshot=validateBoxFiles(files);}
     catch(error) {
       if(warm){const closing=Promise.resolve().then(()=>warm.box.close()).catch(()=>{});if(this.ctx.waitUntil)this.ctx.waitUntil(closing);}
       if(!error?.path)return {infrastructure:String(error?.message||error)};
-      return {report:{mode:'checks',passed:false,checks:[],issues:[{path:error.path,stage:'snapshot',detail:`${error.message}: the build cannot carry this file. Write it under a path of letters, digits, '_', '-' and '.', and keep each file small.`}],inventory:null}};
+      return {report:{mode:'checks',passed:false,checks:[],issues:[{path:error.path,stage:'snapshot',detail:String(error.message)}],inventory:null}};
     }
     const key=await sha256(`checks:${input}`),start=Date.now(),spec=compileBoxSpec(plan);
     let box=null;
@@ -5819,14 +5820,15 @@ export class ControlRoom extends DurableObject {
        !(runtimeGlue?RUNTIME_GLUE.includes(path):materialized?path===COMPILE_MANIFEST:path==='glue/smoke.js'))
       throw new Error('The compiler writes only glue/index.js, package.json, glue/smoke.js and '+COMPILE_MANIFEST+': '+path);
     // runtimeGlue: an atomic top's package.json, which its compile writes.
-    // A v7 worker writes at a path its writer rule allows; a v8 worker's file
-    // and the runtime's own writes (memory aside) keep to the build's path
-    // rule, what the box can carry.
+    // A v7 worker writes at a path its writer rule allows; a v8 worker's
+    // files are its own repository's, at whatever path it wrote (src/worker.js
+    // reads each as the place it names there); the runtime's own writes
+    // (memory aside) keep to the build's path rule.
     if(this.env.MOCK_AI!=='true' && !path.startsWith('memory/')) {
       const worker=!materialized && !runtimeGlue && n.phase==='implement' && !isRuntimeNode(n);
       // A materialized copy carries a worker's file as it is: one that the
       // build cannot carry reaches the compile as its owner's problem.
-      const bad=worker&&!this.v8()?writerPathError(path):materialized?null:worker?pathError(path,{own:true}):buildPathError(path);
+      const bad=worker?(this.v8()?null:writerPathError(path)):materialized?null:buildPathError(path);
       if(bad)throw new Error((worker?'Workers cannot write this path: ':'Unsafe runtime path: ')+bad);
     }
     if(isBuilderNode(n) && this.env.MOCK_AI!=='true') {
@@ -5883,7 +5885,7 @@ export class ControlRoom extends DurableObject {
       this.event(id,'build_invalidated',`Accepted build invalidated by change to ${path}; new container build required.`);
       this.wake(id);
     }
-    const wakeParent=n.parent && ((!path.startsWith('memory/') || path===PUBLIC_KNOWLEDGE) ||
+    const wakeParent=n.parent && ((this.v8() || !path.startsWith('memory/') || path===PUBLIC_KNOWLEDGE) ||
       query(db,'SELECT request_id FROM route_hops WHERE manager=? AND target=? LIMIT 1',n.parent,id).length);
     if(wakeParent) {
       // During a turn the owner is woken once, after the turn's commit.
@@ -8495,7 +8497,7 @@ export class ControlRoom extends DurableObject {
     this.db().exec("DELETE FROM meta WHERE key LIKE 'level_rounds:%' OR key LIKE 'rebuilds:%' OR key LIKE 'escalated:%' OR key LIKE 'compile_reported:%' OR key LIKE 'compile_blocked:%' OR key LIKE 'compile_infrastructure:%' OR key LIKE 'checks_retries:%'");
     for(const n of this.allNodes().filter(x=>x.status==='failed'&&!isRuntimeNode(x))) {
       this.set(`failure_reason:${n.id}`,'');
-      const worker=!this.manager(n.id),files=worker&&deliveredFiles(this.files(n.id)).length>0;
+      const worker=!this.manager(n.id),files=worker&&this.deliveredOf(n.id).length>0;
       this.db().exec('UPDATE agents SET status=? WHERE id=?',files?'done':'waiting',n.id);
       this.event(n.id,'revived','The change gives this part another chance: it had failed.');
       if(!files)this.wake(n.id);
@@ -9275,7 +9277,7 @@ export class ControlRoom extends DurableObject {
       ...(contractInputs(c).length?{inputs:contractInputs(c)}:{}),...(contractOutputs(c)?{outputs:contractOutputs(c)}:{}),...(c.effects?{effects:c.effects}:{}),...(runText(c)?{runs:runText(c)}:{}),
       examples:contractExamples(c,(c.serves||[]).map(v=>byId.get(v)).filter(Boolean))}));
     const prompt={task:design.prompt,deliver,...(callable.length?{call:callable.map((c,i)=>({name:c.name,contract:contractLine(c),reference:refs[i]?.reference||c.name}))}:{})};
-    const files=ownFiles.map(f=>f.path).filter(p=>!p.startsWith('memory/')).sort();
+    const files=ownFiles.map(f=>f.path).sort();
     const complaints=inbox.filter(m=>/^\[complaint\] /.test(m.body)).map(m=>m.body.slice(12));
     const answers=this.read(`fn_answers:${id}`,[]).map(a=>a.text),digest=this.heldDigest(id),base=this.baseFilesFor(id);
     const world={...this.availableView(id,answers),...(answers.length?{answers}:{}),...this.sourceInputs(id,'chunks'),
@@ -9301,7 +9303,7 @@ export class ControlRoom extends DurableObject {
     } else {
       const inbox=this.receive(id),ownFiles=await this.ownFiles(id),view=this.workerView(id,inbox,ownFiles);
       this.event(id,'working',`Turn ${n.turn+1}; received ${inbox.length} messages.`);
-      const world=workerWorld({files:new Map(ownFiles.filter(f=>!f.path.startsWith('memory/')).map(f=>[f.path,f.content])),
+      const world=workerWorld({files:new Map(ownFiles.map(f=>[f.path,f.content])),
         write:(path,content)=>this.putFile(id,path,content),runExamples:()=>this.runExamples(id),ask:a=>this.workerAsk(id,a)});
       const out=await workerSession(this.inferenceEnv('worker'),view,world);
       const said=[out.transcript.length?`${out.transcript.length} call(s) in ${out.rounds} round(s)`:'no call',world.written.length?`wrote ${world.written.join(', ')}`:'',
@@ -9380,7 +9382,7 @@ export class ControlRoom extends DurableObject {
   async runExamples(id) {
     const design=this.designOf(id),byId=this.validationsById(),contracts=design.contracts;
     const runs=[...new Set(contracts.flatMap(c=>c.serves||[]))].map(v=>byId.get(v)).filter(Boolean);
-    const own=await this.ownFiles(id),files=this.boxHeld(new Map(own.filter(f=>!f.path.startsWith('memory/')).map(f=>[f.path,f.content])));
+    const own=await this.ownFiles(id),files=this.boxHeld(new Map(own.map(f=>[f.path,f.content])));
     const digest=await snapshotHash(files),started=Date.now(),fresh=this.uncompiled(files),parsed=this.localSyntax(files,fresh);
     const compile=new Map([...fresh].map(p=>[p,this.syntaxOf(p,files)?.row]).filter(([,row])=>row));
     const spec={contracts,validations:runs};

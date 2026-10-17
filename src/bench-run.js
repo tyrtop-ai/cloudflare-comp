@@ -32,7 +32,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { loadDataset, benchPolicy, roomOutcome, gradeOutcome, aggregate, compareRuns, taskDigest, BENCH_LIMITS } from './bench.js';
 import { freshBox, compileBoxSpec, classifyEnvironment } from './box.js';
 import { checkPlan, CHECK_LIMITS } from './checks.js';
-import { snapshotHash, validateBuildFiles } from './build-verification.js';
+import { snapshotHash, validateBoxFiles } from './build-verification.js';
 import { TOOLCHAINS } from './toolchains.js';
 
 const query = (db, sql, ...args) => db.exec(sql, ...args).toArray();
@@ -350,7 +350,7 @@ export async function gradeBundle(env, grader, files) {
   if (!grader?.check) return {infrastructure: 'the task has no grader'};
   if (!env?.BOXES) return {infrastructure: 'BOXES binding unavailable: the grader runs only in a fresh box with the internet off'};
   let snapshot;
-  try { snapshot = validateBuildFiles(files); } catch (e) { return {passed: false, detail: clip(`the shipped files cannot be carried: ${e?.message || e}`)}; }
+  try { snapshot = validateBoxFiles(files); } catch (e) { return {passed: false, detail: clip(`the shipped files cannot be carried: ${e?.message || e}`)}; }
   const {plan, toolchains} = checkPlan({contracts: [], validations: [grader]}, files, {rows: TOOLCHAINS}), run = {...plan, syntax: []};
   try {
     const {box: opened, ...report} = await freshBox(env.BOXES).compile(compileBoxSpec(run), {fingerprint: await snapshotHash(files), files: Object.fromEntries(snapshot), mode: 'checks', plan: run, toolchains, limits: CHECK_LIMITS}) || {};

@@ -9,8 +9,9 @@
 // delivers, whether pieces are too small) is Clef's review alone
 // (src/model.js reviewLevel), which reads the division's facts (divisionOf).
 import { TOOLCHAINS, toolchainOf } from './toolchains.js';
-import { normalizeContract, kindOf, nameError, PLACED_KINDS, CONTRACT_KINDS } from './contracts.js';
-import { readCheck, CHECK_FIELDS, runOf, servedRun, runsOf, bundlePath, contractExamples, checkExamples, exerciseWords, divisionOf, LEVEL_LIMITS, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
+import { normalizeContract, kindOf, nameError, PLACED_KINDS, PATH_NAMED, CONTRACT_KINDS } from './contracts.js';
+import { readCheck, CHECK_FIELDS, runOf, servedRun, runsOf, unheldPath, contractExamples, checkExamples, exerciseWords, divisionOf, LEVEL_LIMITS, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
+import { rootedPath } from '../container/build-path.mjs';
 import { session } from './session.js';
 import { systemPrompt, TOOLS, CHECK_TOOL_KINDS } from './prompts.js';
 
@@ -52,18 +53,22 @@ function contract(s, a) {
   const unknown = Object.keys(a).filter(k => !CONTRACT_FIELDS.includes(k));
   if (unknown.length) return {error: `contract has no field ${unknown.map(k => `"${k.slice(0, 40)}"`).join(', ')}; its fields are ${CONTRACT_FIELDS.join(', ')}`};
   if (levelContracts(s).length >= LEVEL_LIMITS.contracts) return {error: `this level holds at most ${LEVEL_LIMITS.contracts} contracts`};
-  const name = typeof a.name === 'string' ? a.name : '', kind = a.kind;
-  if (!name.trim()) return {error: 'name is required'};
+  const kind = a.kind;
+  if (typeof a.name !== 'string' || !a.name.trim()) return {error: 'name is required'};
   if (!CONTRACT_KINDS.includes(kind)) return {error: `kind ${JSON.stringify(kind ?? null).slice(0, 40)} is not one of ${CONTRACT_KINDS.join(', ')}`};
+  if (a.path !== undefined && typeof a.path !== 'string') return {error: 'path is a text'};
+  // A path names the place it does among the files, as a rooted file system
+  // reads it (rootedPath); a contract named by its path is named by that place.
+  const path = a.path === undefined ? '' : rootedPath(a.path), name = PATH_NAMED.has(kind) ? rootedPath(a.name) : a.name;
+  if (!name.trim()) return {error: 'name is required'};
   if (s.own.some(c => c.name === name)) return {error: `"${name}" is already declared: it is one of the contracts you deliver`};
   if (s.contracts.some(c => c.name === name)) return {error: `"${name}" is already declared`};
   if (s.have.some(c => c.name === name)) return {error: `"${name}" is already declared: it is a contract your level already has`};
-  if (a.path !== undefined && typeof a.path !== 'string') return {error: 'path is a text'};
-  const path = a.path ?? '';
   if (PLACED_KINDS.has(kind) && !path) return {error: `a ${kind} contract needs the relative path of its file`};
-  if (path && !bundlePath(path)) return {error: `"${path.slice(0, 200)}" is not a relative path that stays inside the files' root`};
+  const unheld = path ? unheldPath(path) : '';
+  if (unheld) return {error: unheld};
   const languages = [...new Set(present(s).map(c => c.path ? toolchainOf(c.path)?.id : null).concat(path ? [toolchainOf(path)?.id] : []).filter(Boolean))];
-  const bad = nameError({name, kind, ...(path ? {path} : {})}, {rows: s.rows, languages, argvCommands: true, base: s.base});
+  const bad = nameError({name, kind, ...(path ? {path} : {})}, {rows: s.rows, languages, argvCommands: true});
   if (bad) return {error: bad};
   const row = path ? toolchainOf(path) : null;
   if (row && row.id !== 'text' && !s.ids.has(row.id)) return {error: `${path} is written in ${row.id}, which the box does not run (it runs ${listed([...s.ids])})`};

@@ -12,11 +12,12 @@ import {levelRoom, usualClef, deliver, writeCalls, events, rowId} from './helper
 import {liveRoom} from './helpers/room.js';
 import {workerWorld, workerCall} from '../src/worker.js';
 import {MESSAGES, TOOLS, CLEF, clefText} from '../src/prompts.js';
+import {packagePath} from '../src/assembly.js';
 
 const trail = room => events(room).slice(-16).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 220)}`).join('\n');
 
 // ------------------------------------------------------------ each function's results
-test('the worker\'s functions: each stores exactly what it is given or says exactly why it cannot; an identical write says so plainly; done and wait end the turn with the summary given', async () => {
+test('the worker\'s functions: each stores exactly what it is given or says exactly why it cannot; a path names a place among its files, with no path rule; an identical write says so plainly; done and wait end the turn with the summary given', async () => {
   const stored = [], world = workerWorld({files: new Map([['convert.js', 'old\n']]), write: async (path, content) => { stored.push([path, content]); },
     runExamples: async () => ({examples: [{examples: ['convert 1 → 2'], observed: 'pass'}], passed: 1, of: 1}), ask: async a => ({sent: true, says: MESSAGES.ask_sent(), seen: a})});
   const call = async (name, args) => (await workerCall(world, name, args));
@@ -25,15 +26,23 @@ test('the worker\'s functions: each stores exactly what it is given or says exac
   assert.deepEqual((await call('read_file', {path: 'other.js'})).result, {error: 'You have no file other.js. Your files: convert.js.'});
   assert.deepEqual((await call('read_file', {})).result, {error: 'path is the text of a relative path'});
   assert.deepEqual((await call('read_file', {path: 'convert.js', lines: 3})).result, {error: 'read_file has no field "lines"; its fields are path'});
-  // write_file: written; the same bytes again: unchanged, said plainly and nothing stored; a path outside its files: why.
+  // write_file: written; the same bytes again: unchanged, said plainly and nothing stored.
   assert.deepEqual((await call('write_file', {path: 'convert.js', content: 'new\n'})).result, {written: 'convert.js', characters: 4});
   assert.deepEqual((await call('read_file', {path: 'convert.js'})).result, {path: 'convert.js', content: 'new\n'}, 'a write is read back in the same session');
   assert.deepEqual((await call('write_file', {path: 'convert.js', content: 'new\n'})).result, {unchanged: 'convert.js', says: 'unchanged: convert.js is already exactly this text.'});
-  for (const [path, why] of [['../up.js', 'not a plain relative path (empty, \'.\' or \'..\' segment)'], ['/abs.js', 'not a relative project path'], ['a b.js', 'use only letters, digits, \'_\', \'-\' and \'.\' in file and directory names (no spaces or other characters); rename the file']])
-    assert.deepEqual((await call('write_file', {path, content: 'x'})).result, {error: `${path} is not a relative path inside your files: ${why}.`}, path);
+  // A path names the place it does among its files, as a rooted file system reads it: '..' from the top is the top, so no
+  // path reaches past them; any name and any folder is the worker's own, the ones the runtime used to keep too.
+  for (const [path, at] of [['../up.js', 'up.js'], ['/abs.js', 'abs.js'], ['./src/../lib/x.js', 'lib/x.js'], ['a b.js', 'a b.js'], ['caf\u00e9+@x.md', 'caf\u00e9+@x.md'],
+    ['.env', '.env'], ['memory/notes.md', 'memory/notes.md'], ['components/Button.js', 'components/Button.js'], ['glue/index.js', 'glue/index.js'], ['.recursive/RUN.md', '.recursive/RUN.md']])
+    assert.deepEqual((await call('write_file', {path, content: `x ${at}`})).result, {written: at, characters: `x ${at}`.length}, path);
+  assert.deepEqual((await call('read_file', {path: './memory/../memory/notes.md'})).result, {path: 'memory/notes.md', content: 'x memory/notes.md'});
+  assert.deepEqual((await call('read_file', {path: '../../other.js'})).result.error, `You have no file other.js. Your files: ${[...world.files.keys()].sort().join(', ')}.`);
+  // The repository's own records folder holds no file of the worker's: the result says so, and nothing is stored.
+  assert.deepEqual((await call('write_file', {path: '.git/config', content: 'x'})).result, {error: '.git/config is in the folder a repository keeps for its own records, outside the files.'});
+  assert.deepEqual((await call('write_file', {path: '/', content: 'x'})).result, {error: 'path is the text of a relative path'}, 'the top of its files is no file');
   assert.deepEqual((await call('write_file', {path: 'a.js'})).result, {error: 'content is the complete text of the file'});
-  assert.deepEqual(stored, [['convert.js', 'new\n']], 'only the one write that changed something was stored');
-  assert.deepEqual([world.written, world.unchanged], [['convert.js'], ['convert.js']]);
+  assert.deepEqual(stored.map(([p]) => p), ['convert.js', 'up.js', 'abs.js', 'lib/x.js', 'a b.js', 'caf\u00e9+@x.md', '.env', 'memory/notes.md', 'components/Button.js', 'glue/index.js', '.recursive/RUN.md'], 'each write that changed something was stored, at the place it names');
+  assert.deepEqual([world.written[0], world.unchanged], ['convert.js', ['convert.js']]);
   // run_examples and ask: what the room answers, as it answers it.
   assert.deepEqual((await call('run_examples', {})).result, {examples: [{examples: ['convert 1 → 2'], observed: 'pass'}], passed: 1, of: 1});
   assert.deepEqual((await call('ask', {need: 'a table of factors', name: 'factors'})).result, {sent: true, says: MESSAGES.ask_sent(), seen: {need: 'a table of factors', name: 'factors'}});
@@ -82,6 +91,34 @@ test('run_examples runs the worker\'s examples on its own files as they stand, i
   assert.ok(events(room, 'examples_run').every(e => e.actor === w.id));
   assert.match(events(room, 'examples_run')[0].body, /^Ran its examples on its 1 file\(s\): 0 of 3 pass\.$/);
   assert.ok(Object.values(room.read('validation_status', {})).every(s => s.passed === true), 'the compiler\'s runs alone set the status');
+});
+
+// ------------------------------------------------------------ a worker's world is its own files
+test('a worker\'s files are its own repository, every path in it: a folder the runtime once kept, a name with a space, a dotfile, each is written, reaches its box and ships; a level places a file in any folder; no path rule is said', async () => {
+  const NOTES = {name: 'memory/NOTES.md', kind: 'doc', path: 'memory/NOTES.md', does: 'notes on the units'};
+  const level = {contracts: [CONVERT, NOTES], validations: [...CLI_LEVEL.validations, {id: 'd', serves: ['memory/NOTES.md'], check: {kind: 'file', path: 'memory/NOTES.md', has: ['# Units']}}], pieces: []};
+  const leaf = (_u, _n, _s, {round}) => round === 1 ? [
+    {name: 'write_file', arguments: {path: 'convert.js', content: CONVERT_JS}}, {name: 'write_file', arguments: {path: './memory/NOTES.md', content: '# Units\n'}},
+    {name: 'write_file', arguments: {path: 'glue/units table.txt', content: 'C F\n'}}, {name: 'write_file', arguments: {path: '../components/.helper.js', content: 'module.exports = 1;\n'}},
+    {name: 'run_examples', arguments: {}}] : [{name: 'done', arguments: {summary: 'the converter and its notes'}}];
+  const {room, calls, builds} = await levelRoom({prompt: CLI, split: () => level, leaf, clef: caught()});
+  assert.equal(room.get('status'), 'complete', trail(room));
+  const w = room.allNodes().find(n => n.role === 'worker'), own = ['components/.helper.js', 'convert.js', 'glue/units table.txt', 'memory/NOTES.md'];
+  const results = calls.leafRounds.find(r => r.round === 2).results;
+  assert.deepEqual(results.filter(x => x.name === 'write_file').map(x => x.result.written), ['convert.js', 'memory/NOTES.md', 'glue/units table.txt', 'components/.helper.js']);
+  assert.deepEqual(room.files(w.id).map(f => f.path), own);
+  // Its examples ran on every file it has, in a box that held them all.
+  assert.deepEqual(Object.keys(builds[0]).sort(), own);
+  assert.deepEqual(results.find(x => x.name === 'run_examples').result.examples.map(e => e.observed), ['pass', 'pass', 'pass', 'pass']);
+  // The bundle: each placed file at its contract's path, the others under the piece's folder.
+  const {files} = await room.bundleFiles(room.roomManager()), at = p => packagePath(w.label, p, w.id, room.partsRoot());
+  assert.deepEqual([...files.keys()].sort(), ['convert.js', 'memory/NOTES.md', at('components/.helper.js'), at('glue/units table.txt')].sort());
+  const app = await room.appFiles();
+  assert.equal(app.passed, true);
+  for (const p of ['convert.js', 'memory/NOTES.md', at('glue/units table.txt'), at('components/.helper.js')]) assert.ok(app.files.some(f => f.path === p), p);
+  // Nothing anyone read says what a path may be.
+  const said = JSON.stringify([calls.leafRounds.map(r => r.results), calls.splitRounds.map(r => r.results)]);
+  assert.doesNotMatch(said, /use only letters|rename the file|not a relative path|cannot be placed|outside the files|Workers cannot write|keeps .* for the pieces/);
 });
 
 // The tracker: two pieces, each handed down to one worker; the report piece calls the store's createTicket.
