@@ -16,7 +16,7 @@ import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfa
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
-import { toolchainById, toolchainOf, TOOLCHAINS, COMPILE_ROWS, installed as installedRows, browserProject, parseModeOf, scopeManifestOf, codeRowOf, pageScripts, pageModes } from './toolchains.js';
+import { toolchainById, toolchainOf, TOOLCHAINS, COMPILE_ROWS, installed as installedRows, parseModeOf, scopeManifestOf, codeRowOf, pageScripts, pageModes } from './toolchains.js';
 // v8 S9: amendments and the prompt queue.
 import { effectiveGoal, goalView, promptText, reorderError } from './amend.js';
 import { checkPlan, fileResult, checkProblems, statusEntry, runNotes, CHECK_LIMITS } from './checks.js';
@@ -35,7 +35,7 @@ import { callOf, esmSyntax, placeholders, startKeys } from './linker.js';
 import { contractCheck, contractBody, stubExports, exportNames, awaitFixes, asyncExports } from './linker.js';
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
-import { inheritServes, otherName, kindOf as contractKind, contractLine, gateLine, useReferences, PLACED_KINDS, contractInputs, contractOutputs } from './contracts.js';
+import { inheritServes, otherName, kindOf as contractKind, contractLine, gateLine, PLACED_KINDS, contractInputs, contractOutputs } from './contracts.js';
 import { branchDirectory, packageDirectory, packagePath, partsRoot, PARTS_ROOT } from './assembly.js';
 import { placeChecks, checkUses, textHash } from './piece.js';
 import { zipFiles } from './zip.js';
@@ -707,20 +707,10 @@ export class ControlRoom extends DurableObject {
     if(rows.length)this.event('room','sources_read',clip(`The prompt's ${rows.length} link(s), in ${Date.now()-started} ms: ${rows.map(r=>r.error?`${r.id} not read (${r.error})`:`${r.id} ${r.title||r.url} (${r.bytes} bytes, ${chunks.filter(c=>c.source===r.id).length} part(s))`).join('; ')}.`,1500));
     return calls;
   }
-  // v8 S6 review: what one reference is rendered from (useReferences): the
-  // rows, the levels' languages, whether their code runs in a browser, and
-  // for a reader its own languages (its contracts' paths and its files) and
-  // whether it delivers a page.
-  referenceFacts(id=null) {
-    const facts={...this.contractFacts(),browser:browserProject(this.treeContracts())},own=id?this.promisedOf(id):[];
-    if(!id)return facts;
-    const paths=[...own.map(c=>c.path).filter(Boolean),...this.deliveredOf(id).map(f=>f.path)];
-    return {...facts,reader:[...new Set(paths.map(p=>toolchainOf(p)?.id).filter(Boolean))],page_reader:own.some(c=>contractKind(c)==='page')};
-  }
   // v7: a provided answer, the function's promise and its import line.
   providedFor(f, owner) { return providedText(f,owner); }
-  // How a worker refers to a name: v7's import line, or under v8 its row's (a contract it names, else a function of the levels' languages).
-  referenceLine(name, c=null, reader=null) { return this.v8()?useReferences([c||{name}],this.referenceFacts(reader))[0]?.reference||name:`const { ${name} } = require('./${name}');`; }
+  // v7: how a worker refers to a name, its import line. A v8 worker is given each contract it may call as declared and writes its own reference.
+  referenceLine(name) { return `const { ${name} } = require('./${name}');`; }
   // The path of an agent's one placed contract, for the single-fence fallback (§3.2), or null.
   placedPath(id) {const p=this.designOf(id).contracts.filter(c=>PLACED_KINDS.has(contractKind(c))&&c.path);return p.length===1?p[0].path:null;}
   // The toolchain rows this deployment runs: the Container's last inventory
@@ -8831,7 +8821,7 @@ export class ControlRoom extends DurableObject {
         await this.amendEntry(x,e=>({calls:[...new Set([...e.calls,c.name])]}));
       }
     }
-    this.answerAsker(n.id,ask,text||MESSAGES.provided({contract:contractLine(c),reference:this.referenceLine(c.name,c,n.id)}),c.name);
+    this.answerAsker(n.id,ask,text||MESSAGES.provided({contract:contractLine(c)}),c.name);
   }
   // The package p manager m granted the asker: it is listed on every row of
   // the asker's line that does not list it (m's and those above it too, for
@@ -8925,20 +8915,21 @@ export class ControlRoom extends DurableObject {
   // ---------- the worker ----------
   // A worker's request: its prompt (its task, what it delivers under which
   // names and paths, each with every example rendered from the validations
-  // that serve it, and the names it may call with their references), the
+  // that serve it, and the contracts it may call, each as declared), the
   // paths of its own files (it reads them with read_file), the complaints
   // routed to it that it has not answered with done (heldComplaints),
   // verbatim, and its world: what it can ask for by name and
   // the answers it has, the chunks of linked pages and the existing files it
   // holds. The prompt is the one its manager's level file holds for it (designOf).
   workerView(id, inbox=[], ownFiles=[]) {
-    const design=this.designOf(id),byId=this.validationsById(),facts=this.referenceFacts(id),callable=this.callableOf(id),refs=useReferences(callable,facts);
+    const design=this.designOf(id),byId=this.validationsById(),callable=this.callableOf(id);
     // How it is reached when something serves it: its files as they are, or its command listening on the port in PORT. A command's own command line, which nothing serves, is its file's.
     const runText=c=>!c.run?'':c.run.static?'its files are served as they are':c.run.port?`${c.run.run} starts it, listening on the port in PORT; ready when ${c.run.ready||'/'} answers`:'';
-    const deliver=design.contracts.map(c=>({name:c.name,kind:contractKind(c),...(c.path?{path:c.path}:{}),...(c.does?{does:c.does}:{}),
-      ...(contractInputs(c).length?{inputs:contractInputs(c)}:{}),...(contractOutputs(c)?{outputs:contractOutputs(c)}:{}),...(c.effects?{effects:c.effects}:{}),...(runText(c)?{runs:runText(c)}:{}),
-      examples:contractExamples(c,(c.serves||[]).map(v=>byId.get(v)).filter(Boolean))}));
-    const prompt={task:design.prompt,deliver,...(callable.length?{call:callable.map((c,i)=>({name:c.name,contract:contractLine(c),reference:refs[i]?.reference||c.name}))}:{})};
+    // A contract as declared: its name, kind, path, what it does, takes and gives.
+    const declared=c=>({name:c.name,kind:contractKind(c),...(c.path?{path:c.path}:{}),...(c.does?{does:c.does}:{}),
+      ...(contractInputs(c).length?{inputs:contractInputs(c)}:{}),...(contractOutputs(c)?{outputs:contractOutputs(c)}:{}),...(c.effects?{effects:c.effects}:{})});
+    const deliver=design.contracts.map(c=>({...declared(c),...(runText(c)?{runs:runText(c)}:{}),examples:contractExamples(c,(c.serves||[]).map(v=>byId.get(v)).filter(Boolean))}));
+    const prompt={task:design.prompt,deliver,...(callable.length?{call:callable.map(declared)}:{})};
     const files=ownFiles.map(f=>f.path).sort();
     const complaints=this.heldComplaints(id,inbox).map(c=>c.text);
     const answers=this.read(`fn_answers:${id}`,[]).map(a=>a.text),digest=this.heldDigest(id),base=this.baseFilesFor(id);

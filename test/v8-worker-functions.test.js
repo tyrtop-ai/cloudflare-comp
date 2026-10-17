@@ -138,6 +138,8 @@ test('a worker\'s files are its own repository, every path in it: a folder the r
 const TRACKER = 'Build a small issue tracker: a library to create tickets and read one back by its id, and a `report` command that files a ticket and prints it as one line.';
 const STORE = "const tickets = new Map();\nlet next = 1;\nfunction createTicket(title) { const t = {id: next++, title, status: 'open'}; tickets.set(t.id, t); return {...t}; }\nfunction getTicket(id) { const t = tickets.get(id); return t ? {...t} : null; }\nmodule.exports = {createTicket, getTicket};\n";
 const report = reference => `${reference}\nconst t = createTicket(process.argv.slice(2).join(' '));\nconsole.log('#' + t.id + ' ' + t.title + ' [' + t.status + ']');\n`;
+// The worker writes its own reference to a contract it may call, from the contract as declared (its name and path).
+const referTo = c => `const { ${c.name} } = require('./${c.path}');`;
 const callCheck = (id, serves, steps) => ({id, serves, check: {kind: 'call', steps: steps.map(([call, args, expect]) => ({call, args, ...(expect === undefined ? {} : {expect})}))}});
 const command = (id, serves, args, line) => ({id, serves, check: {kind: 'command', run: `report ${args}`, expect: {exit: 0, stdout_has: [line]}}});
 const T_CONTRACTS = [
@@ -157,7 +159,7 @@ const T_PIECES = [
   {label: 'Ticket report', task: 'The report command: file a ticket with the title given and print it as one line.', contracts: ['report'], uses: ['createTicket']}];
 const trackerSplit = user => user.contracts_you_deliver ? {contracts: user.contracts_you_deliver, validations: [], pieces: []} : {contracts: T_CONTRACTS, validations: T_VALIDATIONS, pieces: T_PIECES};
 const isReport = user => user.prompt.deliver.some(c => c.name === 'report');
-const reportFile = user => report(user.prompt.call.find(c => c.name === 'createTicket').reference);
+const reportFile = user => report(referTo(user.prompt.call.find(c => c.name === 'createTicket')));
 
 test('run_examples on a piece that calls another\'s function runs on the worker\'s own files only: the call it makes is observed as missing there, as its own box shows it', async () => {
   const leaf = (user, _n, _s, {round}) => !isReport(user) ? deliver({'store.js': STORE})
@@ -222,7 +224,7 @@ test('an ask goes to the asker\'s manager as one choice among its functions, eac
   const answers = room.read(`fn_answers:${w.id}`, []);
   assert.equal(answers.length, 2, 'each ask its own answer');
   for (const a of answers) assert.ok(/^fn getTicket \([0-9a-f]{8}\)$/.test(a.key) && a.kind === 'provided', a.key);
-  assert.match(answers[0].text, /^function getTicket\(id\) in store\.js: .*Refer to it exactly as: .+, and use it rather than writing your own\.$/);
+  assert.match(answers[0].text, /^function getTicket\(id\) in store\.js: .*\. Use it rather than writing your own\.$/);
   assert.deepEqual(room.levelDesign(rp.id).children.find(c => c.id === w.id).calls, ['createTicket', 'getTicket']);
   assert.ok(calls.leaf.filter(isReport).at(-1).world.answers.includes(answers[0].text), 'its next turn starts with the answer');
 });
@@ -419,7 +421,7 @@ test('a manager reads its children and contracts from its level files only, neve
   assert.deepEqual(asked[0].state.contracts_offered, [{slot: 0, contract: 'file styles.css: the page styles'}]);
   assert.ok(!JSON.stringify(asked[0].state).includes('decoy'), 'nothing from the rows\' copies');
   assert.deepEqual(room.read(`fn_answers:${wa.id}`, []).map(x => x.key), ['fn styles.css']);
-  assert.match(room.read(`fn_answers:${wa.id}`, [])[0].text, /^file styles\.css: the page styles\. Refer to it exactly as: /);
+  assert.match(room.read(`fn_answers:${wa.id}`, [])[0].text, /^file styles\.css: the page styles\. Use it rather than writing your own\.$/);
   assert.deepEqual(room.levelDesign(a.id).children[0].calls, ['styles.css'], 'its entry in its manager\'s level file calls it');
   assert.ok(PAGE);
 });

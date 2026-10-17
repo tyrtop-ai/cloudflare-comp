@@ -1,7 +1,7 @@
 // v8 §4.5: the toolchain table is data, and its helpers are pure.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {TOOLCHAINS,STACKS,OTHER_MANIFESTS,toolchainOf,toolchainById,installed,renderImport,extractSurface,stackFrames,validIdentifier,manifestOf} from '../src/toolchains.js';
+import {TOOLCHAINS,STACKS,OTHER_MANIFESTS,toolchainOf,toolchainById,installed,extractSurface,stackFrames,validIdentifier,manifestOf} from '../src/toolchains.js';
 
 test('the phase-1 rows: javascript, python and text, frozen, each extension in one row',()=>{
   assert.deepEqual(TOOLCHAINS.map(t=>t.id),['javascript','python','text']);
@@ -27,12 +27,8 @@ test('installed: the rows whose executables the inventory reports; text always',
   assert.deepEqual(installed(null).map(t=>t.id),['text']);
 });
 
-test('renderImport and identifiers come from the row',()=>{
+test('identifiers come from the row',()=>{
   const js=toolchainById('javascript'),py=toolchainById('python');
-  assert.equal(renderImport(js,'countWords'),"const { countWords } = require('./countWords');");
-  assert.equal(renderImport(js,'countWords',true),"import { countWords } from './countWords';");
-  assert.equal(renderImport(py,'count_words'),'from count_words import count_words');
-  assert.equal(renderImport(toolchainById('text'),'x'),null);
   assert.equal(validIdentifier(py,'count_words'),true);
   assert.equal(validIdentifier(py,'lambda'),false);
   assert.equal(validIdentifier(js,'lambda'),true);

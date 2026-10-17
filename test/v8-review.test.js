@@ -26,10 +26,10 @@ const workerRequests = (calls, name) => calls.leaf.filter(u => u.prompt.deliver.
 // name (MESSAGES.provided), its own contract (MESSAGES.own_contract), or a
 // labelled broker answer. v7's texts ("No piece of the application
 // promises ...", "write it in your own module") are never among them.
-const V8_ANSWER = [/^.+\. Refer to it exactly as: .+, and use it rather than writing your own\.$/s, /^.+ is in your own prompt: write it in your files under exactly that name\.$/s];
+const V8_ANSWER = [/^.+\. Use it rather than writing your own\.$/s, /^.+ is in your own prompt: write it in your files under exactly that name\.$/s];
 const v8Answer = a => a.kind === 'broker' ? typeof a.text === 'object' && !!a.text?.label : a.kind === 'provided' && V8_ANSWER.some(re => re.test(a.text));
 test('F1: a v8 room\'s manager with contracts is never planned; an ask answered in a v8 room is only ever a v8 answer, in fn_answers and in every worker request', {skip}, async () => {
-  assert.equal(MESSAGES.provided({contract: 'function f()', reference: 'from f import f'}).match(V8_ANSWER[0])?.[0].length > 0, true);
+  assert.equal(MESSAGES.provided({contract: 'function f()'}).match(V8_ANSWER[0])?.[0].length > 0, true);
   let asked = false;
   const leaf = leafOf({control: user => {
     if (!user.prompt.deliver.some(c => c.name === 'loud') || asked) return null;
@@ -49,7 +49,7 @@ test('F1: a v8 room\'s manager with contracts is never planned; an ask answered 
 });
 
 // ------------------------------------------------------------------ F4
-test('F4: a rebuilt worker is handed what the archived one was: its uses (the call and its reference), and the splitter of the rebuild reads the contracts it may call', {skip}, async () => {
+test('F4: a rebuilt worker is handed what the archived one was: its uses (each contract it may call, as declared), and the splitter of the rebuild reads the contracts it may call', {skip}, async () => {
   let asked = false;
   const leaf = leafOf({control: user => {
     if (!user.prompt.deliver.some(c => c.name === 'loud') || asked) return null;
@@ -63,8 +63,9 @@ test('F4: a rebuilt worker is handed what the archived one was: its uses (the ca
   assert.deepEqual(JSON.parse(rebuilt.uses), JSON.parse(gone.uses));
   assert.deepEqual(JSON.parse(rebuilt.uses), ['shout']);
   const prompts = workerRequests(r.calls, 'loud').map(u => u.prompt);
-  assert.deepEqual(prompts.at(-1).call, prompts[0].call, 'the same call, contract and reference');
-  assert.equal(prompts.at(-1).call[0].reference, 'from shout import shout');
+  assert.deepEqual(prompts.at(-1).call, prompts[0].call, 'the same contract it may call');
+  assert.equal(prompts.at(-1).call[0].name, 'shout');
+  assert.equal(prompts.at(-1).call[0].reference, undefined, 'the worker writes its own reference');
   const job = r.calls.split.at(-1);
   assert.deepEqual(job.contracts_you_may_call.map(c => c.name), ['shout']);
   assert.deepEqual(r.room.packagesOf(rebuilt.id), r.room.packagesOf(gone.id));
