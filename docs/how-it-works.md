@@ -325,7 +325,7 @@ Linking is the one place where independent work meets, which makes it the natura
 
 ## v8 (experimental)
 
-Everything above describes v7, and v7 builds one kind of thing: a JavaScript module graph whose entry exports `start()`, tested by a script a model writes after the code exists. v8 builds what the prompt asks for, in any language the box has installed, and checks it against validations its splitters write before any code exists.
+Everything above describes v7, and v7 builds one kind of thing: a JavaScript module graph whose entry exports `start()`, tested by a script a model writes after the code exists. v8 builds what the prompt asks for, in whatever language the work is written in, and checks it against validations its splitters write before any code exists.
 
 v8 keeps the recursive idea: a tree of small agents, decomposition and recomposition one level at a time, each agent in its own repository. Its rules are the owner's, recorded in [owner/rulings.md](owner/rulings.md) (the owner's own words are in [owner/prompts.md](owner/prompts.md)):
 
@@ -344,7 +344,7 @@ v8 is a room setting: **Pipeline** in the dashboard, or `settings.pipeline: "v8"
 | Role | Does | Never |
 |---|---|---|
 | **Manager** (`manager-<hex16>`) | Routes. It owns its children's contracts and the validations it holds, in a file in its own repository (`level.json`). Each of its choices is Clef's. | Writes code, or rewrites its children's assignments |
-| **Splitter** (`splitter-<hex16>`) | A short session under its manager, on the worker model. It declares the level's contracts, the validations that check them, and the pieces, through functions | Decides whether its division is valid: Clef's review does |
+| **Splitter** (`splitter-<hex16>`) | A short session under its manager, on the manager model. It declares the level's contracts, the validations that check them, and the pieces, through functions | Decides whether its division is valid: Clef's review does |
 | **Worker** (`worker-<hex16>`) | Writes the files that deliver its prompt. It is the only role that writes code | Sees its siblings, the overall goal, a validation, or whether anything split |
 | **Builder** (`builder-<hex16>`) | Joins the work of its manager's children: writes the glue between the workers' interfaces, and may rename interface names | Writes the code a contract promises |
 | **Compiler** (`compiler-<hex16>`, one per level) | Makes sure the joined code works: it compiles every file and runs the validations of its manager's subtree, in a fresh box | Changes a file |
@@ -354,7 +354,7 @@ v8 is a room setting: **Pipeline** in the dashboard, or `settings.pipeline: "v8"
 1. **The room creates one manager.** Start creates `manager-<hex16>` from the prompt. Its task is the prompt, and it holds the installed packages, the chunks of the pages the prompt links to, and the existing files the room starts from. Its parent is the room.
    - Whatever an agent sends to its parent goes to the room when its parent is the room, and the agent can't tell the difference. An escalation that nothing below could settle is a hold for the person there, and an ask that no manager up to the room holds archives the asker (step 8).
    - The room steers nothing. It is done when the compiler of the manager it created has every validation of that manager's subtree passing on its exact bundle, with nothing pending below. The export ships that bundle.
-2. **Every manager tries to split, the same way at every level.** Clef pre-grades the assignment once, over `{assignment, contracts}` (the row's contracts, one line each). At or below the room's `split_floor` (default 0.1), Clef is sure the level doesn't need dividing, and no division is proposed: the level goes down whole to one worker, with the contracts it was given. (The room's manager is given none, so its splitter first declares them and their validations, with no `piece` to call.) Otherwise the splitter proposes a division.
+2. **Every manager tries to split, the same way at every level.** Clef pre-grades the assignment once, over `{assignment, contracts}` (the row's contracts, one line each). At or below the room's `split_floor` (default 0.1), Clef is sure the level doesn't need dividing, and no division is proposed: the level goes down whole to one worker, with the contracts it was given. (The room's manager is given none, so its splitter first declares them and their validations, with no `piece` to call.) Otherwise the splitter always proposes a division, and only Clef's review (step 4) decides whether it is valid.
 3. **The splitter declares the level through functions.**
    - `contract` declares one contract: a name, a kind (function, file, page, route, command, doc or data), what it does, its inputs, outputs and effects, a path, and for a page, route or command how it runs.
    - `file_check`, `judge_check`, `command_check`, `call_check`, `http_check` and `browser_check` each declare one validation of the contracts it `serves`. Each is typed in full, and its result shows the examples it renders.
@@ -363,7 +363,7 @@ v8 is a room setting: **Pipeline** in the dashboard, or `settings.pipeline: "v8"
 
    Each call stores exactly what it was given, or says exactly why it can't. Nothing else the model writes is read. The session has no cap on its calls. When its context window fills before `done`, the next turn starts a new session with the same functions, handed what it has declared so far; the room's turn budget bounds it.
 
-   The splitter sees its assignment, the contracts it delivers (none for the room's manager, whose splitter states them), the validations of those contracts held above it, the contracts it may call, what the box runs (the installed toolchains' programs and file extensions), its packages, and, quoted as data, the summaries of linked pages and the existing project's digest.
+   The splitter sees its assignment, the contracts it delivers (none for the room's manager, whose splitter states them), the validations of those contracts held above it, the contracts it may call, what the box runs (the installed toolchains' programs and file extensions), its packages, and, quoted as data, the summaries of linked pages and the existing project's files.
 4. **Clef reviews the proposal.** One batched call reads the original assignment with its contracts, and the pieces as written. It asks `split_valid` (is this a valid division, without going too small), `split_size`, and each piece's `scope`. In the same call it asks of each validation whether it exercises what its contracts state, whether someone knowing only those contracts could write what passes it, and whether it tests something a user meets rather than an internal detail.
    - Clef reviews and never deletes: a validation it doubts is kept, marked.
    - A YES admits the pieces.
@@ -383,7 +383,9 @@ v8 is a room setting: **Pipeline** in the dashboard, or `settings.pipeline: "v8"
    The runtime renders the examples from the validations, without a model call: a command validation gives `python3 convert_temp.py 100 C → its output contains 212`, a browser validation gives `open /create.html, fill the field labelled "Title", click the button "Create" → "Test Ticket" appears`, and a call validation gives `f(args) → result`. The worker never receives a validation itself, the goal, its siblings or its parent, and nothing it reads says whether its manager's work split: its prompt has the same form either way.
 
    Its functions are `read_file`; `write_file` (a whole file, staged for the turn's one commit); `run_examples` (its examples on its files as they stand, in a fresh box with the internet off, the way its compiler runs them); `ask` (by name: answered at once when its world holds the name, otherwise by its manager, at the start of its next turn); `done`; and `wait`. A session that ends with neither `done` nor `wait` (its context window is full) goes on next turn in a new session, with its files as it wrote them.
-7. **Managers route through functions.** On each ask, complaint or change it holds, every function call a manager may make is one typed option: `answer(contract)` for each contract its other children deliver, `route_to(child)` for each live child, `extend(need)`, which hands the need to its splitter, and `ask_parent(need)`. Clef scores each option over the manager's own files (its entry in its parent's level file, and its own level file), and the runtime calls the highest. Every choice is a `manager_choice` event with Clef's p for each option.
+7. **Managers route through functions.** On each ask, complaint or change it holds, every function call a manager may make is one typed option. What it reads is its own files: its entry in its parent's level file, and its children as its level file lists them, each live child's label and the contracts it delivers. It never reads the tasks its splitter wrote for them: the design is the builder's and the workers' artifact. Clef scores each option, and the runtime calls the highest. Every choice is a `manager_choice` event with Clef's p for each option.
+   - On an ask: `answer(contract)` for each contract its other children deliver, `grant(package)` for each package its row holds that the asker's doesn't, and `ask_parent(need)`. No level grows for an ask.
+   - On a complaint or a change: `route_to(child)` for each live child, and `extend`, which hands it to its splitter: for every change, and for a complaint only when it names a contract no live child delivers (step 8).
    - A walk up the tree is a chain of `ask_parent` calls, each one manager's choice.
    - A complaint goes down to the worker responsible for it, as the compiler observed it. Nothing rewrites it into instructions.
    - A change goes to the child whose contracts it concerns, or to the splitter, which extends the level.
@@ -398,7 +400,7 @@ v8 is a room setting: **Pipeline** in the dashboard, or `settings.pipeline: "v8"
    - A pass holds only for the bundle it ran on. So a validation runs first at its holder, as soon as that subtree is done and while its siblings may still be working, and again at each level whose bundle differs.
    - A validation held below whose run reaches another piece's work is held by the level above from then on.
    - Every failure is a complaint, routed down as observed (step 7).
-   - A check that could not run is nobody's work: the room holds at `checks_blocked` and retries.
+   - A check that could not run is nobody's work: no worker gets a complaint for it, and the compiler runs it again until it can observe it, within the room's turn budget.
 
    File checks run in the Worker, and documents go to Clef. Everything else runs in the box's one exec:
 
@@ -416,13 +418,13 @@ v8 is a room setting: **Pipeline** in the dashboard, or `settings.pipeline: "v8"
 
 The export of a v8 room is the project at its own paths, plus `.recursive/RUN.md` (how to run it, and the validation table), `.recursive/validations.json` (the levels' contracts and validations) and each manager's level file at `.recursive/levels/<manager>.json`. The runtime never writes the project's own `README.md`.
 
-**Holds.** A v8 room holds for the person: an escalation that reached the room, a grant to change an existing file (`base_confirm`), files that would ship without a compile or a box (`checks_untested`, which Continue accepts), checks that couldn't run (`checks_blocked`, which retries itself), the room's agent or depth limit (`split_capacity`), or Clef not answering (`clef_blocked`). **Continue** answers the hold and wakes the row it names.
+**Holds.** A v8 room holds for the person: an escalation that reached the room, a grant to change an existing file (`base_confirm`), or the room's agent or depth limit (`split_capacity`). **Continue** answers the hold and wakes the row it names. The room has no other completion step: it is done when its manager's compiler observes every validation passing (step 1).
 
 ### Starting from a repo, and links in the prompt
 
 `POST /api/run` takes `base`: a public GitHub repo with an optional branch, tag or commit, or a room's previous v8 result (**Start from** in the dashboard). The repo is read without a token. Its text files are the base the pieces build on, and the files the room doesn't build (hidden directories, binaries, vendored files) are carried into the export untouched.
 - **Ownership.** A base file belongs to no piece until a contract names its path, and only that piece changes it. Only the person grants the change: at Start (`grants` in `/api/run`), or at the `base_confirm` hold, which lists each waiting file with Clef's p and whether the prompt names it (shown pre-selected; "do not touch X" does not count). Continue grants the listed or selected files. Until then, the pieces carrying the file wait, and the room doesn't complete. A follow-up prompt can leave a file out instead.
-- **What models see.** A splitter and a worker get a compact digest of the repo, quoted as data, and a worker also gets the existing files it was granted.
+- **What models see.** The repo's files exist whole in a splitter's and a worker's world, quoted as data, and a worker also gets the existing files it was granted.
 - **Export.** The export is the base plus the changes. `POST /api/export/github` with `onto_base: true` commits just the changes on top of the exact commit the room started from.
 
 Links written in the prompt are read once, when the room opens, from hosts on the owner's allowlist (`FETCH_ALLOW`). Their text is cut into chunks, and the reader, on the compiler model, states what each chunk and each page says through its `note` function. A splitter reads the pages' summaries, a piece cites the chunks it needs, and a worker reads only the chunks cited for it. A link that can't be read is listed in the **Sources and base** panel, and the run goes on without it.
@@ -433,7 +435,7 @@ A finished room can take more work without starting over. The **Prompts** panel 
 
 - **A change goes to the room's manager, as a change on its row.** Before that manager's split, it becomes part of the manager's assignment, which its splitter reads. After the split, the manager's choice (step 7) hands it, verbatim, to the child whose contracts it concerns (`route_to`), and so on down to the worker it concerns, or to its splitter, which extends the level with new pieces, contracts and validations (`extend`). Every level behaves the same. Pieces the change doesn't reach are never woken, and their files stay as they were. Nothing is moved or deleted: each extension is a new commit of the level file.
 - **While running.** A manager in the middle of a turn finishes it, and takes up the change at its next turn.
-- **Budgets.** A change runs on the turns the run has left. Turns you give with **Apply now** are added on top and recorded on the prompt. A paused room stays paused: the change waits on the manager's row for Continue.
+- **Budgets.** Each change runs on the room's turn budget: the one set at Start, or the turns you give it with **Apply now**, which are recorded on the prompt. The queue has no allowance of its own. A paused room stays paused: the change waits on the manager's row for Continue.
 - **Done.** The room completes when the compiler of the manager it created has every validation passing on its exact bundle again, the new ones included.
 - **On failure.** By default the queue stops at a prompt that fails (the room failed, or holds where only you can go on), and **Go on** resumes it. With **When a prompt fails: go on**, the next prompt is applied anyway.
 
@@ -452,17 +454,17 @@ A finished room can take more work without starting over. The **Prompts** panel 
 ### Benchmark mode
 
 The **Benchmarks** panel and `POST /api/bench` run a dataset of coding tasks, one v8 room per task:
-- **Datasets.** HumanEval, MBPP, MultiPL-E (its JavaScript and Python sets), or plain `{id, prompt, tests}` JSON lines, either pasted or fetched from `raw.githubusercontent.com` or Hugging Face's datasets server.
+- **Datasets.** HumanEval, MBPP, MultiPL-E (in whatever language a task is written), or plain `{id, prompt, tests}` JSON lines, either pasted or fetched from `raw.githubusercontent.com` or Hugging Face's datasets server.
 - **A task room is an ordinary room.** Its prompt is the task's own prompt (for HumanEval, the signature and the docstring). Its splitters write that level's validations from it like any other, with three different examples per function, and the room works against its own validations. There are no hidden tests inside a room.
-- **The grader is outside the room, and its grade goes back until done.** When a task room completes, the `BenchRun` grades the bundle it ships, in a fresh box of its own, with the benchmark's tests. By default (**Grading: until done**) a failed grade goes back into the room, verbatim, as a complaint to the manager the room created, like anything else; the room works on it, and the run grades again each time the room completes, until the task passes or the room's turn budget is spent. **Once** grades only what the room ships the first time it completes (pass@1 with no test feedback).
+- **The grader is outside the room, and its grade goes back until done.** When a task room completes, the `BenchRun` grades the bundle it ships, in a fresh box of its own, with the benchmark's tests. A failed grade goes back into the room, verbatim, as a complaint to the manager the room created, like anything else; the room works on it, and the run grades again each time the room completes, until the task passes or the room's turn budget is spent.
 - **Scheduling.** A `BenchRun` Durable Object drives the rooms on alarms, so a run continues with the page closed. At most **Rooms at once** run together, capped by `BENCH_EXECUTORS`. Each compile of a task room runs in its own fresh box, so no two tasks share one. Rooms that passed are deleted by default; the others are kept so you can look at them.
-- **Scoring.** pass@1 counts only scored tasks. Platform failures, stops and holds are errors and are left out. A room that ran out of turns counts as a failure. Each task records its wall time, tokens (from the spans), box time and, until done, the gradings it took. Two runs can be compared on the tasks they share.
+- **Scoring.** A task's outcome is what the room and the grader observed: completed and graded (passed or failed), failed, or held. The pass rate counts the graded tasks; a room that ran out of turns counts as a failure, and stops and holds are counted apart. Each task records its wall time, tokens (from the spans), box time and the gradings it took. Two runs can be compared on the tasks they share.
 
 Integrity limits:
 - **The harness.** It is a supervisor that never loads the solution. It reads the nonce and the tests and deletes them before anything runs, and runs the tests in a separate process that doesn't hold the nonce. It counts every assertion. A pass needs that process's own token-signed completion record, exit 0 and at least one assertion.
 - **What it can't stop.** Code that reaches the test process's memory can defeat the in-process counting, and so can a process of the same user reading the supervisor through `/proc`. The box is the boundary, so a pass is strong evidence, not proof.
 - **Comparing numbers.** The models may have seen these datasets in training, and the tree around the model is not the setup published numbers use. Treat the results as a comparison between settings and models on this deployment, not a leaderboard figure.
-- **Scope.** Only Python and JavaScript tasks run. SWE-bench is out of scope: it needs per-repo Docker environments that Containers can't host.
+- **Scope.** A task runs in the language it is written in, and its grading runs in a box that runs that language. SWE-bench is out of scope: it needs per-repo Docker environments that Containers can't host.
 
 ### Speed changes
 
@@ -600,7 +602,6 @@ The changelogs give each run's evidence, and the local replays of its files, whi
   Nothing compares the code that siblings write. In the larger v7.11 run, two sibling workers each wrote an almost identical `TicketRepository` class. Two sibling splits that run at the same time can each promise the same new name. A manager's model can retire a duplicate only when nothing else imports it.
 - **v8 joins are the builder's.** In v8 the glue between the workers' interfaces, and any rename of an interface name, is the builder's work through its functions. A join that doesn't work shows only when the compiler runs the validations, and its complaint goes back down like any other.
 - **v8 is experimental.** It is tested offline with scripted models, and the changelog lists its live runs so far. How well a small model declares a level through functions is still open.
-- **v8 languages.** Only Node and Python are installed, each with its standard library, and Python with pytest. A contract in a language the box doesn't run can't be declared: the splitter's `contract` function says so.
 - **v8 validations are only as good as the splitters write them.** Nothing checks that a level's validations capture what you meant beyond Clef's review of each. A judge check is a Clef yes/no, not a test.
 - **v8 network isolation** rests on each box starting with the internet off. Inside it, checks also run in a network namespace where the box allows user namespaces, and the check report's inventory says which.
 - **Amendments add and change, never remove.** A follow-up that replaces most of the project ("use X instead") reaches many pieces one by one. For that, start a new room with the previous result as its base.

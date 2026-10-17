@@ -15,10 +15,10 @@ Owner, 2026-10-16: "throw out the fucking card writer. You're too attached to th
 
 1. **The room starts the run.** It creates the top manager's row: task = the prompt (the effective goal), its sources and base digest, and the installed packages. There is no card step and no handler.
 2. **Pre-grade.** One Clef call over `{assignment, contracts}`. At the top, `contracts` is empty: the top's splitter defines the level. If p ≤ `split_floor`, the runtime skips the split attempts (no proposals), and the splitter is asked only for this level's contracts and validations with no pieces.
-3. **The splitter (`splitter-<hex16>`, a short-lived step under its manager, using the worker model) proposes, for each attempt (up to 3):**
+3. **The splitter (`splitter-<hex16>`, a short-lived step under its manager, using the manager model, since the owner calls the splitter "essentially what you're calling manager now" and says "workers are a different model") proposes, for each attempt (up to 3):**
    - `contracts`: what this level delivers. At the top these are the deliverables. Below the top, they are the manager's own contracts (given by its parent's splitter), possibly refined: a path or names chosen, examples added.
    - `validations`: runnable checks (the existing check kinds: call/command/http/browser/file) for this level's contracts, each with `serves`. A contract of kind command/route/page carries how it runs (argv, port or static), the way `card.run` did.
-   - `pieces`: `{label, task, contracts: [the names it delivers]}`. These are empty when the splitter proposes no division.
+   - `pieces`: `{label, task, contracts: [the names it delivers]}`. They are empty only when the pre-grade hands the level down whole (step 2). Otherwise the splitter always proposes a division, and only Clef's review decides whether it is valid (owner: "the idea is that manager always attempts to flip, and then clef is supposed to decide if that was a valide split"; "literally every manager tries to split, model can retry twice with different split parameter").
 4. **Clef validates each attempt in one batched call. It annotates and never deletes.**
    - **Split:** `split_valid`, `split_size` and the per-piece `scope` question, when there are pieces. Retry parameters depend on the objection.
    - **Validations:** the per-validation questions worth keeping from reviewCard: `exercises`, `implementable` and `internal`. A NO marks the validation doubtful. The writer is not asked to revise.
@@ -27,7 +27,7 @@ Owner, 2026-10-16: "throw out the fucking card writer. You're too attached to th
    - **The proposal splits:** each piece becomes a `manager-<hex16>`, with its contracts on its row.
    - **It doesn't split:** one `worker-<hex16>` with the manager's contracts.
    - **Where validations live:** each is held by the lowest manager whose subtree serves it (placeChecks, unchanged).
-7. **The builder and the compiler** are unchanged from M3 and ship-verified. The top verifies the exact shipped bundle.
+7. **The builder joins, and the compiler verifies.** The builder is an agent: it writes the glue between the interfaces the workers created, and may rename interface names (owner: "builder - writes glue between the interfaces created by the worker. can edit interface names"). The compiler makes sure the code the builder joined actually works (owner: "compiler - ensures that the code taped together by the builder actually works"). The top verifies the exact shipped bundle.
 
 ## What goes
 
@@ -40,7 +40,7 @@ Owner, 2026-10-16: "throw out the fucking card writer. You're too attached to th
 
 ## What stays, renamed
 
-- **The validation states** (`requirement_status` becomes `validation_status`), passes keyed to exact bytes, the top verifying what ships, accept-untested holds, base_confirm (the person grants changing existing files), sources and refs, packages and the broker, interface facts in contract lines.
+- **The validation states** (`requirement_status` becomes `validation_status`), passes keyed to exact bytes, the top verifying what ships, base_confirm (the person grants changing existing files), sources and refs, packages and the broker, interface facts in contract lines.
 - **Benchmarks:** see "There are no hidden tests inside a room" below; the grader is outside the room.
 
 ## Done when
@@ -58,7 +58,7 @@ Owner: "the top manager shouldn't even know it's a top manager. The room should 
 
 - **No top-specific behaviour in any agent or compiler.** There is no `isTop` and no `topId()` in agent logic.
   - The manager the room created is an ordinary manager whose parent is the room.
-  - Anything an agent sends to its parent goes to the room when the parent is the room, and the agent can't tell the difference. An ask no manager up to the room holds archives the asker, and the compensating controls rebuild what it delivered (owner: "if it works up to root without finding it, it kills the work"; "more specifically, archived"). Stuck reports, escalations and failures nothing below could settle are the room's to hold for the person.
+  - Anything an agent sends to its parent goes to the room when the parent is the room, and the agent can't tell the difference. An ask no manager up to the room holds archives the asker, and the compensating controls rebuild what it delivered (owner: "if it works up to root without finding it, it kills the work"; "more specifically, archived").
 - **Every compiler follows the same rule.** At its level, it verifies every validation held in its subtree whose last pass is not on its level's exact bundle, in one box. So a validation runs at its holder (early) and again at each level whose bundle differs from the one it passed on. The ship-verified invariant then holds at every level, with no level knowing it is last.
 - **The room observes and doesn't steer.** It is done when the compiler of the manager it created has every validation of its subtree passing on that level's current exact bundle, with nothing pending below. The export ships that bundle. That is the room's only completion rule.
 - **The room's own record** of which manager it created is the room's state, not something an agent reads.
@@ -127,7 +127,7 @@ Owner: "the workers shouldn't know about their siblings. Or about the overall pr
   - Benchmark: the 3 come from the splitter's own validations of the task's prompt, as in any room.
 - **There are no "hidden tests" inside a room.** The benchmark's own tests are the grader, and the grader sits outside the system.
   - **Today** (src/bench.js): a bench room starts from a fixed card with one deliverable and one "hidden requirement", whose check runs the benchmark's tests inside the room's compiler. A failure ends the room `benchmark_failed` without repair, and the room has no validations of its own.
-  - **Now:** a bench task room is an ordinary room. Its prompt is the task's prompt (the signature and docstring). The splitter writes that level's validations from it like any other, with 3 examples per contract, and the room iterates against its own validations only. When the room is done, the BenchRun grades the shipped bundle in the harness's own box. A failing grade goes back into the room as a complaint, until the room is done (owner, 2026-10-16 05:54: "why does it not go back? it should go back until done, just like anything else?"). Grading once, for a pass@1 number, is an option, not the default.
+  - **Now:** a bench task room is an ordinary room. Its prompt is the task's prompt (the signature and docstring). The splitter writes that level's validations from it like any other, with 3 examples per contract, and the room iterates against its own validations only. When the room is done, the BenchRun grades the shipped bundle in the harness's own box. A failing grade goes back into the room as a complaint, until the room is done (owner, 2026-10-16 05:54: "why does it not go back? it should go back until done, just like anything else?").
   - **Delete:** the bench card, hidden requirements, the `hidden` flag, `benchmark_failed`, and every masking of hidden validations.
 - **The three-examples rule covers only contracts that are called or run** (owner, 2026-10-16: "only to contracts that are called or run"): functions, commands and routes. Pages, files, docs and data owe none.
 
@@ -146,4 +146,6 @@ Owner: "every model should work that way, where the runtime should only be inter
 - **Worker:** `read_file`, `write_file`, `run_examples` (its examples in its own box, as the compiler would run them), `ask` (by name, through the broker), `done`.
 - **Builder:** read its children's files and the design artifact, `write_file` (glue), `rename` (interface names), `done`.
 - **Source reading:** `note` for what a linked page says.
-- **Manager (Clef):** `children()` (names, tasks, contracts: what it can see), `answer(contract)` to the asker, `route_to(child)` for an ask, a complaint or a change, `ask_parent(need)` (the same call one level up), `extend(need)` (hands to its splitter), and its level's own choices (split or hand down; admit or retry a split; whether a document meets its question).
+- **Manager (Clef):** `children()` (each live child's label and the contracts it delivers, never the tasks its splitter wrote: owner, "the manager doesn't need to know that, that's why we use an artifact for that"), and its level's own choices (split or hand down; admit or retry a split; whether a document meets its question).
+  - **On an ask:** `answer(contract)` to the asker, `grant(package)` down the asker's line, or `ask_parent(need)` (the same call one level up). An ask no manager up to the room holds archives the asker at the room (rule 4). No level grows for an ask.
+  - **On a complaint or a change:** `route_to(child)`, or `extend` (hands it to its splitter): for a change, or for a complaint naming a contract no live child delivers (rule 4 (b) 3).

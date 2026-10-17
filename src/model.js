@@ -178,11 +178,12 @@ export async function reviewLevel(env, {assignment, contracts = [], pieces = [],
     notes:validations.map((v,j)=>({exercises:answers[`exercises_${j}`],implementable:answers[`implementable_${j}`],...(answers[`internal_${j}`]!=null?{internal:answers[`internal_${j}`]}:{})}))};
 }
 // v8: a manager's choice. A manager works through functions too: on an ask,
-// a complaint or a change, each function call it may make (answer with a
-// contract, route_to a child, extend its level, ask_parent) is one typed
-// option, and Clef scores each one with one noul question over the
-// manager's own files (its assignment and contracts, its children's labels
-// and contracts, and the item). options: [{key, question}], the key Clef's
+// a complaint or a change, each function call it may make (on an ask:
+// answer with a contract, grant a package, ask_parent; on a complaint or a
+// change: route_to a child, extend its level) is one typed option, and
+// Clef scores each one with one noul question over the manager's own files
+// (its assignment and contracts, its children's labels and contracts, and
+// the item). options: [{key, question}], the key Clef's
 // question key (e.g. route_to_1) and the question its instructions.
 // [p per option], in order; the caller calls the highest.
 export const CHOICE_QUESTIONS = 96;

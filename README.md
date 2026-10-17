@@ -91,14 +91,14 @@ The yes/no questions go to Clef, a classifier that answers with a probability, s
 v7 can only build one kind of thing: a JavaScript app whose entry exports `start()`. v8 is a second pipeline you pick per room, meant to build whatever the prompt asks for. It follows the owner's rulings ([docs/owner/rulings.md](docs/owner/rulings.md)):
 
 - There is no Root. The room creates one manager from your prompt, named `manager-` and 16 hex digits like every row, and no agent knows it is the top. The room is done when that manager's compiler has every validation of its subtree passing on the bundle it ships.
-- Every manager tries to split, the same way at every level. Its splitter declares the level's contracts, the validations that check them and the pieces, through functions, and Clef decides whether the split is valid.
+- Every manager tries to split, the same way at every level. Its splitter declares the level's contracts, the validations that check them and the pieces, through functions, and only Clef decides whether the split is valid.
 - Managers are Clef routers and never write code. Where an ask, a complaint or a change goes is a manager's choice among its functions, and Clef makes it.
-- Only workers write code, in any language the box has installed (today Node and Python). A worker gets its prompt, with examples rendered from the validations of what it delivers, the complaints routed to it, and what exists for it by name. It never sees the goal, its siblings or a validation itself.
+- Only workers write code, in any language: the box runs whatever code type the work is written in, with no fixed set of languages. A worker gets its prompt, with examples rendered from the validations of what it delivers, the complaints routed to it, and what exists for it by name. It never sees the goal, its siblings or a validation itself.
 - Every model works through functions: the runtime never parses a model's prose. There are no blocklists and no path rules: each agent has its world, and code runs only in fresh, single-use boxes with the internet off.
 - At every level a builder joins the children's work, writing the glue between their interfaces, and a compiler runs the validations in a fresh box. A failure goes back down to the worker responsible, as the compiler observed it, until the level passes.
 - Links written in the prompt are read once at the start. A run can also start from a public GitHub repo or the room's previous result.
 - Follow-up prompts queue up in a Prompts panel: each one, when the room completes, goes to the room's manager as a change, and the managers route it. **Adjust now** applies one to a running room.
-- A benchmark mode runs HumanEval, MBPP or MultiPL-E tasks, one ordinary room per task. The grader sits outside the room, and by default its failures go back into the room until the task passes.
+- A benchmark mode runs HumanEval, MBPP or MultiPL-E tasks, one ordinary room per task. The grader sits outside the room, and its failures go back into the room until the task passes, like anything else.
 
 ## Where it's at
 

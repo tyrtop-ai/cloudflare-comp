@@ -19,15 +19,12 @@ If you serve the Worker on your own domain, set `SELF_HOSTS` first ([INSTALL-CLO
 
 Use a new room for each goal. Set **Pipeline** to **v8** before pressing **Start**. A room keeps the pipeline it started with, and Continue can't change it. Leave the other settings at their defaults, with a turn budget of 100.
 
-The room creates one manager from your prompt, and the manager's splitter states its level through functions. The **Levels** panel then shows each validation (with a pass, fail or untested chip), each manager's level file (a button that opens it), and each splitter step with Clef's verdict on it. The graph shows every agent: managers and workers as circles, splitters, builders and compilers as squares. If the room holds, the panel says why:
+The room creates one manager from your prompt, and the manager's splitter states its level through functions. The **Levels** panel then shows each validation (with a pass, fail or untested chip), each manager's level file (a button that opens it), and each splitter step with Clef's verdict on it. The graph shows every agent: managers and workers as circles, splitters, builders and compilers as squares. The room is done when its manager's compiler observes every validation passing; nothing else completes it. If the room holds, the panel says why:
 
 | Hold | Meaning | What to do |
 |---|---|---|
 | `base_confirm` | A contract would change a file of the repo the room started from, and only you can grant that | Select the files to grant and press Continue, or send a follow-up prompt that leaves the file out |
-| `checks_blocked` | The validations couldn't run (the box, Chromium, Clef) | Retries itself after 30 s, 2 min and 10 min, then waits for Continue |
-| `checks_untested` | Everything that runs passed, but some files would ship without a compile or a box | Continue accepts the project as it is (logged as `unchecked_accepted`), or send a follow-up prompt |
 | `split_capacity` | A manager couldn't create its children within the room's agent or depth limit | Raise the limit and press Continue |
-| `clef_blocked` | Clef couldn't answer a manager's choice or a review | Continue asks again |
 | any other | Something nothing below could settle reached the room; its text says what | Read the text. Continue wakes the row it names, or send a follow-up prompt |
 
 ## 3. Try these goals
@@ -41,12 +38,12 @@ The room creates one manager from your prompt, and the manager's splitter states
 **"A Python CLI that converts temperatures."**
 - The level should have a command contract and command validations, with three different examples for the command.
 - If a validation fails, open the worker's complaint in the traffic panel. It is what the compiler observed, as it observed it.
-- In the export, check `state.toolchain_inventory`: it shows the Python and Node versions, and whether checks ran with the network off (`network`).
+- In the export, check `state.toolchain_inventory`: it shows the version of each toolchain the box had, and whether checks ran with the network off (`network`).
 - The same inventory shows the box's host name (`hostname`, which should be `box-` and 16 hex characters) and `getfqdn`, which should be `{"ok": true, "value": "box-…"}` with the same name (section 6.2).
 
 **"A static web page with a to-do list."**
 - The level should have a page contract (`index.html`) served as it is, and browser validations.
-- The browser validations are the most likely to hit infrastructure problems (Chromium starting on `standard-1`). A `checks_blocked` hold, or a validation marked `infrastructure`, means the box side failed, not the page.
+- The browser validations are the most likely to hit infrastructure problems (Chromium starting on `standard-1`). A validation marked `infrastructure` means the box side failed, not the page: no worker gets a complaint for it, and the compiler runs it again until it can observe it.
 
 **"Build a small issue tracker that lets someone create, view, update, and delete tickets."** (the old default)
 - No `start()` requirement is added in v8. The splitter chooses the shape, and the contracts it declares (routes, a page, a command) say what it chose.
@@ -58,10 +55,10 @@ The room creates one manager from your prompt, and the manager's splitter states
 In the **Benchmarks** panel:
 - **Dataset URL:** the HumanEval rows URL shown in the field's placeholder (datasets-server.huggingface.co).
 - **Tasks:** 10. **Rooms at once:** 2. **Keep task rooms:** the default (keeps the ones that didn't pass).
-- **Grading:** the default, **Until done**: a failed grade goes back into the room as a complaint, and the room works on it until the task passes or its budget is spent. **Once** grades only what each room ships the first time it completes (pass@1 with no test feedback).
+- **Grading:** a failed grade goes back into the room as a complaint, like anything else, and the room works on it until the task passes or its budget is spent.
 - Use the same model pickers and turn budget as for the rooms above.
 
-Press **Run benchmark**. It keeps going with the page closed. A task room is an ordinary room whose prompt is the task's prompt: for most HumanEval tasks Clef's pre-grade should keep the level whole, so one worker writes the function. pass@1 counts only scored tasks. Errors (a box that couldn't run, a stop, a hold) are counted separately, so a high error count points at the platform, not the model.
+Press **Run benchmark**. It keeps going with the page closed. A task room is an ordinary room whose prompt is the task's prompt: for most HumanEval tasks Clef's pre-grade should keep the level whole, so one worker writes the function. A task's outcome is what the room and the grader observed: graded (passed or failed), failed, or held. Stopped and held tasks are counted apart from the graded ones.
 
 ## 5. What to send back
 
@@ -72,9 +69,9 @@ Press **Run benchmark**. It keeps going with the page closed. A task room is an 
 
 ## 6. Capability boxes: every v8 compile in its own box
 
-A v8 room runs each compile in a **fresh, single-use box**: a new Durable Object (`Box`) with its own VM, started with the internet off, which runs the build runner on the compile's request and is destroyed afterwards. A worker's `run_examples` and a benchmark's grading each open one too, and no two benchmark tasks share one. The runner's own isolation still runs inside the box. If a box can't be opened (for example, if the platform refuses `enableInternet: false`, or the image isn't deployed), the compile holds at `checks_blocked` with its usual automatic retries; there is no shared Container to fall back to. v7 rooms keep `BuildExecutor` unchanged.
+A v8 room runs each compile in a **fresh, single-use box**: a new Durable Object (`Box`) with its own VM, started with the internet off, which runs the build runner on the compile's request and is destroyed afterwards. A worker's `run_examples` and a benchmark's grading each open one too, and no two benchmark tasks share one. The runner's own isolation still runs inside the box. If a box can't be opened (for example, if the platform refuses `enableInternet: false`, or the image isn't deployed), the compile runs again until a box opens, within the room's turn budget; there is no shared Container to fall back to. v7 rooms keep `BuildExecutor` unchanged.
 
-The boxes come from a second Container application in `wrangler.jsonc`. It uses the `durable_object` scheduling policy (public beta) and has three images: `check` (Node, Python), `browser` (`check` plus Chromium) and `fetch` (Node only). The first `npm run deploy` builds all three, so it takes longer.
+The boxes come from a second Container application in `wrangler.jsonc`. It uses the `durable_object` scheduling policy (public beta) and has three images: `check` (Node, Python and the toolchains of the other languages the box runs), `browser` (`check` plus Chromium) and `fetch` (Node only). The first `npm run deploy` builds all three, so it takes longer.
 
 The first box of a run is slow to start: its image is pulled, so it takes 9 to 15 s to become ready instead of about 1 s. The span records it with `cold: true` (any box whose `ready_ms` is over 5 s). Later compiles start warm. The room opens that first box early, as soon as its first level is admitted (section 6.3), so the first compile normally finds it ready.
 
@@ -84,7 +81,7 @@ The platform names each box's VM with a label longer than the 63 characters a ho
 
 The box image runs the build runner under `/opt/box/hostname.py`. It gives the runner, and everything it starts, the box's own name in a user namespace of its own: `box-` followed by the first 16 hex characters of the SHA-256 of the box's Durable Object id (for example `box-3f9a0c27d18e4b65`), with an `/etc/hosts` that resolves it, so `getfqdn` answers without asking DNS. It needs no root: it uses the same user namespaces the runner already uses to turn the checks' network off. The same name is in the compile's span (`box.name`), in the inventory and in the probe's report.
 
-If the box can't set its name, the runner still runs and its inventory says so: `hostname_ok: false`, `hostname_status` with the reason (for example `unshare: EPERM`) and `getfqdn` with the error. Every check that then fails in that box is the box's problem, not the code's: the room holds at `checks_blocked` with a `compile_infrastructure` text that starts with "The box's environment, not the code", logs a `box_environment` event, and sends no worker a complaint. The same rule covers the other environment facts the inventory reports, for example a check that couldn't start `python3` in a box that reports no Python.
+The name is valid by construction. Whatever a check then observes in the box, the compiler reports as it observed it.
 
 After deploying, run the probe's `hostname` item once (section 6.1) and check that `runner_named` is `true`.
 
