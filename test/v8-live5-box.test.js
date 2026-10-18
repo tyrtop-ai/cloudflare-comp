@@ -28,13 +28,14 @@ const LEVEL = {
 const RIGHT = 'function main() { console.log(String(Number(process.argv[2]) * 9 / 5 + 32)); }\nmain();\n';
 const WRONG = 'function main() { console.log(String(Number(process.argv[2]))); }\nmain();\n';
 const USAGE = {path: 'USAGE.md', content: '# Usage\n\nRun `node temp.js 100`.\n'};
-const clef = input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? 0.1 : 0.9}]))});
+const clef = input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: 0.9}]))});
 const SPEC = {image: 'check', instance: 'standard-1', internet: true};
 // The box of the issue tracker run: a platform host name with a 64-character label.
 const LONG = 'a'.repeat(64);
 const BAD_HOST = {hostname: LONG, hostname_ok: false, hostname_longest_label: 64, hostname_status: 'unshare: EPERM',
   getfqdn: {ok: false, error: "UnicodeError: encoding with 'idna' codec failed (UnicodeError: label too long)", ms: 30}};
-// A room on levels: its manager is caught by the pre-grade, its splitter states LEVEL, one worker writes.
+// A room on levels with no room for pieces (ALONE, its agent limit): its splitter states LEVEL, one worker writes.
+const ALONE = {pipeline: 'v8', max_agents: 3};
 const room = ({answers = [RIGHT], leafMs = 0, readyMs = 0, splitMs = 0} = {}) => {
   let n = 0;
   const boxes = fakeBoxes({readyMs});
@@ -210,7 +211,7 @@ test('BoxPrewarm: a matching session takes the box; another image discards it un
 // ------------------------------------------------------------ the room
 test('a v8 room opens its first session\'s box when its first level is admitted, while the worker writes; the compiler takes it, warm', async () => {
   const r = room({readyMs: 250, leafMs: 400});
-  await r.room.start(GOAL, 10, {pipeline: 'v8'});
+  await r.room.start(GOAL, 10, ALONE);
   await r.drain();
   assert.equal(r.room.get('status'), 'complete', events(r.room).slice(-6).map(e => `${e.kind}: ${e.body.slice(0, 140)}`).join('\n'));
   const [pre] = spansOf(r.room, 'box', 'prewarm'), [compile] = spansOf(r.room, 'container', 'compiler');
@@ -231,7 +232,7 @@ test('a v8 room opens its first session\'s box when its first level is admitted,
 test('a repair round opens a fresh box (the prewarm serves the first session only), and BOX_CONCURRENCY counts the prewarmed box', async () => {
   const r = room({answers: [WRONG, RIGHT], readyMs: 20});
   r.env.BOX_CONCURRENCY = '1';
-  await r.room.start(GOAL, 10, {pipeline: 'v8'});
+  await r.room.start(GOAL, 10, ALONE);
   await r.drain();
   assert.equal(r.room.get('status'), 'complete');
   const compiles = spansOf(r.room, 'container', 'compiler');
@@ -249,7 +250,7 @@ test('a prewarmed box no session takes is stopped when the run ends', async () =
   let r;
   r = liveRoom({boxes: fakeBoxes({readyMs: 20}), split: () => LEVEL, clef,
     leaf: async () => { await r.room.stop(); return fileBlocks([{path: 'temp.js', content: RIGHT}], {summary: 'part of it', done: false}); }});
-  await r.room.start(GOAL, 10, {pipeline: 'v8'});
+  await r.room.start(GOAL, 10, ALONE);
   await r.drain();
   assert.notEqual(r.room.get('status'), 'running');
   assert.equal(spansOf(r.room, 'container', 'compiler').length, 0, 'no compile ran');
@@ -289,7 +290,7 @@ test('a room whose prewarmed box stopped before its compile runs the compiler in
   const boxes = fakeBoxes({readyMs: 5});
   const r = liveRoom({boxes, clef, split: async () => LEVEL,
     leaf: async () => { await sleep(80); if (!n++) await boxes.boxes[0].container.destroy(); return fileBlocks([{path: 'temp.js', content: RIGHT}, USAGE], {summary: 'wrote the converter', done: true}); }});
-  await r.room.start(GOAL, 10, {pipeline: 'v8'});
+  await r.room.start(GOAL, 10, ALONE);
   await r.drain();
   assert.equal(r.room.get('status'), 'complete', events(r.room).slice(-6).map(e => `${e.kind}: ${e.body.slice(0, 140)}`).join('\n'));
   assert.equal(events(r.room, 'build_infrastructure').length, 0, 'every validation had a result');

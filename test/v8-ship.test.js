@@ -7,8 +7,8 @@
 // outside the piece. A pass is for the bundle it ran on, never carried up.
 // The scripted tree: the room's manager divides a text toolkit into Loud
 // part {Shouter, Louder}, Quiet part {Whisperer, Softener} and Notes; the
-// pieces below the parts are caught by their pre-grade and hand their level
-// to one worker each. The usual scripted compiler runs the validations in
+// pieces below the parts propose divisions Clef's review says NO to (the
+// room helper's WHOLE), and hand their level to one worker each. The usual scripted compiler runs the validations in
 // its box (test/helpers/compiler.js).
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -47,14 +47,13 @@ const PARTS = [
     {label: 'Whisperer', task: 'Write whisper', contracts: ['whisper']}, {label: 'Softener', task: 'Write soft, which uses whisper', contracts: ['soft'], uses: ['whisper']}]},
   {label: 'Notes', task: 'Write NOTES.md, the notes on how to use the toolkit', contracts: ['NOTES.md']}];
 const pieceOf = ({kids: _, ...p}) => p;
-// The room's manager states the level; a part restates its given contracts and divides them; a piece's pre-grade catches it.
+// The room's manager states the level; a part restates its given contracts and divides them; a piece gives no pieces of its own.
 const splitFor = (parts = PARTS) => user => {
   if (!user.contracts_you_deliver) return {contracts: CONTRACTS, validations: VALIDATIONS, pieces: parts.map(pieceOf)};
   const names = user.contracts_you_deliver.map(c => c.name).join(','), part = parts.find(p => p.contracts.join(',') === names);
   return {contracts: user.contracts_you_deliver, validations: [], pieces: (part?.kids || []).map(pieceOf)};
 };
-const splits = tasks => state => [GOAL, ...tasks].some(t => String(state.assignment || '').startsWith(t)) ? 0.9 : 0.05;
-const clefFor = (tasks = PARTS.filter(p => p.kids).map(p => p.task)) => clefBy((key, state) => key === 'should_split' ? splits(tasks)(state) : /^piece_reach_/.test(key) ? choiceP(key, state) : 0.9);
+const clefFor = () => clefBy((key, state) => /^piece_reach_/.test(key) ? choiceP(key, state) : 0.9);
 const FILES = {
   shout: 'def shout(s):\n    return str(s).upper() + "!"\n',
   loud: 'from shout import shout\n\n\ndef loud(s):\n    return shout(s) + shout(s)\n',

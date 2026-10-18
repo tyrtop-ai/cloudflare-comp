@@ -105,7 +105,7 @@ export const TOOLS = Object.freeze({
     {name: 'level', description: 'Shows everything declared so far: the contracts, the validations with their examples, and the pieces.', parameters: {type: 'object', properties: {}, required: []}},
     {name: 'read_file', description: 'Shows one of the files the work starts from, whole: any path existing_files lists. The result is its text, or that there is no such file at that path.',
       parameters: {type: 'object', properties: {path: {type: 'string', description: 'The relative path of the file, exactly as existing_files lists it.'}}, required: ['path']}},
-    {name: 'done', description: 'Completes the level. When something is still missing, the result lists it and the level stays open: three different examples for every function, command and route contract, each a call, request or run of that contract, and, when piece is offered, a division of at least two pieces and no more than the level can hold now.', parameters: {type: 'object', properties: {}, required: []}}
+    {name: 'done', description: 'Completes the level. When something is still missing, the result lists it and the level stays open: three different examples for every function, command and route contract, each a call, request or run of that contract, and, when piece is offered, a division of at least two pieces and no more than the level can hold now. A division is reviewed when done completes it; one that is not admitted comes back in the result, listed in rejected with why, and the level stays open with everything declared.', parameters: {type: 'object', properties: {}, required: []}}
   ]),
   // The worker's functions (src/worker.js): its own files, commands in its
   // own box, an ask by name, and the end of its turn.
@@ -159,8 +159,6 @@ const toolTexts = (role, list) => Object.fromEntries(list.flatMap(t => [[`TOOLS.
 // §6.4: the Clef questions, all typed noul. {i}, {j} and {contract} are
 // filled by clefText; a key's state object travels beside it.
 export const CLEF = Object.freeze({
-  // The pre-grade reads the assignment and its row's contracts (gateLine): none when the level states its own.
-  split: 'The contracts listed, if any, are agreed in advance. Can different makers produce this assignment as two or more pieces at the same time, so that together they deliver the whole of it? Answer NO if it is one indivisible piece of work, or if dividing it would only create steps one maker must take in order.',
   // Each division a splitter proposes is reviewed in one call: given the original and the pieces, split_valid and split_size.
   split_valid: 'Is this a valid division of the original: do the pieces together deliver all of it, each one something a different maker can produce at the same time against the contracts listed? Answer NO if a piece repeats another, only plans or discusses, or must wait for another piece to be written first.',
   split_size: 'Is every piece large enough to be worth a maker of its own? Answer NO if a piece is only a single small function, a constant, or a few lines that belong with another piece.',
@@ -177,12 +175,12 @@ export const CLEF = Object.freeze({
 });
 export const clefText = (key, vars = {}) => CLEF[key].replace(/\{(\w+)\}/g, (m, k) => k in vars ? String(vars[k]) : m);
 
-// What a retry hears about its previous answer, in the user JSON
-// (previous_answer_problems), never in the system text.
+// Why a division the splitter completed was not admitted: done's result
+// (problems, beside the division in rejected), and, when its session goes on
+// in a new context, previous_answer_problems in its request; never in the system text.
 export const RETRY = Object.freeze({
-  // A splitter's new session after its division was not admitted.
-  too_small: count => `Your previous division, listed in rejected, had ${count} pieces, some too small to be worth a task of their own. Divide the assignment into larger pieces this time.`,
-  different: 'Your previous division, listed in rejected, was not a valid division of the assignment. Divide it differently this time.'
+  too_small: count => `The division you completed, listed in rejected, had ${count} pieces, some too small to be worth a task of their own. Divide the assignment into larger pieces: drop_piece takes a piece out and piece declares one; then call done again.`,
+  different: 'The division you completed, listed in rejected, was not a valid division of the assignment. Divide it differently: drop_piece takes a piece out and piece declares one; then call done again.'
 });
 
 // The texts the room itself composes for a v8 agent, as data. Each is a
@@ -191,6 +189,8 @@ export const RETRY = Object.freeze({
 const it = many => many ? 'them' : 'it';
 export const BASE_LABEL = 'from the base repository';
 export const MESSAGES = Object.freeze({
+  // A splitter's restatement of one piece (restate in its request): what the complaints say, and how it states the piece anew.
+  restate: () => 'complaints lists what was observed when the files delivering your assignment ran, and that they did not change in answer: the assignment as stated does not say what was observed should hold. State it anew: piece states its task and the contracts it delivers, under label; contract states one of contracts_you_deliver anew under its own name; a check function states a validation, and drop_validation takes out one whose expected value is not what the contracts should hold. Then call done.',
   // The clause beside existing files whenever their text is quoted.
   base_note: () => 'existing_files lists every file the work starts from, by path and size, and read_file shows any of them whole; base_files quotes the ones given to you.',
   // ------------------------------------------------- what the worker's functions say

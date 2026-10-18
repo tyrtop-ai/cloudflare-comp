@@ -5,9 +5,11 @@
 // has not landed (F2); the runtime holds no room for the turns that ask no
 // model (F3: the owner set no such bound). The stop probes of the card era (crosswait, selfwait,
 // waitprobe2) are ported to the levels: a worker that answers a complaint
-// with its files as they were is archived and its level's splitter rebuilds
-// its contracts (owner, 2026-10-17), and the repairs and rebuilds go on
-// until the room's turn budget ends, with nothing held; Continue goes on.
+// with its files as they were sends it back to the creator of its problem
+// statement (owner, 2026-10-17, 2026-10-18): its level's splitter restates
+// that piece, and the same worker goes on with the revised assignment; the
+// repairs and restatements go on until the room's turn budget ends, with
+// nothing held; Continue goes on.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {choiceP} from './helpers/levels.js';
@@ -36,75 +38,91 @@ const workerOf = (room, m) => room.children(m).find(c => c.role === 'worker')?.i
 const sentTo = (room, id) => events(room, 'complaint_routed').filter(e => e.recipient === id).length;
 
 // Owner, 2026-10-17: "In what situation does a worker build the same solution? When the problem statement was incorrect or unfilled.
-// ergo problem statement failure, not worker or routing failure". A worker that answers a complaint with done, its files byte for byte as
-// they were when it was handed it, is archived, and its level's splitter rebuilds its contracts, reading the complaint and that the
-// delivery did not change; no worker is handed the complaint again, and the manager's routing is not asked about it again.
+// ergo problem statement failure, not worker or routing failure"; 2026-10-18: "It's not "this failed, spin up a new agent" it's "this
+// failed, send it back to creator"". A worker that answers a complaint with done, its files byte for byte as they were when it was handed
+// it, is not archived: the complaint and that the delivery did not change go to its level's splitter, which restates that piece; the same
+// worker goes on with its files and the revised assignment, and the manager's routing is not asked about it again.
 const workers = room => room.allNodes().filter(n => n.role === 'worker');
-const handedOnce = room => { const to = events(room, 'complaint_routed').filter(e => room.node(e.recipient)?.role === 'worker').map(e => `${e.recipient} ${e.body}`); return to.length === new Set(to).size; };
-const rebuildsWith = (r, text) => r.calls.split.filter(u => u.complaints?.some(c => text.test(c.observed) && c.delivered_files === 'unchanged since it was observed'));
+const restatesWith = (r, text) => r.calls.split.filter(u => u.restate && u.complaints?.some(c => text.test(c.observed) && c.delivered_files === 'unchanged since it was observed'));
+// A worker that answered a complaint unchanged is handed a complaint again only after its piece was restated.
+const handedAfterRestating = room => workers(room).every(w => {
+  let owed = false;
+  for (const e of events(room)) {
+    if (e.kind === 'complaint_unchanged' && e.actor === w.id) owed = true;
+    else if (e.kind === 'restated' && e.recipient === w.id) owed = false;
+    else if (e.kind === 'complaint_routed' && e.recipient === w.id && owed) return false;
+  }
+  return true;
+});
+// One splitter per manager, whatever its sessions.
+const oneSplitterEach = room => { const by = new Map(); for (const x of room.splitterRows()) by.set(x.manager, new Set([...(by.get(x.manager) || []), x.splitter])); return [...by.values()].every(s => s.size === 1); };
 
-test('selfwait: two branches whose workers answer their complaints with their files unchanged: each is archived and its level\'s splitter rebuilds its contract, reading the complaint; no worker is handed a complaint twice, the rebuilds go on until the room\'s budget ends, nothing holds, and Continue goes on', {skip}, async () => {
-  const r = await toolkit({leaf: leafOf({answers: BAD}), budget: 50});
+test('selfwait: two branches whose workers answer their complaints with their files unchanged: each goes back to its level\'s splitter, which restates the piece, reading the complaint, and the same worker goes on; no worker is archived, the restatements go on until the room\'s budget ends, nothing holds, and Continue goes on', {skip}, async () => {
+  const r = await toolkit({leaf: leafOf({answers: BAD}), budget: 120});
   const m = at(r.room);
   assertBudget(r.room, 'end');
   // The worker's write_file says the file already holds exactly that text; no level escalates for it.
   assert.ok(events(r.room, 'session').some(e => /unchanged (?:shout|whisper)\.py/.test(e.body)), tail(r.room));
   assert.equal(events(r.room, 'escalated').length, 0);
-  assert.ok(handedOnce(r.room), 'no worker is handed a complaint twice');
-  // Each worker archived is one that answered its complaint with its files unchanged, under Shouter or Whisperer.
-  const gone = workers(r.room).filter(c => c.status === 'archived'), said = new Set(events(r.room, 'complaint_unchanged').map(e => e.actor));
-  assert.ok(gone.length >= 1 && gone.every(g => said.has(g.id) && [m.Shouter, m.Whisperer].includes(g.parent)), tail(r.room));
-  const rebuilt = rebuildsWith(r, /shout|whisper/);
-  assert.ok(rebuilt.length >= 1, `its level's splitter reads the complaint: ${rebuilt.length}`);
-  assert.ok(rebuilt.every(u => u.contracts_you_deliver.length === 1), 'each rebuild restates the archived worker\'s contract');
-  const before = workers(r.room).length;
-  await again(r, 6);
+  assert.ok(handedAfterRestating(r.room), 'a worker is handed a complaint again only once its piece was restated');
+  assert.ok(!workers(r.room).some(w => w.status === 'archived'), 'no worker is archived');
+  const said = new Set(events(r.room, 'complaint_unchanged').map(e => e.actor));
+  assert.ok(said.size >= 1 && [...said].every(id => [m.Shouter, m.Whisperer].includes(r.room.node(id).parent)), tail(r.room));
+  const restated = restatesWith(r, /shout|whisper/);
+  assert.ok(restated.length >= 1, `its level's splitter reads the complaint: ${restated.length}`);
+  assert.ok(restated.every(u => u.contracts_you_deliver.length === 1 && workers(r.room).some(w => w.label === u.label)), 'each restatement is of the worker\'s own piece');
+  assert.ok(oneSplitterEach(r.room), 'one splitter per manager');
+  const before = workers(r.room).length, n = restatesWith(r, /shout|whisper/).length;
+  await again(r, 20);
   assertBudget(r.room, 'after continue');
-  assert.ok(workers(r.room).length > before, 'Continue: the rebuilds go on');
-  assert.ok(handedOnce(r.room), 'and no worker is handed a complaint twice');
-  assert.ok(r.boxes.length <= 40, `bounded: ${r.boxes.length} boxes`);
+  assert.equal(workers(r.room).length, before, 'no new worker');
+  assert.ok(restatesWith(r, /shout|whisper/).length > n, 'Continue: the restatements go on');
+  assert.ok(r.boxes.length <= 60, `bounded: ${r.boxes.length} boxes`);
 });
 
 // A validation held at the room's manager (it serves shout and whisper) that shout fails there only; Clef routes its complaint.
 const X = [call('x1', ['shout', 'whisper'], 'shout', 'hey', 'HEY!!'), call('x2', ['shout', 'whisper'], 'shout', 'b', 'B!!'), call('x3', ['shout', 'whisper'], 'shout', 'Oh', 'OH!!')];
 const withX = split => user => { const a = split(user); return user.contracts_you_deliver ? a : {...a, validations: [...a.validations, ...X]}; };
-for (const [name, other] of [['crosswait: Clef gives the room\'s complaint to the other part', true], ['selfwait: Clef gives it to the part that writes shout', false]]) test(`${name}; the worker it reaches answers it with its files unchanged, so that worker is archived and its level's splitter rebuilds its contract, reading the complaint; no worker is handed it twice, until the budget ends; nothing holds, and Continue runs the room's validations again`, {skip}, async () => {
+for (const [name, other] of [['crosswait: Clef gives the room\'s complaint to the other part', true], ['selfwait: Clef gives it to the part that writes shout', false]]) test(`${name}; the worker it reaches answers it with its files unchanged, so it goes back to its level's splitter, which restates the piece, reading the complaint, and the same worker goes on, until the budget ends; nothing holds, and Continue runs the room's validations again`, {skip}, async () => {
   const pick = (key, state) => { const kids = (state.children || []).map(c => c.label); const quiet = kids.findIndex(t => /Quiet/.test(t)), i = Number(key.split('_').pop()); return (i === quiet) === other ? 0.9 : 0.1; };
   const seen = [];
-  const r = await toolkit({split: withX(splitFor()), clef: clefFor(undefined, {'^route_to_\\d+$': (k, state) => { if (state.item?.kind === 'complaint' && state.children.length === 3) { seen.push(state); return pick(k, state); } return choiceP(k, state); }}), budget: 70});
+  const r = await toolkit({split: withX(splitFor()), clef: clefFor(undefined, {'^route_to_\\d+$': (k, state) => { if (state.item?.kind === 'complaint' && state.children.length === 3) { seen.push(state); return pick(k, state); } return choiceP(k, state); }}), budget: 140});
   const m = at(r.room), routed = events(r.room, 'complaint_routed').filter(e => e.actor === m.Root);
   assert.ok(routed.length > 0 && routed.every(e => e.recipient === (other ? m['Quiet part'] : m['Loud part'])), tail(r.room));
   // The routing reads no record of earlier answers: an unchanged answer is the statement's, not the routing's.
   assert.ok(seen.length > 0 && seen.every(s => s.children.every(c => Object.keys(c).every(k => ['slot', 'label', 'contracts', 'wrote'].includes(k)))), JSON.stringify(seen[0]?.children));
-  assert.ok(handedOnce(r.room), 'no worker is handed the complaint twice');
+  assert.ok(handedAfterRestating(r.room), 'a worker is handed the complaint again only once its piece was restated');
   assert.ok(events(r.room, 'complaint_unchanged').length > 0, tail(r.room));
-  assert.ok(rebuildsWith(r, /HEY!!|B!!|OH!!/).length > 0, 'its level\'s splitter reads the complaint');
+  assert.ok(restatesWith(r, /HEY!!|B!!|OH!!/).length > 0, 'its level\'s splitter reads the complaint');
+  assert.ok(!workers(r.room).some(w => w.status === 'archived'), 'no worker is archived');
   assertBudget(r.room, 'end');
-  assert.ok(runsBy(r.room).Root >= 2, `the room's manager compiled again after the rebuild (${runsBy(r.room).Root})`);
+  assert.ok(runsBy(r.room).Root >= 2, `the room's manager compiled again after the restatement (${runsBy(r.room).Root})`);
   assert.equal(events(r.room, 'escalated').length, 0);
   const runs = runsBy(r.room).Root;
-  await again(r, 6);
+  await again(r, 20);
   assertBudget(r.room, 'after continue');
   assert.ok(runsBy(r.room).Root > runs, 'Continue: the room\'s manager ran its checks again');
-  assert.ok(r.boxes.length <= 40, `bounded: ${r.boxes.length} boxes`);
+  assert.ok(r.boxes.length <= 60, `bounded: ${r.boxes.length} boxes`);
 });
 
-// A wrong expected value is a wrong problem statement too: the rebuild's splitter takes the validation out (drop_validation) and states
-// one in its place; the level file that held it no longer lists it, and the room completes with the worker's files as they were.
-test('a validation that expects a wrong value: the worker answers its complaint with its files unchanged, its level\'s splitter reads the complaint, takes that validation out of the room\'s level and states a right one, and the room completes', {skip}, async () => {
+// A wrong expected value is a wrong problem statement too: the splitter's restatement of the piece takes the validation out
+// (drop_validation) and states one in its place; the level file that held it no longer lists it, and the same worker completes the room
+// with its files as they were.
+test('a validation that expects a wrong value: the worker answers its complaint with its files unchanged, its level\'s splitter reads the complaint, takes that validation out of the room\'s level and states a right one, and the same worker completes the room', {skip}, async () => {
   const WRONG = call('s3', ['shout'], 'shout', 'Yo', 'YO!!');
   const base = splitFor({validations: VALIDATIONS.map(v => v.id === 's3' ? WRONG : v)});
   const asked = [];
   const split = (user, _n, _s, {round}) => {
-    if (!user.complaints) return base(user);
+    if (!user.restate) return base(user);
     if (round === 1) asked.push(user);
     const wrong = user.validations_you_have.find(v => v.check.steps?.[0]?.expect === 'YO!!');
-    return round === 1 ? [{name: 'drop_validation', arguments: {id: wrong.id}}, {name: 'call_check', arguments: {serves: ['shout'], steps: [{call: 'shout', args: ['Yo'], expect: 'YO!'}]}}] : [{name: 'done', arguments: {}}];
+    return round === 1 ? [{name: 'drop_validation', arguments: {id: wrong.id}}, {name: 'call_check', arguments: {serves: ['shout'], steps: [{call: 'shout', args: ['Yo'], expect: 'YO!'}]}},
+      {name: 'piece', arguments: {label: user.label, task: user.assignment, contracts: ['shout']}}] : [{name: 'done', arguments: {}}];
   };
   const r = await toolkit({split});
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
   const m = at(r.room);
-  assert.equal(asked.length, 1, 'one rebuild');
+  assert.equal(asked.length, 1, 'one restatement');
   assert.match(asked[0].complaints[0].observed, /YO!!/);
   assert.equal(asked[0].complaints[0].delivered_files, 'unchanged since it was observed');
   assert.deepEqual(asked[0].contracts_you_deliver.map(c => c.name), ['shout']);
@@ -113,11 +131,10 @@ test('a validation that expects a wrong value: the worker answers its complaint 
   const old = r.room.levelDesign(m.Root).validations.map(v => v.id);
   assert.ok(!r.room.validationRows().some(v => v.check.steps?.[0]?.expect === 'YO!!'), 'the wrong validation is gone');
   assert.ok(!r.room.levelDesign(m.Root).contracts.find(c => c.name === 'shout').serves.some(id => !old.includes(id) && !r.room.validationRows().some(v => v.id === id)));
-  const gone = r.room.children(m.Shouter).filter(c => c.role === 'worker' && c.status === 'archived');
-  assert.equal(gone.length, 1, 'the worker that changed nothing is archived');
-  assert.equal(events(r.room, 'complaint_routed').filter(e => e.recipient === gone[0].id).length, 1, 'it was handed the complaint once');
-  const now = r.room.children(m.Shouter).find(c => c.role === 'worker' && c.status !== 'archived');
-  assert.ok(JSON.stringify(r.room.workerView(now.id).prompt.deliver[0].examples).includes('YO!') && !JSON.stringify(r.room.workerView(now.id).prompt.deliver[0].examples).includes('YO!!'), 'the new worker\'s examples say the right value');
+  const ws = r.room.children(m.Shouter).filter(c => c.role === 'worker');
+  assert.deepEqual(ws.map(w => w.status), ['done'], 'one worker, the same one, not archived');
+  assert.equal(events(r.room, 'restated').filter(e => e.recipient === ws[0].id).length, 1);
+  assert.ok(JSON.stringify(r.room.workerView(ws[0].id).prompt.deliver[0].examples).includes('YO!') && !JSON.stringify(r.room.workerView(ws[0].id).prompt.deliver[0].examples).includes('YO!!'), 'its examples say the right value');
 });
 
 test('waitprobe2: the room\'s complaint goes to Notes, whose worker rewrites its file every time; there is no round cap: the repairs go on past six rounds until the budget ends, nothing holds, and Continue goes on', {skip}, async () => {
@@ -125,7 +142,7 @@ test('waitprobe2: the room\'s complaint goes to Notes, whose worker rewrites its
   let notes = 0;
   const split = user => { const a = splitFor()(user); return user.contracts_you_deliver ? a : {...a, validations: [...a.validations, ...XN]}; };
   const pick = (key, state) => { const i = Number(key.split('_').pop()); return (state.children?.[i]?.contracts || []).some(c => /NOTES/.test(c)) ? 0.9 : 0.1; };
-  const r = await toolkit({split, clef: clefFor(undefined, {'^route_to_\\d+$': (k, state) => state.children.length === 3 ? pick(k, state) : choiceP(k, state)}), leaf: leafOf({answers: {'NOTES.md': () => `# Notes\n\nCall shout to shout and whisper to whisper (${++notes}).\n`}}), budget: 90}); // each splitter and compiler call after a session's first counts against the budget too
+  const r = await toolkit({split, clef: clefFor(undefined, {'^route_to_\\d+$': (k, state) => state.children.length === 3 ? pick(k, state) : choiceP(k, state)}), leaf: leafOf({answers: {'NOTES.md': () => `# Notes\n\nCall shout to shout and whisper to whisper (${++notes}).\n`}}), budget: 150}); // each splitter and compiler call after a session's first counts against the budget too
   assert.ok(notes > 7, `Notes was given the complaint round after round (${notes} writes), past the six rounds the room used to stop at`);
   assertBudget(r.room, 'end');
   const before = notes, runs = runsBy(r.room).Root;
@@ -138,7 +155,7 @@ test('waitprobe2: the room\'s complaint goes to Notes, whose worker rewrites its
 // ------------------------------------------------------------------ F3
 const asker = () => leafOf({control: user => user.prompt.deliver.some(c => c.name === 'loud') ? {summary: 'need a thesaurus', wait: true, ask: [{need: 'looks up synonyms of a word online', name: 'synonyms'}]} : null});
 test('a rebuild cycle (every rebuilt worker asks again for what no manager covers) has no rebuild cap: each asker is archived and rebuilt again until the room\'s budget ends, with nothing held; Continue goes on with more', {skip}, async () => {
-  const r = await toolkit({leaf: asker(), clef: clefFor(undefined, {'^ask_parent$': 0.95}), budget: 60});
+  const r = await toolkit({leaf: asker(), clef: clefFor(undefined, {'^ask_parent$': 0.95}), budget: 150});
   const archived = () => r.room.allNodes().filter(n => n.status === 'archived').length;
   assertBudget(r.room, 'end');
   assert.ok(archived() > 4, `the asker and each of its rebuilds, past the three rebuilds the room used to stop at: ${archived()}`);

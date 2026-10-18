@@ -95,9 +95,9 @@ test('every v8 row id is <role>-<hex16>: the first 16 hex digits of the SHA-256 
   // Siblings take their sequence in the order they were spawned: the pieces first, then the builder.
   assert.deepEqual(rows.filter(r => r.parent === m).map(r => [r.role, r.seq]), [['manager', 1], ['manager', 2], ['builder', 3]]);
   assert.deepEqual(room.children(m).map(c => c.label), ['Ticket store', 'Ticket report', 'Builder'], 'children in their spawn\'s order');
-  // A splitter step is splitter-<hex16> by the manager's count of its steps.
+  // A manager's splitter is one agent, splitter-<hex16> of [manager, 1, 'splitter'], whatever its sessions.
   const steps = room.splitterRows();
-  for (const s of steps) assert.equal(s.id, await rowId(s.manager, steps.filter(x => x.manager === s.manager).indexOf(s) + 1, 'splitter'));
+  for (const s of steps) assert.equal(s.splitter, await rowId(s.manager, 1, 'splitter'));
   // Each repository is named by the room's hex (its id and its run's nonce) and the row's id.
   const hex = sha(JSON.stringify(['levels-test', room.get('run_nonce')])).slice(0, 16);
   for (const n of room.allNodes()) assert.equal(n.repo_name, `${hex}-${n.id}`);
@@ -110,9 +110,9 @@ test('no root and no dotted id in a v8 room: rows, splitters, validations, probl
   const {room} = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf});
   assert.equal(room.get('status'), 'complete', trail(room));
   assert.ok(room.problems('1=1').length > 0, 'a complaint was routed');
-  const ids = new Set([...room.allNodes().map(n => n.id), ...room.splitterRows().map(s => s.id)]), q = sql => room.db().exec(sql).toArray();
+  const ids = new Set([...room.allNodes().map(n => n.id), ...room.splitterRows().map(s => s.splitter)]), q = sql => room.db().exec(sql).toArray();
   for (const id of ids) assert.match(id, ID);
-  const named = [...q('SELECT parent FROM agents WHERE parent IS NOT NULL').map(r => r.parent), ...q('SELECT manager FROM splitters').map(r => r.manager),
+  const named = [...q('SELECT parent FROM agents WHERE parent IS NOT NULL').map(r => r.parent), ...q('SELECT manager FROM splitter_sessions').map(r => r.manager),
     ...q('SELECT level FROM validations').map(r => r.level), ...q('SELECT holder,assignee,source FROM problems').flatMap(r => [r.holder, r.assignee, r.source]),
     ...q('SELECT actor,recipient FROM events').flatMap(r => [r.actor, r.recipient]), ...q('SELECT parent FROM spawn_batches').map(r => r.parent),
     ...q('SELECT agent FROM artifact_files').map(r => r.agent), ...q('SELECT sender,recipient FROM messages').flatMap(r => [r.sender, r.recipient])].filter(x => x && !['room', 'system'].includes(x) && !/^runtime:/.test(x));
@@ -127,13 +127,13 @@ test('no root and no dotted id in a v8 room: rows, splitters, validations, probl
 test('the same tree twice gives the same ids: a second run of the room, and a spawn replayed after Artifacts failed it', async () => {
   const r = await levelRoom({prompt: TRACKER, split: trackerSplit, leaf: trackerLeaf});
   assert.equal(r.room.get('status'), 'complete', trail(r.room));
-  const first = tree(r.room), repos = r.room.allNodes().map(n => n.repo_name), steps = r.room.splitterRows().map(s => s.id);
+  const first = tree(r.room), repos = r.room.allNodes().map(n => n.repo_name), steps = r.room.splitterRows().map(s => s.splitter);
   // The same room started again: the same rows under the same ids; its repositories are its run's own.
   await r.room.start(TRACKER, 80, {pipeline: 'v8'}, 'levels-test');
   await r.drain();
   assert.equal(r.room.get('status'), 'complete', trail(r.room));
   assert.deepEqual(tree(r.room), first);
-  assert.deepEqual(r.room.splitterRows().map(s => s.id), steps);
+  assert.deepEqual(r.room.splitterRows().map(s => s.splitter), steps);
   const again = r.room.allNodes().map(n => n.repo_name);
   assert.ok(again.every(n => !repos.includes(n)), 'a new run names new repositories');
   assert.deepEqual(again.map(n => n.slice(17)), repos.map(n => n.slice(17)), 'each after the run\'s hex, the same row id');

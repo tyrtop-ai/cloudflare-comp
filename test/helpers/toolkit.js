@@ -40,11 +40,11 @@ export const splitFor = ({parts = PARTS, contracts = CONTRACTS, validations = VA
   const names = user.contracts_you_deliver.map(c => c.name).join(','), part = parts.find(p => p.contracts.join(',') === names);
   return {contracts: user.contracts_you_deliver, validations: [], pieces: (part?.kids || []).map(pieceOf)};
 };
-const splits = tasks => state => [GOAL, ...tasks].some(t => String(state.assignment || '').startsWith(t)) ? 0.9 : 0.05;
-// Clef: the room's manager and the parts split; every other question says yes, unless over names it (a key pattern).
-export const clefFor = (tasks = PARTS.filter(p => p.kids).map(p => p.task), over = {}) => clefBy((key, state, input) => {
+// Clef: a manager chooses as choiceP says, and every other question says yes, unless over names it (a key pattern). The first
+// argument is kept for its callers: there is no pre-grade, and a part's pieces are its splitter's (splitFor).
+export const clefFor = (_tasks, over = {}) => clefBy((key, state, input) => {
   for (const [re, v] of Object.entries(over)) if (new RegExp(re).test(key)) return typeof v === 'function' ? v(key, state, input) : v;
-  return key === 'should_split' ? splits(tasks)(state) : choiceP(key, state) ?? 0.9;
+  return choiceP(key, state) ?? 0.9;
 });
 export const FILES = {
   shout: 'def shout(s):\n    return str(s).upper() + "!"\n',

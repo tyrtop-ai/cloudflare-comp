@@ -95,6 +95,21 @@ export function levelCalls(level,{user={},tools=['contract','piece','level','don
   out.push({name:'done',arguments:{}});
   return out;
 }
+// Every manager with room for pieces tries to split, and Clef judges every
+// division: a scripted level that names fewer than two pieces where piece is
+// offered (a level its test means to go whole to one worker) is proposed as
+// two pieces labelled WHOLE, each delivering every contract of the level,
+// which the scripted Clef's review answers NO (liveRoom), so the level goes
+// whole to one worker after the last attempt.
+export const WHOLE=/^whole [12]$/;
+// A restatement (restate in its request) whose scripted level names no piece states the piece as it stands: its label, its task and its contracts.
+function wholeOf(a,user,tools) {
+  if(!a||typeof a!=='object'||Array.isArray(a)||!tools.includes('piece'))return a;
+  if(user.restate)return (a.pieces||[]).length?a:{...a,pieces:[{label:user.label,task:user.assignment,contracts:(user.contracts_you_deliver||[]).map(c=>c.name)}]};
+  if((a.pieces||[]).length>=2)return a;
+  const names=[...new Set([...(user.contracts_you_deliver||[]),...(user.declared_so_far?.contracts||[]),...(a.contracts||[])].map(c=>c.name))];
+  return {...a,pieces:[1,2].map(i=>({label:`whole ${i}`,task:user.assignment,contracts:names}))};
+}
 // v8: the scripted compiler agent (test/helpers/compiler.js), the room's usual one.
 const {usualCompiler,logged}=await import('./compiler.js');
 export {usualCompiler};
@@ -114,9 +129,13 @@ export {usualCompiler};
 // request's system prompt and user text as sent: on the room's default
 // model the runner's and coverage's end with ' /no_think' (v7.13.4).
 export function liveRoom({link=()=>({edits:[],issues:[]}),build=null,compile=null,runner=()=>runnerTest,coverage=()=>({}),leaf=null,file=null,manager=null,split=null,clef=null,source=null,executor,boxes,room_id='v714-test',store:given=null}={}) {
-  const compileSessions=new WeakMap(),usual=logged([],{given:(files,links)=>{builds.push(files);builds.links.push(links);}}),calls={link:[],build:[],buildRounds:[],compile:[],compileRounds:[],runner:[],leaf:[],leafRounds:[],coverage:[],file:[],manager:[],split:[],splitRounds:[],clef:[],source:[],raw:[]};
+  // What a scripted splitter's level answer declared in its session (by the session's user message): its contracts, validations and piece labels, and whether done comes next.
+  const splitSent=new Map();
+  const compileSessions=new WeakMap(),usual=logged([],{given:(files,links)=>{builds.push(files);builds.links.push(links);}}),calls={link:[],build:[],buildRounds:[],compile:[],compileRounds:[],runner:[],leaf:[],leafRounds:[],coverage:[],file:[],manager:[],split:[],splitRounds:[],splitNo:[],whole:[],clef:[],source:[],raw:[]};
   const AI={run:async(_model,input)=>{
     if(!input.messages) {
+      // The division a scripted splitter proposes for a level its fake gave no pieces (WHOLE): Clef's review says NO, so after the last attempt the level goes whole to one worker.
+      if(input.questions?.split_valid&&(input.state?.pieces||[]).length&&input.state.pieces.every(p=>WHOLE.test(p.label))){calls.whole.push(input);return {answers:{split_valid:{noul:0.01},split_size:{noul:0.99}}};}
       if(!clef)throw new Error('unexpected Clef request');
       calls.clef.push(input);return clef(input,calls.clef.length);
     }
@@ -139,22 +158,39 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),build=null,compile=nul
     // a text (a reply with no call), or a level {contracts, validations,
     // pieces}, which stands for its calls (levelCalls): all but done in the
     // first round, and done in the second once every call was stored; a
-    // refused call fails the test with the results. split(user, n, system,
-    // {round, results, tools}): n counts sessions, results are the previous
-    // round's results (parsed), tools the function names offered.
+    // refused call fails the test with the results. A NO of Clef's review is
+    // done's result in the same session ({complete: false, rejected,
+    // problems}, recorded in calls.splitNo): the fake is asked again with it
+    // (no), and a level answer then drops the pieces it declared, declares the
+    // new level's pieces and whatever it had not declared, and calls done in
+    // the next round. split(user, n, system, {round, results, tools, no,
+    // attempt}): n counts sessions, results are the previous round's results
+    // (parsed), tools the function names offered, attempt counts the
+    // divisions this session completed, the NO's included, plus one.
     if(v8role==='splitter'&&split&&input.tools){
       const round=messages.filter(m=>m.role==='assistant').length+1,last=messages.map(m=>m.role).lastIndexOf('assistant');
       const results=round>1?messages.slice(last+1).filter(m=>m.role==='tool').map(m=>({name:m.name,result:JSON.parse(m.content)})):[],tools=input.tools.map(t=>t.name);
-      if(round===1)calls.split.push(user);
+      if(round===1){calls.split.push(user);splitSent.delete(messages[1].content);}
       calls.splitRounds.push({session:calls.split.length,round,results});
-      const a=await split(user,calls.split.length,system,{round,results,tools});
+      const no=results.find(r=>r.name==='done'&&r.result?.rejected)?.result||null,nos=calls.splitNo.filter(x=>x.session===calls.split.length);
+      if(no)calls.splitNo.push({session:calls.split.length,round,result:no});
+      const a=wholeOf(await split(user,calls.split.length,system,{round,results,tools,no,attempt:nos.length+(no?1:0)+1}),user,tools);
       if(typeof a==='string')return {response:a};
       if(Array.isArray(a))return {tool_calls:a.map(c=>({name:c.name,arguments:c.arguments??{}}))};
-      // A level's calls go in the first round; done in the second, once every one of them was stored.
-      const refused=results.filter(r=>r.result?.error||r.result?.complete===false);
-      if(round>2||refused.length)throw new Error('the scripted splitter\'s level was not accepted: '+JSON.stringify(refused.length?refused:results).slice(0,1500));
-      const first=round===1?levelCalls(a,{user,tools}).filter(c=>c.name!=='done'):[];
-      return {tool_calls:first.length?first:[{name:'done',arguments:{}}]};
+      // A level's calls go in the first round it answers with a level (or the round after a NO); done in the next, once every one of them was stored.
+      const refused=results.filter(r=>r.result?.error||r.result?.complete===false&&!r.result.rejected);
+      const sent=splitSent.get(messages[1].content)||null;
+      if(refused.length||sent&&!no&&!sent.pending)throw new Error('the scripted splitter\'s level was not accepted: '+JSON.stringify(refused.length?refused:results).slice(0,1500));
+      if(!sent||no) {
+        const so=!no?user.declared_so_far:{contracts:sent.contracts,validations:sent.validations,pieces:[]};
+        const declared=levelCalls(a,{user:{...user,declared_so_far:so},tools}).filter(c=>c.name!=='done');
+        const first=[...(no?sent.pieces.map(label=>({name:'drop_piece',arguments:{label}})):[]),...declared];
+        splitSent.set(messages[1].content,{pending:true,contracts:[...(so?.contracts||[]),...declared.filter(c=>c.name==='contract').map(c=>c.arguments)],
+          validations:[...(so?.validations||[]),...(a.validations||[]).filter(v=>declared.some(c=>JSON.stringify(c)===JSON.stringify(checkCall(v))))],pieces:[...(!no?(so?.pieces||[]).map(p=>p.label):[]),...declared.filter(c=>c.name==='piece').map(c=>c.arguments.label)]});
+        if(first.length)return {tool_calls:first};
+      }
+      splitSent.set(messages[1].content,{...splitSent.get(messages[1].content),pending:false});
+      return {tool_calls:[{name:'done',arguments:{}}]};
     }
     // v8: the worker works through functions (src/worker.js). Its fake
     // answers each round of its session: a list of calls [{name,

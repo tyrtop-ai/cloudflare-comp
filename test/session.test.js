@@ -80,7 +80,9 @@ test('the session\'s only bound is the model\'s context window: there is no cap 
 
 test('MOCK_AI: a scripted mock stands in for the model; with none, a mocked session makes no call and ends', async () => {
   const none = fakeEnv(() => { throw new Error('no model under MOCK_AI'); }, {MOCK_AI: 'true'});
-  assert.deepEqual(await session(none.env, {system: 'S', user: 'U', tools: TOOLS, handle: totalHandler()}), {ended: false, reason: 'mock', rounds: 0, transcript: []});
+  const {messages, ...ended} = await session(none.env, {system: 'S', user: 'U', tools: TOOLS, handle: totalHandler()});
+  assert.deepEqual(ended, {ended: false, reason: 'mock', rounds: 0, transcript: []});
+  assert.deepEqual(messages, [{role: 'system', content: 'S'}, {role: 'user', content: 'U'}], 'the conversation as it stands, to resume');
   const out = await session(none.env, {system: 'S', user: 'U', tools: TOOLS, handle: totalHandler(), mock: round => round === 1 ? [{name: 'add', arguments: {n: 4}}] : [{name: 'finish', arguments: {}}]});
   assert.deepEqual([out.ended, out.end, out.rounds, none.requests.length], [true, 4, 2, 0]);
 });

@@ -1,6 +1,6 @@
 // v8 levels, end to end: the room creates one manager from the prompt and
-// observes it; every manager pre-grades with Clef, its splitter states the
-// level (contracts, validations, pieces) and Clef reviews it; workers write;
+// observes it; every manager's splitter (one per manager) states the level
+// (contracts, validations, pieces) and Clef reviews every division; workers write;
 // builders join; each manager's compiler verifies every validation of its
 // subtree on its exact bundle; the room completes when the compiler of its
 // manager has them all passing. Scripted models, the real room, the real
@@ -62,10 +62,11 @@ test('an issue tracker splits: room → manager → splitter → pieces → work
   assert.deepEqual(kids.map(k => k.label), ['Ticket store', 'Ticket report']);
   for (const k of kids) assert.deepEqual(room.children(k.id).filter(c => c.role === 'worker').length, 1);
   assert.ok(rows(room, 'builder').length >= 3, 'every manager has its builder');
-  // One splitter step at the room's manager, none below (each was caught by its pre-grade).
-  assert.equal(calls.split.length, 1);
-  assert.equal(room.splitterRows().length, 1);
-  assert.match(room.splitterRows()[0].id, /^splitter-[0-9a-f]{16}$/);
+  // One splitter per manager, each one session: the room's manager's admitted, each piece's handed down whole on Clef's third NO.
+  assert.equal(calls.split.length, 3);
+  assert.deepEqual(room.splitterRows().map(x => x.session), [1, 1, 1]);
+  for (const x of room.splitterRows()) assert.equal(x.splitter, await rowId(x.manager, 1, 'splitter'));
+  assert.match(room.splitterRows()[0].splitter, /^splitter-[0-9a-f]{16}$/);
   // Validations: rows V1..V10, held where their contracts meet.
   const held = id => room.read(`checks:${id}`, []);
   assert.deepEqual(held(kids[0].id).sort(), ['V1', 'V2', 'V3', 'V4', 'V5', 'V6']);
@@ -87,16 +88,19 @@ const CONVERT = {name: 'convert', kind: 'command', does: 'converts a Celsius tem
 const CLI_LEVEL = {contracts: [CONVERT], validations: [convertCheck('a', '100 C', '212'), convertCheck('b', '0 C', '32'), convertCheck('c', '-40 C', '-40')],
   pieces: [{label: 'never read', task: 'x', contracts: ['convert']}]};
 const CONVERT_JS = "const c = Number(process.argv[2]);\nconsole.log(String(c * 9 / 5 + 32));\n";
-const caught = (more = {}) => usualClef({'^should_split$': 0.02, ...more});
+// A room with no room for pieces (the agent limit): its manager's splitter states the level with no piece to call.
+const ALONE = {max_agents: 3};
 const trail = room => events(room).slice(-14).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 220)}`).join('\n');
 const theWorker = room => room.allNodes().find(n => n.role === 'worker' && n.status !== 'archived');
 
-test('a CLI the pre-grade catches: the room\'s manager has its splitter state the level, and one worker writes it', async () => {
-  const {room, calls} = await levelRoom({prompt: CLI, split: () => CLI_LEVEL, leaf: () => deliver({'convert.js': CONVERT_JS}), clef: caught()});
+test('a CLI whose division Clef says NO to on every attempt: the room\'s manager has its splitter state the level, in one session, and one worker writes it', async () => {
+  const {room, calls} = await levelRoom({prompt: CLI, split: () => CLI_LEVEL, leaf: () => deliver({'convert.js': CONVERT_JS})});
   assert.equal(room.get('status'), 'complete', trail(room));
-  // Caught: the splitter is asked for the level only (no pieces), and its pieces are never read.
+  // No pre-grade: the splitter proposes a division, which Clef reviews three times in its one session, and the level goes whole to one worker.
   assert.equal(calls.split.length, 1);
-  assert.equal(calls.split[0].max_pieces, 0);
+  assert.equal(calls.split[0].max_pieces, 7);
+  assert.equal(calls.whole.length, 3);
+  assert.ok(!calls.clef.some(c => 'should_split' in (c.questions || {})), 'no pre-grade');
   assert.ok(!('contracts_you_deliver' in calls.split[0]), 'the room\'s manager states its own contracts');
   const m = room.roomManager(), kids = room.children(m).filter(c => !['builder', 'compiler'].includes(c.role));
   assert.equal(kids.length, 1);
@@ -107,7 +111,7 @@ test('a CLI the pre-grade catches: the room\'s manager has its splitter state th
 });
 
 test('a worker\'s request is exactly its prompt, its files, its complaints and its world; the prompt carries three distinct examples per contract, rendered from the validations, never the validations', async () => {
-  const {room, calls} = await levelRoom({prompt: CLI, split: () => CLI_LEVEL, leaf: () => deliver({'convert.js': CONVERT_JS}), clef: caught()});
+  const {room, calls} = await levelRoom({prompt: CLI, split: () => CLI_LEVEL, leaf: () => deliver({'convert.js': CONVERT_JS}), settings: ALONE});
   assert.equal(room.get('status'), 'complete', trail(room));
   const view = calls.leaf[0];
   assert.deepEqual(Object.keys(view).sort(), ['complaints', 'files', 'prompt', 'world']);
@@ -135,7 +139,7 @@ test('a contract with fewer than three distinct examples: done says what is miss
     heard.push(results);
     return [checkCall({serves: ['convert'], check: CLI_LEVEL.validations[1].check}), checkCall({serves: ['convert'], check: CLI_LEVEL.validations[2].check}), {name: 'done', arguments: {}}];
   };
-  const {room, calls} = await levelRoom({prompt: CLI, split, leaf: () => deliver({'convert.js': CONVERT_JS}), clef: caught()});
+  const {room, calls} = await levelRoom({prompt: CLI, split, leaf: () => deliver({'convert.js': CONVERT_JS}), settings: ALONE});
   assert.equal(room.get('status'), 'complete', trail(room));
   assert.equal(calls.split.length, 1, 'one session');
   assert.equal(heard.length, 1);
@@ -144,53 +148,60 @@ test('a contract with fewer than three distinct examples: done says what is miss
   assert.deepEqual(heard[0][2].result.examples_so_far, {convert: 1});
   assert.deepEqual(heard[0].at(-1), {name: 'done', result: {complete: false, missing: ['convert has 1 different example of 3 from the validations that serve it.']}});
   assert.deepEqual(room.splitterRows().map(r => r.outcome), ['done']);
-  const record = JSON.parse(room.db().exec('SELECT output FROM splitters').toArray()[0].output);
+  const record = JSON.parse(room.db().exec('SELECT output FROM splitter_sessions').toArray()[0].output);
   assert.deepEqual(record.calls.map(c => c.name), ['contract', 'command_check', 'command_check', 'done', 'command_check', 'command_check', 'done'], 'the splitter row keeps every call with its result');
   assert.equal(room.validationRows().length, 4, 'every validation the session stored is a row');
 });
 
-test('a splitter session its context window ends goes on next turn in a new session, from what it declared; nothing is held and the room completes', async () => {
-  // Session 1 declares the contract, then fills its context window without done; session 2 is handed what it declared and adds the rest.
+test('a splitter session its context window ends goes on next turn as the same splitter, in a new context carrying what it declared; nothing is held and the room completes', async () => {
+  // Session 1 declares the contract, then fills its context window without done; session 2, a new context of the same splitter, is handed what it declared and adds the rest.
   const split = (user, n, system, {round, tools}) => {
     const all = levelCalls(CLI_LEVEL, {user, tools});
     if (n === 1) return round === 1 ? all.filter(c => c.name === 'contract') : [{name: 'level', arguments: {note: 'x'.repeat(8000)}}];
     return round === 1 ? all.filter(c => c.name !== 'contract' && c.name !== 'done') : [{name: 'done', arguments: {}}];
   };
-  const {room, calls} = await levelRoom({prompt: CLI, split, leaf: () => deliver({'convert.js': CONVERT_JS}), clef: caught()});
+  const {room, calls} = await levelRoom({prompt: CLI, split, leaf: () => deliver({'convert.js': CONVERT_JS}), settings: ALONE});
   assert.equal(room.get('status'), 'complete', trail(room));
-  assert.equal(calls.split.length, 2, 'two sessions');
+  assert.equal(calls.split.length, 2, 'two contexts');
   assert.ok(calls.splitRounds.filter(r => r.session === 1).length > 5, 'the first ran until its context window was full');
   assert.deepEqual(calls.split[1].declared_so_far.contracts.map(c => c.name), ['convert'], 'the second is handed what the first declared');
   assert.deepEqual(room.roomHolds(), []);
-  assert.deepEqual(room.splitterRows().map(r => r.outcome), ['context', 'done']);
+  assert.deepEqual(room.splitterRows().map(r => [r.session, r.continues, r.outcome]), [[1, '', 'context'], [2, 'context', 'done']]);
+  assert.equal(new Set(room.splitterRows().map(r => r.splitter)).size, 1, 'the same splitter');
   assert.equal(room.allNodes().filter(n => n.role === 'worker').length, 1);
 });
 
 // The owner approved (2026-10-17 00:25, 00:53, 00:55): each call of a splitter counts against the room's turn budget.
-test('each model call of a splitter session counts against the room\'s turn budget: once it is spent the session ends, nothing is held, and Continue goes on from what it declared', async () => {
-  // Session 1 declares the contract, then calls level until the budget is spent; session 2 is handed what it declared and adds the rest.
+test('each model call of a splitter session counts against the room\'s turn budget: once it is spent the session ends, nothing is held, and Continue resumes the same conversation', async () => {
+  // The conversation declares the contract, then calls level until the budget is spent; once resumed it adds the rest and calls done.
+  let resumed = false, sent = false;
   const split = (user, n, system, {round, tools}) => {
     const all = levelCalls(CLI_LEVEL, {user, tools});
-    if (n === 1) return round === 1 ? all.filter(c => c.name === 'contract') : [{name: 'level', arguments: {}}];
-    return round === 1 ? all.filter(c => c.name !== 'contract' && c.name !== 'done') : [{name: 'done', arguments: {}}];
+    if (round === 1) return all.filter(c => c.name === 'contract');
+    if (!resumed) return [{name: 'level', arguments: {}}];
+    if (!sent) { sent = true; return all.filter(c => c.name !== 'contract' && c.name !== 'done'); }
+    return [{name: 'done', arguments: {}}];
   };
-  const r = await levelRoom({prompt: CLI, split, leaf: () => deliver({'convert.js': CONVERT_JS}), clef: caught(), budget: 6});
+  const r = await levelRoom({prompt: CLI, split, leaf: () => deliver({'convert.js': CONVERT_JS}), budget: 6, settings: ALONE});
   const {room, calls} = r;
   assert.notEqual(room.get('status'), 'complete');
-  const first = calls.splitRounds.filter(x => x.session === 1).length;
+  const first = calls.splitRounds.length;
   assert.ok(first >= 1 && first <= 6, `the first session ran ${first} rounds within a budget of 6`);
   assert.equal(room.get('budget_left'), '0', 'its calls spent the budget');
   assert.deepEqual(room.splitterRows().map(x => x.outcome), ['budget']);
   assert.deepEqual(room.roomHolds(), [], 'nothing is held');
+  resumed = true;
   await again(r, 60);
   assert.equal(room.get('status'), 'complete', trail(room));
-  assert.deepEqual(calls.split[1].declared_so_far.contracts.map(c => c.name), ['convert'], 'the second is handed what the first declared');
-  assert.deepEqual(room.splitterRows().map(x => x.outcome), ['budget', 'done']);
+  assert.equal(calls.split.length, 1, 'one conversation: none starts anew');
+  assert.ok(calls.splitRounds[first].round > 1 && calls.splitRounds[first].results.some(x => x.name === 'level'), 'it goes on from the last call it made');
+  assert.deepEqual(room.splitterRows().map(x => [x.session, x.continues, x.outcome]), [[1, '', 'budget'], [2, 'conversation', 'done']]);
+  assert.equal(new Set(room.splitterRows().map(x => x.splitter)).size, 1, 'the same splitter');
 });
 
 test('a complaint reaches the worker responsible exactly as the compiler observed it, and its fix completes the room', async () => {
   const WRONG = "const c = Number(process.argv[2]);\nconsole.log(String(c * 2));\n";
-  const {room, calls} = await levelRoom({prompt: CLI, split: () => CLI_LEVEL, leaf: (_u, n) => deliver({'convert.js': n === 1 ? WRONG : CONVERT_JS}), clef: caught()});
+  const {room, calls} = await levelRoom({prompt: CLI, split: () => CLI_LEVEL, leaf: (_u, n) => deliver({'convert.js': n === 1 ? WRONG : CONVERT_JS}), settings: ALONE});
   assert.equal(room.get('status'), 'complete', trail(room));
   assert.equal(calls.leaf.length, 2);
   const w = theWorker(room), sent = room.problems("assignee=? AND stage='complaint'", w.id);
@@ -206,7 +217,7 @@ test('an ask in scope nowhere up to the room: the asker is archived with its fil
   const ask = fileBlocks([], {summary: 'needs a database', wait: true, ask: [{need: 'a database server to keep the readings', name: 'readingsDatabase'}]});
   // The rebuild's splitter reads the validations its level already has, and states the contract again.
   const split = user => user.validations_you_have ? {contracts: [CONVERT], validations: [], pieces: []} : CLI_LEVEL;
-  const {room, calls} = await levelRoom({prompt: CLI, split, leaf: (_u, n) => n === 1 ? ask : deliver({'convert.js': CONVERT_JS}), clef: caught({'^ask_parent$': 0.95})});
+  const {room, calls} = await levelRoom({prompt: CLI, split, leaf: (_u, n) => n === 1 ? ask : deliver({'convert.js': CONVERT_JS}), clef: usualClef({'^ask_parent$': 0.95})});
   assert.equal(room.get('status'), 'complete', trail(room));
   const ws = room.allNodes().filter(n => n.role === 'worker');
   assert.equal(ws.length, 2);
@@ -219,7 +230,7 @@ test('an ask in scope nowhere up to the room: the asker is archived with its fil
   assert.ok(events(room, 'archived').length === 1);
   // The rebuilt level keeps the validations it had, and its splitter is shown them.
   assert.equal(calls.split[1].validations_you_have.length, 3);
-  assert.equal(calls.split[1].max_pieces, 0, 'its manager\'s pre-grade caught it, so the rebuild is offered no piece either');
+  assert.equal(calls.split[1].max_pieces, 7, 'a rebuild with room for pieces is offered piece, and its division goes to Clef\'s review');
   assert.deepEqual(calls.split[1].contracts_you_deliver.map(c => c.name), ['convert']);
   assert.equal(room.validationRows().length, 3);
 });
@@ -254,7 +265,7 @@ test('every text the room composes for a model request passes the prompt lint, t
   const WRONG = "const c = Number(process.argv[2]);\nconsole.log(String(c * 2));\n";
   const ask = fileBlocks([], {summary: 'needs a table', wait: true, ask: [{need: 'a table of conversion factors', name: 'conversionTable'}]});
   const {room, calls, drain} = await levelRoom({prompt: CLI, split: user => user.validations_you_have ? {contracts: [CONVERT], validations: [], pieces: []} : CLI_LEVEL,
-    leaf: (_u, n) => n === 1 ? ask : n === 2 ? deliver({'convert.js': WRONG}) : deliver({'convert.js': CONVERT_JS}), clef: caught({'^ask_parent$': 0.95})});
+    leaf: (_u, n) => n === 1 ? ask : n === 2 ? deliver({'convert.js': WRONG}) : deliver({'convert.js': CONVERT_JS}), clef: usualClef({'^ask_parent$': 0.95})});
   assert.equal(room.get('status'), 'complete', trail(room));
   await room.amend('The converter also prints the unit F after the value.');
   await drain();

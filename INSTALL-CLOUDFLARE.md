@@ -186,7 +186,7 @@ In the answer, `items.hostname.runner_named` should be `true`, and `items.hostna
    | Manager model | Qwen3 A3B | Qwen3 A3B, Llama 4 Scout, Qwen2.5 Coder 32B, DeepSeek V4 Flash, Mistral Small 3.1, Qwen 3.8 27B, Llama 3.2 1B | v7: splits and their promised functions, managers' decisions and link edits. v8: the splitters and the builders. |
    | Worker model | Qwen3 A3B | the same list | The workers, which write the code. |
    | Compiler model | Qwen3 A3B | the same list | v7: the API coverage mapping, triage and the runner's test. v8: the compiler agents, and the readers of the prompts' linked pages. |
-   | Split decision model | Clef-flash | Clef-flash, Clef | Answers the YES/NO questions as probabilities. v7: the split gate, each child's scope, each function name a split adds, routing, the prune walk, which function answers a worker's request, and a retask's new task. v8: every manager's choice among its functions, the split's pre-grade and review, and whether a piece's own compile runs a validation it holds. |
+   | Split decision model | Clef-flash | Clef-flash, Clef | Answers the YES/NO questions as probabilities. v7: the split gate, each child's scope, each function name a split adds, routing, the prune walk, which function answers a worker's request, and a retask's new task. v8: every manager's choice among its functions, the review of every division, and whether a piece's own compile runs a validation it holds. |
    | Minimum YES probability | 70% | 20–80% | Clef split threshold. |
    | Pipeline | v7 | v7, v8 | Which pipeline the room runs. Fixed when the room starts: Continue keeps it (event `pipeline_kept`). |
 
@@ -204,7 +204,7 @@ The dashboard loads one full snapshot, then asks for what changed every second (
 - **Agent traffic:** newest first. A v8 room shows every event of the run, so you can scroll down to the first; a v7 room shows the latest 300.
 - **The files** the room has recorded, committed or staged for the current turn's commit (in a v7 room, the first 240). Click one to read its content from the room's index of Artifacts writes.
 - **The Container build panel**, with the latest Container report.
-- In a v8 room, the **Levels** panel (each validation with a pass, fail or untested chip, each manager's level file, each splitter step with Clef's verdict, and why the room is held), the **Sources and base** panel and the **Prompts** queue.
+- In a v8 room, the **Levels** panel (each validation with a pass, fail or untested chip, each manager's level file, each splitter session with Clef's verdict, and why the room is held), the **Sources and base** panel and the **Prompts** queue.
 
 A run ends in one of three states:
 - **complete**, when the compiler's runner test passes on the current source and every agent is done (in a v8 room: when the compiler of the manager the room created has every validation of its subtree passing on its exact bundle);
@@ -231,7 +231,7 @@ A run ends in one of three states:
 - every problem with its decisions, and every repair ticket;
 - each manager's linking state and the compiler's state;
 - every event, and every timing span (model calls, Clef gates, git phases, Container runs, dispatch delays);
-- in a v8 room, each manager's level file, the validations and their results, the splitter steps, the sources read and the base.
+- in a v8 room, each manager's level file, the validations and their results, the splitter sessions, the sources read and the base.
 
 **The agents' Artifacts remote URLs in the export include your Cloudflare account ID.** Don't commit an export to a repository or post it publicly.
 

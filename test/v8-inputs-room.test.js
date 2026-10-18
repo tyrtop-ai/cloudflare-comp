@@ -76,10 +76,10 @@ const repoRoutes = (files = BASE_FILES, sha = SHA) => ({
   'https://codeload.github.com/acme-example/widget/tar.gz/main': () => new Response(tarGz(files, undefined, sha), {headers: {'content-type': 'application/x-gzip'}})
 });
 
-// Clef: should_split by the assigned text (a level not divided is caught, and goes to one worker), judge by the file;
-// everything else passes.
-const clefFor = ({split = () => false, judge = () => 0.9} = {}) => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul:
-  k === 'should_split' ? (split(String(input.state.assignment)) ? 0.9 : 0.05) : k === 'judge' ? judge(input.state.file, input.questions.judge.instructions) : 0.9}]))});
+// Clef: judge by the file; everything else passes. A level the test gives no pieces proposes the scripted division Clef's review
+// says NO to (helpers/room.js WHOLE), and goes to one worker.
+const clefFor = ({judge = () => 0.9} = {}) => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul:
+  k === 'judge' ? judge(input.state.file, input.questions.judge.instructions) : 0.9}]))});
 // Workers by the contracts they deliver: the n-th turn gets the n-th answer (the last one repeats).
 const scripted = answers => {
   const seen = new Map();
@@ -97,8 +97,8 @@ const has = (id, path, text) => ({id, serves: [path], check: {kind: 'file', path
 const judged = (id, path, question) => ({id, serves: [path], check: {kind: 'judge', path, question}});
 // A level's splitter: the room's manager states `level`; a piece restates its given contracts.
 const levelSplit = level => user => user.contracts_you_deliver ? {contracts: user.contracts_you_deliver, validations: [], pieces: []} : typeof level === 'function' ? level(user) : level;
-function inputsRoom({level, splitWhen, judge, answers, source = null, fetch, allow = null, room_id}) {
-  const r = liveRoom({split: levelSplit(level), clef: clefFor({split: splitWhen, judge}), leaf: scripted(answers), source, ...(room_id ? {room_id} : {})});
+function inputsRoom({level, judge, answers, source = null, fetch, allow = null, room_id}) {
+  const r = liveRoom({split: levelSplit(level), clef: clefFor({judge}), leaf: scripted(answers), source, ...(room_id ? {room_id} : {})});
   Object.assign(r.env, {TEST_FETCH: fetch, GITHUB_TOKEN: SECRET, ...(allow ? {FETCH_ALLOW: allow} : {})});
   return r;
 }
@@ -200,7 +200,7 @@ const LINKS_LEVEL = {contracts: DOCS,
 
 test('links in the start prompt: fetched with the owner\'s allowlist, stored and summarised, cited by the split, and each worker reads only its chunks', async () => {
   const fetch = fakeFetch({'https://docs.example.com/widget-format': () => new Response(PAGE, {headers: {'content-type': 'text/markdown; charset=utf-8'}})});
-  const {room, calls, drain} = inputsRoom({level: LINKS_LEVEL, splitWhen: t => t.startsWith(LINKS_GOAL), source: sourceModel, fetch, allow: 'docs.example.com',
+  const {room, calls, drain} = inputsRoom({level: LINKS_LEVEL, source: sourceModel, fetch, allow: 'docs.example.com',
     answers: {'GUIDE.md': [wrote([['GUIDE.md', GUIDE_MD]])], 'FAQ.md': [wrote([['FAQ.md', FAQ_MD]])]}});
   const started = await room.start(LINKS_GOAL, 40, {pipeline: 'v8'}, '', {selfHosts: ['control.example.com']});
   assert.deepEqual(started, {status: 'running'});
@@ -443,7 +443,8 @@ test('a level that holds the base reads any base file whole with read_file: its 
   };
   const r = liveRoom({split, clef: clefFor({judge: readmeJudge}), leaf, room_id: 'room-one-0001'});
   Object.assign(r.env, {TEST_FETCH: fakeFetch(repoRoutes()), GITHUB_TOKEN: SECRET});
-  await r.room.start(README_GOAL, 20, {pipeline: 'v8'}, 'room-one-0001', {base: {repo: 'acme-example/widget'}, selfHosts: ['control.example.com']});
+  // No room for pieces (the agent limit): the level goes to one worker, so this splitter's done needs no division.
+  await r.room.start(README_GOAL, 20, {pipeline: 'v8', max_agents: 3}, 'room-one-0001', {base: {repo: 'acme-example/widget'}, selfHosts: ['control.example.com']});
   await r.drain();
   assert.equal(r.room.get('status'), 'complete', trace(r.room));
   assert.ok(seen.tools.includes('read_file'), 'the splitter is offered read_file');
@@ -588,7 +589,7 @@ const SPLIT_LEVEL = {contracts: [NOTES, SHOUT, HELP, WIDGET],
 
 test('S8b review M1: base text reaches every model quoted and labelled; a level whose contracts place base files changes them in the room\'s own copy, with nothing held for the person', async () => {
   const fetch = fakeFetch(repoRoutes());
-  const {room, calls, drain} = inputsRoom({level: SPLIT_LEVEL, splitWhen: t => t.startsWith(SPLIT_GOAL), fetch,
+  const {room, calls, drain} = inputsRoom({level: SPLIT_LEVEL, fetch,
     answers: {'NOTES.md': [wrote([['NOTES.md', '# Notes\n\nAbout the widget.\n'], ['extra.txt', 'a note of the worker\'s own\n']])],
       'src/shout.js': [wrote([['src/shout.js', BASE_FILES['src/shout.js'].replace('!', '!!!')]])],
       'HELP.md,bin/widget.js': [wrote([['HELP.md', '# Help\n\nAsk the widget for help.\n'], ['bin/widget.js', 'const message = "changed";\nconsole.log(message);\n']])]}});

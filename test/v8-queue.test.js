@@ -11,6 +11,7 @@ import {spawnSync} from 'node:child_process';
 import {liveRoom, events, fileBlocks, levelCalls} from './helpers/room.js';
 import {usualClef, choiceP, deliver} from './helpers/levels.js';
 import {effectiveGoal, goalView, reorderError, promptText} from '../src/amend.js';
+import {RETRY} from '../src/prompts.js';
 // After the room helper registered the cloudflare: loader.
 const {default: worker} = await import('../src/index.js');
 
@@ -81,9 +82,9 @@ test('queue: prompts queued while the first run goes wait for it; then the alarm
   assert.equal(room.goalRev(), 2);
   assert.equal(room.userGoal(), effectiveGoal(GOAL, [README_CHANGE]));
   assert.match(events(room, 'change_routed').at(-1).body, /concerns no child's contracts; its splitter extends the level/);
-  // The extension: a splitter step of its own, which states README.md and its validations and proposes a division; Clef's review
-  // finds its two pieces too small on each of its three attempts, so a new child, one worker, delivers it.
-  assert.deepEqual(room.splitterRows().map(r => r.kind), ['split', 'extend', 'extend', 'extend']);
+  // The extension: a session of the room's manager's splitter, which states README.md and its validations and proposes a division; Clef's
+  // review finds its two pieces too small on each of its three attempts, each NO done's result in that session, so a new child, one worker, delivers it.
+  assert.deepEqual(room.splitterRows().filter(r => r.manager === m).map(r => [r.kind, r.session]), [['split', 1], ['extend', 2]]);
   assert.deepEqual(room.splitAttempts(m).filter(a => String(a.job || '').startsWith('extend:')).map(a => [a.pieces, a.outcome]), [[2, 'retry larger'], [2, 'retry larger'], [2, 'handed down']]);
   assert.equal(calls.split.at(-1).assignment, README_CHANGE);
   assert.deepEqual(calls.split.at(-1).contracts_you_have.map(c => c.name), ['temp', 'USAGE.md'], 'the splitter reads what its level has');
@@ -140,13 +141,13 @@ test('an extension whose splitter declares again a contract its level has hears 
   await room.amend(README_CHANGE);
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
-  // One session per attempt of the extension's division (Clef finds its two pieces too small twice, then it is handed down).
+  // One session for the extension: the contract function's answer, then each NO of Clef's review (two pieces too small twice) as done's result; the third hands it down.
   assert.equal(heard.length, 3);
-  for (const h of heard) {
-    assert.deepEqual(h[0], {name: 'contract', result: {error: '"temp" is already declared: it is a contract your level already has'}});
-    assert.ok(h.slice(1).every(r => !r.result.error), JSON.stringify(h));
-  }
-  assert.deepEqual(room.splitterRows().map(r => [r.kind, r.outcome]), [['split', 'done'], ['extend', 'done'], ['extend', 'done'], ['extend', 'done']]);
+  assert.deepEqual(heard[0][0], {name: 'contract', result: {error: '"temp" is already declared: it is a contract your level already has'}});
+  assert.ok(heard[0].slice(1).every(r => !r.result.error), JSON.stringify(heard[0]));
+  for (const h of heard.slice(1)) assert.deepEqual(h.map(r => [r.name, r.result.problems]), [['done', [RETRY.too_small(2)]]]);
+  const m = room.roomManager();
+  assert.deepEqual(room.splitterRows().filter(r => r.manager === m).map(r => [r.kind, r.outcome]), [['split', 'done'], ['extend', 'done']]);
   assert.equal(kids(room, room.roomManager()).filter(c => room.promisedOf(c.id).some(f => f.name === 'temp')).length, 1);
   assert.equal(events(room, 'bundle_conflict').length, 0);
 });

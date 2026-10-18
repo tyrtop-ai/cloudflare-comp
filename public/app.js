@@ -49,17 +49,16 @@ function treeIndex(agents) {
   const role=n=>isReader(n)?'reader':isSplitter(n)?'splitter':isBuilder(n)?'builder':isCompiler(n)?'compiler':(n.phase==='manager'||producers(n.id).length)?'manager':'worker';
   return {kids,byId,producers,builderOf,role};
 }
-// v8: the agents the room keeps beside its rows: each splitter step (its
-// manager's, by attempt: running while its session runs, done once Clef admitted
-// its pieces, waiting on Clef's review once it called done, failed when its
-// session ended without done or its pieces were not admitted) and each level's compiler. Only under a manager the tree has.
+// v8: the agents the room keeps beside its rows: each manager's splitter, one
+// agent with its sessions as its history (running while a session runs, done
+// once its last session's done completed, waiting when its last session ended
+// without done and goes on next turn) and each level's compiler. Only under a manager the tree has.
 // And each link reader the room ran on the prompt's links (a part's or a page's, running until it ends, done when it
 // noted, failed when it ended without a note), joined to the manager the room created, which its notes go to.
 function levelNodes(s) {
   const has=new Set((s?.agents||[]).map(n=>n.id));
-  const splitter=x=>({id:x.id,parent:x.manager,role:'splitter',level:true,seq:x.attempt,label:`Splitter · attempt ${x.attempt}`,
-    status:!x.ended_at?'running':x.verdict==='admitted'?'done':x.outcome==='done'&&!x.verdict?'waiting':'failed',
-    task:`State its manager's level through its functions (${x.kind} attempt ${x.attempt}).`,step:x});
+  const splitter=x=>({id:x.id,parent:x.manager,role:'splitter',level:true,seq:0,label:'Splitter',status:x.state,
+    task:`State its manager's level through its functions: ${x.sessions.length} session${x.sessions.length===1?'':'s'}.`,step:x});
   const compiler=x=>({id:x.id,parent:x.manager,role:'compiler',level:true,label:'Compiler',status:x.state,
     task:'Verify the level\'s piece, as its builder joined it, on its exact bundle in a fresh box.',record:x});
   const reader=(x,i,all)=>({id:x.id,seq:i-all.length,parent:has.has(s.room_manager)?s.room_manager:null,role:'reader',level:true,label:`Link reader · ${x.ref}`,
@@ -107,16 +106,16 @@ const promiseLabel=i=>i.kind&&i.kind!=='function'?`${i.kind} ${i.name}`:`${i.nam
 const validationState=(v,status)=>{const st=status?.[v.id];return typeof st?.passed!=='boolean'?'untested':st.stale?'stale':st.passed?'pass':'fail';};
 // v8: the levels: each validation with its last result, its check in a few
 // words, the contracts it serves and the manager that holds it; each manager's level file (open it to read it); then each splitter
-// step with its manager, attempt and outcome.
+// session with its splitter, its manager and its outcome.
 function levelsMarkup(s) {
   const list=s.validations||[];
   if(!list.length)return '<p class="empty">A v8 room\'s manager\'s splitter states its level first: its contracts, and the validations that check each. The manager owns its children\'s interfaces and routes.</p>';
   const row=v=>{const state=validationState(v,s.validation_status),detail=s.validation_status?.[v.id]?.detail;
     return `<li><span class="req-chip ${state}"${detail?` title="${esc(detail)}"`:''}>${state}</span> <b class="mono">${esc(v.id)}</b> ${esc(v.check)} <span class="faint">· serves ${esc((v.serves||[]).join(', '))}${v.held?` · held by ${esc(v.held)}`:''}</span></li>`;};
-  const step=x=>`<li><span class="mono">${esc(x.id)}</span> <span class="faint">· ${esc(x.manager)} · ${esc(x.kind)} attempt ${esc(x.attempt)} · ${esc(x.ended_at?x.outcome||'ended':'running')}</span></li>`;
+  const step=x=>`<li><span class="mono">${esc(x.splitter)}</span> <span class="faint">· ${esc(x.manager)} · session ${esc(x.session)} · ${esc(x.kind)}${x.continues?` · continues its ${esc(x.continues)}`:''} · ${esc(x.ended_at?x.outcome||'ended':'running')}${x.verdict?` · ${esc(x.verdict)}`:''}</span></li>`;
   const level=f=>`<li><button type="button" class="file-row" data-agent="${esc(f.manager)}" data-path="${esc(f.path)}"><span class="mono">${esc(f.manager)}/${esc(f.path)}</span><small>r${esc(f.revision)} · ${esc(String(f.commit||'').slice(0,12))}</small></button> <span class="faint">${esc(f.label||'')} · ${esc(f.children)} children${f.archived?` · ${esc(f.archived)} archived`:''} · ${esc(f.contracts)} contracts · ${esc(f.validations)} validations</span></li>`;
   const section=(title,items)=>items.length?`<div class="panel-section"><div class="eyebrow">${title}</div><ul class="panel-list">${items.join('')}</ul></div>`:'';
-  return section('VALIDATIONS',list.map(row))+section('LEVEL FILES',(s.levels||[]).map(level))+section('SPLITTER STEPS',(s.splitters||[]).map(step));
+  return section('VALIDATIONS',list.map(row))+section('LEVEL FILES',(s.levels||[]).map(level))+section('SPLITTER SESSIONS',(s.splitters||[]).flatMap(x=>x.sessions||[]).map(step));
 }
 // v8 S9: the Prompts panel. Each prompt with its state (queued, running,
 // done, failed, skipped); a queued one can be edited, removed, skipped and
@@ -195,8 +194,8 @@ function nodeDetail(n,index) {
     const x=n.reading;
     more=`<p class="faint">${esc(x.ended_at?x.noted?'noted':'ended without a note':'running')} · ${esc(x.rounds)} model call${x.rounds===1?'':'s'}${x.ended_at?` · ${((x.ended_at-x.started_at)/1000).toFixed(1)} s`:''}</p>`;
   } else if(role==='splitter') {
-    const x=n.step;
-    more=`<p class="faint">${esc(x.ended_at?x.outcome||'ended':'running')}${x.verdict?` · ${esc(x.verdict)}`:''}${x.ended_at&&x.spawned_at?` · ${((x.ended_at-x.spawned_at)/1000).toFixed(1)} s`:''}</p>`;
+    // Its sessions, its history: each with its job, what it continues, how it ended, Clef's last review in it and its time.
+    more=(n.step.sessions||[]).map(x=>`<p class="faint">session ${esc(x.session)} · ${esc(x.kind)}${x.continues?` · continues its ${esc(x.continues)}`:''} · ${esc(x.ended_at?x.outcome||'ended':'running')}${x.verdict?` · ${esc(x.verdict)}`:''}${x.ended_at&&x.spawned_at?` · ${((x.ended_at-x.spawned_at)/1000).toFixed(1)} s`:''}</p>`).join('');
   }
   return `<div class="onode-detail role-${role}"><div><b class="mono">${esc(n.id)}</b> · ${esc(n.label)} · <span class="onode-role">${role}</span> · ${esc(state)}${holdsOf(current?.pause).filter(h=>h.agent===n.id).map(h=>` · waits on the room's hold: ${esc(h.kind)}`).join('')}</div><p>${esc(n.task)}</p>${n.interfaces?.length?`<p class="faint">promises: ${esc(n.interfaces.map(promiseLabel).join(', '))}</p>`:''}${talks}${more}${line(n)}</div>`;
 }
@@ -517,7 +516,7 @@ const applySnapshotSettings=s=>{
 // compiler model runs the compiler agents and reads the linked pages; there is no root and no test writer.
 const MODEL_LABELS={
   v7:{'model-label':'Manager model (splits, decisions, linking)','compiler-model-label':'Compiler model (API coverage check, the runner\'s test)','split-model-label':'Split decision model'},
-  v8:{'model-label':'Manager model (the splitters and the builders)','compiler-model-label':'Compiler model (the compiler agents, the linked pages\' readers)','split-model-label':'Clef model (every manager\'s choice, the split\'s pre-grade and review, whether a piece runs a validation)'}};
+  v8:{'model-label':'Manager model (the splitters and the builders)','compiler-model-label':'Compiler model (the compiler agents, the linked pages\' readers)','split-model-label':'Clef model (every manager\'s choice, the review of every division, whether a piece runs a validation)'}};
 const updateModelHint=()=>{
   for(const [id,text] of Object.entries(MODEL_LABELS[$('pipeline')?.value==='v8'?'v8':'v7'])) if($(id)) $(id).textContent=text;
   const small=[$('model').value,$('worker-model').value,$('compiler-model').value].some(v=>String(v).includes('1b-instruct'));

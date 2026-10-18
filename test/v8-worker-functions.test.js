@@ -91,14 +91,15 @@ const CONVERT = {name: 'convert', kind: 'command', does: 'converts a Celsius tem
 const CLI_LEVEL = {contracts: [CONVERT], validations: [convertCheck('a', '100 C', '212'), convertCheck('b', '0 C', '32'), convertCheck('c', '-40 C', '-40')], pieces: []};
 const CONVERT_JS = "const c = Number(process.argv[2]);\nconsole.log(String(c * 9 / 5 + 32));\n";
 const WRONG = "const c = Number(process.argv[2]);\nconsole.log(String(c * 2));\n";
-const caught = (more = {}) => usualClef({'^should_split$': 0.02, ...more});
+// A room with no room for pieces (its agent limit): the level goes to one worker with no division to review.
+const ALONE = {max_agents: 3};
 
 test('run runs one command in the worker\'s own box, which holds its files as they stand (its writes of this session too), with the internet on, and says what the process did; the box closes when the session ends; nothing it runs is a validation\'s status', async () => {
   const convert = ['node', 'convert.js', '100', 'C'];
   const leaf = (_u, _n, _s, {round}) => round === 1 ? [{name: 'write_file', arguments: {path: 'convert.js', content: WRONG}}, {name: 'run', arguments: {argv: convert}}]
     : round === 2 ? [{name: 'write_file', arguments: {path: 'convert.js', content: CONVERT_JS}}, {name: 'run', arguments: {argv: convert}}]
     : [{name: 'done', arguments: {summary: 'the converter'}}];
-  const {room, calls, boxes} = await levelRoom({prompt: CLI, split: () => CLI_LEVEL, leaf, clef: caught()});
+  const {room, calls, boxes} = await levelRoom({prompt: CLI, split: () => CLI_LEVEL, leaf, settings: ALONE});
   assert.equal(room.get('status'), 'complete', trail(room));
   assert.equal(calls.leaf.length, 1, 'one turn: the worker saw what its file printed and fixed it in the same session');
   const runs = calls.leafRounds.filter(r => r.round > 1).map(r => r.results.find(x => x.name === 'run')?.result).filter(Boolean);
@@ -121,7 +122,7 @@ test('a worker\'s files are its own repository, every path in it: a folder the r
     {name: 'write_file', arguments: {path: 'convert.js', content: CONVERT_JS}}, {name: 'write_file', arguments: {path: './memory/NOTES.md', content: '# Units\n'}},
     {name: 'write_file', arguments: {path: 'glue/units table.txt', content: 'C F\n'}}, {name: 'write_file', arguments: {path: '../components/.helper.js', content: 'module.exports = 1;\n'}},
     {name: 'run', arguments: {argv: ['node', '-e', "console.log(require('fs').readdirSync('.', {recursive: true}).filter(p => require('fs').statSync(p).isFile()).sort().join(','))"]}}] : [{name: 'done', arguments: {summary: 'the converter and its notes'}}];
-  const {room, calls} = await levelRoom({prompt: CLI, split: () => level, leaf, clef: caught()});
+  const {room, calls} = await levelRoom({prompt: CLI, split: () => level, leaf, settings: ALONE});
   assert.equal(room.get('status'), 'complete', trail(room));
   const w = room.allNodes().find(n => n.role === 'worker'), own = ['components/.helper.js', 'convert.js', 'glue/units table.txt', 'memory/NOTES.md'];
   const results = calls.leafRounds.find(r => r.round === 2).results;
@@ -467,7 +468,7 @@ test('a change is one manager choice too: route_to the child it concerns, or ext
 test('a worker\'s session that ends with neither done nor wait (its context window full) goes on next turn in a new session, with its files as it wrote them; the room\'s turn budget is its only bound', async () => {
   // A model that never ends its turn: it reads its file again and again until the window is full.
   const leaf = (_u, _n, _s, {round}) => round === 1 ? [{name: 'write_file', arguments: {path: 'convert.js', content: CONVERT_JS + '// ' + 'x'.repeat(9000) + '\n'}}] : [{name: 'read_file', arguments: {path: 'convert.js'}}];
-  const {room, calls} = await levelRoom({prompt: CLI, split: () => CLI_LEVEL, leaf, clef: caught(), budget: 4});
+  const {room, calls} = await levelRoom({prompt: CLI, split: () => CLI_LEVEL, leaf, settings: ALONE, budget: 4});
   const w = room.allNodes().find(n => n.role === 'worker');
   assert.ok(calls.leaf.length >= 2, `${calls.leaf.length} sessions`);
   assert.ok(events(room, 'session').every(e => /ended without done or wait \(its context window was full\)\.$/.test(e.body)));
@@ -483,11 +484,11 @@ test('a worker\'s session that ends with neither done nor wait (its context wind
 // a turn that throws runs again, each run a turn of the budget, until the budget the person set ends.
 test('a worker\'s turn that throws runs again, as a turn of the budget: no pause after a number of failures, no hold', async () => {
   const run = async (budget, throws) => {
-    const r = liveRoom({split: () => CLI_LEVEL, leaf: () => deliver({'convert.js': CONVERT_JS}), clef: caught()});
+    const r = liveRoom({split: () => CLI_LEVEL, leaf: () => deliver({'convert.js': CONVERT_JS}), clef: usualClef()});
     const own = r.room.levelWorkerTurn;
     let n = 0;
     r.room.levelWorkerTurn = function (...a) { if (++n <= throws) throw new Error(`defect ${n}`); return own.apply(this, a); };
-    await r.room.start(CLI, budget, {pipeline: 'v8'}, 'throws-test');
+    await r.room.start(CLI, budget, {pipeline: 'v8', ...ALONE}, 'throws-test');
     await r.drain();
     return {r, n};
   };
