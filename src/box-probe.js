@@ -10,7 +10,7 @@
 // scrub() removes anything shaped like an id or a registry path from error
 // texts before the report leaves.
 import {DurableObject, WorkerEntrypoint} from 'cloudflare:workers';
-import {freshBox, BOX_HOSTNAME} from './box.js';
+import {freshBox, BOX_HOSTNAME, BOX_ROOT, BOX_WORK} from './box.js';
 import {checkLimitsOf} from './checks.js';
 
 export const PROBE_ITEMS = Object.freeze(['start', 'exec', 'network', 'caps', 'unshare', 'env', 'hostname', 'snapshot', 'browser', 'relay', 'fanout', 'private']);
@@ -134,14 +134,16 @@ export class BoxProbe extends DurableObject {
     });
   }
   // v8 live 5: the host name a box's exec gets from the platform, the one
-  // the runner runs under (the box's name, through /opt/box/hostname.py),
-  // and, last, whether uid 0 could have set the platform's name itself. Each
+  // a session's command runs under (the box's name, through
+  // /opt/box/hostname.py, as root in the box's folder, as box-session.js
+  // runs it), and, last, whether uid 0 could have set the platform's name
+  // itself. Each
   // with Python's getfqdn of it; the platform's name is scrubbed like any id,
   // and its label lengths stay.
   async probe_hostname() {
     return this.withBox({image: 'check', instance: 'standard-1', internet: false}, async (box, o) => {
       const platform = parseLine(await box.run([...PROBE, 'hostname']));
-      const runner = parseLine(await box.run([...BOX_HOSTNAME, o.name, '--', ...PROBE, 'hostname'], {ms: 20_000}));
+      const runner = parseLine(await box.run([...BOX_HOSTNAME, o.name, '--', ...PROBE, 'hostname'], {ms: 20_000, user: BOX_ROOT, cwd: BOX_WORK}));
       let uid_0;
       try { uid_0 = parseLine(await box.run([...PROBE, 'hostname'], {user: '0:0'})); } catch (e) { uid_0 = errorOf(e); }
       return {name: o.name, platform, runner, runner_named: runner?.hostname === o.name && runner?.getfqdn?.value === o.name, uid_0};

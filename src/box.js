@@ -83,7 +83,8 @@ export function boxStartOptions(raw, images) {
 }
 
 // ctx.container.exec's options: pipes and a fixed PATH. user is a numeric
-// uid:gid (Container API), used only by the S0 probe.
+// uid:gid (Container API): root (BOX_ROOT) for a session's commands and the
+// file writer, others in the S0 probe.
 export function boxExecOptions({stdin = false, quiet = false, user} = {}) {
   return {...(stdin ? {stdin: 'pipe'} : {}), stdout: quiet ? 'ignore' : 'pipe', stderr: quiet ? 'ignore' : 'pipe', env: {PATH: BOX_PATH},
     ...(typeof user === 'string' && /^\d{1,6}(?::\d{1,6})?$/.test(user) ? {user} : {})};

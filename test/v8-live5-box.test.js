@@ -279,7 +279,7 @@ test('a prewarmed box no session takes is stopped when the run ends', async () =
 });
 
 // ------------------------------------------------------------ the S0 probe
-test('the S0 probe reports the platform\'s host name, the name the runner runs under, and whether uid 0 could set it', async () => {
+test('the S0 probe reports the platform\'s host name, the name a session\'s command runs under (as root, as sessions run), and whether uid 0 could set it', async () => {
   const {BoxProbe} = await import('../src/box-probe.js');
   const ns = fakeBoxes({onExec: (argv, options) => {
     if (argv.at(-1) !== 'hostname' || !argv.includes('/opt/box/probe.mjs')) return undefined;
@@ -292,6 +292,7 @@ test('the S0 probe reports the platform\'s host name, the name the runner runs u
   assert.match(h.name, BOX_NAME);
   assert.equal(h.runner.hostname, h.name);
   assert.equal(h.runner_named, true);
+  assert.equal(h.runner.uid, 0, 'the runner is probed as a session runs it: as root');
   assert.equal(h.platform.hostname, '<id>', 'the platform\'s id-shaped name is scrubbed');
   assert.deepEqual(h.platform.labels, [64], 'its label length stays');
   assert.equal(h.platform.getfqdn.ok, false);
