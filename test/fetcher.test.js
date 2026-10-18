@@ -43,7 +43,7 @@ function fakeFetch(routes) {
 const text = (body, type = 'text/plain; charset=utf-8', extra = {}) => () => new Response(body, {status: 200, headers: {'content-type': type, ...extra}});
 const redirect = to => () => new Response(null, {status: 302, headers: {location: to}});
 
-test('SSRF: schemes, ports, credentials and IP literals in every encoding are refused; any other host is refused unless the allowlist holds it', () => {
+test('schemes, ports and credentials are refused; any host, IP literals in every encoding among them, is refused unless the allowlist holds it', () => {
   const p = policy();
   const refused = [
     'http://example.com/', 'https://example.com:8443/', 'https://user:pw@example.com/', 'https://user@example.com/',
@@ -58,7 +58,9 @@ test('SSRF: schemes, ports, credentials and IP literals in every encoding are re
   for (const url of refused) assert.ok(urlRefusal(url, p), `should refuse ${url}`);
   for (const url of ['https://example.com/a', 'https://docs.example.com:443/x?y=1', 'https://EXAMPLE.org./b'])
     assert.equal(urlRefusal(url, p), null, url);
-  assert.match(urlRefusal('https://2130706433/', p), /IP literal/);
+  // An address or a single label is a host like any other: the owner's list decides (owner, 2026-10-16 05:39, 2026-10-17 "see 2").
+  assert.match(urlRefusal('https://2130706433/', p), /host 127\.0\.0\.1 is not on the allowlist/);
+  assert.match(urlRefusal('https://localhost/', p), /host localhost is not on the allowlist/);
   assert.match(urlRefusal('https://evil.example.net/', p), /allowlist/);
 });
 
@@ -66,8 +68,10 @@ test('allowlist: documented default, owner override by FETCH_ALLOW, rooms only n
   assert.deepEqual(parseAllow(undefined), [...DEFAULT_ALLOW]);
   assert.deepEqual(parseAllow('  '), [...DEFAULT_ALLOW]);
   assert.ok(DEFAULT_ALLOW.includes('raw.githubusercontent.com') && DEFAULT_ALLOW.includes('docs.python.org'));
-  // The owner's entries as written: an IP literal and a single label are not DNS names; svc.internal is the owner's own (owner, 2026-10-17: no suffix lists over FETCH_ALLOW).
-  assert.deepEqual(parseAllow('example.com, *.example.org,127.0.0.1,localhost,intranet,svc.internal'), ['example.com', 'example.org', 'svc.internal']);
+  // The owner's entries as written, every one: an IP address, a single label and svc.internal are his own (owner, 2026-10-16 05:39; 2026-10-17: no rule over FETCH_ALLOW).
+  assert.deepEqual(parseAllow('example.com, *.example.org,127.0.0.1,localhost,intranet,svc.internal'), ['example.com', 'example.org', '127.0.0.1', 'localhost', 'intranet', 'svc.internal']);
+  const own = fetchPolicy({allow: '127.0.0.1,localhost,intranet'});
+  for (const url of ['https://127.0.0.1/', 'https://2130706433/', 'https://localhost/', 'https://api.localhost/', 'https://intranet/']) assert.equal(urlRefusal(url, own), null, url);
   const p = fetchPolicy({allow: 'example.com'});
   assert.equal(urlRefusal('https://github.com/', p) !== null, true, 'the override replaces the default list');
   assert.equal(urlRefusal('https://www.example.com/', p), null);
@@ -89,9 +93,9 @@ test('only URLs written literally in the goal are fetched', async () => {
 test('redirects are manual and each hop rechecked; every redirect is followed, with no hop count', async () => {
   const goal = 'Use https://example.com/start';
   const cases = {
-    'https://127.0.0.1/admin': /IP literal/, 'https://localhost/': /not a public host name/, 'http://example.com/plain': /only https/,
+    'https://127.0.0.1/admin': /allowlist/, 'https://localhost/': /allowlist/, 'http://example.com/plain': /only https/,
     'https://example.com:8080/': /port 443/, 'https://evil.example.net/': /allowlist/, 'https://control.example.net/api': /own host/,
-    'https://[::ffff:127.0.0.1]/': /IP literal/
+    'https://[::ffff:127.0.0.1]/': /allowlist/
   };
   for (const [target, why] of Object.entries(cases)) {
     const fetch = fakeFetch({'https://example.com/start': redirect(target)});
@@ -106,7 +110,7 @@ test('redirects are manual and each hop rechecked; every redirect is followed, w
     'https://example.org/two': redirect('https://10.0.0.7/')
   });
   const r3 = await fetchSource(goal, 'https://example.com/start', {fetch: chain, policy: policy()});
-  assert.match(r3.error, /redirect refused: IP literals/);
+  assert.match(r3.error, /redirect refused: host 10\.0\.0\.7 is not on the allowlist/);
   assert.equal(chain.calls.length, 3);
   for (const c of chain.calls) assert.equal(c.init.redirect, 'manual');
   // Every redirect is followed: four hops to allowed hosts reach the page (owner, 2026-10-17).
@@ -446,13 +450,14 @@ test('chunkText cuts long single-line blocks at the size limit; goalUrls trims i
   grows(goalUrls, n => 'https://example.com/a' + ')'.repeat(n), 100000, 'goalUrls trailing parens');
 });
 
-test('allowlist entries are validated for strings and arrays: each DNS name the owner writes is kept as written; selfHosts can be required', () => {
-  // Owner, 2026-10-17: no suffix lists over FETCH_ALLOW; a single label and an IP literal are not DNS names.
-  assert.deepEqual(parseAllow(['com', 'co.uk', 'github.io', 'pages.dev', '127.0.0.1', 'svc.internal', 'Example.COM.', '*.example.org']),
-    ['co.uk', 'github.io', 'pages.dev', 'svc.internal', 'example.com', 'example.org']);
-  assert.deepEqual(parseAllow('com,co.uk,trycloudflare.com,r2.dev'), ['co.uk', 'trycloudflare.com', 'r2.dev']);
-  assert.deepEqual(fetchPolicy({allow: ['com']}).allow, []);
-  assert.ok(urlRefusal('https://anything-at-all.com/', fetchPolicy({allow: ['com']})));
+test('allowlist entries from strings and arrays: every host suffix the owner writes is kept as written; selfHosts can be required', () => {
+  // Owner, 2026-10-16 05:39 and 2026-10-17 "see 2": no rule over FETCH_ALLOW; a top-level suffix, a single label and an IP address are his entries too.
+  assert.deepEqual(parseAllow(['com', 'co.uk', 'github.io', 'pages.dev', '127.0.0.1', 'svc.internal', 'Example.COM.', '*.example.org', 'my_host.lan']),
+    ['com', 'co.uk', 'github.io', 'pages.dev', '127.0.0.1', 'svc.internal', 'example.com', 'example.org', 'my_host.lan']);
+  assert.deepEqual(parseAllow('com,co.uk,trycloudflare.com,r2.dev'), ['com', 'co.uk', 'trycloudflare.com', 'r2.dev']);
+  assert.deepEqual(fetchPolicy({allow: ['com']}).allow, ['com']);
+  assert.equal(urlRefusal('https://anything-at-all.com/', fetchPolicy({allow: ['com']})), null);
+  assert.ok(urlRefusal('https://anything-at-all.org/', fetchPolicy({allow: ['com']})));
   assert.deepEqual(fetchPolicy({allow: ['example.com'], room: ['co.uk', 'docs.example.com', '10.0.0.1']}).allow, ['docs.example.com'], 'a room only narrows the owner\'s list');
   assert.throws(() => fetchPolicy({requireSelfHosts: true}), /selfHosts/);
   const p = fetchPolicy({allow: 'example.com', selfHosts: ['app.example.com:443'], requireSelfHosts: true});

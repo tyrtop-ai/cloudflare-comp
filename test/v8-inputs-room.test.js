@@ -125,6 +125,10 @@ test('base files: every text file, whole, at any path inside the box\'s folder (
   assert.equal(kept.modes.get('bin/run.sh'), 0o755);
   assert.deepEqual(kept.passthrough.map(p => [p.path, p.reason]), [['data.bin', 'binary'], ['logo.png', 'binary']]);
   assert.equal('not_carried' in kept, false);
+  // A name with a backslash or control characters is the project's file as git holds it (R10-edges/record-4).
+  const named = keepBaseFiles([t('win\\style.txt', 'b'), t('tab\there.txt', 't'), t('new\nline\x7f.md', 'c')]);
+  assert.deepEqual([...named.files.keys()].sort(), ['new\nline\x7f.md', 'tab\there.txt', 'win\\style.txt']);
+  assert.equal(named.skipped_count, 0);
   const many = keepBaseFiles(Array.from({length: 410}, (_, i) => t(`f${String(i).padStart(3, '0')}.txt`, 'x\n')));
   assert.deepEqual([many.files.size, many.passthrough.length, many.skipped_count], [410, 0, 0]);
   // Only what one storage row cannot hold (Cloudflare's 2 MB) is left out, and listed.
@@ -814,9 +818,9 @@ test('S8b review M6 and LOWs: a v7 result or a running room is refused as a base
   room.env.TEST_FETCH = limited;
   assert.match((await room.start('Add NOTES.md to this project.', 5, {pipeline: 'v8'}, 'room-low-0001', {base: {repo: 'acme-example/widget'}})).error, /rate limited for requests without a token; give a branch, tag or commit/);
   // FETCH_ALLOW with no usable entry: said in an event and in each refused row.
-  const r2 = inputsRoom({level: README_LEVEL, fetch: fakeFetch({}), allow: 'com, *', answers: {}});
+  const r2 = inputsRoom({level: README_LEVEL, fetch: fakeFetch({}), allow: '*., .', answers: {}});
   await r2.room.start('Write NOTES.md from https://docs.example.com/widget-format as notes.', 5, {pipeline: 'v8'}, '', {selfHosts: ['c.example.com']});
   await r2.drain();
-  assert.match(events(r2.room, 'fetch_allow_unreadable')[0].body, /FETCH_ALLOW has no usable host suffix \(com, \*\)/);
+  assert.match(events(r2.room, 'fetch_allow_unreadable')[0].body, /FETCH_ALLOW has no usable host suffix \(\*\., \.\)/);
   assert.match(r2.room.sourceRows()[0].error, /not on the allowlist \(FETCH_ALLOW has no usable entry\)/);
 });

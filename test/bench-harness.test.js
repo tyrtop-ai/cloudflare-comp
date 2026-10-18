@@ -6,7 +6,8 @@
 // the bundle, runs the prompt and the benchmark's tests against it, and
 // exits 0 on a pass, 1 on a failed test, 3 when no module defines the entry.
 // The single-use box is the isolation (owner, 2026-10-17): no nonce, no
-// pass mark, no token, no supervisor (R2-edges/chrono-5). Offline: the real
+// pass mark, no token, no supervisor (R2-edges/chrono-5). Its internet is on,
+// so the tests get what they need (owner, 2026-10-17 20:39). Offline: the real
 // Box over a fake Container whose commands run for real (test/helpers/boxes.js).
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -27,7 +28,7 @@ test('the grader is the harness\'s one command and the benchmark\'s tests as inp
   assert.equal(t.grader.check.run, `python3 -I ${FIXTURE.harness}`);
   assert.deepEqual(HARNESS_EXIT, {pass: 0, failed: 1, no_module: 3});
   for (const row of [HUMANEVAL[0], MULTIPLE_JS[0]]) assert.doesNotMatch(taskFromRow(row).grader.check.files[FIXTURE.harness], /nonce|token|BENCH-PASS|pipe/i, row.task_id || row.name);
-  assert.deepEqual(GRADER_BOX, {image: 'check', instance: 'standard-1', internet: false});
+  assert.deepEqual(GRADER_BOX, {image: 'check', instance: 'standard-1', internet: true});
 });
 
 test('Python: a right solution passes wherever it sits; a wrong one fails with exit 1 and what the test raised; no module defining the entry is exit 3', {skip: !hasPython && 'python3 is not installed'}, async () => {
@@ -62,11 +63,11 @@ test('honest Python solutions pass: eval, typing, namedtuple, dataclass, recursi
     assert.equal((await grade(HUMANEVAL[0], {'solution.py': source})).passed, true, source);
 });
 
-test('the grader\'s box: fresh, the internet off, the bundle and its input files in its folder, closed after the grading; a box that does not open is no grading', async () => {
+test('the grader\'s box: fresh, the internet on, the bundle and its input files in its folder, closed after the grading; a box that does not open is no grading', async () => {
   const ns = fakeBoxes();
   await grade(MULTIPLE_JS[0], {'solution.js': 'module.exports = { add_two: (a, b) => a + b };\n'}, {BOXES: ns});
   const [{container}] = ns.boxes;
-  assert.deepEqual([container.starts, container.options.enableInternet, container.running], [1, false, false]);
+  assert.deepEqual([container.starts, container.options.enableInternet, container.running], [1, true, false]);
   assert.deepEqual(Object.keys(container.written).sort(), [FIXTURE.harness, FIXTURE.tests, 'solution.js'].sort());
   assert.match((await grade(MULTIPLE_JS[0], {'a.js': '1;\n'}, {BOXES: fakeBoxes({refuse: () => 'no capacity'})})).infrastructure, /no capacity/);
   assert.match((await grade(MULTIPLE_JS[0], {'a.js': '1;\n'}, {})).infrastructure, /BOXES binding unavailable/);

@@ -18,7 +18,7 @@ export const REPO_LIMITS = Object.freeze({
   maxSkipped: 200               // skipped entries listed; the rest are counted
 });
 // Only these two hosts are ever contacted, whatever FETCH_ALLOW says.
-const GITHUB_POLICY = {allow: ['api.github.com', 'codeload.github.com'], archive: true};
+const GITHUB_POLICY = {allow: ['api.github.com', 'codeload.github.com']};
 const NAME = /^[A-Za-z0-9_.-]{1,100}$/;
 
 const clip = (v, n = 300) => String(v ?? '').slice(0, n);
@@ -41,9 +41,9 @@ const validRef = r => typeof r === 'string' && /^[A-Za-z0-9._/-]{1,200}$/.test(r
   !r.startsWith('/') && !r.startsWith('-') && !r.endsWith('/');
 const validDir = d => typeof d === 'string' && d.length <= 200 && !d.split('/').some(s => !s || s === '.' || s === '..') &&
   /^[A-Za-z0-9_.@+/-]+$/.test(d);
-// Repo-relative paths only: no absolute paths, no '..', no control characters.
-const safePath = p => p && !p.startsWith('/') && !/[\\\x00-\x1f\x7f]/.test(p) &&
-  !p.split('/').some(s => !s || s === '.' || s === '..');
+// A path inside the repo: not absolute and with no '..' among its parts.
+// Any other name is the repo's as git holds it, whatever its characters.
+const insidePath = p => !p.startsWith('/') && !p.split('/').includes('..');
 
 // --- minimal streaming tar reader ------------------------------------------------
 
@@ -200,11 +200,7 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
       if (response.status === 403 || response.status === 429) throw new FetchRefused(`archive download answered ${response.status}: rate limited; try later`);
       throw new FetchRefused(`archive download answered ${response.status}`);
     }
-    const type = String(response.headers?.get?.('content-type') || '').split(';')[0].trim().toLowerCase();
-    if (!/^application\/(?:x-gzip|gzip|x-tar|x-gtar|octet-stream)$/.test(type)) {
-      response.body?.cancel?.().catch?.(() => {});
-      throw new FetchRefused(`archive content type ${type || '(none)'} is not read`);
-    }
+    // Read whatever content type it is served as: a body that is no tar archive fails as one.
     src = byteSource(await plainChunks(response.body));
     // ignoreBOM: a byte order mark is part of the file and survives (S8b review).
     const decoder = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true});
@@ -214,7 +210,7 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
       // Every entry must sit under the archive's single root directory
       // (<name>-<sha>/), which the first entry names.
       const raw = entry.path;
-      if (raw.startsWith('/') || raw.includes('\\')) return skip(clip(raw, 200), 'unsafe path');
+      if (raw.startsWith('/')) return skip(clip(raw, 200), 'an absolute path');
       const first = raw.split('/')[0];
       root ??= first;
       if (!first || first !== root || first === '.' || first === '..') return skip(clip(raw, 200), 'outside the archive root');
@@ -222,13 +218,18 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
       if (!rel || (sub && !rel.startsWith(sub))) return;
       const path = rel.slice(sub.length);
       if (!path || entry.type === '5') return;
-      if (!safePath(path)) return skip(clip(path, 200), 'unsafe path');
+      if (!insidePath(path)) return skip(clip(path, 200), 'a path with .. in it, outside the repo');
       const segs = path.split('/');
       const gitAt = segs.indexOf('.git');
       if (gitAt >= 0) { const d = segs.slice(0, gitAt + 1).join('/') + '/'; if (!recorded.has(d)) { recorded.add(d); skip(d, '.git dropped'); } return; }
       // A symbolic link is the project's as git holds it (mode 120000, its target the blob): carried with its target.
       if (entry.type === '2') return out.passthrough.push({path, bytes: utf8.encode(entry.link), mode: LINK_MODE, reason: `a symbolic link to ${JSON.stringify(entry.link)}`});
-      if (entry.type !== '0' && entry.type !== '\0' && entry.type !== '7') return skip(path, 'not a regular file');
+      // Git stores regular files, executables, symbolic links and submodules
+      // (a submodule is a commit of another repo: its archive entry is an
+      // empty directory, with no content to carry). Any other tar entry (a
+      // hard link, a device, a fifo) is nothing git stores, so a repo's
+      // archive holds none; one that is there has no content of its own.
+      if (entry.type !== '0' && entry.type !== '\0' && entry.type !== '7') return skip(path, `a tar entry of type ${JSON.stringify(entry.type)}, which is not anything git stores (a file, a symbolic link or a submodule), with no content of its own`);
       if (entry.size > L.maxFileBytes) return skip(path, `larger than one storage row holds (${L.maxFileBytes} bytes)`);
       const prior = sizes.get(path) ?? null;
       const data = await entry.read();

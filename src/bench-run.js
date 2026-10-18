@@ -9,7 +9,7 @@
 // the same call /api/run makes (ControlRoom.start), with the task's prompt.
 // The grader is outside the room: once the room completes on its own
 // validations, the run grades the bundle it ships (appFiles) in a fresh box
-// of its own with the internet off (gradeBundle). A failed grading goes back
+// of its own with the internet on (gradeBundle). A failed grading goes back
 // to the room's manager as a complaint, whole, like any other
 // (ControlRoom.graderComplaint), the room goes on with the turns its budget
 // has left, and the run grades again each time it completes, until a
@@ -32,7 +32,9 @@
 // remote URLs or account ids.
 import { DurableObject } from 'cloudflare:workers';
 import { loadDataset, benchPolicy, roomOutcome, gradeOutcome, aggregate, compareRuns, taskDigest, BENCH_LIMITS } from './bench.js';
-import { freshBox, boxTimes, BOX_ROOT, BOX_WORK } from './box.js';
+import { freshBox, boxTimes, BOX_ROOT, BOX_WORK, sessionBoxSpec } from './box.js';
+import { boxSession } from './box-session.js';
+import { compilerWorld, compilerSession } from './compiler.js';
 import { checkLimitsOf } from './checks.js';
 import { boxPathError } from '../container/build-path.mjs';
 import { selfHostsOf } from './room-inputs.js';
@@ -175,12 +177,14 @@ export class BenchRun extends DurableObject {
   // and so does the run's Stop (settle). A grading that could not run
   // observed nothing: it is no round, the task stays where it is, and the
   // completed room is graded again on the next tick (or, after a Stop, on
-  // the tick that resumes the run).
+  // the tick that resumes the run). A grading that gave no grade (the
+  // grader's session ended with no result, or the task has nothing to grade
+  // with) settles the task as an error: grading it again could not differ.
   async graded(t, s, now, {settle = false} = {}) {
     const g = gradeOutcome(await this.grade(t));
     const row = this.row(t.idx);
     if (!row || row.status !== 'running' || row.room !== t.room) return;
-    if (g.outcome === 'error') { this.record(t, s); return; }
+    if (g.outcome === 'error' && !g.settled) { this.record(t, s); return; }
     const round = (t.rounds || 0) + 1, once = t.once || g.outcome;
     this.db().exec('UPDATE tasks SET rounds=?,once=? WHERE idx=?', round, once, t.idx);
     if (g.outcome === 'fail' && !settle) {
@@ -198,7 +202,8 @@ export class BenchRun extends DurableObject {
     try { app = await this.env.ROOMS.getByName(t.room).appFiles(); } catch (e) { return {infrastructure: clip(`the room's files could not be read: ${e?.message || e}`)}; }
     if (!app || app.error) return {passed: false, detail: `the room shipped no files: ${app?.error || 'no answer'}`};
     const files = new Map((app.files || []).filter(f => typeof f?.content === 'string' && !f.runtime).map(f => [f.path, f.content]));
-    return gradeBundle(this.env, parse(t.grader, null), files, checkLimitsOf(this.get('settings', {})));
+    const settings = this.get('settings', {});
+    return gradeBundle(this.env, parse(t.grader, null), files, checkLimitsOf(settings), {model: settings.compiler_model || settings.model});
   }
   // The counts of the current attempt, on top of the stopped attempts' (prior).
   record(t, s) {
@@ -333,12 +338,18 @@ export class BenchRun extends DurableObject {
 }
 
 // The grader on a bundle, in a fresh single-use box of its own with the
-// internet off: the bundle's files and the grader's input files in the box's
-// folder, and its one command run there. {passed, detail} or
-// {infrastructure}; detail is the box's whole observation of a failed
-// grading (the command, what it expected that did not hold, then its exit,
-// stdout and stderr), the complaint the room gets.
-export const GRADER_BOX = Object.freeze({image: 'check', instance: 'standard-1', internet: false});
+// internet on, so whatever runs the tests installs what they need. A
+// command grader (Python's and JavaScript's harness): the bundle's files and
+// the grader's input files in the box's folder, and its one command run
+// there; detail is the box's whole observation of a failed grading (the
+// command, what it expected that did not hold, then its exit, stdout and
+// stderr), the complaint the room gets. Any other language's grader: the
+// compiler's session (src/compiler.js) on the same files, with the
+// benchmark's tests as its one validation; it runs them in its box as the
+// benchmark states them, and its result is the grade, its observation the
+// detail. {passed, detail}, {infrastructure} when it could not run, or
+// {ungraded} when it ran and gave no grade.
+export const GRADER_BOX = Object.freeze({image: 'check', instance: 'standard-1', internet: true});
 // What of the grader's expectation its command's result does not meet: '' when it meets all of it.
 function unmet(e, r) {
   const out = r.stdout || '', err = r.stderr || '', lacks = (list, text) => (list || []).find(x => !text.includes(x));
@@ -349,17 +360,18 @@ function unmet(e, r) {
   if (lacks(e.stderr_has, err) !== undefined) return `its stderr lacks ${JSON.stringify(lacks(e.stderr_has, err))}`;
   return '';
 }
-export async function gradeBundle(env, grader, files, limits = checkLimitsOf({})) {
-  if (!grader?.check) return {infrastructure: grader?.unrunnable || 'the task has no grader'};
-  if (!env?.BOXES) return {infrastructure: 'BOXES binding unavailable: the grader runs only in a fresh box with the internet off'};
-  const c = grader.check, argv = String(c.run || '').trim().split(/\s+/).filter(Boolean);
+export async function gradeBundle(env, grader, files, limits = checkLimitsOf({}), {model} = {}) {
+  if (!grader?.check && !grader?.validation) return {ungraded: grader?.unrunnable || 'the task has no grader'};
+  if (!env?.BOXES) return {infrastructure: 'BOXES binding unavailable: the grader runs only in a fresh box of its own'};
   const put = Object.fromEntries([...files].filter(([p]) => !boxPathError(p)));
-  for (const [p, t] of Object.entries(c.files || {})) put[p] = t;
+  for (const [p, t] of Object.entries((grader.check || grader).files || {})) put[p] = t;
+  if (!grader.check) return gradeBySession(env, grader.validation, put, limits, model);
+  const c = grader.check, argv = String(c.run || '').trim().split(/\s+/).filter(Boolean);
   let box = null;
   try {
     box = freshBox(env.BOXES);
     const opened = await box.open(GRADER_BOX, limits.total_ms);
-    if (opened?.fresh !== true || opened?.internet !== false) return {infrastructure: 'the box did not confirm a fresh start with the internet off'};
+    if (opened?.fresh !== true) return {infrastructure: 'the box did not confirm a fresh start'};
     await box.write(put);
     const r = await box.run(argv, {stdin: c.stdin || '', ms: boxTimes(limits.total_ms).run, max: Infinity, user: BOX_ROOT, cwd: BOX_WORK});
     const out = r.stdout || '', err = r.stderr || '', missed = unmet(c.expect || {}, r);
@@ -367,6 +379,27 @@ export async function gradeBundle(env, grader, files, limits = checkLimitsOf({})
     return {passed: false, detail: `${argv.join(' ')}: exit ${r.code}; ${missed}\nstdout:\n${out}\nstderr:\n${err}`};
   } catch (e) { return {infrastructure: clip(e?.message || e)}; }
   finally { if (box) await Promise.resolve(box.close()).catch(() => {}); }
+}
+// The compiler's session as the grader: its validation is the benchmark's
+// tests; its files are the bundle and the tests file, which its box holds.
+async function gradeBySession(env, validation, put, limits, model) {
+  const files = new Map(Object.entries(put));
+  const open = async () => {
+    const box = freshBox(env.BOXES);
+    try { return {box, opened: await box.open(sessionBoxSpec([validation]), limits.total_ms)}; }
+    catch (e) { await Promise.resolve(box.close()).catch(() => {}); throw e; }
+  };
+  const box = boxSession({open, files: () => put, totalMs: limits.total_ms});
+  const world = compilerWorld({files, validations: [validation.id], box});
+  let out;
+  try {
+    out = await compilerSession({...env, ...(model ? {MODEL_NAME: model} : {}), PIPELINE: 'v8'},
+      {validations: [validation], contracts: [], files: [...files.keys()].sort()}, world);
+  } catch (e) { return {infrastructure: clip(e?.message || e)}; }
+  finally { await box.close(); }
+  const r = world.results.get(validation.id);
+  if (!r) return {ungraded: `the grader's session gave no result for the benchmark's tests (it ran ${box.commands} command(s) and ended ${out.end ? 'with done' : out.reason})`};
+  return r.passed ? {passed: true, detail: ''} : {passed: false, detail: r.observed};
 }
 
 // ---------------------------------------------------------------- /api/bench

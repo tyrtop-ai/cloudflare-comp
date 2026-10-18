@@ -135,46 +135,6 @@ const verdict = (code, word, detail) => { process.stderr.write('\nBenchHarnessEr
 })();
 `;
 
-// Any other language: the tests run after the solution, as the benchmark
-// runs them (MultiPL-E appends its tests to the program). The harness walks
-// the bundle for the files the box runs (RUNS: the command for each
-// extension, from the toolchain rows) that name the entry (every such file
-// when the task gives none). For each in turn it writes, beside it, the
-// file's text with the tests after it, and runs that with the file's
-// command, its output on stderr. It exits 0 once a run exits 0; 1 when
-// every run failed, 3 when no file is there to run.
-const AFTER = String.raw`// Benchmark harness, written by the runtime. See src/bench-harness.js.
-'use strict';
-const fs = require('fs'), p = require('path'), cp = require('child_process');
-const ENTRY = __ENTRY__, RUNS = __RUNS__, TESTS = __TESTS_FILE__;
-const verdict = (code, word, detail) => { process.stderr.write('\nBenchHarnessError: ' + word + (detail ? ': ' + detail : '') + '\n'); process.exit(code); };
-function main() {
-  const tests = fs.existsSync(TESTS) ? fs.readFileSync(TESTS, 'utf8') : '';
-  const word = ENTRY ? new RegExp('(^|[^\\w$])' + ENTRY.replace(/[$.*+?^{}()|[\]\\]/g, '\\$&') + '(?![\\w$])') : null;
-  const found = [];
-  const walk = d => { for (const e of fs.readdirSync(d, {withFileTypes: true}).sort((a, b) => a.name < b.name ? -1 : 1)) {
-    const f = p.join(d, e.name);
-    if (e.isDirectory()) { if (!e.name.startsWith('.') && e.name !== 'node_modules') walk(f); }
-    else if (e.isFile() && Object.hasOwn(RUNS, p.extname(e.name).toLowerCase()) && (!word || word.test(fs.readFileSync(f, 'utf8')))) found.push(f);
-  } };
-  walk('.');
-  if (!found.length) verdict(3, 'no_module', 'no ' + Object.keys(RUNS).join(', ') + ' file' + (ENTRY ? ' names ' + ENTRY : ' is in the bundle'));
-  const failed = [];
-  for (const f of found) {
-    const ext = p.extname(f).toLowerCase(), target = p.join(p.dirname(f), 'bench_graded' + ext);
-    fs.writeFileSync(target, fs.readFileSync(f, 'utf8') + '\n' + tests);
-    const argv = RUNS[ext].map(x => x === '{path}' ? target : x);
-    process.stderr.write('--- ' + f + ' with the tests after it: ' + argv.join(' ') + '\n');
-    const r = cp.spawnSync(argv[0], argv.slice(1), {stdio: ['ignore', 2, 2]});
-    try { fs.unlinkSync(target); } catch (e) {}
-    if (r.status === 0 && !r.signal && !r.error) process.exit(0);
-    failed.push(f + ': ' + (r.error ? argv[0] + ' could not start (' + r.error.message + ')' : 'exit ' + r.status + (r.signal ? ', ' + r.signal : '')));
-  }
-  verdict(1, 'failed', 'the tests failed after ' + failed.join('; '));
-}
-main();
-`;
-
 // files: the grader's input-file names.
 export function pythonHarness({entry, callCheck = true, files}) {
   const py = v => JSON.stringify(v); // a JSON string is a valid Python str literal for these values
@@ -182,8 +142,4 @@ export function pythonHarness({entry, callCheck = true, files}) {
 }
 export function javascriptHarness({entry, files}) {
   return fill(JS, {ENTRY: JSON.stringify(entry), TESTS_FILE: JSON.stringify(files.tests)});
-}
-// runs: {'.rb': ['ruby', '{path}'], ...}. entry: a name, or null.
-export function testsAfterHarness({entry = null, runs, files}) {
-  return fill(AFTER, {ENTRY: JSON.stringify(entry || null), RUNS: JSON.stringify(runs), TESTS_FILE: JSON.stringify(files.tests)});
 }

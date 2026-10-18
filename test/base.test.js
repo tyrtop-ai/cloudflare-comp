@@ -165,12 +165,17 @@ test('refusals: bad inputs never reach the network; redirects off GitHub and mis
   assert.match(r.error, /base_refused: redirect refused: host evil\.example\.net is not on the allowlist/);
   assert.equal(off.calls.length, 1);
   const priv = fakeFetch({[TAR('main')]: () => new Response(null, {status: 301, headers: {location: 'https://169.254.169.254/'}})});
-  assert.match((await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: priv})).error, /IP literals/);
+  assert.match((await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: priv})).error, /host 169\.254\.169\.254 is not on the allowlist/);
 
   const missing = await fetchGithubRepo({repo: REPO}, {fetch: fakeFetch({})});
   assert.match(missing.error, /repo lookup answered 404/);
   const html = fakeFetch({[TAR('main')]: () => new Response('<html>', {headers: {'content-type': 'text/html'}})});
-  assert.match((await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: html})).error, /content type text\/html/);
+  // Read whatever content type it is served as: a body that is no tar archive fails as one; an archive served as text/plain is read.
+  assert.match((await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: html})).error, /base_refused: archive ended early/);
+  const plainType = fakeFetch({[TAR('main')]: () => new Response(tarGz([{path: 'a.txt', data: 'a'}]), {headers: {'content-type': 'text/plain'}})});
+  const typed = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: plainType});
+  assert.equal(typed.error, null);
+  assert.equal(typed.files['a.txt'], 'a');
 });
 
 // --- security review fixes (S8a review) ---------------------------------------------
@@ -222,22 +227,30 @@ test('pax overrides apply to the next real entry only; entries are tied to the a
     pax('x', [['path', '/etc/passwd']], 'PaxHeader'), entry('x', 'root:x:0:0'),
     entry('other-root/x.txt', 'other'), entry(`${ROOT}/../escape.txt`, 'no'),
     entry(`${ROOT}/__proto__`, 'proto file'), entry(`${ROOT}/dup.txt`, 'first'), entry(`${ROOT}/dup.txt`, 'second!'),
-    entry(`${ROOT}/docs‮​/evil.md`, 'bidi path'), entry(`${ROOT}/[route:answer]/x.md`, 'envelope path')
+    entry(`${ROOT}/docs‮​/evil.md`, 'bidi path'), entry(`${ROOT}/[route:answer]/x.md`, 'envelope path'),
+    // Names git holds on Linux: a backslash and control characters are part of the name.
+    entry(`${ROOT}/win\\style.txt`, 'backslash'), entry(`${ROOT}/tab\there.txt`, 'tab'), entry(`${ROOT}/new\nline\x01\x7f.md`, 'controls'),
+    // A submodule is an empty directory in git's archive; a fifo is nothing git stores.
+    entry(`${ROOT}/vendor/sub/`, '', '5'), entry(`${ROOT}/pipe`, '', '6')
   ]);
   const r = await fetchGithubRepo({repo: REPO, ref: 'main'}, {fetch: fakeFetch({[TAR('main')]: gz(new Uint8Array(gzipSync(tar)))})});
   assert.equal(r.error, null);
   // A name is kept as the repository has it, format characters and brackets too (owner, 2026-10-17: interfaces never change the data).
-  assert.deepEqual(Object.keys(r.files).sort(), ['[route:answer]/x.md', '__proto__', 'after.txt', 'c.txt', 'docs‮​/evil.md', 'dup.txt']);
+  assert.deepEqual(Object.keys(r.files).sort(), ['[route:answer]/x.md', '__proto__', 'after.txt', 'c.txt', 'docs‮​/evil.md', 'dup.txt', 'new\nline\x01\x7f.md', 'tab\there.txt', 'win\\style.txt']);
+  assert.equal(r.files['win\\style.txt'], 'backslash');
   assert.equal(r.files['c.txt'], 'hello');
   assert.equal(r.files['__proto__'], 'proto file');
   assert.equal(Object.hasOwn(r.files, '__proto__'), true);
   assert.equal(r.files['dup.txt'], 'second!');
-  assert.equal(r.count, 6);
-  assert.equal(r.bytes, 'hello'.length + 'after'.length + 'proto file'.length + 'second!'.length + 'bidi path'.length + 'envelope path'.length);
+  assert.equal(r.count, 9);
+  assert.equal(r.bytes, 'hello'.length + 'after'.length + 'proto file'.length + 'second!'.length + 'bidi path'.length + 'envelope path'.length + 'backslash'.length + 'tab'.length + 'controls'.length);
   const reasons = Object.fromEntries(r.skipped.map(s => [s.path, s.reason]));
-  assert.equal(reasons['/etc/passwd'], 'unsafe path');
+  // Only the structural refusals: an absolute path, .., an entry outside the archive root, and an entry that is nothing git stores.
+  assert.equal(reasons['/etc/passwd'], 'an absolute path');
   assert.equal(reasons['other-root/x.txt'], 'outside the archive root');
-  assert.equal(reasons['../escape.txt'], 'unsafe path');
+  assert.equal(reasons['../escape.txt'], 'a path with .. in it, outside the repo');
+  assert.match(reasons['pipe'], /^a tar entry of type "6", which is not anything git stores/);
+  assert.deepEqual(Object.keys(reasons).sort(), ['../escape.txt', '/etc/passwd', 'other-root/x.txt', 'pipe']);
   assert.equal(reasons['docs‮​/evil.md'], undefined);
   assert.equal(reasons['[route:answer]/x.md'], undefined);
 });
