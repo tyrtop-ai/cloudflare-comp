@@ -2294,3 +2294,9 @@ yeah remove the pre grade for now. flat remove it because it's gonna hurt more t
 ````text
 divisions should always go to clef? always?
 ````
+
+## 2026-10-18 02:44
+
+````text
+why are you runnign this again?
+````
