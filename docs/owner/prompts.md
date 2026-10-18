@@ -2300,3 +2300,15 @@ divisions should always go to clef? always?
 ````text
 why are you runnign this again?
 ````
+
+## 2026-10-18 02:45
+
+````text
+these feel like questions I've asked before
+````
+
+## 2026-10-18 02:45 (sent while Claude was working)
+
+````text
+give me a summary of what has been changed, architecturally, or removed, by the red team
+````
