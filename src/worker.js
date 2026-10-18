@@ -12,7 +12,6 @@
 // system reads it (rootedPath): '..' from the top is the top, so no path
 // reaches past them.
 import { rootedPath } from '../container/build-path.mjs';
-import { unheldPath } from './validations.js';
 import { session } from './session.js';
 import { runArgs } from './box-session.js';
 import { systemPrompt, TOOLS, MESSAGES } from './prompts.js';
@@ -59,8 +58,6 @@ async function writeFile(w, a) {
   const path = placeOf(a);
   if (!path) return {error: 'path is the text of a relative path'};
   if (!isText(a.content)) return {error: 'content is the complete text of the file'};
-  const unheld = unheldPath(path);
-  if (unheld) return {error: unheld};
   if (w.files.get(path) === a.content) { w.unchanged.push(path); return {unchanged: path, says: MESSAGES.unchanged({path})}; }
   await w.write(path, a.content);
   w.files.set(path, a.content);

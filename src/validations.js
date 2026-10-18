@@ -15,9 +15,7 @@
 // that is not one of the forms is refused, with why.
 // No room, no model.
 import { kindOf } from './contracts.js';
-import { isPath } from './protocol.js';
 import { rootedPath } from '../container/build-path.mjs';
-import { MESSAGES } from './prompts.js';
 
 export const VALIDATION_KINDS = Object.freeze(['file', 'judge', 'command', 'call', 'http', 'browser']);
 export const EXAMPLES_PER_CONTRACT = 3;
@@ -37,13 +35,6 @@ const argvOf = (v, what) => Array.isArray(v) && v.length && v.every(a => typeof 
 // or quoted (JSON) when it is empty or holds a space, a quote or a backslash.
 export const commandLine = argv => (Array.isArray(argv) ? argv : []).map(a => /^[^\s"'\\]+$/.test(a) ? a : JSON.stringify(a)).join(' ');
 
-// ------------------------------------------------------------ paths
-// Why the files cannot hold a file at a plain relative path (rootedPath's), or
-// '': a .git folder, which git keeps for its own records, so no commit holds a
-// file there; or a name over 255 characters or a path over 512, which the
-// room's file store refuses (src/artifact-store.js isPath, which putFile and
-// the ZIP and GitHub exports share with v7).
-export const unheldPath = path => path.split('/').some(x => x.toLowerCase() === '.git') ? MESSAGES.records_folder({path}) : isPath(path) ? '' : MESSAGES.too_long({path});
 
 // ------------------------------------------------------------ one check
 // The fields each kind of check has, and each step and expectation.

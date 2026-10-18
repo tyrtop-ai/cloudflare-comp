@@ -20,7 +20,7 @@ import {textHash} from '../src/piece.js';
 const trail = room => events(room).slice(-16).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 220)}`).join('\n');
 
 // ------------------------------------------------------------ each function's results
-test('the worker\'s functions: each stores exactly what it is given or says exactly why it cannot; a path names a place among its files, and one its files cannot hold (in .git, the folder git keeps for its own records, or longer than the file store holds) is refused with why; an identical write says so plainly; done and wait end the turn with the summary given', async () => {
+test('the worker\'s functions: each stores exactly what it is given or says exactly why it cannot; a path names a place among its files, any path (no path rule); an identical write says so plainly; done and wait end the turn with the summary given', async () => {
   const stored = [], world = workerWorld({files: new Map([['convert.js', 'old\n']]), write: async (path, content) => { stored.push([path, content]); },
     box: {run: async (argv, stdin) => ({exit: 0, stdout: `ran ${argv.join(' ')} on ${JSON.stringify(stdin)}`, stderr: '', timed_out: false}), write: async () => ''},
     ask: async a => ({sent: true, says: MESSAGES.ask_sent(), seen: a})});
@@ -41,14 +41,12 @@ test('the worker\'s functions: each stores exactly what it is given or says exac
     assert.deepEqual((await call('write_file', {path, content: `x ${at}`})).result, {written: at, characters: `x ${at}`.length}, path);
   assert.deepEqual((await call('read_file', {path: './memory/../memory/notes.md'})).result, {path: 'memory/notes.md', content: 'x memory/notes.md'});
   assert.deepEqual((await call('read_file', {path: '../../other.js'})).result.error, `You have no file other.js. Your files: ${[...world.files.keys()].sort().join(', ')}.`);
-  // The repository's own records folder holds no file of the worker's: the result says so, and nothing is stored.
-  assert.deepEqual((await call('write_file', {path: '.git/config', content: 'x'})).result, {error: '.git/config is in the folder a repository keeps for its own records, outside the files.'});
-  // A name over 255 characters or a path over 512 is more than the store that keeps the files holds (src/artifact-store.js isPath): the result says that bound, and nothing is stored.
+  // No path rule (owner, 2026-10-16 05:39): a .git folder or a long name is written as given.
   const long = `${'d'.repeat(256)}.md`;
-  assert.deepEqual((await call('write_file', {path: long, content: 'x'})).result, {error: `${long} is longer than the store that keeps the files holds: a name of up to 255 characters, in a path of up to 512.`});
+  for (const path of ['.git/config', long]) assert.deepEqual((await call('write_file', {path, content: 'x'})).result, {written: path, characters: 1}, path);
   assert.deepEqual((await call('write_file', {path: '/', content: 'x'})).result, {error: 'path is the text of a relative path'}, 'the top of its files is no file');
   assert.deepEqual((await call('write_file', {path: 'a.js'})).result, {error: 'content is the complete text of the file'});
-  assert.deepEqual(stored.map(([p]) => p), ['convert.js', 'up.js', 'abs.js', 'lib/x.js', 'a b.js', 'caf\u00e9+@x.md', '.env', 'memory/notes.md', 'components/Button.js', 'glue/index.js', '.recursive/RUN.md'], 'each write that changed something was stored, at the place it names');
+  assert.deepEqual(stored.map(([p]) => p), ['convert.js', 'up.js', 'abs.js', 'lib/x.js', 'a b.js', 'caf\u00e9+@x.md', '.env', 'memory/notes.md', 'components/Button.js', 'glue/index.js', '.recursive/RUN.md', '.git/config', long], 'each write that changed something was stored, at the place it names');
   assert.deepEqual([world.written[0], world.unchanged], ['convert.js', ['convert.js']]);
   // run and ask: what the box and the room answer, as they answer it.
   assert.deepEqual((await call('run', {argv: ['node', 'convert.js', '1'], stdin: 'x'})).result, {exit: 0, stdout: 'ran node convert.js 1 on "x"', stderr: '', timed_out: false});
@@ -131,7 +129,7 @@ test('a worker reads each contract\'s run as the splitter stated it: its command
 });
 
 // ------------------------------------------------------------ a worker's world is its own files
-test('a worker\'s files are its own repository, every path in it: a folder the runtime once kept, a name with a space, a dotfile, each is written, reaches its box and ships; a level places a file in any folder; none of these paths is refused or lectured (only a path in .git, or one longer than the file store holds, is refused)', async () => {
+test('a worker\'s files are its own repository, every path in it: a folder the runtime once kept, a name with a space, a dotfile, each is written, reaches its box and ships; a level places a file in any folder; none of these paths is refused or lectured', async () => {
   const NOTES = {name: 'memory/NOTES.md', kind: 'doc', path: 'memory/NOTES.md', does: 'notes on the units'};
   const level = {contracts: [CONVERT, NOTES], validations: [...CLI_LEVEL.validations, {id: 'd', serves: ['memory/NOTES.md'], check: {kind: 'file', path: 'memory/NOTES.md', has: ['# Units']}}], pieces: []};
   const leaf = (_u, _n, _s, {round}) => round === 1 ? [

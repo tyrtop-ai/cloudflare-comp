@@ -10,7 +10,7 @@
 // written: the room's review(level), called by done, and a NO is done's
 // result in the same session, which goes on with everything it declared.
 import { normalizeContract, kindOf, nameError, PLACED_KINDS, PATH_NAMED, CONTRACT_KINDS } from './contracts.js';
-import { readCheck, CHECK_FIELDS, runOf, unheldPath, ownExamples, checkExamples, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
+import { readCheck, CHECK_FIELDS, runOf, ownExamples, checkExamples, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
 import { rootedPath } from '../container/build-path.mjs';
 import { session } from './session.js';
 import { systemPrompt, TOOLS, CHECK_TOOL_KINDS } from './prompts.js';
@@ -84,8 +84,6 @@ function contract(s, a) {
   if (s.contracts.some(c => c.name === name)) return {error: `"${name}" is already declared`};
   if (s.have.some(c => c.name === name)) return {error: `"${name}" is already declared: it is a contract your level already has`};
   if ((PLACED_KINDS.has(kind) || kind === 'function') && !path) return {error: `a ${kind} contract needs the relative path of its file`};
-  const unheld = path ? unheldPath(path) : '';
-  if (unheld) return {error: unheld};
   // A function's name is stored as written; the other kinds' names are their kind's (a route a method and a path, a placed file its path).
   const bad = kind === 'function' ? '' : nameError({name, kind, ...(path ? {path} : {})}, {v8: true});
   if (bad) return {error: bad};
