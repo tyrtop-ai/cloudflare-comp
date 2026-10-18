@@ -1,8 +1,9 @@
 // A fake Box namespace for the offline tests (capability boxes S1). Each
 // get(newUniqueId()) is the REAL Box class (src/box.js) over a fake
 // ctx.container that keeps a log of what it was started and exec'd with.
-// A session's command (env -C /work argv..., src/box-session.js) runs for
-// real on this machine, in a folder of the fake box's own that stands for
+// A session's command (env -C /work python3 -I /opt/box/hostname.py
+// box-<16 hex> -- argv..., src/box-session.js) runs its argv for real on
+// this machine (the name it was given is kept in names), in a folder of the fake box's own that stands for
 // /work, with its stdin, so a room's sessions write and run exactly what a
 // live box would be given. Box is given an env that throws on any read: a
 // box never sees a binding or a secret.
@@ -12,7 +13,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawn} from 'node:child_process';
 register('../cloudflare-loader.mjs', import.meta.url);
-const {Box, BOX_WORK, BOX_WRITER} = await import('../../src/box.js');
+const {Box, BOX_WORK, BOX_WRITER, BOX_HOSTNAME, BOX_NAME} = await import('../../src/box.js');
 // The fake boxes a session tagged (a command argument session-<hex>), by tag: a test reads what the box was given (written).
 export const SESSIONS = new Map();
 
@@ -65,7 +66,14 @@ export class FakeContainer {
     }
     const answer = this.onExec?.(argv, options, this);
     if (answer) return fakeProcess(async () => answer);
-    if (argv[0] === 'env' && argv[1] === '-C' && argv[2] === BOX_WORK && argv.length > 3) return fakeProcess(text => this.local(argv.slice(3), text));
+    if (argv[0] === 'env' && argv[1] === '-C' && argv[2] === BOX_WORK && argv.length > 3) {
+      let run = argv.slice(3);
+      if (BOX_HOSTNAME.every((a, i) => run[i] === a) && BOX_NAME.test(run[BOX_HOSTNAME.length] || '') && run[BOX_HOSTNAME.length + 1] === '--') {
+        (this.names ||= []).push(run[BOX_HOSTNAME.length]);
+        run = run.slice(BOX_HOSTNAME.length + 2);
+      }
+      return fakeProcess(text => this.local(run, text));
+    }
     return fakeProcess(() => ({exitCode: 127, stderr: `no such command in the fake box: ${argv[0]}`}));
   }
   // One command in the box's folder, as the box's exec runs it: no shell, PATH only.

@@ -7,31 +7,29 @@
 # characters a host name label may have, and Python's socket.getfqdn (which
 # http.server's HTTPServer calls when it binds) fails on it with "encoding
 # with 'idna' codec failed (UnicodeError: label too long)": no Python stdlib
-# server could start in a box.
+# server could start in a box. Every command of an agent's session runs
+# through this (src/box-session.js BOX_HOSTNAME), and so does the S0 probe's
+# hostname item.
 #
-# The box image runs as the unprivileged builder user, so this sets the name
-# the way the runner already makes its network namespaces (unshare --user):
-# a new user namespace that maps this user to itself, with its own UTS and
-# mount namespaces. Right after unshare(2) the process holds every
-# capability in the namespaces it created, so it can set their host name
-# and give them an /etc/hosts that resolves that name (127.0.1.1, as Debian
-# does) without asking any DNS server: a box has the internet off. Then it
-# execs the command, which keeps the same uid and, being no root in the
-# namespace, no capability at all: nothing it starts can change the name.
+# The command gets UTS and mount namespaces of its own, whose host name is
+# the box's name, with an /etc/hosts that resolves that name (127.0.1.1, as
+# Debian does) without asking any DNS server. A session's commands run as the
+# box's root, which may make those namespaces itself and keeps its
+# capabilities in them; its mounts are made private first, so the /etc/hosts
+# mount stays in the command's namespace. Any other user makes them inside a
+# new user namespace that maps it to itself (unshare --user). Then it execs
+# the command.
 #
-# The kernel allows this wherever unprivileged user namespaces are allowed;
-# a box's inventory reports runs_network 'off' only where they are. When
-# unshare is refused, the command still runs, under the platform's host
-# name, and BOX_HOSTNAME_STATUS says why: the runner reports it in its
-# inventory (hostname, hostname_status, getfqdn). That report is all: a
-# check that fails in such a box is filed as what it observed, like any
-# other, and nothing reclassifies it from the host name.
+# When the namespaces cannot be made, the command still runs, under the
+# platform's host name. BOX_HOSTNAME_STATUS, in the command's environment,
+# says which: 'set', or why not; the S0 probe reports it, and nothing else
+# reads it.
 import ctypes, errno, os, re, socket, sys
 
 CLONE_NEWNS = 0x00020000
 CLONE_NEWUTS = 0x04000000
 CLONE_NEWUSER = 0x10000000
-MS_RDONLY, MS_REMOUNT, MS_BIND = 0x1, 0x20, 0x1000
+MS_RDONLY, MS_REMOUNT, MS_BIND, MS_REC, MS_PRIVATE = 0x1, 0x20, 0x1000, 0x4000, 0x40000
 NAME = re.compile(r'box-[0-9a-f]{16}\Z')
 
 
@@ -77,19 +75,27 @@ def bind_hosts(libc, text):
 def enter(name):
     libc = ctypes.CDLL(None, use_errno=True)
     uid, gid, hosts = os.geteuid(), os.getegid(), hosts_text(name)
-    if libc.unshare(CLONE_NEWUSER | CLONE_NEWUTS | CLONE_NEWNS) != 0:
+    root = uid == 0
+    if libc.unshare(CLONE_NEWUTS | CLONE_NEWNS | (0 if root else CLONE_NEWUSER)) != 0:
         return 'unshare: ' + code(ctypes.get_errno())
+    private = True
     try:
-        write('/proc/self/setgroups', 'deny')
-        write('/proc/self/uid_map', f'{uid} {uid} 1\n')
-        write('/proc/self/gid_map', f'{gid} {gid} 1\n')
+        if root:
+            private = libc.mount(b'none', b'/', None, ctypes.c_ulong(MS_REC | MS_PRIVATE), None) == 0
+        else:
+            write('/proc/self/setgroups', 'deny')
+            write('/proc/self/uid_map', f'{uid} {uid} 1\n')
+            write('/proc/self/gid_map', f'{gid} {gid} 1\n')
         socket.sethostname(name)
     except OSError as e:
         return f'sethostname: {code(e.errno)}'
-    try:
-        note = bind_hosts(libc, hosts)
-    except OSError as e:
-        note = f'hosts: {code(e.errno)}'
+    if not private:
+        note = 'hosts: private mounts: ' + code(ctypes.get_errno())
+    else:
+        try:
+            note = bind_hosts(libc, hosts)
+        except OSError as e:
+            note = f'hosts: {code(e.errno)}'
     return 'set' + (f' ({note})' if note else '')
 
 

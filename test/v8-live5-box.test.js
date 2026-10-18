@@ -96,6 +96,22 @@ os.execvp(sys.argv[1], sys.argv[1:])`;
   assert.match(broken.server, /label too long/, 'and so http.server');
   const fixed = run(['python3', '-I', script, name, '--', 'python3', '-c', probe]);
   assert.deepEqual(fixed, {hostname: name, getfqdn: name, server: name, status: 'set'});
+  assert.doesNotMatch(readFileSync('/etc/hosts', 'utf8'), new RegExp(name), 'as root, its /etc/hosts stays in the command\'s own mount namespace');
+});
+
+// Owner 2026-10-16 05:08, "give boxes a hex16 name as well": every command of a session runs under its box's own name.
+test('a session runs each of its commands under its box\'s name, box-<16 hex>, through hostname.py', async () => {
+  const {boxSession} = await import('../src/box-session.js');
+  const ns = fakeBoxes(), box = freshBox(ns);
+  const s = boxSession({open: async () => ({box, opened: await box.open(SPEC, T)}), files: () => ({'a.txt': 'hi'}), totalMs: T});
+  assert.deepEqual(await s.run(['cat', 'a.txt']), {exit: 0, stdout: 'hi', stderr: '', timed_out: false});
+  await s.run(['true']);
+  const name = s.opened.name, [{container}] = ns.boxes;
+  assert.match(name, BOX_NAME);
+  assert.deepEqual(container.log.filter(l => l[0] === 'exec' && l[1].includes('--')).map(l => l[1]),
+    [['env', '-C', '/work', ...BOX_HOSTNAME, name, '--', 'cat', 'a.txt'], ['env', '-C', '/work', ...BOX_HOSTNAME, name, '--', 'true']]);
+  assert.deepEqual(container.names, [name, name]);
+  await s.close();
 });
 
 // ------------------------------------------------------------ the Box: prewarmed, then taken by one session

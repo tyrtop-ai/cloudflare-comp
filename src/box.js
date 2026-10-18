@@ -22,8 +22,8 @@
 import {DurableObject} from 'cloudflare:workers';
 import {waitForBuildOutput} from './build-executor.js';
 import {boxPathError} from '../container/build-path.mjs';
-import {BoxError, boxTimes, BOX_WORK, BOX_ROOT, sessionBoxSpec} from './box-session.js';
-export {BoxError, boxTimes, BOX_WORK, BOX_ROOT, sessionBoxSpec};
+import {BoxError, boxTimes, BOX_WORK, BOX_ROOT, BOX_HOSTNAME, sessionBoxSpec} from './box-session.js';
+export {BoxError, boxTimes, BOX_WORK, BOX_ROOT, BOX_HOSTNAME, sessionBoxSpec};
 
 export const BOX_IMAGES = Object.freeze(['check', 'browser', 'fetch']);
 // `basic` is not accepted under the durable_object policy (scheduling-policy docs).
@@ -38,11 +38,6 @@ export const BOX_COLD_MS = 5000;
 // WorkerEntrypoint that serves one fixed thing. Today only the S0 probe's
 // page and WebSocket echo (src/box-probe.js BoxProbePeer).
 export const BOX_PEERS = Object.freeze({probe: 'BoxProbePeer'});
-// v8 live 5: the platform names a box's VM with a label over 63
-// characters, on which Python's socket.getfqdn (http.server's bind) fails.
-// /opt/box/hostname.py (container/box) runs a command under the name
-// box-<16 hex> in a user namespace of its own; the S0 probe reports whether it can.
-export const BOX_HOSTNAME = Object.freeze(['python3', '-I', '/opt/box/hostname.py']);
 export const BOX_NAME = /^box-[0-9a-f]{16}$/;
 // Writes the files of a session into its folder: stdin is {files: {path:
 // text}, links: {path: target}}; each path is one the box holds (boxPathError).
