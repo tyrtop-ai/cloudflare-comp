@@ -62,7 +62,7 @@ function checkWorld(s) {
   const all = present(s), served = new Set(all.filter(c => c.run).map(c => c.name));
   return {paths: new Set([...all.map(c => c.path).filter(Boolean), ...s.base]), functions: new Set(all.filter(c => kindOf(c) === 'function').map(c => c.name)), served};
 }
-// A contract's different examples, from the validations that serve it (those held above it, and this session's): a function's, the steps that call it.
+// A contract's different examples, from the validations that serve it (those held above it, and this session's), as done counts them (ownExamples).
 const examplesOf = (s, c) => ownExamples(c, [...s.held.filter(h => (c.serves || []).includes(h.id)), ...s.validations.filter(v => v.serves.includes(c.name))]);
 
 // ------------------------------------------------------------ the functions
@@ -184,7 +184,8 @@ export function levelView(s) {
 }
 // What the level still lacks: [] when nothing. Every contract that is
 // called or run (function, command, route) has three different examples
-// from the validations that serve it (a function's, steps that call it).
+// from the validations that serve it (ownExamples: a function's, steps that
+// call it; a command's or a route's, requests, browser scenarios or command runs).
 // When piece is offered (the level may divide), the level is a division the
 // room can create now: every manager tries to split and Clef's review judges
 // every division, so a session with fewer than two pieces hears that its
@@ -196,7 +197,7 @@ export function missingOf(s) {
   const out = [];
   for (const c of levelContracts(s).filter(c => EXAMPLE_KINDS.has(kindOf(c)))) {
     const n = examplesOf(s, c).length;
-    if (n < EXAMPLES_PER_CONTRACT) out.push(`${c.name} has ${n} different example${n === 1 ? '' : 's'} of ${EXAMPLES_PER_CONTRACT} from the validations that serve it${kindOf(c) === 'function' ? ': steps that call it' : ''}.`);
+    if (n < EXAMPLES_PER_CONTRACT) out.push(`${c.name} has ${n} different example${n === 1 ? '' : 's'} of ${EXAMPLES_PER_CONTRACT} from the validations that serve it: ${kindOf(c) === 'function' ? 'steps that call it' : 'requests, browser scenarios or command runs'}.`);
   }
   const n = s.pieces.length, room = s.divide ? s.room() : 0;
   if (s.restate && n !== 1) out.push('the piece, declared with piece: its task under its label, and the contracts it delivers.');

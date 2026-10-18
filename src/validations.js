@@ -337,14 +337,21 @@ const servingOf = (contract, validations) => (validations || []).filter(v => (v?
 export function contractExamples(contract, validations) {
   return distinct(servingOf(contract, validations).flatMap(v => keyedExamples(v.check))).map(e => e.text);
 }
-// The different examples of a contract that is called or run (a function,
-// command or route). Three is the least a splitter writes (the reader counts
-// these). A function's are the steps that call it, each step naming the
-// function it calls; any other contract's are every example of the
+// The checks that request or run what they serve: an http check's requests,
+// a browser check's scenario, a command check's run.
+const REQUESTS = new Set(['http', 'browser', 'command']);
+// The different examples of a contract, as done counts them toward the three
+// a contract that is called or run owes (the owner's rule). A function's are
+// the steps that call it, each step naming the function it calls; a command's
+// or a route's are the requests, scenarios and runs of the http, browser and
+// command checks declared as serving it (a file's text or a judge's question
+// requests or runs nothing); any other contract's are every example of the
 // validations declared as serving it (contractExamples).
 export function ownExamples(contract, validations) {
-  if (kindOf(contract) !== 'function') return contractExamples(contract, validations);
-  return distinct(servingOf(contract, validations).flatMap(v => keyedExamples(v.check)).filter(e => e.call === contract.name)).map(e => e.text);
+  const kind = kindOf(contract), serving = servingOf(contract, validations);
+  if (kind === 'function') return distinct(serving.flatMap(v => keyedExamples(v.check)).filter(e => e.call === contract.name)).map(e => e.text);
+  if (kind === 'command' || kind === 'route') return distinct(serving.filter(v => REQUESTS.has(v.check?.kind)).flatMap(v => keyedExamples(v.check))).map(e => e.text);
+  return contractExamples(contract, validations);
 }
 
 // ------------------------------------------------------------ words

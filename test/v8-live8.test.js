@@ -76,11 +76,11 @@ test('replay, issue tracker: its answers as calls, in order; each mistake is a r
   assert.equal(two['validation start-server-validation-1'].error, 'the command check: stdout_has is a list of texts');
   assert.equal(two['validation start-server-validation-3'].error, 'the http check serves "start-server", which is not a declared contract that states how it runs (POST /tickets, GET /tickets, PUT /tickets/:id, DELETE /tickets/:id)');
   assert.deepEqual(['get-tickets', 'update-ticket', 'delete-ticket'].map(id => two[`validation ${id}-validation-3`].examples_so_far), [{getTickets: 3}, {updateTicket: 3}, {deleteTicket: 3}]);
-  assert.deepEqual(two.done, {complete: false, missing: [...['POST /tickets', 'GET /tickets', 'PUT /tickets/:id', 'DELETE /tickets/:id', 'start-server'].map(n => `${n} has 0 different examples of 3 from the validations that serve it.`)]});
+  assert.deepEqual(two.done, {complete: false, missing: [...['POST /tickets', 'GET /tickets', 'PUT /tickets/:id', 'DELETE /tickets/:id', 'start-server'].map(n => `${n} has 0 different examples of 3 from the validations that serve it: requests, browser scenarios or command runs.`)]});
   assert.equal(three['validation create-ticket-validation-3'].examples_so_far.createTicket, 3);
   // Its routes, each run by "start-server" as written, are stored, so done lists the three of them its failed checks left short.
   assert.deepEqual(three.done.missing, [...['getTickets', 'updateTicket', 'deleteTicket'].map(n => `${n} has 0 different examples of 3 from the validations that serve it: steps that call it.`),
-    ...['POST /tickets', 'GET /tickets', 'PUT /tickets/:id', 'start-server'].map(n => `${n} has 0 different examples of 3 from the validations that serve it.`)]);
+    ...['POST /tickets', 'GET /tickets', 'PUT /tickets/:id', 'start-server'].map(n => `${n} has 0 different examples of 3 from the validations that serve it: requests, browser scenarios or command runs.`)]);
 });
 
 // Three examples is the least a splitter writes for what is called or run, never the most a worker reads: the to-do
