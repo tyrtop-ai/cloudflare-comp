@@ -38,9 +38,11 @@ const argvOf = (v, what) => Array.isArray(v) && v.length && v.every(a => typeof 
 export const commandLine = argv => (Array.isArray(argv) ? argv : []).map(a => /^[^\s"'\\]+$/.test(a) ? a : JSON.stringify(a)).join(' ');
 
 // ------------------------------------------------------------ paths
-// Why a repository holds no file at a plain relative path (rootedPath's), or
-// '': the folder it keeps for its own records, or a name or path longer than
-// it holds (isPath, the store's own form).
+// Why the files cannot hold a file at a plain relative path (rootedPath's), or
+// '': a .git folder, which git keeps for its own records, so no commit holds a
+// file there; or a name over 255 characters or a path over 512, which the
+// room's file store refuses (src/artifact-store.js isPath, which putFile and
+// the ZIP and GitHub exports share with v7).
 export const unheldPath = path => path.split('/').some(x => x.toLowerCase() === '.git') ? MESSAGES.records_folder({path}) : isPath(path) ? '' : MESSAGES.too_long({path});
 
 // ------------------------------------------------------------ one check

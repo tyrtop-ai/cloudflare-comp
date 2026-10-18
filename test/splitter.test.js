@@ -59,6 +59,8 @@ test('contract: stored exactly as given, or refused with exactly why: a kind out
   for (const path of ['components/Button.md', 'memory/notes.md', 'glue/how.md', '.recursive/x.md'])
     assert.deepEqual(splitterCall(s, 'contract', {name: path, kind: 'doc', path, does: 'x'}).result, {stored: path, kind: 'doc'}, path);
   assert.equal(why({name: 'x.md', kind: 'doc', path: '.git/x.md', does: 'x'}), '.git/x.md is in the folder a repository keeps for its own records, outside the files.');
+  const deep = `${'d/'.repeat(260)}x.md`;
+  assert.equal(why({name: deep, kind: 'doc', path: deep, does: 'x'}), `${deep} is longer than the store that keeps the files holds: a name of up to 255 characters, in a path of up to 512.`);
   assert.equal(why({name: 'guide.md', kind: 'doc', path: 'docs/guide.md', does: 'x'}), 'doc "guide.md" must be named by its path docs/guide.md', 'no renaming');
   assert.equal(why({name: 'convert', kind: 'command', path: 'other.py', does: 'x'}), '"convert" is already declared');
   assert.equal(why({name: 'given', kind: 'doc', path: 'GIVEN.md', does: 'x'}), '"given" is already declared: it is one of the contracts you deliver');

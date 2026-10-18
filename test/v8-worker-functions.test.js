@@ -20,7 +20,7 @@ import {textHash} from '../src/piece.js';
 const trail = room => events(room).slice(-16).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 220)}`).join('\n');
 
 // ------------------------------------------------------------ each function's results
-test('the worker\'s functions: each stores exactly what it is given or says exactly why it cannot; a path names a place among its files, and one a repository holds no file at (its records folder, a name too long) is refused with why; an identical write says so plainly; done and wait end the turn with the summary given', async () => {
+test('the worker\'s functions: each stores exactly what it is given or says exactly why it cannot; a path names a place among its files, and one its files cannot hold (in .git, the folder git keeps for its own records, or longer than the file store holds) is refused with why; an identical write says so plainly; done and wait end the turn with the summary given', async () => {
   const stored = [], world = workerWorld({files: new Map([['convert.js', 'old\n']]), write: async (path, content) => { stored.push([path, content]); },
     box: {run: async (argv, stdin) => ({exit: 0, stdout: `ran ${argv.join(' ')} on ${JSON.stringify(stdin)}`, stderr: '', timed_out: false}), write: async () => ''},
     ask: async a => ({sent: true, says: MESSAGES.ask_sent(), seen: a})});
@@ -43,6 +43,9 @@ test('the worker\'s functions: each stores exactly what it is given or says exac
   assert.deepEqual((await call('read_file', {path: '../../other.js'})).result.error, `You have no file other.js. Your files: ${[...world.files.keys()].sort().join(', ')}.`);
   // The repository's own records folder holds no file of the worker's: the result says so, and nothing is stored.
   assert.deepEqual((await call('write_file', {path: '.git/config', content: 'x'})).result, {error: '.git/config is in the folder a repository keeps for its own records, outside the files.'});
+  // A name over 255 characters or a path over 512 is more than the store that keeps the files holds (src/artifact-store.js isPath): the result says that bound, and nothing is stored.
+  const long = `${'d'.repeat(256)}.md`;
+  assert.deepEqual((await call('write_file', {path: long, content: 'x'})).result, {error: `${long} is longer than the store that keeps the files holds: a name of up to 255 characters, in a path of up to 512.`});
   assert.deepEqual((await call('write_file', {path: '/', content: 'x'})).result, {error: 'path is the text of a relative path'}, 'the top of its files is no file');
   assert.deepEqual((await call('write_file', {path: 'a.js'})).result, {error: 'content is the complete text of the file'});
   assert.deepEqual(stored.map(([p]) => p), ['convert.js', 'up.js', 'abs.js', 'lib/x.js', 'a b.js', 'caf\u00e9+@x.md', '.env', 'memory/notes.md', 'components/Button.js', 'glue/index.js', '.recursive/RUN.md'], 'each write that changed something was stored, at the place it names');
@@ -128,7 +131,7 @@ test('a worker reads each contract\'s run as the splitter stated it: its command
 });
 
 // ------------------------------------------------------------ a worker's world is its own files
-test('a worker\'s files are its own repository, every path in it: a folder the runtime once kept, a name with a space, a dotfile, each is written, reaches its box and ships; a level places a file in any folder; no path rule is said', async () => {
+test('a worker\'s files are its own repository, every path in it: a folder the runtime once kept, a name with a space, a dotfile, each is written, reaches its box and ships; a level places a file in any folder; none of these paths is refused or lectured (only a path in .git, or one longer than the file store holds, is refused)', async () => {
   const NOTES = {name: 'memory/NOTES.md', kind: 'doc', path: 'memory/NOTES.md', does: 'notes on the units'};
   const level = {contracts: [CONVERT, NOTES], validations: [...CLI_LEVEL.validations, {id: 'd', serves: ['memory/NOTES.md'], check: {kind: 'file', path: 'memory/NOTES.md', has: ['# Units']}}], pieces: []};
   const leaf = (_u, _n, _s, {round}) => round === 1 ? [

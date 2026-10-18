@@ -197,9 +197,9 @@ export const MESSAGES = Object.freeze({
   ask_sent: () => 'Sent. Its answer arrives at the start of your next turn, in answers.',
   unchanged: ({path}) => `unchanged: ${path} is already exactly this text.`,
   no_file: ({path, paths}) => paths ? `You have no file ${path}. Your files: ${paths}.` : `You have no file ${path}, and no files yet.`,
-  // A place a repository holds no file at (src/validations.js unheldPath): its own records folder, or longer than it holds.
+  // A path the files cannot hold (src/validations.js unheldPath): in .git, the folder git keeps for its own records; or longer than the room's file store holds (src/artifact-store.js isPath).
   records_folder: ({path}) => `${path} is in the folder a repository keeps for its own records, outside the files.`,
-  too_long: ({path}) => `${path} is longer than a repository holds: a name of up to 255 characters, in a path of up to 512.`,
+  too_long: ({path}) => `${path} is longer than the store that keeps the files holds: a name of up to 255 characters, in a path of up to 512.`,
   // ------------------------------------------------- what the builder's functions say
   no_validation: ({id, ids}) => `There is no validation ${id}. Your validations: ${ids}.`,
   builder_no_file: ({path, paths}) => paths ? `There is no file ${path}. The files: ${paths}.` : `There is no file ${path}, and no files yet.`,

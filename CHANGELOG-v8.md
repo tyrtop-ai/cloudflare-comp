@@ -535,3 +535,7 @@ The owner, 2026-10-18: "It's not "this failed, spin up a new agent" it's "this f
 - **No pre-grade.** `CLEF.split`, `split_floor`, `gateContracts` and `gateLine` are gone; the v7 split gate is unchanged. With room for pieces, every splitter proposes a division of two or more and Clef reviews every one.
 - **Dashboard.** One splitter square per manager, its sessions in its details; the Levels panel lists the splitter sessions; Clef's model label names the review of every division.
 - **Tests.** The scripted rooms' splitter answers a NO in the same session; a scripted level with fewer than two pieces where `piece` is offered proposes a division the scripted Clef says NO to, and goes whole to one worker. Budgets of rooms whose levels now take three reviews were raised.
+
+## Round 10 of the owner's red team: path refusals
+
+- **Correction to "No path rule for agents"** (the redesign entry above). That line was wrong: a worker's `write_file` and the splitter's `contract` still refuse two kinds of path, through `unheldPath` (`src/validations.js`). A path inside `.git/` is git's own records folder, which no commit holds a file in. A name over 255 characters or a path over 512 is more than the room's file store takes (`src/artifact-store.js` `isPath`; `putFile` and the ZIP and GitHub exports refuse the same, and all of them are shared with v7). `MESSAGES.too_long` now says that limit is the store's ("longer than the store that keeps the files holds"), not a repository's. Whether v8 should hold longer paths is for the owner to rule on.
