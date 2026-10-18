@@ -139,7 +139,7 @@ test('Python temperature CLI: a wrong output fails its command validations, the 
   // The bundle keeps placed files at their own paths; a file no contract places goes under its piece's folder.
   const app=await room.appFiles();
   assert.deepEqual(app.files.map(f=>f.path),[...notesOf(room),'USAGE.md',notes,'temp.py']);
-  assert.match(app.files[0].content,/- `temp`: `python3 temp\.py`: prints the Fahrenheit value/);
+  assert.match(app.files[0].content,/- `temp` \(command, `temp\.py`\): prints the Fahrenheit value/);
   assert.deepEqual(lintRequests(room,calls),[]);
 });
 
@@ -277,7 +277,8 @@ test('runNotes: the prompt, how to run each contract, and the validation table w
   assert.match(text,/## Prompt\n\nConvert temperatures/);
   assert.match(text,/- `index\.html`: serve this folder with any static file server/);
   assert.match(text,/- `api`: `serve` \(it reads the port from `PORT`; ready at `\/health`\)/);
-  assert.match(text,/- `temp`: `python3 temp\.py`: converts/);
+  assert.match(text,/- `temp` \(command, `temp\.py`\): converts/);
+  assert.doesNotMatch(text,/python3/,'no run command from a language row');
   assert.match(text,/1 of 3 pass\. These files \(snapshot `abcdef0123456789`\) have not passed every validation as exported\./);
   assert.match(text,/\| V1 \| pass \| temp, api \| command \|/);
   assert.match(text,/\| V2 \| fail: Clef judged p=0\.20: q \\\| r \| GUIDE\.md \| judge \|/);

@@ -2,7 +2,8 @@
 // reproduced as the review's probe found it (M4 and M5, the browser
 // adapter's, went with the adapter).
 //  H2  an ask is a package's by its name, never by its need's words.
-//  M1  the language's standard library is the language's: never listed, asked for or granted.
+//  M1  no row holds a package or standard-library list of a language (owner 2026-10-17 20:39).
+//  L7  no row says how a language's packages install: the agents install in their boxes.
 //  M2  a module a run could not find is a package only by the rows, never a project-like name.
 //  L5, L7, L8, L10 as the review lists them.
 import test from 'node:test';
@@ -10,12 +11,13 @@ import assert from 'node:assert/strict';
 import { liveRoom, events, rowId } from './helpers/room.js';
 import { usualClef } from './helpers/levels.js';
 import { lintText } from './helpers/prompt-lint.js';
-import { normalizePackages, piecePackages, installedPackages, stdlibRow } from '../src/packages.js';
+import * as packages from '../src/packages.js';
+const { normalizePackages, piecePackages } = packages;
 import { MESSAGES } from '../src/prompts.js';
-import { TOOLCHAINS } from '../src/toolchains.js';
+import { TOOLCHAINS, COMPILE_ROWS } from '../src/toolchains.js';
 
 // ------------------------------------------------------------ packages
-const PYTEST = {name: 'pytest', language: 'python', provides: 'tests'};
+const PYTEST = {name: 'pytest', provides: 'tests'};
 const TOP = await rowId('v714-test', 1, 'manager');
 const BACKEND = await rowId(TOP, 1, 'manager');
 const SERVER = await rowId(BACKEND, 1, 'worker');
@@ -44,7 +46,7 @@ test('H2 (owner, 2026-10-16 20:43): a worker\'s ask by any name its world does n
 });
 
 test('H2: the manager is the interface for what exists: a package its row holds, or the name asked for granted new, is one of its functions on an ask (grant), at every depth; Clef scores it, and a grant is listed on the asker\'s whole line; a manager whose grants Clef finds give nothing hands the ask up', async () => {
-  const REQUESTS = {name: 'requests', language: 'python', provides: 'HTTP client'};
+  const REQUESTS = {name: 'requests', provides: 'HTTP client'};
   // Clef: a package a row holds gives the need; of the names granted new (each by its name: the runtime knows no language), only flask does.
   const grantP = (key, state) => { const o = state.packages_offered?.[Number(key.split('_')[1])]?.package || ''; return !/ \(new: no row lists it yet\)$/.test(o) ? 0.95 : /^flask /.test(o) ? 0.95 : 0.1; };
   const {room} = liveRoom({clef: usualClef({'^grant_\\d+$': grantP, '^ask_parent$': 0.6})});
@@ -76,27 +78,25 @@ test('H2: the manager is the interface for what exists: a package its row holds,
   for (const id of [SERVER, BACKEND, TOP]) assert.deepEqual(room.packagesOf(id).find(p => p.name === 'flask'), {name: 'flask'}, id);
 });
 
-test('M1: the installed set and the rows\' packages hold no standard library module; its modules are row data (stdlib_provides)', () => {
-  assert.deepEqual(installedPackages().map(p => p.name), ['pytest']);
-  assert.ok(stdlibRow('http.server') && stdlibRow('node:http'));
-  assert.ok(TOOLCHAINS.every(r => !(r.packages || []).some(p => /^node:|^http\.server$/.test(p.name))));
+test('M1 (owner 2026-10-17 20:39, "language adrogenous"): no row holds a package list or a standard library\'s modules, and packages.js reads no row', () => {
+  for (const row of TOOLCHAINS) for (const f of ['packages', 'site_modules', 'stdlib_names', 'stdlib_provides', 'module_prefix']) assert.ok(!(f in row), `${row.id}.${f}`);
+  for (const f of ['installedPackages', 'installedLine', 'stdlibRow', 'inStdlib']) assert.ok(!(f in packages), f);
 });
 
-test('L5: a row lists every package it is given, in every language: no count drops one', () => {
-  const many = [...Array.from({length: 70}, (_, i) => ({name: `js${i}`, language: 'javascript'})), {name: 'pytest', language: 'python'}, {name: 'requests', language: 'python'}];
+test('L5: a row lists every package it is given, by its name: no count drops one, and no language is kept', () => {
+  const many = [...Array.from({length: 70}, (_, i) => ({name: `js${i}`, language: 'javascript'})), {name: 'pytest'}, {name: 'requests'}];
   const out = normalizePackages(many);
-  assert.equal(out.filter(p => p.language === 'javascript').length, 70);
-  assert.deepEqual(out.filter(p => p.language === 'python').map(p => p.name), ['pytest', 'requests']);
+  assert.equal(out.length, 72);
+  assert.ok(out.every(p => !('language' in p)));
   assert.equal(normalizePackages([{name: 'x', provides: 'y'.repeat(300)}])[0].provides.length, 300, 'what a package provides, whole');
 });
 
-test('L7: the module prefix is row data; each code row says how its box installs packages', () => {
-  assert.equal(stdlibRow('node:fs')?.id, 'javascript');
-  for (const row of TOOLCHAINS.filter(r => r.id !== 'text')) assert.ok(Array.isArray(row.install?.argv) && row.install.argv.includes('{packages}') && row.install.tree, row.id);
+test('L7 (owner 2026-10-17 20:39, "it can install shit"): no row says how a language\'s packages install', () => {
+  for (const row of [...TOOLCHAINS, ...COMPILE_ROWS]) assert.ok(!('install' in row), row.id);
 });
 
 test('L10: a piece holds the packages its splitter named that its parent\'s row lists, by name, nothing more; any other is asked', () => {
-  const parent = [PYTEST, {name: 'requests', language: 'python', provides: 'HTTP client'}, {name: 'express', language: 'javascript', provides: 'HTTP server'}];
+  const parent = [PYTEST, {name: 'requests', provides: 'HTTP client'}, {name: 'express', provides: 'HTTP server'}];
   const piece = {interfaces: [{name: 'app.py', kind: 'file', path: 'app.py'}]};
   assert.deepEqual(piecePackages({...piece, packages: ['express']}, parent), {packages: [parent[2]], asks: [], given: true}, 'the splitter named it and the parent lists it: the piece has it, and no package of a guessed language');
   assert.deepEqual(piecePackages({...piece, packages: ['pytest']}, parent).packages.map(p => p.name), ['pytest'], 'only what was named');
