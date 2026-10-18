@@ -54,7 +54,7 @@ const CHECK_TOOLS = [
       expect: {type: 'object', properties: {exit: {type: 'integer', description: 'Its exit code.'}, stdout: text('Its whole standard output, exactly.'), stdout_has: texts('Texts its standard output contains.'), stderr_has: texts('Texts its error output contains.'), stderr: {type: 'boolean', description: 'True when it writes to its error output.'}},
         description: 'What it observes. With none, it observes an exit of 0.'}},
       required: ['serves', 'run']}},
-  {name: 'call_check', description: 'Declares a validation that calls declared function contracts of one file, in order, in one process, each by its name as declared. Each call is one example.' + CHECK_RESULT,
+  {name: 'call_check', description: 'Declares a validation that calls declared function contracts, in order, in one process, each by its name as declared. Each call is one example.' + CHECK_RESULT,
     parameters: {type: 'object', properties: {serves: SERVES, steps: {type: 'array', description: 'The calls, in order.', items: {type: 'object', properties: {
       call: text('A declared function contract.'), args: {type: 'array', items: {type: ANY}, description: 'Its arguments, as JSON values.'}, save: text('A name later arguments read as $name for what this call returns.'),
       expect: {type: ANY, description: 'The value it returns, as a JSON value.'}, expect_has: text('A text the value it returns contains.'), throws: {type: 'boolean', description: 'True when the call throws.'}}, required: ['call']}}}, required: ['serves', 'steps']}},

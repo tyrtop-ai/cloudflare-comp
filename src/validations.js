@@ -59,9 +59,8 @@ const text = (v, what) => typeof v !== 'string' || !v.trim() ? {error: `${what} 
 
 // The world a level's checks run in: ctx.paths (the paths its contracts
 // place, and the existing project's), ctx.functions (function contract
-// names), ctx.functionPaths (name → path), ctx.served (contract names that
-// state how they run). One check, as written, held to the level's declared
-// names: {check} or {error}.
+// names), ctx.served (contract names that state how they run). One check, as
+// written, held to the level's declared names: {check} or {error}.
 export function readCheck(c, ctx) {
   if (!plain(c)) return {error: 'the check is not an object'};
   const kind = c.kind;
@@ -129,9 +128,6 @@ export function readCheck(c, ctx) {
       if (s.throws !== undefined) { if (typeof s.throws !== 'boolean') return {error: `${at}: throws is true or false`}; if (s.throws) step.throws = true; }
       steps.push(step);
     }
-    // One call check runs in one process over the one file that defines its functions.
-    const files = [...new Set(steps.map(st => ctx.functionPaths?.get(st.call)).filter(Boolean))];
-    if (files.length > 1) return {error: `the call check calls functions of different files (${files.join(', ')}); one call check runs the functions of one file`};
     return {check: {kind, steps}};
   }
   // http or browser

@@ -109,6 +109,9 @@ test('a check function: serves names declared contracts exactly (the error lists
   assert.deepEqual(splitterCall(s, 'call_check', {serves: ['had'], steps: [{call: 'had', args: [1], expect: 1}]}).result.examples_so_far, {had: 1});
   assert.deepEqual(splitterCall(s, 'call_check', {serves: ['to_f'], steps: [{call: 'to_f', args: [0], expect: 32}, {call: 'to_f', args: [100], expect: 212}]}).result,
     {id: 'v5', examples: ['to_f(0) → 32', 'to_f(0) → 32; to_f(100) → 212'], examples_so_far: {to_f: 2}});
+  // A call check of functions declared in two files (conv.py and had.py) is stored as written.
+  assert.deepEqual(splitterCall(s, 'call_check', {serves: ['to_f', 'had'], steps: [{call: 'to_f', args: [1], expect: 33.8}, {call: 'had', args: [2], expect: 2}]}).result,
+    {id: 'v6', examples: ['to_f(1) → 33.8', 'to_f(1) → 33.8; had(2) → 2'], examples_so_far: {to_f: 3, had: 2}});
   // An example is what it is: the same call written three times, or written again after other steps, is one example.
   const add = splitterState({});
   calls(add, [['contract', {name: 'add', kind: 'function', path: 'add.js', does: 'adds'}], ['contract', {name: 'reset', kind: 'function', path: 'add.js', does: 'resets'}]]);

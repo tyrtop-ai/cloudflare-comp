@@ -61,8 +61,7 @@ const present = s => [...levelContracts(s), ...s.have];
 function checkWorld(s) {
   const all = present(s);
   const served = new Set([...levelContracts(s).filter(c => c.run), ...runsOf(s.have).map(r => ({name: r.id}))].map(c => c.name));
-  return {paths: new Set([...all.map(c => c.path).filter(Boolean), ...s.base]), functions: new Set(all.filter(c => kindOf(c) === 'function').map(c => c.name)),
-    functionPaths: new Map(all.filter(c => kindOf(c) === 'function' && c.path).map(c => [c.name, c.path])), served};
+  return {paths: new Set([...all.map(c => c.path).filter(Boolean), ...s.base]), functions: new Set(all.filter(c => kindOf(c) === 'function').map(c => c.name)), served};
 }
 // A contract's different examples, from the validations that serve it (those held above it, and this session's): a function's, the steps that call it.
 const examplesOf = (s, c) => ownExamples(c, [...s.held.filter(h => (c.serves || []).includes(h.id)), ...s.validations.filter(v => v.serves.includes(c.name))]);
