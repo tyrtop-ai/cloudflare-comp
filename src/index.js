@@ -18,7 +18,6 @@ import { decompose, tooMany, vagueText, shouldSplit, scopeChildren, scopeInterfa
 import { apiMethod, coverageCheckable, gapList, gapProblem, goalOperations, goalPerformers, mappedGaps, operationMethods, plannedGaps, startMethods, untestedOperations, apiGaps, methodDescriptions, inventedAssertions, GONE_IDIOM, goalMethods, statedReturns } from './api-coverage.js';
 import { contractText, assignedPiece, fileGateError, writerPathError, deliveredFiles, productionFiles, codeFiles, codeRequired, strayDeclaration, languageNote, V7_LANGUAGES, runtimeOwned } from './code-work.js';
 import { buildPathError } from '../container/build-path.mjs';
-import { toolchainOf, TOOLCHAINS, installed as installedRows } from './toolchains.js';
 // v8 S9: amendments and the prompt queue.
 import { effectiveGoal, goalView, promptText, reorderError } from './amend.js';
 import { statusEntry, runNotes, checkLimitsOf, DEFAULT_CHECK_SECONDS } from './checks.js';
@@ -290,8 +289,6 @@ export const LEVEL_FILE = 'level.json', LEVELS_DIR = '.recursive/levels';
 const levelShape = l => !!l && typeof l === 'object' && ['contracts','children','validations','archived'].every(k => Array.isArray(l[k]));
 // v8: what a room records at its opening, so a room made before level files is told apart (earlierRoom).
 const LEVELS_FORMAT = 'level/1';
-// v8: the code languages of contracts: the toolchain rows of the paths they place.
-const contractLanguages = contracts => [...new Set((contracts||[]).map(c=>c?.path?toolchainOf(c.path):null).filter(r=>r&&r.id!=='text'&&(r.executables||[]).length).map(r=>r.id))];
 // The agent models the dashboard offers: the Qwen3 hybrid (default), four
 // that answer without reasoning (Llama 4 Scout, Qwen2.5 Coder, DeepSeek V4
 // Flash with its reasoning off, Mistral Small 3.1), and two comparisons.
@@ -569,16 +566,10 @@ export class ControlRoom extends DurableObject {
   v8() { return this.live() && this.settings().pipeline==='v8'; }
   // How a stored contract row is read: under v8 with its kind, path and serves.
   contractOpts() { return this.v8()?{v8:true,serves:true}:{}; }
-  // The facts contract name rules read under v8 (§2.2): the toolchain rows and the languages the levels' contracts are written in.
-  contractFacts() { return {rows:this.installedToolchains(),languages:this.v8()?contractLanguages(this.treeContracts()):[]}; }
-  // The languages a code piece delivers in: v7 links and runs JavaScript;
-  // under v8 those of the levels' contracts (their paths' code rows), or,
-  // with none stated yet, every installed code toolchain.
-  languages() {
-    if(!this.v8())return V7_LANGUAGES;
-    const own=contractLanguages(this.treeContracts());
-    return own.length?own:this.installedToolchains().filter(r=>r.id!=='text'&&(r.executables||[]).length).map(r=>r.id);
-  }
+  // v7: the languages a code piece delivers in (v7 links and runs
+  // JavaScript). Only v7's turns read it; v8 reads no language (owner,
+  // 2026-10-17 20:39: "The runtime should be language adrogenous").
+  languages() { return V7_LANGUAGES; }
   // v8 S8b: the room's inputs beside its prompts (src/room-inputs.js). The
   // fetch a prompt's links (the start prompt's, an Adjust now change's or a
   // queued prompt's) and a base repo are read with: the runtime's own, with
@@ -671,11 +662,6 @@ export class ControlRoom extends DurableObject {
   referenceLine(name) { return `const { ${name} } = require('./${name}');`; }
   // The path of an agent's one placed contract, for the single-fence fallback (§3.2), or null.
   placedPath(id) {const p=this.designOf(id).contracts.filter(c=>PLACED_KINDS.has(contractKind(c))&&c.path);return p.length===1?p[0].path:null;}
-  // The toolchain rows this deployment runs: a room's saved box inventory
-  // (meta toolchain_inventory, which the check runner recorded before the
-  // compiler agent; nothing records it now), else every row of the phase-1
-  // image (src/toolchains.js).
-  installedToolchains() { const inv=this.read('toolchain_inventory',null); return inv?installedRows(inv):[...TOOLCHAINS]; }
   // v7, live 4: one prompt handler (see HANDLER_PREFIX), spawned for the
   // goal: it creates Root's row with the promise it is given and ends.
   async handPrompt({prompt='', task='', interfaces=[]}={}) {
@@ -5714,9 +5700,6 @@ export class ControlRoom extends DurableObject {
     // (a generic name, create or get, is never read here), the performers
     // start() returns (v7.15.5), its uses, and whether it is itself the
     // store (review: a piece promising a storage function keeps the data).
-    // v8 (S3, §3.4): the done rule per contract kind. A placed file, a
-    // command, a route or another row's function is read by kindCheck; a
-    // JavaScript function keeps contractCheck's full rules below.
     const byKind=[],checked=[];
     checked.push(...promised);
     const names=checked.map(f=>f.name),elsewhere=this.planned()?this.promisedElsewhere(id):new Map(),foreign=new Map([...elsewhere].filter(([n])=>!GENERIC_NAMES.has(n)));
@@ -8153,8 +8136,6 @@ export class ControlRoom extends DurableObject {
     for(const level of [...new Set(validations.map(v=>v.level))])for(const c of this.levelDesign(level)?.contracts||[])if(!seen.has(c.name)){seen.add(c.name);contracts.push(c);}
     return {contracts,validations};
   }
-  // Every contract of the tree's levels, for the facts reading names and languages.
-  treeContracts() { return this.levelManagers().flatMap(id=>this.levelDesign(id)?.contracts||[]); }
   // The names a row may call (its assignment's calls), each as the nearest level above it defines it.
   callableOf(id) { return this.namedContracts(this.agentAbove(id),this.assignmentOf(id).calls); }
   // Each name as the nearest level file from row `from` up defines it.

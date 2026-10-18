@@ -566,7 +566,6 @@ test('start() keeps every self host it is given, however many', async () => {
 });
 
 // ============================================================ S8b review
-const {contractErrors} = await import('../src/contracts.js');
 const {packagePath, partsRoot} = await import('../src/assembly.js');
 const {zipFiles, fromBase64} = await import('../src/zip.js');
 const {exportToGitHub, githubExportOptions} = await import('../src/github-export.js');
@@ -630,13 +629,12 @@ test('S8b review M2: a base holding components/ moves the pieces\' folder to rcp
   for (const [p, t] of Object.entries(files)) assert.equal(bundle.get(p), t, `the base file ${p} stays`);
   assert.equal(bundle.get(packagePath(w.label, 'helper.js', w.id, 'rcp_parts')), 'module.exports = "piece";\n');
   assert.equal(partsRoot(['rcp_parts/x', 'Components/y']), 'rcp_parts_2');
-  // No path rule: a contract places its file at the path it names, the parts root and another case of a base file too.
-  const facts = {...room.contractFacts()};
-  const errs = list => contractErrors([{label: 'P', task: 'x', interfaces: list}], [], {facts}).map(e => e.text);
-  for (const path of ['components/Button.js', 'components/button.js', 'rcp_parts/x.md'])
-    assert.deepEqual(errs([{name: path, kind: path.endsWith('.md') ? 'doc' : 'file', path, does: 'x'}]), [], path);
-  // The splitter's contract function answers the same: stored.
+  // No path rule: the splitter's contract function stores a contract at the path it names, the parts root and another case of a base file too.
   const stated = c => splitterCall(splitterState({base: ['README.md', 'components/Button.js']}), 'contract', c).result;
+  for (const path of ['components/button.js', 'rcp_parts/x.md']) {
+    const kind = path.endsWith('.md') ? 'doc' : 'file';
+    assert.deepEqual(stated({name: path, kind, path, does: 'x'}), {stored: path, kind}, path);
+  }
   assert.deepEqual(stated({name: 'components/Button.js', kind: 'file', path: 'components/Button.js', does: 'the button'}), {stored: 'components/Button.js', kind: 'file'});
   assert.deepEqual(stated({name: 'readme.md', kind: 'doc', path: 'readme.md', does: 'x'}), {stored: 'readme.md', kind: 'doc'});
 });
