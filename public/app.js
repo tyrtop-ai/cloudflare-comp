@@ -37,7 +37,7 @@ const SQUARE=new Set(['reader','splitter','builder','compiler']);
 const idOrder=(a,b)=>{if(a.seq!=null&&b.seq!=null)return a.seq-b.seq;const x=a.id.split('.').map(Number),y=b.id.split('.').map(Number);for(let i=0;i<Math.max(x.length,y.length);i++)if((x[i]??-1)!==(y[i]??-1))return (x[i]??-1)-(y[i]??-1);return 0;};
 // A row's depth: a v8 row's depth column, a v7 row's dotted id.
 const depthOf=n=>n.depth??n.id.split('.').length-1;
-// A manager's children in the order the level runs: its splitter steps, the pieces, its builder, its compiler.
+// A manager's children in the order the level runs: its splitter (one per manager, its sessions), the pieces, its builder, its compiler.
 const stage=n=>isReader(n)||isSplitter(n)?0:isBuilder(n)?2:isCompiler(n)?3:1;
 function treeIndex(agents) {
   const kids=new Map(),byId=new Map(agents.map(n=>[n.id,n]));
@@ -347,7 +347,7 @@ function treeSvg(agents) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif"><rect width="100%" height="100%" fill="${C.bg}"/><g stroke="${C.line}" stroke-width="1.2">${lines}</g><g font-size="9" fill="${C.muted}" text-anchor="middle">${shapes}</g></svg>`;
 }
 // v7: the prompt handlers above the top, each open or ended (a v8 room has
-// none: the room creates its manager, whose splitter steps are its nodes).
+// none: the room creates its manager, whose one splitter, with its sessions, is its node).
 function stepsMarkup(s) {
   const hs=s?.prompt_handlers||[];
   if(!hs.length)return '';
@@ -660,9 +660,9 @@ const shortModel=m=>String(m||'').split('/').pop();
 let benchRun='',benchData=null,benchList=[],benchCompare=null,benchFileName='',benchSlots=0;
 const benchOutcome=t=>t.outcome||(t.status==='running'?'running':'queued');
 // pass@1 is each task's first grading, over the scored tasks only: pass ÷
-// (pass + fail). Errors (a room that could not run, an observer's stop) are
-// left out; a grading that could not run settles nothing and is graded again
-// until it observes.
+// (pass + fail). Errors (a room that could not run, an observer's stop, a
+// grading that gave no grade) are left out; a grading that could not run
+// settles nothing and is graded again until it observes.
 // Until done is the pass rate once the grader's failures went back to the
 // rooms, and the mean gradings it took.
 const SCORED_NOTE='pass@1 = first gradings passed ÷ scored tasks (pass + fail); errors (a room that could not run, an observer\'s stop, a grading that gave no grade) are not scored; a grading that could not run is graded again until it observes';

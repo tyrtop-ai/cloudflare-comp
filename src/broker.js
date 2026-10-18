@@ -1,6 +1,7 @@
 // Capability boxes S5 (design/next/capability-boxes.md §5): the broker's
 // pure parts. The broker is what a v8 worker's ask function returns for a
-// name its own world holds: a chunk of a page the goal links to, or a file
+// name its own world holds: a chunk of a page a prompt the room took links
+// to (the start prompt, an Adjust now change or a queued prompt), or a file
 // of the project the run starts from. A worker reads its catalogue (the
 // view's `available`), the names it is shown, and calls ask with one. The
 // room classifies the name and answers it from what the room holds, in the
