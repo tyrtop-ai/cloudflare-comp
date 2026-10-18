@@ -2288,3 +2288,9 @@ the should be everywhere. It's not "this failed, spin up a new agent" it's "this
 
 yeah remove the pre grade for now. flat remove it because it's gonna hurt more than it'll help for now
 ````
+
+## 2026-10-18 00:11
+
+````text
+divisions should always go to clef? always?
+````
