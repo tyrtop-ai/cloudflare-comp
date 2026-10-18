@@ -14,12 +14,6 @@ const {normalizeAction,normalizeAsk,splitPieces,splitShape}=await import('../src
 const {validKnowledgeKey}=await import('../src/knowledge.js');
 const {normalizeContracts,normalizeContract,contractErrors,contractLine,nameError,inheritServes,kindOf,contractInputs,contractOutputs,textNames}=C;
 
-// Toolchain rows as data (the shape of src/toolchains.js, §4.5), trimmed to what the name rules read.
-const ROWS=[
-  {id:'javascript',extensions:['.js','.mjs','.cjs'],identifier:'^[A-Za-z_$][A-Za-z0-9_$]{0,63}$',reserved:'await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield'},
-  {id:'python',extensions:['.py'],identifier:'^[A-Za-z_][A-Za-z0-9_]{0,63}$',reserved:'False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield'},
-  {id:'text',extensions:['.md','.txt','.html','.css','.json']}];
-const PY={rows:ROWS,languages:['python','text']};
 // v8 rows as the runtime stores them (serves kept), and as a model writes them (serves dropped).
 const V8={v8:true,serves:true};
 const N=xs=>normalizeContracts(xs,V8),N1=x=>normalizeContract(x,V8);
@@ -110,17 +104,15 @@ test('S2: other kinds (v8): a file, page, doc or data contract is named by its p
   assert.deepEqual(N([{name:'README.md',kind:'doc',serves:['R1']},{name:'README.md',kind:'doc',does:'usage',serves:['R2']}]),[{name:'README.md',kind:'doc',does:'usage',params:[],path:'README.md',serves:['R1','R2']}]);
 });
 
-test('S2: name rules per kind: a function by its toolchain row (a Python reserved word, a JavaScript-only name), a route, a command with its file, a placed path',()=>{
+test('S2: name rules per kind: a function by v7\'s JavaScript rule and no other language\'s, a route, a command with its file, a placed path',()=>{
   const fn=(name,extra={})=>N1({name,...extra});
-  assert.equal(nameError(fn('count_words'),PY),'');
-  assert.equal(nameError(fn('lambda'),PY),'"lambda" is not a valid python function name (a reserved word)');
-  assert.equal(nameError(fn('$count'),PY),'"$count" is not a valid python function name');
-  assert.equal(nameError(fn('$count'),{rows:ROWS,languages:['javascript']}),'','a JavaScript name');
-  assert.equal(nameError(fn('lambda'),{rows:ROWS,languages:['javascript']}),'');
-  assert.equal(nameError(fn('lambda',{path:'app.js'}),PY),'','the function\'s path names its row');
-  assert.equal(nameError(fn('$count')),'','without facts a function name is read as JavaScript (v7)');
+  assert.equal(nameError(fn('count_words')),'');
+  assert.equal(nameError(fn('$count')),'','a function name is read as JavaScript (v7)');
+  assert.equal(nameError(fn('delete')),'"delete" is not a valid javascript function name (a reserved word)');
   assert.equal(nameError(fn('require')),'"require" is not a valid javascript function name (a reserved word)','v7\'s protected names stay JavaScript\'s');
-  assert.equal(nameError(fn('lambda'),{rows:ROWS}),'"lambda" is not a valid python function name (a reserved word)','with no language given, a name must hold in every row');
+  // Owner, 2026-10-17 20:39 ("The runtime should be language adrogenous"): no language's name rules are kept or read, whatever the path or the facts.
+  assert.equal(nameError(fn('lambda',{path:'app.py'}),{v8:true}),'','no other language\'s reserved words');
+  for(const k of ['DEFAULT_ROW','rowOfPath','functionRows','kindCheck'])assert.equal(C[k],undefined,k);
   const route=name=>nameError(N1({name,kind:'route'}));
   assert.deepEqual(['GET /items','POST /items/:id','GET /items/{id}','DELETE /','get /items','FETCH /items','GET items','GET /a b'].map(route).map(Boolean),[false,false,false,false,true,true,true,true]);
   const cmd=(name,path)=>nameError(N1({name,kind:'command',...(path?{path}:{})}));
@@ -137,18 +129,18 @@ test('S2: name rules per kind: a function by its toolchain row (a Python reserve
 
 test('S2: contractErrors: C1 by kind, C2, C4 by name and by path, C3 in contracts, C5 quoting the contract; v7 words without facts',()=>{
   const errors=contractErrors([
-    piece('CLI',{name:'convert',kind:'command',path:'cli.py'},{name:'lambda'},{name:'get /x',kind:'route'}),
+    piece('CLI',{name:'convert',kind:'command',path:'cli.py'},{name:'delete'},{name:'get /x',kind:'route'}),
     piece('Export',{name:'export',kind:'command',path:'cli.py'},{name:'example.md',kind:'doc'},{name:'foo'}),
     piece('Docs',{name:'README.md',kind:'doc'},{name:'a.md',kind:'doc'},{name:'b.md',kind:'doc'},{name:'c.md',kind:'doc'},{name:'d.md',kind:'doc'},{name:'e.md',kind:'doc'})],
-    N([{name:'guide.md',kind:'doc',does:'the user guide'}]),{facts:PY});
+    N([{name:'guide.md',kind:'doc',does:'the user guide'}]));
   assert.deepEqual(errors.map(e=>[e.check,e.path??null,e.text]),[
-    ['C1',null,'"CLI": "lambda" is not a valid python function name (a reserved word).'],
+    ['C1',null,'"CLI": "delete" is not a plain JavaScript function name; use an identifier such as createTicket.'],
     ['C1',null,'"CLI": "get /x" is not a route; name it as a method and a path, such as "GET /path".'],
     ['C2',null,'"Export": "foo" is copied from the example; name the function after what it does.'],
     ['C4','cli.py','cli.py is placed by both "CLI" and "Export"; give each file to exactly one piece.'],
     ['C3',null,'"Docs" lists 6 contracts; list at most 5, only those another piece uses or your assignment promises.'],
     ['C5',null,'Your assignment promises doc guide.md: the user guide; give it, unchanged, to exactly one piece, the one whose task writes it.']]);
-  assert.deepEqual(contractErrors([piece('One',{name:'run',kind:'command',path:'run.py'},{name:'run.py',kind:'file'})],[],{facts:PY}).map(e=>e.check),[],'one piece may place one path twice');
+  assert.deepEqual(contractErrors([piece('One',{name:'run',kind:'command',path:'run.py'},{name:'run.py',kind:'file'})]).map(e=>e.check),[],'one piece may place one path twice');
   // The same doc on two pieces is C4 by name only, never twice.
   assert.deepEqual(contractErrors([piece('A',{name:'README.md',kind:'doc'}),piece('B',{name:'README.md',kind:'doc'})]).map(e=>[e.check,e.path??null]),[['C4',null]]);
   assert.deepEqual(contractErrors([piece('Entry',{name:'create-ticket'})]).map(e=>e.text),['"Entry": "create-ticket" is not a plain JavaScript function name; use an identifier such as createTicket.']);
@@ -157,15 +149,15 @@ test('S2: contractErrors: C1 by kind, C2, C4 by name and by path, C3 in contract
   assert.deepEqual(I.repairInterfaces([piece('Docs',{name:'tools/notes.py',kind:'file'}),piece('CLI',{name:'notes',kind:'command',path:'tools/notes.py'})],[]).removed,[]);
 });
 
-test('S2: C9: a function named as the stem of a placed file in its language is an error on the piece that adds it',()=>{
-  const C9=(spawn,promised=[],facts=PY)=>contractErrors(spawn,promised,{facts}).filter(e=>e.check==='C9').map(e=>e.text);
-  assert.deepEqual(C9([piece('CLI',{name:'convert',kind:'command',path:'convert.py'}),piece('Core',{name:'convert'})]),['"Core": function convert has the name of the file convert.py; name the function differently.']);
-  assert.deepEqual(C9([piece('Core',{name:'convert',path:'lib/convert.py'}),piece('CLI',{name:'convert',kind:'command',path:'convert.py'})]),['"Core": function convert has the name of the file convert.py; name the function differently.']);
-  assert.deepEqual(C9([piece('Core',{name:'convert'}),piece('Data',{name:'convert.py',kind:'file'})],[{name:'convert',does:'',params:[]}]),['"Data": the file convert.py has the name of the function convert; place the file at another path.']);
-  assert.deepEqual(C9([piece('CLI',{name:'convert',kind:'command',path:'convert.py'}),piece('Core',{name:'convert',path:'convert.js'})]),[]);
+test('S2: C9 (v7): a function named as the stem of a placed JavaScript file is an error on the piece that adds it; no other language is read',()=>{
+  const C9=(spawn,promised=[])=>contractErrors(spawn,promised).filter(e=>e.check==='C9').map(e=>e.text);
+  assert.deepEqual(C9([piece('CLI',{name:'convert',kind:'command',path:'convert.js'}),piece('Core',{name:'convert'})]),['"Core": function convert has the name of the file convert.js; name the function differently.']);
+  assert.deepEqual(C9([piece('Core',{name:'convert',path:'lib/convert.js'}),piece('CLI',{name:'convert',kind:'command',path:'convert.mjs'})]),['"Core": function convert has the name of the file convert.mjs; name the function differently.']);
+  assert.deepEqual(C9([piece('Core',{name:'convert'}),piece('Data',{name:'convert.js',kind:'file'})],[{name:'convert',does:'',params:[]}]),['"Data": the file convert.js has the name of the function convert; place the file at another path.']);
+  assert.deepEqual(C9([piece('CLI',{name:'convert',kind:'command',path:'convert.py'}),piece('Core',{name:'convert'})]),[],'a file of another language');
   assert.deepEqual(C9([piece('Docs',{name:'convert.md',kind:'doc'}),piece('Core',{name:'convert'})]),[]);
-  assert.deepEqual(C9([piece('CLI',{name:'convert',kind:'command',path:'cli.py'}),piece('Core',{name:'convert'})]),[]);
-  assert.deepEqual(C9([piece('A',{name:'convert'}),piece('B',{name:'convert.py',kind:'file'})],[{name:'convert',does:'',params:[]},{name:'convert.py',kind:'file',does:'',params:[],path:'convert.py'}]),[]);
+  assert.deepEqual(C9([piece('CLI',{name:'convert',kind:'command',path:'cli.js'}),piece('Core',{name:'convert'})]),[]);
+  assert.deepEqual(C9([piece('A',{name:'convert'}),piece('B',{name:'convert.js',kind:'file'})],[{name:'convert',does:'',params:[]},{name:'convert.js',kind:'file',does:'',params:[],path:'convert.js'}]),[]);
 });
 
 test('S2: contractLine renders each kind on one line, and promiseText is that one renderer for any contract with a v8 field; a v7 promise reads as before',()=>{

@@ -15,7 +15,7 @@ import {boxPathError} from '../container/build-path.mjs';
 import {fromBase64} from './zip.js';
 
 export {SOURCE_CLAUSE};
-// The room's tables. sources: one row per URL of the goal, fetched or not
+// The room's tables. sources: one row per URL a prompt links, fetched or not
 // (error says why not), with its summary; source_chunks: the stored text,
 // cut as its summary cut it, so a ref S1#3 is the third chunk of S1; base_files: the
 // project the room starts from (§7.1), with each file's mode (an executable
@@ -80,7 +80,7 @@ export function normalizeBase(raw) {
 export function keepBaseFiles(entries, limits = {}) {
   const L = {...REPO_LIMITS, ...limits}, files = new Map(), modes = new Map(), passthrough = [], skipped = [];
   let bytes = 0, passBytes = 0, skipped_count = 0;
-  const skip = (path, reason) => { skipped_count++; if (skipped.length < L.maxSkipped) skipped.push({path: clip(path, 200), reason}); };
+  const skip = (path, reason) => { skipped_count++; skipped.push({path, reason}); };
   const tooLarge = `larger than one storage row holds (${L.maxFileBytes} bytes)`;
   const carry = (path, data, mode, reason) => {
     if (data.length > L.maxFileBytes) return skip(path, `${reason}; ${tooLarge}`);
@@ -130,7 +130,7 @@ export async function loadBase(base, {fetch, readApp, limits = {}} = {}) {
     if (r.error) return {error: `The repo could not be read: ${r.error}`};
     entries = [...Object.entries(r.files).map(([path, text]) => ({path, text, mode: r.modes?.[path]})), ...(r.passthrough || []).map(p => ({path: p.path, bytes: p.bytes, mode: p.mode, reason: p.reason}))];
     meta = {kind: 'repo', source: r.source, ref: r.ref, resolved_sha: r.resolved_sha, dir: r.dir, truncated: !!r.truncated,
-      fetch_skipped: r.skipped.slice(0, 50), fetch_skipped_count: r.skipped_count};
+      fetch_skipped: r.skipped, fetch_skipped_count: r.skipped_count};
   } else {
     let app;
     try { app = await readApp(base.room); } catch (e) { return {error: `The room ${base.room} could not be read: ${clip(e?.message || e, 200)}`}; }
@@ -142,19 +142,20 @@ export async function loadBase(base, {fetch, readApp, limits = {}} = {}) {
     meta = {kind: 'room', source: `room ${base.room}`, room: base.room, ref: null, resolved_sha: null, passed: !!app.passed, unverified: !app.passed, app_digest: app.digest || null, truncated: false};
   }
   const kept = keepBaseFiles(entries, limits);
-  if (!kept.files.size) return {error: `${meta.source} has no text file the room can start from${kept.skipped_count ? ` (${kept.skipped_count} skipped: ${kept.skipped.slice(0, 3).map(s => `${s.path}: ${s.reason}`).join('; ')})` : ''}`};
+  if (!kept.files.size) return {error: `${meta.source} has no text file the room can start from${kept.skipped_count ? ` (${kept.skipped_count} skipped: ${kept.skipped.map(s => `${s.path}: ${s.reason}`).join('; ')})` : ''}`};
   const digest = await sha256Bytes(utf8.encode(JSON.stringify([[...kept.files], kept.passthrough.map(p => p.path)])));
   return {files: kept.files, modes: kept.modes, passthrough: kept.passthrough,
     meta: {...meta, digest, files: kept.files.size, bytes: kept.bytes,
       passthrough: kept.passthrough.length, pass_bytes: kept.pass_bytes,
-      skipped: kept.skipped.slice(0, 50), skipped_count: kept.skipped_count}};
+      skipped: kept.skipped, skipped_count: kept.skipped_count}};
 }
 
 // --- sources ----------------------------------------------------------------
 
 // Every host this deployment answers on, from SELF_HOSTS (a comma list, e.g.
 // the custom domain beside the workers.dev host), each one as listed, so a
-// goal's link can never reach this deployment through another of its names.
+// prompt's link (the start prompt's, an Adjust now change's or a queued
+// prompt's) can never reach this deployment through another of its names.
 export const selfHostsOf = env => String(env?.SELF_HOSTS ?? '').split(/[,\s]+/).map(h => h.trim().replace(/^[a-z]+:\/\//i, '').replace(/[/?#].*$/, '')).filter(Boolean);
 
 // Fetch every URL of a prompt and summarise it. A failure never throws: its
@@ -241,8 +242,8 @@ export function chunksFor(rows, chunk, refs) {
 export function baseNotes(meta, passthrough = []) {
   if (!meta) return '';
   const lines = ['', '## The project this run started from', '', `${meta.source}${meta.ref ? ` at ${meta.ref}` : ''}${meta.resolved_sha ? ` (${meta.resolved_sha})` : ''}: ${meta.files} file(s) built and checked with the run's own.${meta.unverified ? ' That result had not passed its checks.' : ''}`];
-  if (passthrough.length) lines.push('', `Carried untouched, never built, run or checked (${passthrough.length}):`, '', ...passthrough.slice(0, 200).map(p => `- \`${p.path}\` (${p.reason})`));
+  if (passthrough.length) lines.push('', `Carried untouched, never built, run or checked (${passthrough.length}):`, '', ...passthrough.map(p => `- \`${p.path}\` (${p.reason})`));
   const gone = [...(meta.skipped || []), ...(meta.fetch_skipped || [])];
-  if (gone.length) lines.push('', `Not carried (${gone.length}${(meta.skipped_count || 0) + (meta.fetch_skipped_count || 0) > gone.length ? ' listed' : ''}):`, '', ...gone.slice(0, 100).map(p => `- \`${p.path}\` (${p.reason})`));
+  if (gone.length) lines.push('', `Not carried (${gone.length}${(meta.skipped_count || 0) + (meta.fetch_skipped_count || 0) > gone.length ? ' listed' : ''}):`, '', ...gone.map(p => `- \`${p.path}\` (${p.reason})`));
   return lines.join('\n') + '\n';
 }

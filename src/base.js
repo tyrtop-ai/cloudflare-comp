@@ -13,9 +13,9 @@ import {FetchRefused, concatBytes, fetchPolicy, guardedFetch, inputCapFor, plain
 // row (Cloudflare's limit, not this runtime's): a file larger than that
 // cannot be stored at all, and is listed as not carried.
 export const STORE_ROW_BYTES = 2_000_000 - 16 * 1024;
+// Every file not carried is listed, with why.
 export const REPO_LIMITS = Object.freeze({
-  maxFileBytes: STORE_ROW_BYTES,
-  maxSkipped: 200               // skipped entries listed; the rest are counted
+  maxFileBytes: STORE_ROW_BYTES
 });
 // Only these two hosts are ever contacted, whatever FETCH_ALLOW says.
 const GITHUB_POLICY = {allow: ['api.github.com', 'codeload.github.com']};
@@ -175,7 +175,7 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
   let root = null;
   const skip = (path, reason) => {
     out.skipped_count++;
-    if (out.skipped.length < L.maxSkipped) out.skipped.push({path, reason});
+    out.skipped.push({path, reason});
   };
   let src = null;
   try {
@@ -210,15 +210,15 @@ export async function fetchGithubRepo({repo, ref = null, dir = null} = {}, {fetc
       // Every entry must sit under the archive's single root directory
       // (<name>-<sha>/), which the first entry names.
       const raw = entry.path;
-      if (raw.startsWith('/')) return skip(clip(raw, 200), 'an absolute path');
+      if (raw.startsWith('/')) return skip(raw, 'an absolute path');
       const first = raw.split('/')[0];
       root ??= first;
-      if (!first || first !== root || first === '.' || first === '..') return skip(clip(raw, 200), 'outside the archive root');
+      if (!first || first !== root || first === '.' || first === '..') return skip(raw, 'outside the archive root');
       const rel = raw.slice(first.length + 1).replace(/\/+$/, '');
       if (!rel || (sub && !rel.startsWith(sub))) return;
       const path = rel.slice(sub.length);
       if (!path || entry.type === '5') return;
-      if (!insidePath(path)) return skip(clip(path, 200), 'a path with .. in it, outside the repo');
+      if (!insidePath(path)) return skip(path, 'a path with .. in it, outside the repo');
       const segs = path.split('/');
       const gitAt = segs.indexOf('.git');
       if (gitAt >= 0) { const d = segs.slice(0, gitAt + 1).join('/') + '/'; if (!recorded.has(d)) { recorded.add(d); skip(d, '.git dropped'); } return; }

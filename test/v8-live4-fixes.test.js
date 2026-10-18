@@ -14,7 +14,8 @@ import { lintText } from './helpers/prompt-lint.js';
 import * as packages from '../src/packages.js';
 const { normalizePackages, piecePackages } = packages;
 import { MESSAGES } from '../src/prompts.js';
-import { TOOLCHAINS, COMPILE_ROWS } from '../src/toolchains.js';
+import * as toolchains from '../src/toolchains.js';
+const { TOOLCHAINS } = toolchains;
 
 // ------------------------------------------------------------ packages
 const PYTEST = {name: 'pytest', provides: 'tests'};
@@ -92,7 +93,8 @@ test('L5: a row lists every package it is given, by its name: no count drops one
 });
 
 test('L7 (owner 2026-10-17 20:39, "it can install shit"): no row says how a language\'s packages install', () => {
-  for (const row of [...TOOLCHAINS, ...COMPILE_ROWS]) assert.ok(!('install' in row), row.id);
+  for (const row of TOOLCHAINS) assert.ok(!('install' in row), row.id);
+  assert.equal(toolchains.COMPILE_ROWS, undefined, 'and no compile row');
 });
 
 test('L10: a piece holds the packages its splitter named that its parent\'s row lists, by name, nothing more; any other is asked', () => {

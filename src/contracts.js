@@ -14,7 +14,6 @@
 // Pure: no room, no model.
 import { PROTECTED_NAMES, noValue } from './linker.js';
 import { isPath } from './protocol.js';
-import { toolchainOf, extractSurface } from './toolchains.js';
 
 export const CONTRACT_KINDS = Object.freeze(['function', 'file', 'page', 'route', 'command', 'doc', 'data']);
 const KINDS = new Set(CONTRACT_KINDS);
@@ -30,12 +29,9 @@ export const ROUTE_NAME = /^(?:GET|POST|PUT|PATCH|DELETE) \/\S*$/;
 // convert_temp, is a fine command name). A v8 command (facts.v8) is named as
 // written: its name is only the key its run is looked up by.
 export const COMMAND_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
-// The JavaScript row's identifier rule (C1 under v7). Under v8 the caller
-// passes the toolchain rows (facts.rows); without them a function name is
-// read as JavaScript, as v7 always did.
+// v7's function name rule (C1): a JavaScript identifier, not a reserved word.
 export const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
 export const RESERVED = new Set('await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield'.split(' '));
-export const DEFAULT_ROW = Object.freeze({id: 'javascript', extensions: ['.js', '.mjs', '.cjs'], identifier: IDENTIFIER.source, reserved: [...RESERVED]});
 // The prompts' example names, and stock fillers (C2).
 export const EXAMPLE = /^(?:(?:other)?functionName|fnName|name|listedName|camelCaseIdentifier|example\w*|foo|bar)$/i;
 // The splitter prompt's example does, params and returns, copied: no hint at all.
@@ -225,41 +221,18 @@ export function contractLine(c) {
 }
 
 // ------------------------------------------------------------ name rules (§2.2)
-const reservedOf = row => new Set(Array.isArray(row.reserved) ? row.reserved : String(row.reserved || '').split(/\s+/).filter(Boolean));
-const rowsWithNames = facts => (Array.isArray(facts?.rows) ? facts.rows : []).filter(r => r && typeof r.identifier === 'string');
-const extOf = p => /(\.[^./]+)$/.exec(String(p || ''))?.[1]?.toLowerCase() || '';
-// The toolchain row a path is written in (by extension), or null.
-export const rowOfPath = (path, facts) => [...rowsWithNames(facts), ...(facts?.rows ? [] : [DEFAULT_ROW])].find(r => (r.extensions || []).includes(extOf(path))) || null;
-// The rows a function contract may be implemented in: its path's row; else
-// the project's code languages (facts.language, facts.languages); else every
-// row given; else JavaScript.
-export function functionRows(c, facts = null) {
-  const rows = rowsWithNames(facts);
-  if (!rows.length) return [DEFAULT_ROW];
-  const byPath = c?.path ? rows.find(r => (r.extensions || []).includes(extOf(c.path))) : null;
-  if (byPath) return [byPath];
-  const langs = [facts.language, ...(Array.isArray(facts.languages) ? facts.languages : [])].filter(Boolean);
-  const named = rows.filter(r => langs.includes(r.id));
-  return named.length ? named : rows;
-}
-// Why a function name is not one in a row: '' when it is.
-const identifierError = (row, name) => {
-  let re;
-  try { re = new RegExp(row.identifier); } catch { re = IDENTIFIER; }
-  if (!re.test(name)) return 'identifier';
-  if (reservedOf(row).has(name)) return 'reserved';
-  if (row.id === 'javascript' && PROTECTED_NAMES.has(name)) return 'reserved';
-  return '';
-};
+// v7's function name rule: a JavaScript identifier, not a reserved or
+// protected word ('' when it is one). No language's rules are read for a v8
+// contract: the runtime knows no language (owner, 2026-10-17 20:39).
+const functionNameError = name => !IDENTIFIER.test(name) ? 'identifier' : RESERVED.has(name) || PROTECTED_NAMES.has(name) ? 'reserved' : '';
+// v7: a path of a JavaScript file (C9 reads it).
+const JS_FILE = /\.[cm]?js$/i;
 // Why a contract's name or path breaks its kind's rule, or ''.
 export function nameError(c, facts = null) {
   const kind = kindOf(c), name = String(c?.name ?? '');
   if (kind === 'function') {
-    for (const row of functionRows(c, facts)) {
-      const why = identifierError(row, name);
-      if (why) return `"${name}" is not a valid ${row.id} function name${why === 'reserved' ? ' (a reserved word)' : ''}`;
-    }
-    return '';
+    const why = functionNameError(name);
+    return why ? `"${name}" is not a valid javascript function name${why === 'reserved' ? ' (a reserved word)' : ''}` : '';
   }
   if (kind === 'route') return ROUTE_NAME.test(name) ? '' : `"${name}" is not a route; name it as a method and a path, such as "GET /path"`;
   if (kind === 'command' && !facts?.v8 && !COMMAND_NAME.test(name)) return `"${name}" is not a command name: lowercase letters, digits, hyphens and underscores, starting with a letter`;
@@ -279,10 +252,9 @@ const returnsText = f => f?.returns ? `${f.does ? ';' : ':'} returns ${f.returns
 // A promise as a C5 text quotes it (v7's form for a function).
 export const described = f => kindOf(f) === 'function' ? `${signatureOf(f)}${f.does ? ': ' + f.does : ''}${returnsText(f)}` : contractLine(f);
 
-// C1-C5 and C9, in the order the repairs run (§2.2). facts: {rows (toolchain
-// rows), language | languages}; without facts a function name is read as
-// JavaScript and C1 says so in v7's words. Promised names passed C1/C2 at the
-// parent's split, so only new names are checked.
+// C1-C5 and C9, v7's split checks, in the order the repairs run (§2.2).
+// Without facts C1 says a bad function name in v7's words. Promised names
+// passed C1/C2 at the parent's split, so only new names are checked.
 export function contractErrors(spawn, promised = [], {facts = null} = {}) {
   const own = new Set(promised.map(p => p.name)), errors = [];
   const kids = (Array.isArray(spawn) ? spawn : []).filter(c => c && typeof c === 'object');
@@ -318,13 +290,13 @@ export function contractErrors(spawn, promised = [], {facts = null} = {}) {
     const holders = kids.filter(k => namesOf(k).includes(p.name));
     if (holders.length !== 1) errors.push({label: '', name: p.name, check: 'C5', text: `Your assignment promises ${described(p)}; ${holders.length ? `${holders.map(k => `"${k.label}"`).join(' and ')} ${holders.length > 2 ? 'all' : 'both'} list it; ` : ''}give it, unchanged, to exactly one piece, the one whose task writes it.`});
   }
-  // C9: a function named as the stem of a placed file in its language (a
-  // runtime shim {name}.py would collide with that file, §5.2).
+  // C9 (v7): a function named as the stem of a placed JavaScript file (its
+  // import line, require('./{name}'), would read that file).
   const items = [...kids.flatMap(c => contractsOf(c).map(f => ({c, f}))), ...promised.filter(p => !kids.some(k => namesOf(k).includes(p.name))).map(f => ({c: null, f}))];
   const placed = items.filter(x => PLACED_KINDS.has(kindOf(x.f)) && x.f.path), reported = new Set();
   for (const x of items) if (kindOf(x.f) === 'function') for (const p of placed) {
-    const row = rowOfPath(p.f.path, facts), key = `${x.f.name}\n${p.f.path}`;
-    if (!row || stem(p.f.path) !== x.f.name || reported.has(key) || !functionRows(x.f, facts).some(r => r.id === row.id)) continue;
+    const key = `${x.f.name}\n${p.f.path}`;
+    if (!JS_FILE.test(p.f.path) || stem(p.f.path) !== x.f.name || reported.has(key)) continue;
     const fnNew = !own.has(x.f.name), fileNew = !own.has(p.f.name);
     if (!fnNew && !fileNew) continue;
     reported.add(key);
@@ -364,40 +336,4 @@ export function inheritServes(spawn, promised = []) {
     }
   }
   return {spawn: out, inherited: [...added.values()]};
-}
-
-// ------------------------------------------------------------ done rule (§3.4)
-// Whether a worker's delivered files keep one contract, by its kind: '' when
-// they do, the reason when they do not, and null for a function contract the
-// JavaScript row's contractCheck reads (its full rules stay there). files: a
-// Map of the worker's delivered path -> content.
-// A line a line-extracted row (Python) runs at load: top-level code that is
-// not a definition, an import, a decorator or a comment.
-const ENTRY_LINE = /^(?![\s#@]|def\s|async\s+def\s|class\s|import\s|from\s|"""|''')\S/m;
-export function kindCheck(c, files) {
-  const kind = kindOf(c), text = p => files.has(p) ? String(files.get(p) ?? '') : null;
-  if (PATH_NAMED.has(kind)) {
-    const t = text(c.path);
-    if (t === null) return `${c.path} is not written: your contract places ${kind === 'doc' ? 'this document' : 'this file'} at exactly that path`;
-    if (!t.trim()) return `${c.path} is empty`;
-    if (kind === 'data' && /\.json$/i.test(c.path)) { try { JSON.parse(t); } catch (e) { return `${c.path} is not valid json (${String(e.message).slice(0, 120)})`; } }
-    return '';
-  }
-  if (kind === 'command') {
-    const t = text(c.path);
-    if (t === null) return `${c.path} is not written: the command ${c.name} is implemented in exactly that file`;
-    if (!t.trim()) return `${c.path} is empty`;
-    if (toolchainOf(c.path)?.extractor === 'line' && !ENTRY_LINE.test(t)) return `${c.path} defines ${c.name} but runs nothing when it is run: add the code that runs it`;
-    return '';
-  }
-  if (kind === 'route') {
-    const path = String(c.name).split(' ')[1] || '';
-    return [...files.values()].some(t => String(t ?? '').includes(path)) ? '' : `no file serves ${c.name}`;
-  }
-  // A function: the JavaScript row's rules stay in contractCheck; another
-  // row's extractor finds the name defined in a delivered file.
-  const other = [...files].filter(([p]) => toolchainOf(p)?.extractor && toolchainOf(p).id !== 'javascript');
-  if (other.some(([p, t]) => extractSurface(p, t).names.includes(c.name))) return '';
-  const js = [...files.keys()].some(p => toolchainOf(p)?.id === 'javascript');
-  return js || !other.length ? null : `${c.name} is not defined in ${other.map(([p]) => p).join(', ')}`;
 }

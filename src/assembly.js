@@ -26,19 +26,17 @@ export function branchDirectory(label, identity=label) {
 }
 
 // v8 S5 (§5.2): a piece's folder under components/ when its files are not
-// placed: p_<snake label>_<hash8>, a valid package and module name in every
-// row's language (letters, digits and '_', starting with a letter), so a
-// runtime shim can name a file in it by module path. Used only under v8; v7
-// keeps branchDirectory.
+// placed: p_<snake label>_<hash8> (letters, digits and '_'), one per piece.
+// The runtime reads no language in it, and writes no file that names it.
+// Used only under v8; v7 keeps branchDirectory.
 export function packageDirectory(label, identity=label) {
   const name=String(label).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'').slice(0,16).replace(/_+$/,'') || 'piece';
   return `p_${name}_${branchDirectory('', identity).split('-').pop()}`;
 }
 // v8 S8b: the folder every piece's unplaced files go under, one name for
 // the bundle, the glue and the link: 'components', unless the project the
-// room starts from has its own components/ (in any case), when a name that
-// is a valid module name in every row's language and that the base does not
-// hold is used instead (rcp_parts, rcp_parts_2, ...).
+// room starts from has its own components/ (in any case), when a name the
+// base does not hold is used instead (rcp_parts, rcp_parts_2, ...).
 export const PARTS_ROOT='components';
 export function partsRoot(basePaths=[]) {
   const held=new Set([...basePaths].map(p=>String(p).split('/')[0].toLowerCase()));

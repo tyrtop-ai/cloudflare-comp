@@ -17,7 +17,7 @@ import {lintRequests, crashAt, reopen} from './helpers/levels.js';
 import {SOURCE_CLAUSE, chunkText} from '../src/fetcher.js';
 import {BASE_LABEL, MESSAGES} from '../src/prompts.js';
 import {normalizeBase, keepBaseFiles, summariesFor, chunksFor, baseFromApp, loadBase, baseFileRead} from '../src/room-inputs.js';
-import {STORE_ROW_BYTES} from '../src/base.js';
+import {STORE_ROW_BYTES, REPO_LIMITS} from '../src/base.js';
 import {splitterState, splitterCall, levelOf} from '../src/splitter.js';
 // After helpers/room.js has registered the cloudflare: loader.
 const {default: worker} = await import('../src/index.js');
@@ -134,6 +134,10 @@ test('base files: every text file, whole, at any path inside the box\'s folder (
   // Only what one storage row cannot hold (Cloudflare's 2 MB) is left out, and listed.
   const huge = keepBaseFiles([t('huge.json', 'q'.repeat(STORE_ROW_BYTES + 1)), t('ok.txt', 'x')]);
   assert.deepEqual([[...huge.files.keys()], huge.skipped], [['ok.txt'], [{path: 'huge.json', reason: `larger than one storage row holds (${STORE_ROW_BYTES} bytes)`}]]);
+  // Every one left out is listed, its path whole: no count of listed entries.
+  const long = `${'d/'.repeat(150)}x.txt`, left = keepBaseFiles([...Array.from({length: 260}, (_, i) => t(`s${i}.txt`, 'xx')), t(long, 'xx')], {maxFileBytes: 1});
+  assert.deepEqual([left.skipped.length, left.skipped_count, left.skipped.at(-1).path], [261, 261, long]);
+  assert.equal(REPO_LIMITS.maxSkipped, undefined);
   // A room's result: its project's files as text, whatever their paths, and the files it carried come back as bytes;
   // the notes its runtime wrote (marked runtime) are that room's, not the project's.
   const app = baseFromApp({kind: 'levels', files: [{path: '.recursive/RUN.md', content: 'r', runtime: true}, {path: '.recursive/mine.md', content: 'm'}, {path: 'a.txt', content: 'a'},
@@ -566,7 +570,6 @@ test('start() keeps every self host it is given, however many', async () => {
 });
 
 // ============================================================ S8b review
-const {contractErrors} = await import('../src/contracts.js');
 const {packagePath, partsRoot} = await import('../src/assembly.js');
 const {zipFiles, fromBase64} = await import('../src/zip.js');
 const {exportToGitHub, githubExportOptions} = await import('../src/github-export.js');
@@ -630,13 +633,12 @@ test('S8b review M2: a base holding components/ moves the pieces\' folder to rcp
   for (const [p, t] of Object.entries(files)) assert.equal(bundle.get(p), t, `the base file ${p} stays`);
   assert.equal(bundle.get(packagePath(w.label, 'helper.js', w.id, 'rcp_parts')), 'module.exports = "piece";\n');
   assert.equal(partsRoot(['rcp_parts/x', 'Components/y']), 'rcp_parts_2');
-  // No path rule: a contract places its file at the path it names, the parts root and another case of a base file too.
-  const facts = {...room.contractFacts()};
-  const errs = list => contractErrors([{label: 'P', task: 'x', interfaces: list}], [], {facts}).map(e => e.text);
-  for (const path of ['components/Button.js', 'components/button.js', 'rcp_parts/x.md'])
-    assert.deepEqual(errs([{name: path, kind: path.endsWith('.md') ? 'doc' : 'file', path, does: 'x'}]), [], path);
-  // The splitter's contract function answers the same: stored.
+  // No path rule: the splitter's contract function stores a contract at the path it names, the parts root and another case of a base file too.
   const stated = c => splitterCall(splitterState({base: ['README.md', 'components/Button.js']}), 'contract', c).result;
+  for (const path of ['components/button.js', 'rcp_parts/x.md']) {
+    const kind = path.endsWith('.md') ? 'doc' : 'file';
+    assert.deepEqual(stated({name: path, kind, path, does: 'x'}), {stored: path, kind}, path);
+  }
   assert.deepEqual(stated({name: 'components/Button.js', kind: 'file', path: 'components/Button.js', does: 'the button'}), {stored: 'components/Button.js', kind: 'file'});
   assert.deepEqual(stated({name: 'readme.md', kind: 'doc', path: 'readme.md', does: 'x'}), {stored: 'readme.md', kind: 'doc'});
 });

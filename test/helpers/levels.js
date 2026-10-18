@@ -104,7 +104,7 @@ export const callCheck = (id, serves, steps) => ({id, serves, check: {kind: 'cal
 const strings = v => typeof v === 'string' ? [v, v.replace(/[.\s]+$/, '')] : Array.isArray(v) ? v.flatMap(strings) : v && typeof v === 'object' ? Object.values(v).flatMap(strings) : [];
 export function roomData(room) {
   const nodes = room.allNodes(), validations = room.validationRows(), byId = new Map(validations.map(v => [v.id, v]));
-  const contracts = [...room.treeContracts(), ...nodes.flatMap(n => room.promisedOf(n.id))];
+  const contracts = [...room.levelManagers().flatMap(id => room.levelDesign(id)?.contracts || []), ...nodes.flatMap(n => room.promisedOf(n.id))];
   const out = [room.userGoal(), room.baseGoal(), ...room.goalChanges()];
   for (const n of nodes) out.push(n.label, n.task, ...room.files(n.id).map(f => f.path));
   for (const c of contracts) out.push(contractLine(c), ...strings(c), ...contractExamples(c, (c.serves || []).map(id => byId.get(id)).filter(Boolean)));

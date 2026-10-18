@@ -1,6 +1,8 @@
-// v8 §3: workers write any text file. A task passes through as the splitter
-// wrote it (S16's "Write executable source code…" wrapper is gone), and the
-// one publication gate is fileGateError below.
+// v7's worker gates: the one publication gate (fileGateError), the paths a
+// v7 writer may write (writerPathError), and what a v7 code piece must
+// deliver (codeFiles, languageNote, strayDeclaration), each reading v7's file
+// table (src/toolchains.js). A v8 worker writes any file of its own
+// repository, at any path, and none of these reads it.
 import { sourceParseError } from './linker.js';
 import { toolchainOf, toolchainById, manifestOf } from './toolchains.js';
 import { isAssemblyMetadata } from './assembly.js';
@@ -83,8 +85,7 @@ export function fileGateError(path, content, facts={}) {
   if (row?.id==='text' && /\.json$/i.test(path)) {
     try { JSON.parse(text); } catch (e) { return `${path}: invalid JSON (${String(e.message).slice(0,160)})`; }
   }
-  // Any other row, and a language no row knows: no check in the Worker. A
-  // row's syntax command runs in the Container at compile time (v8 §4.1).
+  // Any other file: no check.
   return null;
 }
 
@@ -99,8 +100,8 @@ export function deliveredFiles(files) {
 // The pre-v8 name, so call sites outside v8 S1's methods read the same rule
 // until the v7 pipeline is deleted (S7).
 export const productionFiles = deliveredFiles;
-// The languages the v7 pipeline links and runs (toolchain row ids). Under
-// v8 they are those of the levels' contracts.
+// The languages the v7 pipeline links and runs (toolchain row ids). v8
+// reads no language.
 export const V7_LANGUAGES = Object.freeze(['javascript']);
 // The delivered files in the project's languages: what a piece that must
 // write code has to deliver (v8 S1 review).
