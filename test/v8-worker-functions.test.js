@@ -14,6 +14,8 @@ import {liveRoom} from './helpers/room.js';
 import {workerWorld, workerCall, workerTools} from '../src/worker.js';
 import {MESSAGES, TOOLS, CLEF, clefText} from '../src/prompts.js';
 import {packagePath} from '../src/assembly.js';
+import {builderWorld, builderCall} from '../src/builder.js';
+import {textHash} from '../src/piece.js';
 
 const trail = room => events(room).slice(-16).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 220)}`).join('\n');
 
@@ -390,7 +392,7 @@ test('the join keeps the worker\'s delivery at its contract\'s path: a builder\'
   assert.equal(piece.files.get(atB), '<p>glue</p>\n', 'the builder\'s file stands in its own folder');
   assert.deepEqual([...piece.glue.keys()].sort(), [atB, 'wire.js'].sort(), 'no file of the builder\'s is left out');
   assert.deepEqual([...piece.ownAt], [['index.html', atB]]);
-  assert.match(events(room, 'bundle_conflict').at(-1).body, /builder's file stands in its own folder: index\.html/);
+  assert.equal(events(room, 'bundle_conflict').length, 0, 'the builder\'s own write_file said where its file is written');
 });
 
 test('a delivered or existing file at a builder\'s own file\'s path stays the file there, unplaced files too; the builder\'s file stands in its own folder and ships (only workers write the code)', async () => {
@@ -399,6 +401,15 @@ test('a delivered or existing file at a builder\'s own file\'s path stays the fi
   room.set(`base_digest:${top.id}`, 'd1');
   room.db().exec('INSERT INTO base_files(path,content,sha256) VALUES (?,?,?)', 'README.md', '# Base\n', 'h');
   await room.putFile(wa.id, 'notes.txt', 'the worker\'s notes\n');
+  room.db().exec('INSERT INTO base_passthrough(path,bytes,mode,sha256,reason) VALUES (?,?,?,?,?)', 'logo.png', new Uint8Array([0, 1, 2]), 0o644, 'h2', 'binary');
+  // Its world holds the existing files at their paths, as it holds the delivered ones, so its write_file says where its file goes.
+  const before = await room.joinPiece(top.id, bid), world = builderWorld({files: before.delivered, from: new Map([...before.deliveredBy].map(([p, c]) => [p, c])), carried: before.carriedAsIs, home: room.builderHome(bid)});
+  assert.deepEqual(builderCall(world, 'read_file', {path: 'README.md'}).result, {path: 'README.md', content: '# Base\n'});
+  assert.deepEqual(builderCall(world, 'read_file', {path: 'logo.png'}).result, {path: 'logo.png', carried_untouched: 'binary'});
+  assert.deepEqual(builderCall(world, 'write_file', {path: 'README.md', content: '# mine\n'}).result, {written: atR, characters: 7, says: MESSAGES.builder_beside({path: 'README.md', piece: '', at: atR})});
+  assert.equal(builderCall(world, 'write_file', {path: 'logo.png', content: 'x'}).result.written, packagePath('Builder', 'logo.png', bid));
+  assert.deepEqual(builderCall(world, 'rename', {path: 'logo.png', from: 'a', to: 'b', name_characters: ''}).result, {error: MESSAGES.builder_no_text({path: 'logo.png', why: 'binary'})});
+  assert.deepEqual(room.builderView(top.id, world).files.filter(f => f.existing), [{path: 'README.md', existing: true}, {path: 'logo.png', existing: true, carried_untouched: 'binary'}]);
   room.save(`built:${bid}`, {renamed: {}, glue: {[atN]: 'the builder\'s notes\n', 'README.md': '# mine\n'}});
   const piece = await room.joinPiece(top.id, bid);
   assert.equal(piece.files.get(atN), 'the worker\'s notes\n', 'the delivered file stays at its path');
@@ -409,7 +420,9 @@ test('a delivered or existing file at a builder\'s own file\'s path stays the fi
   assert.equal(piece.files.get(atR), '# mine\n', 'the builder\'s file ships in its own folder');
   assert.ok(piece.glue.has(atR) && !piece.glue.has('README.md'));
   assert.equal(piece.ownAt.get('README.md'), atR);
-  assert.match(events(room, 'bundle_conflict').at(-1).body, /README\.md \(the builder's at /);
+  // A rename in its copy of an existing file is the file at that path, as in a delivered one.
+  room.save(`built:${bid}`, {renamed: {'README.md': {base: textHash('# Base\n'), text: '# Joined\n', renames: [{from: 'Base', to: 'Joined'}]}}, glue: {}});
+  assert.equal((await room.joinPiece(top.id, bid)).files.get('README.md'), '# Joined\n');
 });
 
 test('a manager reads its children and contracts from its level files only, never from the rows\' copies: a copy that says otherwise changes nothing it is shown or chooses', async () => {

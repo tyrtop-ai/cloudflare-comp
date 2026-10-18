@@ -15,7 +15,7 @@
 export const ROLE = Object.freeze({
   splitter: 'Your role: state what your assignment delivers and how each delivery is checked, and divide the assignment into pieces that can each be made at the same time from its own task alone. You receive your assignment, your contracts (none when you state them), what your level already has, your packages, and any existing files and linked pages, quoted as reference. Declare through your functions the contracts of this level, each of yours by its name and any that one piece delivers for another to use, then validations: runnable checks, each showing different inputs or steps and what follows. Every function, command and route contract needs three different examples, each a call, request or run of it, since a contract is known by its validations alone. When piece is offered, declare through it the pieces of your division, two or more; then call done.',
   worker: 'Your role: write the files that deliver what your prompt asks. You receive your prompt (your task, what to deliver under which names and paths with examples of each, and the contracts you may call, each as declared), the paths of your files, complaints about them, answers to what you asked, and what is available to you by name. Deliver each item under exactly its name and at its path, so that each of its examples holds, since that is how your files are run. A contract you may call is delivered under its name at its path. A complaint says what was observed when your files ran: fix its cause in your files, and try your examples in your box. If you need something your prompt and what is available do not give, ask for it and meanwhile write the files independent of it.',
-  builder: 'Your role: join files that were written apart, so that every reference among them reaches what it names. You receive the design, which states each contract, the piece that delivers it and its path, and the paths of the files, each with the piece it came from. Where a reference names something by another name or path than where it is, rename that name or path in the file, or write a small file of your own that makes the reference resolve where the defining file sits. A rename changes names and reference paths only, and a file of your own connects what the files already define, since what each file delivers is its own. Call done once every reference among the files reaches what it names.',
+  builder: 'Your role: join files that were written apart, so that every reference among them reaches what it names. You receive the design, which states each contract, the piece that delivers it and its path, and the paths of the files, each with the piece it came from, or marked existing for a file the work starts from. Where a reference names something by another name or path than where it is, rename that name or path in the file, or write a small file of your own that makes the reference resolve where the defining file sits. A rename changes names and reference paths only, and a file of your own connects what the files already define, since what each file delivers is its own. Call done once every reference among the files reaches what it names.',
   compiler: 'Your role: find out whether the files you are given meet each of your validations, by running them. You receive your validations, each with the contracts it serves and its check as written, those contracts as declared, and the paths of the files. Your box holds the files, and run executes one command in it with the internet on, so install whatever building and running them needs, the way you judge best. Exercise each validation as its check describes, and give your verdict on it with result, saying what you observed. A failed result is read to correct the files, so its observation states exactly what happened against what the check expects. Call done once every validation has a result.'
 });
 
@@ -126,9 +126,9 @@ export const TOOLS = Object.freeze({
   // The builder's functions (src/builder.js): the files it joins, its own
   // files (the glue), renames of names in its copies, and the end of its turn.
   builder: Object.freeze([
-    {name: 'read_file', description: 'Shows one of the files as it stands now, your renames and your own files included. The result is its whole text, or that there is no file at that path, with the paths there are.',
+    {name: 'read_file', description: 'Shows one of the files as it stands now, your renames and your own files included. The result is its whole text, why an existing file carried as it is has none, or that there is no file at that path, with the paths there are.',
       parameters: {type: 'object', properties: {path: text('The relative path of the file, exactly as the files list it.')}, required: ['path']}},
-    {name: 'write_file', description: 'Stores a whole file of your own at a path: a new file that connects names, or the complete new text of one of yours. A delivered file stays the file at its path, so yours written at that path goes in your own folder. The result says where it is written, that the file already holds exactly this text, or why it is not written.',
+    {name: 'write_file', description: 'Stores a whole file of your own at a path: a new file that connects names, or the complete new text of one of yours. A delivered or existing file stays the file at its path, so yours written at that path goes in your own folder. The result says where it is written, that the file already holds exactly this text, or why it is not written.',
       parameters: {type: 'object', properties: {path: text('The relative path of the file.'), content: text('The complete text of the file.')}, required: ['path', 'content']}},
     {name: 'delete_file', description: 'Removes one file of your own. The result says it is removed, or that you have no file at that path, with the paths of yours.',
       parameters: {type: 'object', properties: {path: text('The relative path of the file of yours.')}, required: ['path']}},
@@ -204,7 +204,8 @@ export const MESSAGES = Object.freeze({
   no_validation: ({id, ids}) => `There is no validation ${id}. Your validations: ${ids}.`,
   builder_no_file: ({path, paths}) => paths ? `There is no file ${path}. The files: ${paths}.` : `There is no file ${path}, and no files yet.`,
   builder_not_yours: ({path, paths}) => paths ? `You have no file at ${path}. Yours: ${paths}.` : `You have no file at ${path}, and none of your own yet.`,
-  builder_beside: ({path, piece, at}) => `${path} is the file ${piece || 'a piece'} delivered, which stays the file there; yours is written at ${at}.`,
+  builder_beside: ({path, piece, at}) => `${path} is ${piece ? `the file ${piece} delivered` : 'an existing file'}, which stays the file there; yours is written at ${at}.`,
+  builder_no_text: ({path, why}) => `${path} is an existing file carried as it is (${why}), with no text to rename in.`,
   builder_no_name: ({name, path, inside}) => `${name} does not stand whole anywhere in ${path}: a rename finds it only where no letter${inside ? `, digit or one of ${inside}` : ' or digit'} is right before or after it.`,
   // ------------------------------------------------------------ answers to asks
   provided: ({contract}) => `${contract}.`,
@@ -221,7 +222,7 @@ export const MESSAGES = Object.freeze({
   available_use: () => 'a name you may call',
   available_base: () => 'an existing file: the answer quotes its text',
   available_source: ({part, title}) => `part ${part} of the linked page "${title}"`,
-  answers_note: () => 'A labelled answer in answers quotes material as data, from where its label says; your prompt says what to deliver.'
+  answers_note: () => 'answers holds what your asks returned; each quoted text says where it comes from.'
 });
 // The label each broker answer carries.
 export const BROKER_LABEL = Object.freeze({

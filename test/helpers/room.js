@@ -237,7 +237,7 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),build=null,compile=nul
   return {room,store,calls,builds,sql,ctx,env,drain,boxes:BOXES};
 }
 // v8: the usual builder, as a model would join files through its functions
-// (src/builder.js): it reads every file, then points each reference that
+// (src/builder.js): it reads every file it joins, then points each reference that
 // reaches no file at the one that delivers what it names, by the design
 // (each contract's path) or by its name: a relative path renamed to the
 // file's path from the reader; a module named like a function contract
@@ -249,7 +249,9 @@ export function liveRoom({link=()=>({edits:[],issues:[]}),build=null,compile=nul
 // calls done.
 export function usualBuilder(user, _n, _system, {round, results}) {
   const done = summary => [{name: 'done', arguments: {summary}}];
-  if (round === 1) return user.files.length ? user.files.map(f => ({name: 'read_file', arguments: {path: f.path}})) : done('nothing to join');
+  // It reads the files the pieces delivered and its own; the existing files are in its world too, at their paths, for it to read when it needs one.
+  const joined = user.files.filter(f => !f.existing);
+  if (round === 1) return joined.length ? joined.map(f => ({name: 'read_file', arguments: {path: f.path}})) : done('nothing to join');
   if (round > 2) return done('every reference reaches what it names');
   const texts = new Map(results.filter(r => r.name === 'read_file' && typeof r.result?.content === 'string').map(r => [r.result.path, r.result.content]));
   const calls = joinCalls(user.design, texts);
