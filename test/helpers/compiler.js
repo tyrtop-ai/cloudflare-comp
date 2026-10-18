@@ -7,7 +7,6 @@
 // printed, and calls done. Which command runs a contract's file is the
 // scripted model's own choice (RUNS, by extension). A browser check gets no
 // result: this compiler has no browser.
-import {TOOLCHAINS, COMPILE_ROWS} from '../../src/toolchains.js';
 import {SESSIONS} from './boxes.js';
 import {randomBytes} from 'node:crypto';
 
@@ -149,10 +148,13 @@ function callPy(mod, steps) {
 })().catch(e => say(false, 'the checker failed: ' + (e && e.stack || e)));
 `.replace('__PY__', () => JSON.stringify(PY));
 
-// How the scripted model runs a file (what a compiler agent would judge): a row's run_file for its extension.
+// How the scripted model runs a file (what a compiler agent would judge,
+// not the runtime's: the runtime knows no language): its own command for the
+// files these tests run, by extension.
+const RUNS = Object.freeze({'.js': ['node'], '.mjs': ['node'], '.cjs': ['node'], '.py': ['python3']});
 const runFile = path => {
-  const ext = /(\.[^./]+)$/.exec(path)?.[1]?.toLowerCase(), row = ext && [...TOOLCHAINS, ...COMPILE_ROWS].find(t => t.run_file && (t.extensions || []).includes(ext));
-  return row ? row.run_file.map(x => x === '{path}' ? path : x) : null;
+  const run = RUNS[/(\.[^./]+)$/.exec(path)?.[1]?.toLowerCase()];
+  return run ? [...run, path] : null;
 };
 // A check's job for CHECKER: the command's argument list with a command contract run by its file, a call's module, a route's run.
 export function checkJob(v, contracts = []) {

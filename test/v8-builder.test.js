@@ -4,8 +4,7 @@
 // done. Each call stores exactly what it is given or says exactly why it
 // cannot; nothing reads its prose, and the runtime writes no glue and
 // renames nothing on its behalf. Pure tests of the functions and of what the
-// room keeps of them, the tokens it reads code with,
-// and a bundle joined by the builder's files as a box runs it (no module
+// room keeps of them, and a bundle joined by the builder's files as a box runs it (no module
 // path), its functions called as the usual compiler calls them.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,8 +15,7 @@ import {join, dirname} from 'node:path';
 import {packageDirectory, packagePath, branchDirectory} from '../src/assembly.js';
 import {builderWorld, builderCall, builderWork, builderTools} from '../src/builder.js';
 import {textHash} from '../src/piece.js';
-import {textTokens} from '../src/linker.js';
-import {toolchainById, TOOLCHAINS, validIdentifier} from '../src/toolchains.js';
+import {toolchainById} from '../src/toolchains.js';
 import {runNotes} from '../src/checks.js';
 import {checkOn} from './helpers/compiler.js';
 import {MESSAGES, TOOLS, ROLE, FORMAT} from '../src/prompts.js';
@@ -133,21 +131,13 @@ test('an existing file stays the file at its path as a delivered one does: the b
 });
 
 // ------------------------------------------------------------ package directories
-test('packageDirectory: p_<snake label>_<hash8>, a module name in every row, distinct per piece; v7 keeps branchDirectory', () => {
+test('packageDirectory: p_<snake label>_<hash8>, distinct per piece; v7 keeps branchDirectory', () => {
   const d = packageDirectory('Word counter (core)', 'root.1');
   assert.match(d, /^p_word_counter_cor_[0-9a-f]{8}$/);
   assert.notEqual(d, packageDirectory('Word counter (core)', 'root.2'));
   assert.equal(d.split('_').pop(), branchDirectory('Word counter (core)', 'root.1').split('-').pop(), 'the same opaque suffix');
-  for (const row of TOOLCHAINS.filter(r => r.identifier)) assert.ok(validIdentifier(row, d), row.id);
   assert.equal(packagePath('Ranker', 'lib/ranking.py', 'root.2'), `components/${packageDirectory('Ranker', 'root.2')}/lib/ranking.py`);
   assert.equal(packageDirectory('!!!', 'x').startsWith('p_piece_'), true);
-});
-
-// ------------------------------------------------------------ the tokens the builder reads
-test('tokens: comments and strings (a triple quote is one), a prefix is part of its string, f-string fields are code', () => {
-  assert.deepEqual(textTokens('x = """a\n\'b\'"""  # it\'s\ny = rb"z" + f"{q.r!r:>{w}}"', py).map(t => [t.type, t.value, t.field || false]), [
-    ['name', 'x', false], ['punct', '=', false], ['string', '"""a\n\'b\'"""', false], ['comment', '# it\'s', false], ['name', 'y', false], ['punct', '=', false], ['string', 'rb"z"', false], ['punct', '+', false],
-    ['string', 'f"{q.r!r:>{w}}"', false], ['name', 'q', true], ['punct', '.', true], ['name', 'r', true], ['name', 'w', true]]);
 });
 
 // ------------------------------------------------------------ a bundle the builder joined, as the box runs it

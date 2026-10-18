@@ -1,10 +1,10 @@
-// v8 compiles, the parts that are data: the dashboard's builders and the
-// compile rows, which the runtime reads only as data (how a file runs, for
-// the export's notes; installed as an old room's inventory reports them).
-// The compiler is an agent; its rooms are test/v8-ship.test.js.
+// v8 compiles, the parts that are data: the dashboard's builders, and no
+// compile row (the runtime knows no language: the compiler agent installs
+// and runs what it judges in its own box, owner 2026-10-17 20:39). The
+// compiler is an agent; its rooms are test/v8-ship.test.js.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {COMPILE_ROWS, installed} from '../src/toolchains.js';
+import * as toolchains from '../src/toolchains.js';
 
 
 test('L4: the dashboard tells a builder by its role: a v8 "Builder" is its manager\'s builder, a part a split named "Builder" is a worker', async () => {
@@ -39,12 +39,8 @@ test('L4: the dashboard tells a builder by its role: a v8 "Builder" is its manag
 });
 
 
-test('L1 (norow): the rows as data: a compile row is installed only as an inventory reports its tools and versions; each compiled language says how a file of it runs', () => {
-  const rows = inv => installed(inv, COMPILE_ROWS).map(r => r.id);
-  assert.deepEqual(rows({node: '22.22.0', sh: '/usr/bin/sh', bash: '5.2.21'}), ['typescript', 'shell']);
-  assert.deepEqual(rows({node: '22.17.0', sh: '/usr/bin/sh', bash: '5.2.21'}), ['shell']);
-  assert.deepEqual(rows(['node', 'sh', 'bash']), ['shell'], 'a list of names reports no version');
-  assert.deepEqual(rows({node: '22.22.0', sh: '/usr/bin/sh', bash: '5.2.21', executables: ['gofmt', 'go', 'rustfmt', 'gcc', 'g++', 'javac', 'java', 'ruby', 'php', 'mono', 'esbuild']}), ['typescript', 'shell', 'go', 'rust', 'c', 'cpp', 'java', 'ruby', 'csharp', 'jsx', 'php']);
-  assert.deepEqual(installed({node: '22.22.0', python: '3.11.2'}).map(r => r.id), ['javascript', 'python', 'text']);
-  for (const id of ['go', 'rust', 'c', 'cpp', 'java', 'ruby', 'php', 'csharp', 'jsx']) assert.ok(COMPILE_ROWS.find(r => r.id === id).run_file, id);
+test('L1 (norow): the runtime holds no compile row: no language says how a file of it runs, and no inventory installs one', () => {
+  assert.equal(toolchains.COMPILE_ROWS, undefined);
+  assert.equal(toolchains.installed, undefined);
+  for (const row of toolchains.TOOLCHAINS) assert.ok(!('run_file' in row) && !('executables' in row) && !('requires' in row), row.id);
 });

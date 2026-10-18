@@ -1,9 +1,12 @@
-// v8 §4.5: the toolchain table is data, and its helpers are pure.
+// v7's file table (src/toolchains.js): data, and its helpers are pure. v8
+// reads none of it (owner 2026-10-17 20:39: "The runtime should be language
+// adrogenous. It's just moving data around.").
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {TOOLCHAINS,COMPILE_ROWS,OTHER_MANIFESTS,toolchainOf,toolchainById,installed,extractSurface,validIdentifier,manifestOf} from '../src/toolchains.js';
+import * as toolchains from '../src/toolchains.js';
+const {TOOLCHAINS,OTHER_MANIFESTS,toolchainOf,toolchainById,manifestOf}=toolchains;
 
-test('the phase-1 rows: javascript, python and text, frozen, each extension in one row',()=>{
+test('the rows: javascript, python and text, frozen, each extension in one row',()=>{
   assert.deepEqual(TOOLCHAINS.map(t=>t.id),['javascript','python','text']);
   assert.ok(Object.isFrozen(TOOLCHAINS)&&TOOLCHAINS.every(Object.isFrozen));
   const all=TOOLCHAINS.flatMap(t=>t.extensions);
@@ -19,33 +22,9 @@ test('toolchainOf reads the extension, case-folded; a dotfile or an unknown lang
   assert.equal(toolchainById('cobol'),null);
 });
 
-test('installed: the rows whose executables the inventory reports; text always',()=>{
-  assert.deepEqual(installed({node:'22.11.0',python:null}).map(t=>t.id),['javascript','text']);
-  assert.deepEqual(installed({node:'24.1.0',python:'3.12.3',chromium:'131'}).map(t=>t.id),['javascript','python','text']);
-  assert.deepEqual(installed(['python3']).map(t=>t.id),['python','text']);
-  assert.deepEqual(installed(null).map(t=>t.id),['text']);
-});
-
-test('identifiers come from the row',()=>{
-  const js=toolchainById('javascript'),py=toolchainById('python');
-  assert.equal(validIdentifier(py,'count_words'),true);
-  assert.equal(validIdentifier(py,'lambda'),false);
-  assert.equal(validIdentifier(js,'lambda'),true);
-  assert.equal(validIdentifier(js,'delete'),false);
-  assert.equal(validIdentifier(py,'$x'),false);
-});
-
-test('extractSurface: Acorn for JavaScript, the line regexes for Python (private names left out), nothing for text',()=>{
-  const js=extractSurface('a.js','function add(a,b){return a+b;}\nmodule.exports = { add };');
-  assert.deepEqual([js.toolchain,js.names],['javascript',['add']]);
-  const py=extractSurface('count.py','import re\n\nWORD = re.compile(r"\\w+")\n_cache = {}\n\ndef count_words(text):\n    inner = 1\n    return len(WORD.findall(text))\n\nasync def fetch(url):\n    pass\n\nclass Counter:\n    def add(self, w):\n        pass\n\ndef _helper():\n    pass\n');
-  assert.deepEqual([py.toolchain,py.names.sort()],['python',['Counter','WORD','count_words','fetch']]);
-  assert.deepEqual(extractSurface('README.md','# x'),{toolchain:'text',names:[]});
-  assert.deepEqual(extractSurface('main.go','package main'),{toolchain:null,names:[]});
-});
-
-test('v8 runs no language: no row holds a syntax step, a parser, a stack reader or a toolchain the box installs',()=>{
-  for(const t of [...TOOLCHAINS,...COMPILE_ROWS])for(const k of ['syntax','native','stack','parse_mode','page_scripts','shebang','toolchain'])assert.ok(!(k in t),`${t.id}.${k}`);
+test('the runtime keeps no language\'s rules or commands: a row is its id, name, extensions and manifests; no run command, compile row, inventory, identifier rule or extractor',()=>{
+  for(const t of TOOLCHAINS)assert.deepEqual(Object.keys(t).sort(),['extensions','id','manifests','name'],t.id);
+  for(const name of ['COMPILE_ROWS','installed','extractSurface','validIdentifier','toolchainNamed'])assert.equal(toolchains[name],undefined,name);
 });
 
 test('manifestOf: every row\'s manifests and the other toolchains\', at any depth, without case; a directory entry covers what lies under it',()=>{

@@ -12,8 +12,6 @@ import {spawnSync} from 'node:child_process';
 import {liveRoom, events, fileBlocks, usualBuilder} from './helpers/room.js';
 import {lintRequests, callCheck, choiceP} from './helpers/levels.js';
 import {packageDirectory} from '../src/assembly.js';
-import {textTokens} from '../src/linker.js';
-import {toolchainById} from '../src/toolchains.js';
 
 const hasPython=spawnSync('python3',['--version']).status===0;
 
@@ -252,10 +250,8 @@ test('A3 (JavaScript): a library whose entry requires the other pieces\' functio
   assert.equal(topBuild(builds)['roman-out.js'], TO_ROMAN);
   assert.equal(topBuild(builds)['roman-in.js'], FROM_ROMAN);
   assert.equal(linked, "const { toRoman } = require('./roman-out.js');\nconst { fromRoman } = require('./roman-in.js');\nmodule.exports = { toRoman, fromRoman };\n");
-  // Only the reference paths changed (string tokens on reference lines).
-  const js = toolchainById('javascript'), a = textTokens(ENTRY, js), b = textTokens(linked, js);
-  assert.equal(a.length, b.length);
-  assert.deepEqual(a.map((t, i) => t.value === b[i].value ? null : t.type).filter(Boolean), ['string', 'string']);
+  // Only the reference paths changed: the entry with its two paths replaced is the linked file.
+  assert.equal(ENTRY.replace("'./toRoman'", "'./roman-out.js'").replace("'./fromRoman'", "'./roman-in.js'"), linked);
   assert.ok(!Object.keys(topBuild(builds)).some(p => p.startsWith('glue/')), 'JavaScript needs no glue');
   assert.equal(room.files(entry.id)[0].revision, 1, 'the entry\'s own file is unchanged');
   assert.deepEqual(topWork(room).renamed['index.js'].renames, [{from: './toRoman', to: './roman-out.js'}, {from: './fromRoman', to: './roman-in.js'}]);
