@@ -2328,3 +2328,13 @@ did I ask for this?
 
 the box rule should be a box the agent reaches via interfaces exposed by the runtime.
 ````
+
+## 2026-10-18 02:56
+
+````text
+its literally like news taking quotes out of context. incredible. 
+
+None of those was referring to it.
+
+I cannot believe that you built the red team to blindly follow the prompts as law instead of looking at the architecture or ideas. Don't know how you  did that, but you somehow managed that.
+````
