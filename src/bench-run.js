@@ -32,7 +32,7 @@
 // remote URLs or account ids.
 import { DurableObject } from 'cloudflare:workers';
 import { loadDataset, benchPolicy, roomOutcome, gradeOutcome, aggregate, compareRuns, taskDigest, BENCH_LIMITS } from './bench.js';
-import { freshBox, boxTimes, BOX_ROOT, BOX_WORK, sessionBoxSpec } from './box.js';
+import { freshBox, boxTimes, BOX_ROOT, BOX_WORK, BOX_HOSTNAME, sessionBoxSpec } from './box.js';
 import { boxSession } from './box-session.js';
 import { compilerWorld, compilerSession } from './compiler.js';
 import { checkLimitsOf } from './checks.js';
@@ -341,9 +341,10 @@ export class BenchRun extends DurableObject {
 // internet on, so whatever runs the tests installs what they need. A
 // command grader (Python's and JavaScript's harness): the bundle's files and
 // the grader's input files in the box's folder, and its one command run
-// there; detail is the box's whole observation of a failed grading (the
-// command, what it expected that did not hold, then its exit, stdout and
-// stderr), the complaint the room gets. Any other language's grader: the
+// there under the box's name, as a session's commands are; detail is the
+// box's whole observation of a failed grading (the command, what it expected
+// that did not hold, then its exit, stdout and stderr), the complaint the
+// room gets. Any other language's grader: the
 // compiler's session (src/compiler.js) on the same files, with the
 // benchmark's tests as its one validation; it runs them in its box as the
 // benchmark states them, and its result is the grade, its observation the
@@ -373,7 +374,7 @@ export async function gradeBundle(env, grader, files, limits = checkLimitsOf({})
     const opened = await box.open(GRADER_BOX, limits.total_ms);
     if (opened?.fresh !== true) return {infrastructure: 'the box did not confirm a fresh start'};
     await box.write(put);
-    const r = await box.run(argv, {stdin: c.stdin || '', ms: boxTimes(limits.total_ms).run, max: Infinity, user: BOX_ROOT, cwd: BOX_WORK});
+    const r = await box.run([...BOX_HOSTNAME, opened.name, '--', ...argv], {stdin: c.stdin || '', ms: boxTimes(limits.total_ms).run, max: Infinity, user: BOX_ROOT, cwd: BOX_WORK});
     const out = r.stdout || '', err = r.stderr || '', missed = unmet(c.expect || {}, r);
     if (!missed) return {passed: true, detail: ''};
     return {passed: false, detail: `${argv.join(' ')}: exit ${r.code}; ${missed}\nstdout:\n${out}\nstderr:\n${err}`};

@@ -63,12 +63,13 @@ test('honest Python solutions pass: eval, typing, namedtuple, dataclass, recursi
     assert.equal((await grade(HUMANEVAL[0], {'solution.py': source})).passed, true, source);
 });
 
-test('the grader\'s box: fresh, the internet on, the bundle and its input files in its folder, closed after the grading; a box that does not open is no grading', async () => {
+test('the grader\'s box: fresh, the internet on, the bundle and its input files in its folder, its command under the box\'s name, closed after the grading; a box that does not open is no grading', async () => {
   const ns = fakeBoxes();
   await grade(MULTIPLE_JS[0], {'solution.js': 'module.exports = { add_two: (a, b) => a + b };\n'}, {BOXES: ns});
   const [{container}] = ns.boxes;
   assert.deepEqual([container.starts, container.options.enableInternet, container.running], [1, true, false]);
   assert.deepEqual(Object.keys(container.written).sort(), [FIXTURE.harness, FIXTURE.tests, 'solution.js'].sort());
+  assert.equal(container.names?.length, 1, 'the harness command runs under the box\'s name, as a session\'s commands do');
   assert.match((await grade(MULTIPLE_JS[0], {'a.js': '1;\n'}, {BOXES: fakeBoxes({refuse: () => 'no capacity'})})).infrastructure, /no capacity/);
   assert.match((await grade(MULTIPLE_JS[0], {'a.js': '1;\n'}, {})).infrastructure, /BOXES binding unavailable/);
 });
