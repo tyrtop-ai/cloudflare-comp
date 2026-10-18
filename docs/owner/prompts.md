@@ -2263,3 +2263,19 @@ the workers work on their own little box, so they work on the architecture that 
 ````text
 why am I getting multiple splitters for a manager?
 ````
+
+## 2026-10-18 00:02
+
+````text
+no? what? 
+
+the goal is to have issues route back to the content creator. the spltiter is going to retry the split not build a new splitter? 
+
+the should be everywhere. It's not "this failed, spin up a new agent" it's "this failed, send it back to creator"
+````
+
+## 2026-10-18 00:03 (sent while Claude was working)
+
+````text
+@"/root/.claude/uploads/11c59dd9-e754-55db-97f0-7381246bf899/28830ed1-recursive-control-plane-13edc745.json" @"/root/.claude/uploads/11c59dd9-e754-55db-97f0-7381246bf899/2481a11d-recursive-control-plane-fd2bdd13.json" @"/root/.claude/uploads/11c59dd9-e754-55db-97f0-7381246bf899/e6f96510-recursive-control-plane-b96e4d8a.json" 
+````
