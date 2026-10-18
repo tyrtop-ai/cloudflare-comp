@@ -8444,14 +8444,16 @@ export class ControlRoom extends DurableObject {
     // A row whose escalation is outstanding waits for Continue.
     const wait=()=>{if(!this.escalatedRow(id))return false;this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return true;};
     if(wait())return;
-    if(!this.levelIndex(id))return this.splitStep(id);
+    // A wake during the turn (a child it woke returned while the turn ran) is the next turn's.
+    const after=()=>{if(this.wakeGeneration(id)!==seen)this.wake(id);};
+    if(!this.levelIndex(id)){await this.splitStep(id);return after();}
     // An admission a restart interrupted: what it still owes, and then the
     // turn goes on as any turn of it does (its children may have returned
     // before the restart: this turn is theirs).
     if(job?.admitted)await this.finishLevel(id);
     const owed=this.read(`level_job:${id}`,null);
-    if(this.unspawned(id)){await this.spawnLevel(id);return void this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);}
-    if(owed)return this.splitStep(id,owed);
+    if(this.unspawned(id)){await this.spawnLevel(id);this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);return after();}
+    if(owed){await this.splitStep(id,owed);return after();}
     this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
     const inbox=this.receive(id);
     if(inbox.length)this.acknowledge(id,inbox);

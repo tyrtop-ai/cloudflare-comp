@@ -137,6 +137,35 @@ test('a validation that expects a wrong value: the worker answers its complaint 
   assert.ok(JSON.stringify(r.room.workerView(ws[0].id).prompt.deliver[0].examples).includes('YO!') && !JSON.stringify(r.room.workerView(ws[0].id).prompt.deliver[0].examples).includes('YO!!'), 'its examples say the right value');
 });
 
+// The worker a restatement wakes may return while its manager's turn (the splitter's session that restated it) still runs: that
+// wake is its manager's next turn, so the room completes. Here the worker's turn runs, to its done, inside the admission.
+test('a worker its restatement wakes returns while its manager\'s turn still runs: the manager takes another turn, compiles, and the room completes', {skip}, async () => {
+  const WRONG = call('s3', ['shout'], 'shout', 'Yo', 'YO!!');
+  const base = splitFor({validations: VALIDATIONS.map(v => v.id === 's3' ? WRONG : v)});
+  const split = (user, _n, _s, {round}) => {
+    if (!user.restate) return base(user);
+    const wrong = user.validations_you_have.find(v => v.check.steps?.[0]?.expect === 'YO!!');
+    return round === 1 ? [{name: 'drop_validation', arguments: {id: wrong.id}}, {name: 'call_check', arguments: {serves: ['shout'], steps: [{call: 'shout', args: ['Yo'], expect: 'YO!'}]}},
+      {name: 'piece', arguments: {label: user.label, task: user.assignment, contracts: ['shout']}}] : [{name: 'done', arguments: {}}];
+  };
+  const r = liveRoom({split, leaf: leafOf(), clef: clefFor(), compile: logged([]), room_id: 'restate-race'});
+  const finish = r.room.finishLevel.bind(r.room);
+  let raced = 0;
+  r.room.finishLevel = async id => {
+    const w = r.room.children(id).find(c => c.role === 'worker');
+    if (w && r.room.node(w.id).status === 'ready' && !r.room.activeTurns.has(w.id) && events(r.room, 'restated').some(e => e.recipient === w.id)) {
+      raced++;
+      await r.room.runSelectedTurn(w.id, Number(r.room.get('step')));
+      assert.equal(r.room.node(w.id).status, 'done');
+    }
+    return finish(id);
+  };
+  await r.room.start(GOAL, 120, {pipeline: 'v8'}, 'restate-race');
+  await r.drain();
+  assert.equal(raced, 1, 'the restated worker returned inside its manager\'s turn');
+  assert.equal(r.room.get('status'), 'complete', tail(r.room));
+});
+
 test('waitprobe2: the room\'s complaint goes to Notes, whose worker rewrites its file every time; there is no round cap: the repairs go on past six rounds until the budget ends, nothing holds, and Continue goes on', {skip}, async () => {
   const XN = X.map(v => ({...v, serves: ['shout', 'NOTES.md']}));
   let notes = 0;
