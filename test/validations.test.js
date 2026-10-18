@@ -8,6 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {commandLine, readCheck, runOf, renderExample, checkExamples, contractExamples, checkSummary,
   EXAMPLES_PER_CONTRACT} from '../src/validations.js';
+import {checkUses} from '../src/piece.js';
 
 const ctx = (extra = {}) => ({paths: new Set(['README.md', 'convert.py', 'conv.py', 'index.html']), functions: new Set(['to_f', 'to_c', 'other']),
   served: new Set(['index.html', 'api']), ...extra});
@@ -47,6 +48,8 @@ test('readCheck: each kind held to the level\'s declared names: a path the level
   assert.equal(readCheck({kind: 'call', steps: [{call: 'nope'}]}, ctx()).error, 'step 1 of the call check calls "nope", which is not a function contract declared so far (to_f, to_c, other)');
   // Owner 2026-10-16 16:14 ("you added those yourself") and 2026-10-17 20:39 ("It's just moving data around"): a call check that calls functions declared in two files is stored as written; the compiler exercises it in its box.
   assert.deepEqual(readCheck({kind: 'call', steps: [{call: 'to_f', args: [100], save: 'f'}, {call: 'other', args: ['$f']}]}, ctx()), {check: {kind: 'call', steps: [{call: 'to_f', args: [100], save: 'f'}, {call: 'other', args: ['$f']}]}});
+  // Its pass is named by every contract it calls (checkUses), each in its own file.
+  assert.deepEqual(checkUses({check: {kind: 'call', steps: [{call: 'to_f'}, {call: 'other'}, {call: 'to_f'}]}}, {contracts: [{name: 'to_f', path: 'conv.py'}, {name: 'other', path: 'other.py'}]}).map(d => d.path), ['conv.py', 'other.py']);
   assert.deepEqual(readCheck({kind: 'browser', serve: 'index.html', steps: [{goto: '/'}, {click: {role: 'button', name: 'Add'}}, {expect_count: {role: 'listitem', n: 1}}]}, ctx()).check.steps.length, 3);
   assert.equal(readCheck({kind: 'browser', serve: 'site', steps: [{goto: '/'}]}, ctx()).error, 'the browser check serves "site", which is not a declared contract that states how it runs (index.html, api)');
   assert.equal(readCheck({kind: 'http', serve: 'api', steps: [{method: 'TRACE', path: '/'}]}, ctx()).error, 'step 1 of the http check: its method "TRACE" is not one of "GET", "POST", "PUT", "PATCH", "DELETE"');
