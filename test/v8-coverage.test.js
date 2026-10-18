@@ -205,10 +205,13 @@ test('packages across pieces (owner 2026-10-17 20:39: the room\'s manager starts
   // Only a manager's choice grants, and a grant is listed on every row of the asker's line.
   assert.equal(events(r.room, 'package_granted').length, events(r.room, 'manager_choice').filter(e => /^On the ask for \S+: grant\(/.test(e.body)).length, 'only a manager\'s choice grants');
   for (const l of ['Loud part', 'Quiet part', 'Shouter', 'Louder', 'Whisperer', 'Softener']) assert.ok(names(m[l]).includes('pytest'), l);
-  // A worker's ask goes to its manager: Louder's manager grants pytest, Notes' (whose row holds none) grants it new; each is listed on its whole line.
-  assert.match(events(r.room, 'package_granted').find(e => e.actor === m.Louder).body, /granted pytest to "Louder"/);
+  // A worker's ask goes to its manager: Notes' (whose row holds none) grants it new; each grant is listed on its whole line.
+  // Louder's worker holds pytest either way: from its split, when Loud part's grant reached Louder's row first (its ask is
+  // then answered from its own row), or from its manager's grant of its ask.
+  const louder = events(r.room, 'package_granted').find(e => e.actor === m.Louder);
+  if (louder) assert.match(louder.body, /granted pytest to "Louder"/);
   assert.deepEqual(names(worker('Louder')), ['pytest']);
-  assert.match(r.room.read(`fn_answers:${worker('Louder')}`, [])[0].text, /pytest is now in your packages/);
+  assert.match(r.room.read(`fn_answers:${worker('Louder')}`, [])[0].text, louder ? /pytest is now in your packages/ : /Your packages hold pytest/);
   assert.deepEqual(names(worker('Notes')), ['pytest']);
   assert.deepEqual(names(m.Notes), ['pytest'], 'every row between holds it too');
   assert.match(events(r.room, 'package_granted').find(e => e.actor === m.Notes).body, /granted pytest to "Notes"/);
