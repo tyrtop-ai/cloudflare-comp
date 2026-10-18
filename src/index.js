@@ -9016,9 +9016,10 @@ export class ControlRoom extends DurableObject {
     }
     // This run is not a verified compile.
     this.save(`verified:${id}`,null);
-    // Each failed validation is a complaint: what the compiler observed, routed by the contracts it serves.
+    // Each failed validation is a complaint: what the compiler observed, as
+    // it gave it (no parse of it), routed by the contracts it serves.
     const items=failed.map(v=>({kind:'run',path:'',sites:[],parties:[],detail:status[v.id].detail,
-      facts:{validation:{id:v.id,serves:v.serves||[],check_kind:v.check?.kind||''},failure:failureHead(status[v.id].detail)}}));
+      facts:{validation:{id:v.id,serves:v.serves||[],check_kind:v.check?.kind||''}}}));
     this.event(id,'checks_reported',clip(`The compiler of ${this.node(id)?.label||id}: ${line}.`,900));
     span('reported',{ran:runs.length,passed:passes.length,failed:failed.length});
     if(!items.length) {

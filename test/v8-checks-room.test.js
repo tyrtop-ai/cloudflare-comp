@@ -133,6 +133,8 @@ test('Python temperature CLI: a wrong output fails its command validations, the 
   const repair=calls.leaf.filter(u=>u.prompt.deliver.some(c=>c.name==='temp'))[1];
   assert.deepEqual(repair.complaints,sent.map(p=>p.detail));
   assert.ok(repair.complaints.some(t=>/212/.test(t)),repair.complaints.join('\n'));
+  // R10-compiler/record-5 (owner 2026-10-16 20:40, "not parsing the models output"): a complaint holds the compiler's observation as it gave it, and no parse of it.
+  for(const p of sent)assert.ok(p.facts?.validation&&!('failure' in p.facts),JSON.stringify(p.facts));
   assert.equal(calls.leaf.filter(u=>u.prompt.deliver.some(c=>c.name==='USAGE.md')).length,1);
   assert.deepEqual(room.files(gw.id).map(f=>[f.path,f.revision]),[['USAGE.md',1],['notes.txt',1]]);
   assert.equal(room.spans().filter(s=>s.kind==='container'&&s.name==='compiler').length,calls.compile.length);
