@@ -2338,3 +2338,13 @@ None of those was referring to it.
 
 I cannot believe that you built the red team to blindly follow the prompts as law instead of looking at the architecture or ideas. Don't know how you  did that, but you somehow managed that.
 ````
+
+## 2026-10-18 02:59
+
+````text
+no the red was designed correctly, just implemented incorrectly. 
+
+implement it correctly this time, give them a few runs where they actually look at the context and see if it matches the broader idea of the architecture. 
+
+build a team of 3 who's entire job is to conscisely describe my architecture via my messages by quorum. bring me their results
+````
