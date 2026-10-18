@@ -2312,3 +2312,19 @@ these feel like questions I've asked before
 ````text
 give me a summary of what has been changed, architecturally, or removed, by the red team
 ````
+
+## 2026-10-18 02:52
+
+````text
+<!-- attach -->
+> 2. No caps, clips, retries or holds: the room’s budget is the only bound
+> 
+>     Gone:
+>         round caps and rebuild caps;
+>         the bound on turns without a model call, and the stop after a number of failures;
+>         the stuck and Clef-blocked holds, and the retry schedules.
+
+did I ask for this? 
+
+the box rule should be a box the agent reaches via interfaces exposed by the runtime.
+````
