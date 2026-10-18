@@ -10,7 +10,7 @@
 // written: the room's review(level), called by done, and a NO is done's
 // result in the same session, which goes on with everything it declared.
 import { normalizeContract, kindOf, nameError, PLACED_KINDS, PATH_NAMED, CONTRACT_KINDS } from './contracts.js';
-import { readCheck, CHECK_FIELDS, runOf, servedRun, runsOf, unheldPath, ownExamples, checkExamples, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
+import { readCheck, CHECK_FIELDS, runOf, unheldPath, ownExamples, checkExamples, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
 import { rootedPath } from '../container/build-path.mjs';
 import { session } from './session.js';
 import { systemPrompt, TOOLS, CHECK_TOOL_KINDS } from './prompts.js';
@@ -57,14 +57,12 @@ const roomNow = n => `this level can hold at most ${n} piece${n === 1 ? '' : 's'
 // This level's contracts (given, then declared), and every contract present (with those it has).
 const levelContracts = s => [...s.own, ...s.contracts];
 const present = s => [...levelContracts(s), ...s.have];
-// What a level's checks run by, from what is declared so far.
+// What a level's checks run by, from what is declared so far: the contracts that state how they run serve.
 function checkWorld(s) {
-  const all = present(s);
-  const served = new Set([...levelContracts(s).filter(c => c.run), ...runsOf(s.have).map(r => ({name: r.id}))].map(c => c.name));
-  return {paths: new Set([...all.map(c => c.path).filter(Boolean), ...s.base]), functions: new Set(all.filter(c => kindOf(c) === 'function').map(c => c.name)),
-    functionPaths: new Map(all.filter(c => kindOf(c) === 'function' && c.path).map(c => [c.name, c.path])), served};
+  const all = present(s), served = new Set(all.filter(c => c.run).map(c => c.name));
+  return {paths: new Set([...all.map(c => c.path).filter(Boolean), ...s.base]), functions: new Set(all.filter(c => kindOf(c) === 'function').map(c => c.name)), served};
 }
-// A contract's different examples, from the validations that serve it (those held above it, and this session's): a function's, the steps that call it.
+// A contract's different examples, from the validations that serve it (those held above it, and this session's), as done counts them (ownExamples).
 const examplesOf = (s, c) => ownExamples(c, [...s.held.filter(h => (c.serves || []).includes(h.id)), ...s.validations.filter(v => v.serves.includes(c.name))]);
 
 // ------------------------------------------------------------ the functions
@@ -186,7 +184,8 @@ export function levelView(s) {
 }
 // What the level still lacks: [] when nothing. Every contract that is
 // called or run (function, command, route) has three different examples
-// from the validations that serve it (a function's, steps that call it).
+// from the validations that serve it (ownExamples: a function's, steps that
+// call it; a command's or a route's, requests, browser scenarios or command runs).
 // When piece is offered (the level may divide), the level is a division the
 // room can create now: every manager tries to split and Clef's review judges
 // every division, so a session with fewer than two pieces hears that its
@@ -198,7 +197,7 @@ export function missingOf(s) {
   const out = [];
   for (const c of levelContracts(s).filter(c => EXAMPLE_KINDS.has(kindOf(c)))) {
     const n = examplesOf(s, c).length;
-    if (n < EXAMPLES_PER_CONTRACT) out.push(`${c.name} has ${n} different example${n === 1 ? '' : 's'} of ${EXAMPLES_PER_CONTRACT} from the validations that serve it${kindOf(c) === 'function' ? ': steps that call it' : ''}.`);
+    if (n < EXAMPLES_PER_CONTRACT) out.push(`${c.name} has ${n} different example${n === 1 ? '' : 's'} of ${EXAMPLES_PER_CONTRACT} from the validations that serve it: ${kindOf(c) === 'function' ? 'steps that call it' : 'requests, browser scenarios or command runs'}.`);
   }
   const n = s.pieces.length, room = s.divide ? s.room() : 0;
   if (s.restate && n !== 1) out.push('the piece, declared with piece: its task under its label, and the contracts it delivers.');
@@ -206,13 +205,10 @@ export function missingOf(s) {
   if (s.divide && n && n > (room >= 2 ? room : 0)) out.push(`${roomNow(room)}, and the division has ${n}${room < 2 ? '; with fewer than 2 the level holds no division' : ''}: drop_piece takes a piece out.`);
   return out;
 }
-// The level the session declared, as the room admits it: each run a check
-// serves (and every route's) listens on its port.
+// The level the session declared, exactly as it declared it.
 export function levelOf(s) {
-  const servedBy = new Set(s.validations.map(v => v.check.serve).filter(Boolean));
-  const contracts = levelContracts(s).map(c => c.run && !c.run.static && (kindOf(c) === 'route' || servedBy.has(c.name)) ? {...c, run: servedRun(c.run)} : c);
   const pieces = s.pieces.map(p => ({...p}));
-  return {contracts, validations: s.validations.map(v => ({...v})), pieces, ...(s.dropped.length ? {dropped: [...s.dropped]} : {})};
+  return {contracts: levelContracts(s).map(c => ({...c})), validations: s.validations.map(v => ({...v})), pieces, ...(s.dropped.length ? {dropped: [...s.dropped]} : {})};
 }
 // read_file: one file of the project the work starts from, whole, or that it has no file at the path.
 function readBase(s, a) {

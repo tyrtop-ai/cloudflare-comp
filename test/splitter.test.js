@@ -59,6 +59,8 @@ test('contract: stored exactly as given, or refused with exactly why: a kind out
   for (const path of ['components/Button.md', 'memory/notes.md', 'glue/how.md', '.recursive/x.md'])
     assert.deepEqual(splitterCall(s, 'contract', {name: path, kind: 'doc', path, does: 'x'}).result, {stored: path, kind: 'doc'}, path);
   assert.equal(why({name: 'x.md', kind: 'doc', path: '.git/x.md', does: 'x'}), '.git/x.md is in the folder a repository keeps for its own records, outside the files.');
+  const deep = `${'d/'.repeat(260)}x.md`;
+  assert.equal(why({name: deep, kind: 'doc', path: deep, does: 'x'}), `${deep} is longer than the store that keeps the files holds: a name of up to 255 characters, in a path of up to 512.`);
   assert.equal(why({name: 'guide.md', kind: 'doc', path: 'docs/guide.md', does: 'x'}), 'doc "guide.md" must be named by its path docs/guide.md', 'no renaming');
   assert.equal(why({name: 'convert', kind: 'command', path: 'other.py', does: 'x'}), '"convert" is already declared');
   assert.equal(why({name: 'given', kind: 'doc', path: 'GIVEN.md', does: 'x'}), '"given" is already declared: it is one of the contracts you deliver');
@@ -84,8 +86,10 @@ test('contract: stored exactly as given, or refused with exactly why: a kind out
   // A route states its run as given; with none it is stored without one.
   assert.deepEqual(calls(s, [['contract', {name: 'GET /items', kind: 'route', path: 'server.py', does: 'lists items', run: {run: ['python3', 'server.py'], ready: '/health'}}], ['contract', {name: 'GET /other', kind: 'route', path: 'server.py', does: 'x'}], ['contract', {name: 'index.html', kind: 'page', path: 'index.html', does: 'the page'}]]),
     [{stored: 'GET /items', kind: 'route', examples_needed: 3}, {stored: 'GET /other', kind: 'route', examples_needed: 3}, {stored: 'index.html', kind: 'page'}]);
+  // Owner 2026-10-17 19:16 ("Those interfaces shouldn't be mutating the data ever"): the level holds each run as the splitter stated it, with no port and no ready path added.
+  calls(s, [['http_check', {serves: ['GET /things'], serve: 'GET /things', steps: [{path: '/things'}]}]]);
   const runs = Object.fromEntries(levelOf(s).contracts.map(c => [c.name, c.run ?? null]));
-  assert.deepEqual([runs['GET /items'], runs['GET /other'], runs['index.html']], [{argv: ['python3', 'server.py'], port: true, ready: '/health'}, null, null]);
+  assert.deepEqual([runs['GET /items'], runs['GET /things'], runs['GET /other'], runs['index.html']], [{argv: ['python3', 'server.py'], ready: '/health'}, {argv: ['serve-items']}, null, null]);
 });
 
 test('a check function: serves names declared contracts exactly (the error lists them verbatim) and the check runs as written; the result is its id, the examples it renders and each served contract\'s count so far', () => {
@@ -109,6 +113,9 @@ test('a check function: serves names declared contracts exactly (the error lists
   assert.deepEqual(splitterCall(s, 'call_check', {serves: ['had'], steps: [{call: 'had', args: [1], expect: 1}]}).result.examples_so_far, {had: 1});
   assert.deepEqual(splitterCall(s, 'call_check', {serves: ['to_f'], steps: [{call: 'to_f', args: [0], expect: 32}, {call: 'to_f', args: [100], expect: 212}]}).result,
     {id: 'v5', examples: ['to_f(0) → 32', 'to_f(0) → 32; to_f(100) → 212'], examples_so_far: {to_f: 2}});
+  // A call check of functions declared in two files (conv.py and had.py) is stored as written.
+  assert.deepEqual(splitterCall(s, 'call_check', {serves: ['to_f', 'had'], steps: [{call: 'to_f', args: [1], expect: 33.8}, {call: 'had', args: [2], expect: 2}]}).result,
+    {id: 'v6', examples: ['to_f(1) → 33.8', 'to_f(1) → 33.8; had(2) → 2'], examples_so_far: {to_f: 3, had: 2}});
   // An example is what it is: the same call written three times, or written again after other steps, is one example.
   const add = splitterState({});
   calls(add, [['contract', {name: 'add', kind: 'function', path: 'add.js', does: 'adds'}], ['contract', {name: 'reset', kind: 'function', path: 'add.js', does: 'resets'}]]);
@@ -135,6 +142,18 @@ test('a check function: serves names declared contracts exactly (the error lists
   calls(cli, [['contract', {name: 'convert', kind: 'command', path: 'convert.py', does: 'converts'}]]);
   assert.deepEqual(['100', '0', '-40'].map(t => splitterCall(cli, 'command_check', {serves: ['convert'], run: ['python3', 'convert.py', t, 'C']}).result.examples_so_far), [{convert: 1}, {convert: 2}, {convert: 3}]);
   assert.deepEqual(splitterCall(cli, 'done', {}).result, {complete: true});
+  // Owner 2026-10-16 05:50 and 16:59 ("there must 3 different examples for each contract", "only to contracts that are called or run"): a route's or a
+  // command's three are requests, browser scenarios or command runs of the checks that serve it; a file's text or a judge's question requests or runs
+  // nothing, so it is none of them, though it counts for the file it reads. No path or argument list is matched.
+  const texts = splitterState({divide: false});
+  calls(texts, [['contract', {name: 'GET /items', kind: 'route', path: 'server.js', does: 'lists items', run: {run: ['node', 'server.js']}}], ['contract', {name: 'server.js', kind: 'file', path: 'server.js', does: 'the server'}]]);
+  assert.deepEqual(splitterCall(texts, 'file_check', {serves: ['GET /items', 'server.js'], path: 'server.js', has: ['a', 'b', 'c']}).result.examples_so_far, {'GET /items': 0, 'server.js': 3});
+  assert.deepEqual(splitterCall(texts, 'judge_check', {serves: ['GET /items'], path: 'server.js', question: 'Does it answer with every item?'}).result.examples_so_far, {'GET /items': 0});
+  assert.deepEqual(splitterCall(texts, 'done', {}).result, {complete: false, missing: ['GET /items has 0 different examples of 3 from the validations that serve it: requests, browser scenarios or command runs.']});
+  assert.deepEqual(splitterCall(texts, 'browser_check', {serves: ['GET /items'], serve: 'GET /items', steps: [{goto: '/items'}, {expect_text: 'a'}]}).result.examples_so_far, {'GET /items': 1});
+  assert.deepEqual(splitterCall(texts, 'command_check', {serves: ['GET /items'], run: ['node', 'probe.js']}).result.examples_so_far, {'GET /items': 2});
+  assert.deepEqual(splitterCall(texts, 'http_check', {serves: ['GET /items'], serve: 'GET /items', steps: [{path: '/elsewhere'}]}).result.examples_so_far, {'GET /items': 3});
+  assert.deepEqual(splitterCall(texts, 'done', {}).result, {complete: true});
 });
 
 test('each check function stores a validation of its own kind from its fields at the top level; a field it does not take (a kind, a check wrapper) is refused with its own fields, and there is no validation function', () => {
@@ -218,7 +237,7 @@ test('level shows everything declared so far; done reports what the level still 
   // A held validation counts for the given contract; a doc owes none. Piece is offered here, and no piece is declared yet.
   assert.deepEqual(splitterCall(s, 'done', {}), {result: {complete: false, missing: [
     'to_f has 1 different example of 3 from the validations that serve it: steps that call it.',
-    'convert has 2 different examples of 3 from the validations that serve it.',
+    'convert has 2 different examples of 3 from the validations that serve it: requests, browser scenarios or command runs.',
     'the division has 0 pieces of at least 2, each declared with piece.']}});
   calls(s, [run('-40 C', '-40'), callOf(0, 32), callOf(100, 212),
     ['piece', {label: 'A', task: 'Write to_f.', contracts: ['to_f', 'convert']}], ['piece', {label: 'B', task: 'Write convert.', contracts: ['convert', 'NOTES.md']}]]);

@@ -57,7 +57,7 @@ test('replay, issue tracker: a function\'s examples are the steps that call it, 
   for (const n of ['create_ticket', 'view_tickets', 'update_ticket', 'delete_ticket'])
     assert.equal(result(three, 'contract', n).error, 'a function contract is not started, so it states no run', n);
   assert.equal(result(three, 'piece', 'Ticket Functions').error, 'contracts names "create_ticket", "view_tickets", "update_ticket", "delete_ticket", which are not declared at this level. Declared: server.js, public/index.html');
-  assert.deepEqual(result(three, 'done', 'done'), {complete: false, missing: ['server.js has 1 different example of 3 from the validations that serve it.']});
+  assert.deepEqual(result(three, 'done', 'done'), {complete: false, missing: ['server.js has 1 different example of 3 from the validations that serve it: requests, browser scenarios or command runs.']});
 });
 
 test('replay, temperature CLI: a use that names nothing declared or callable is refused with what is; three different runs complete a command; done names the one command still short', () => {
@@ -67,5 +67,5 @@ test('replay, temperature CLI: a use that names nothing declared or callable is 
   assert.deepEqual(result(two, 'call_check', 'convert_k_to_c'), {id: 'v3', examples: ['convert_temperature(273.15, "K", "C") → {"value":0}'], examples_so_far: {convert_temperature: 3}});
   assert.deepEqual(result(two, 'done', 'done'), {complete: true});
   assert.deepEqual(refused(three), []);
-  assert.deepEqual(result(three, 'done', 'done'), {complete: false, missing: ['test_conversions has 1 different example of 3 from the validations that serve it.']});
+  assert.deepEqual(result(three, 'done', 'done'), {complete: false, missing: ['test_conversions has 1 different example of 3 from the validations that serve it: requests, browser scenarios or command runs.']});
 });

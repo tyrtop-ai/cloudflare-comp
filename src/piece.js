@@ -12,7 +12,6 @@
 //   its requests, its command contract, the contract it calls), which name a
 //   pass with the validation.
 import { kindOf } from './contracts.js';
-import { runsOf } from './validations.js';
 
 // ------------------------------------------------------------ scope
 // validations: [{id, level}] (level: the manager whose splitter wrote it);
@@ -51,15 +50,15 @@ export function textHash(text) {
 const argvOf = c => Array.isArray(c?.argv) ? c.argv : [];
 // v8 M3 review (L1): the contracts a validation runs by: how the contract
 // that serves its requests runs (and the command contract that run starts),
-// the command contract its command line names, the contract it calls.
+// the command contract its command line names, each contract it calls.
 export function checkUses(r, spec) {
   const c = r?.check || {}, ds = spec?.contracts || [], out = [];
   const command = argv => { const d = ds.find(x => kindOf(x) === 'command' && x.name === argv[0]); return d ? {name: d.name, kind: 'command', path: d.path || ''} : null; };
   if (c.kind === 'http' || c.kind === 'browser') {
-    const run = runsOf(ds).find(x => x.id === c.serve) || null;
+    const d = ds.find(x => x.name === c.serve && x.run), run = d ? {id: d.name, ...d.run} : null;
     out.push(run, run && !run.static ? command(argvOf(run)) : null);
   }
   if (c.kind === 'command') out.push(command(argvOf(c)));
-  if (c.kind === 'call') { const d = ds.find(x => x.name === c.steps?.[0]?.call); out.push(d ? {name: d.name, kind: kindOf(d), path: d.path || '', params: d.params || d.inputs || []} : null); }
+  if (c.kind === 'call') for (const name of new Set((c.steps || []).map(s => s?.call))) { const d = ds.find(x => x.name === name); out.push(d ? {name: d.name, kind: kindOf(d), path: d.path || '', params: d.params || d.inputs || []} : null); }
   return out;
 }

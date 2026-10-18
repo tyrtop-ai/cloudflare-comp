@@ -72,14 +72,12 @@ function examplesOf(raw) {
 }
 const servesOf = raw => [...new Set((Array.isArray(raw) ? raw : []).filter(s => typeof s === 'string' && s.trim()).map(s => s.trim()))];
 // How a page, route or command runs, in the form src/validations.js runOf
-// reads it: {static: true}, {argv}, or, when something serves it,
-// {argv, port: true, ready}. A run nothing serves keeps no port.
+// stores it: {static: true}, or {argv, ready?} as the splitter stated it.
 const runField = raw => {
   if (!plain(raw)) return null;
   if (raw.static === true) return {static: true};
   if (!(Array.isArray(raw.argv) && raw.argv.every(a => typeof a === 'string'))) return null;
-  const run = {argv: raw.argv};
-  return raw.port === true ? {...run, port: true, ready: typeof raw.ready === 'string' ? raw.ready : '/'} : run;
+  return {argv: raw.argv, ...(typeof raw.ready === 'string' ? {ready: raw.ready} : {})};
 };
 // Inputs: [{name, is}] or names; params, the v7 spelling, an array or "a, b"
 // (each name of that text without the spaces around it). Each name and what

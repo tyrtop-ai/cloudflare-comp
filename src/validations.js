@@ -38,9 +38,11 @@ const argvOf = (v, what) => Array.isArray(v) && v.length && v.every(a => typeof 
 export const commandLine = argv => (Array.isArray(argv) ? argv : []).map(a => /^[^\s"'\\]+$/.test(a) ? a : JSON.stringify(a)).join(' ');
 
 // ------------------------------------------------------------ paths
-// Why a repository holds no file at a plain relative path (rootedPath's), or
-// '': the folder it keeps for its own records, or a name or path longer than
-// it holds (isPath, the store's own form).
+// Why the files cannot hold a file at a plain relative path (rootedPath's), or
+// '': a .git folder, which git keeps for its own records, so no commit holds a
+// file there; or a name over 255 characters or a path over 512, which the
+// room's file store refuses (src/artifact-store.js isPath, which putFile and
+// the ZIP and GitHub exports share with v7).
 export const unheldPath = path => path.split('/').some(x => x.toLowerCase() === '.git') ? MESSAGES.records_folder({path}) : isPath(path) ? '' : MESSAGES.too_long({path});
 
 // ------------------------------------------------------------ one check
@@ -59,9 +61,8 @@ const text = (v, what) => typeof v !== 'string' || !v.trim() ? {error: `${what} 
 
 // The world a level's checks run in: ctx.paths (the paths its contracts
 // place, and the existing project's), ctx.functions (function contract
-// names), ctx.functionPaths (name → path), ctx.served (contract names that
-// state how they run). One check, as written, held to the level's declared
-// names: {check} or {error}.
+// names), ctx.served (contract names that state how they run). One check, as
+// written, held to the level's declared names: {check} or {error}.
 export function readCheck(c, ctx) {
   if (!plain(c)) return {error: 'the check is not an object'};
   const kind = c.kind;
@@ -129,9 +130,6 @@ export function readCheck(c, ctx) {
       if (s.throws !== undefined) { if (typeof s.throws !== 'boolean') return {error: `${at}: throws is true or false`}; if (s.throws) step.throws = true; }
       steps.push(step);
     }
-    // One call check runs in one process over the one file that defines its functions.
-    const files = [...new Set(steps.map(st => ctx.functionPaths?.get(st.call)).filter(Boolean))];
-    if (files.length > 1) return {error: `the call check calls functions of different files (${files.join(', ')}); one call check runs the functions of one file`};
     return {check: {kind, steps}};
   }
   // http or browser
@@ -211,10 +209,8 @@ function browserStep(s) {
 // contract states: {static: true} serves its files as they are; {run,
 // ready?} is a command's argument list (a program or a command contract,
 // then its arguments), kept as argv as written, and the path it answers at
-// once it is up. A contract that states no run has none. It serves on the
-// port the box gives it ({port: true, ready}) only when something serves it (servedRun): a route
-// always, a page or a command once a level's http or browser check serves
-// it. {run} | {error}.
+// once it is up, when the splitter gives one. A contract that states no run
+// has none. The run is stored and shown as stated. {run} | {error}.
 export const RUN_KINDS = new Set(['page', 'route', 'command']);
 export function runOf(raw, contract) {
   const kind = kindOf(contract);
@@ -228,16 +224,6 @@ export function runOf(raw, contract) {
   if (raw.ready !== undefined && typeof raw.ready !== 'string') return {error: 'its ready path is a path'};
   return {run: {argv: parsed.argv, ...(raw.ready !== undefined ? {ready: raw.ready} : {})}};
 }
-// A run something serves: it listens on the port the box gives it, ready
-// when its ready path (by default "/") answers.
-export function servedRun(run) {
-  if (!run || run.static) return run;
-  return {argv: run.argv, port: true, ready: run.ready || '/'};
-}
-// The runs a level's checks may serve, by contract name (checks.js reads
-// them): a static one, or one that listens on its port. A command's own
-// argument list, which nothing serves, is not one.
-export const runsOf = contracts => (contracts || []).filter(c => c?.run && (c.run.static || c.run.port)).map(c => c.run.static ? {id: c.name, static: true} : {id: c.name, argv: c.run.argv, port: true, ready: c.run.ready || '/'});
 
 // ------------------------------------------------------------ examples
 // A validation as the examples a worker reads: its input and what it
@@ -353,14 +339,21 @@ const servingOf = (contract, validations) => (validations || []).filter(v => (v?
 export function contractExamples(contract, validations) {
   return distinct(servingOf(contract, validations).flatMap(v => keyedExamples(v.check))).map(e => e.text);
 }
-// The different examples of a contract that is called or run (a function,
-// command or route). Three is the least a splitter writes (the reader counts
-// these). A function's are the steps that call it, each step naming the
-// function it calls; any other contract's are every example of the
+// The checks that request or run what they serve: an http check's requests,
+// a browser check's scenario, a command check's run.
+const REQUESTS = new Set(['http', 'browser', 'command']);
+// The different examples of a contract, as done counts them toward the three
+// a contract that is called or run owes (the owner's rule). A function's are
+// the steps that call it, each step naming the function it calls; a command's
+// or a route's are the requests, scenarios and runs of the http, browser and
+// command checks declared as serving it (a file's text or a judge's question
+// requests or runs nothing); any other contract's are every example of the
 // validations declared as serving it (contractExamples).
 export function ownExamples(contract, validations) {
-  if (kindOf(contract) !== 'function') return contractExamples(contract, validations);
-  return distinct(servingOf(contract, validations).flatMap(v => keyedExamples(v.check)).filter(e => e.call === contract.name)).map(e => e.text);
+  const kind = kindOf(contract), serving = servingOf(contract, validations);
+  if (kind === 'function') return distinct(serving.flatMap(v => keyedExamples(v.check)).filter(e => e.call === contract.name)).map(e => e.text);
+  if (kind === 'command' || kind === 'route') return distinct(serving.filter(v => REQUESTS.has(v.check?.kind)).flatMap(v => keyedExamples(v.check))).map(e => e.text);
+  return contractExamples(contract, validations);
 }
 
 // ------------------------------------------------------------ words

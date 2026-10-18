@@ -6,11 +6,12 @@
 // themselves are test/splitter.test.js.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {commandLine, readCheck, runOf, runsOf, servedRun, renderExample, checkExamples, contractExamples, checkSummary,
+import {commandLine, readCheck, runOf, renderExample, checkExamples, contractExamples, checkSummary,
   EXAMPLES_PER_CONTRACT} from '../src/validations.js';
+import {checkUses} from '../src/piece.js';
 
 const ctx = (extra = {}) => ({paths: new Set(['README.md', 'convert.py', 'conv.py', 'index.html']), functions: new Set(['to_f', 'to_c', 'other']),
-  functionPaths: new Map([['to_f', 'conv.py'], ['to_c', 'conv.py'], ['other', 'other.py']]), served: new Set(['index.html', 'api']), ...extra});
+  served: new Set(['index.html', 'api']), ...extra});
 
 test('a command is its argument list, as given: no quoting grammar reads it; each argument is passed as written, shell syntax and backslashes included; commandLine shows it', () => {
   const run = argv => readCheck({kind: 'command', run: argv}, ctx());
@@ -29,7 +30,7 @@ test('a path a check requests is sent as written: no path rule; the box keeps ea
   for (const goto of ['/', 'page.html', '/../x', '/.well-known/x']) assert.deepEqual(readCheck({kind: 'browser', serve: 'index.html', steps: [{goto}]}, ctx()).check.steps, [{goto}], goto);
 });
 
-test('readCheck: each kind held to the level\'s declared names: a path the level places, a declared function, a served contract; one call check runs one file; a command names any program', () => {
+test('readCheck: each kind held to the level\'s declared names: a path the level places, a declared function, a served contract; a call check calls declared functions in any files; a command names any program', () => {
   assert.deepEqual(readCheck({kind: 'file', path: 'README.md', has: ['## Run']}, ctx()), {check: {kind: 'file', path: 'README.md', has: ['## Run']}});
   assert.equal(readCheck({kind: 'file', path: 'nowhere.md'}, ctx()).error, 'the file check reads "nowhere.md", which no declared contract places and the existing files do not hold');
   assert.equal(readCheck({kind: 'judge', path: 'README.md'}, ctx()).error, 'the judge check: its question is a text');
@@ -38,14 +39,17 @@ test('readCheck: each kind held to the level\'s declared names: a path the level
   // Owner 2026-10-17 ("The runtime should be language adrogenous."): a command's program is kept as written, whatever it names; no list of the box's programs is read.
   assert.deepEqual(readCheck({kind: 'command', run: ['ruby', 'x.rb']}, ctx()).check, {kind: 'command', argv: ['ruby', 'x.rb'], expect: {exit: 0}});
   // A call check of a function in a file of any language is kept as written.
-  assert.deepEqual(readCheck({kind: 'call', steps: [{call: 'odd', args: [1]}]}, ctx({functions: new Set(['odd']), functionPaths: new Map([['odd', 'odd.kt']])})).check, {kind: 'call', steps: [{call: 'odd', args: [1]}]});
+  assert.deepEqual(readCheck({kind: 'call', steps: [{call: 'odd', args: [1]}]}, ctx({functions: new Set(['odd'])})).check, {kind: 'call', steps: [{call: 'odd', args: [1]}]});
   // An input file sits at the place its path names beside the command, as a rooted file system reads it.
   assert.deepEqual(readCheck({kind: 'command', run: ['convert'], files: {'../x': 'a', 'in/./b.txt': 'b'}}, ctx()).check.files, {x: 'a', 'in/b.txt': 'b'});
   assert.match(readCheck({kind: 'command', run: ['convert'], files: {'/': 'a'}}, ctx()).error, /input file "\/" that is not a file's path/);
   assert.deepEqual(readCheck({kind: 'call', steps: [{call: 'to_f', args: [100], expect: 212}, {call: 'to_c', args: [212], save: 'c'}]}, ctx()).check,
     {kind: 'call', steps: [{call: 'to_f', args: [100], expect: 212}, {call: 'to_c', args: [212], save: 'c'}]});
   assert.equal(readCheck({kind: 'call', steps: [{call: 'nope'}]}, ctx()).error, 'step 1 of the call check calls "nope", which is not a function contract declared so far (to_f, to_c, other)');
-  assert.match(readCheck({kind: 'call', steps: [{call: 'to_f'}, {call: 'other'}]}, ctx()).error, /calls functions of different files \(conv\.py, other\.py\); one call check runs the functions of one file/);
+  // Owner 2026-10-16 16:14 ("you added those yourself") and 2026-10-17 20:39 ("It's just moving data around"): a call check that calls functions declared in two files is stored as written; the compiler exercises it in its box.
+  assert.deepEqual(readCheck({kind: 'call', steps: [{call: 'to_f', args: [100], save: 'f'}, {call: 'other', args: ['$f']}]}, ctx()), {check: {kind: 'call', steps: [{call: 'to_f', args: [100], save: 'f'}, {call: 'other', args: ['$f']}]}});
+  // Its pass is named by every contract it calls (checkUses), each in its own file.
+  assert.deepEqual(checkUses({check: {kind: 'call', steps: [{call: 'to_f'}, {call: 'other'}, {call: 'to_f'}]}}, {contracts: [{name: 'to_f', path: 'conv.py'}, {name: 'other', path: 'other.py'}]}).map(d => d.path), ['conv.py', 'other.py']);
   assert.deepEqual(readCheck({kind: 'browser', serve: 'index.html', steps: [{goto: '/'}, {click: {role: 'button', name: 'Add'}}, {expect_count: {role: 'listitem', n: 1}}]}, ctx()).check.steps.length, 3);
   assert.equal(readCheck({kind: 'browser', serve: 'site', steps: [{goto: '/'}]}, ctx()).error, 'the browser check serves "site", which is not a declared contract that states how it runs (index.html, api)');
   assert.equal(readCheck({kind: 'http', serve: 'api', steps: [{method: 'TRACE', path: '/'}]}, ctx()).error, 'step 1 of the http check: its method "TRACE" is not one of "GET", "POST", "PUT", "PATCH", "DELETE"');
@@ -98,7 +102,7 @@ test('readCheck has no size caps: steps, texts, input files, a command line, std
 });
 const commandOutcomeText = c => renderExample(c).split(' → ').pop();
 
-test('runOf: only a page, a route or a command is started, by the run it states as given; a run on any other kind is refused; it listens on a port only when something serves it; runsOf lists what can be served', () => {
+test('runOf: only a page, a route or a command is started, by the run it states as given; a run on any other kind is refused; no port and no ready path is added', () => {
   assert.deepEqual(runOf({static: true}, {name: 'index.html', kind: 'page'}), {run: {static: true}});
   assert.deepEqual(runOf({run: ['python3', 'app.py'], ready: '/health'}, {name: 'GET /items', kind: 'route'}), {run: {argv: ['python3', 'app.py'], ready: '/health'}});
   assert.deepEqual(runOf({run: ['serve']}, {name: 'api', kind: 'route'}), {run: {argv: ['serve']}});
@@ -112,12 +116,6 @@ test('runOf: only a page, a route or a command is started, by the run it states 
   assert.equal(runOf({static: 'yes'}, {name: 'index.html', kind: 'page'}).error, 'a static run is static true and nothing else');
   for (const kind of ['function', 'file', 'doc', 'data'])
     assert.equal(runOf({static: true}, {name: 'x', kind}).error, `a ${kind} contract is not started, so it states no run`, kind);
-  // Served: a port and a ready path, by default "/".
-  assert.deepEqual(servedRun({argv: ['serve']}), {argv: ['serve'], port: true, ready: '/'});
-  assert.deepEqual(servedRun({argv: ['serve'], ready: '/up'}), {argv: ['serve'], port: true, ready: '/up'});
-  assert.deepEqual(servedRun({static: true}), {static: true});
-  assert.deepEqual(runsOf([{name: 'index.html', run: {static: true}}, {name: 'api', run: {argv: ['serve'], port: true, ready: '/'}}, {name: 'convert', kind: 'command', run: {argv: ['python3', 'cli.py']}}, {name: 'x'}]),
-    [{id: 'index.html', static: true}, {id: 'api', argv: ['serve'], port: true, ready: '/'}], 'a command nothing serves is no run a check reaches');
 });
 
 test('renderExample and contractExamples: a validation as the example a worker reads, its input and what follows, never the check itself; every distinct one, three at least per contract', () => {
