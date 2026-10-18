@@ -2,7 +2,6 @@
 // time, a validation's status, and the export's run notes. The compiler
 // agent (src/compiler.js) gives each validation its result; compileLevel
 // (src/index.js) records it and turns each failed one into a complaint.
-import { runRowOf } from './toolchains.js';
 import { kindOf } from './contracts.js';
 import { clip } from './protocol.js';
 import { runsOf, commandLine } from './validations.js';
@@ -20,8 +19,9 @@ export const checkLimitsOf = settings => ({total_ms: 1000 * (Number(settings?.ch
 export const statusEntry = (passed, digest, detail = '', extra = {}) => ({passed, digest, ts: Date.now(), detail: passed ? '' : String(detail ?? ''), ...extra});
 
 // .recursive/RUN.md, the export's run notes: the prompt, how to run each
-// part (each page and route by how it runs, the command contracts by their
-// toolchain's run_file), and the validation table with the snapshot it ran
+// part (each page and route by how its contract says it runs, each other
+// contract by its path and what it does, as the agents stated them; owner
+// 2026-10-17 20:39: the runtime knows no language), and the validation table with the snapshot it ran
 // on. app: {goal, room, digest, passed}. spec: {contracts,
 // validations}.
 export function runNotes(app, spec, status = {}) {
@@ -29,10 +29,7 @@ export function runNotes(app, spec, status = {}) {
     '## Prompt', '', String(app?.goal || '(no prompt recorded)'), ''];
   const run = [], contracts = spec?.contracts || [];
   for (const r of runsOf(contracts)) run.push(r.static ? `- \`${r.id}\`: serve this folder with any static file server and open \`/\` in a browser.` : `- \`${r.id}\`: \`${commandLine(r.argv)}\` (it reads the port from \`PORT\`; ready at \`${r.ready || '/'}\`).`);
-  for (const d of contracts.filter(d => kindOf(d) === 'command' && d.path)) {
-    const row = runRowOf(d.path);
-    if (row?.run_file) run.push(`- \`${d.name}\`: \`${row.run_file.map(x => x === '{path}' ? d.path : x).join(' ')}\`${d.does ? `: ${d.does}` : ''}`);
-  }
+  for (const d of contracts.filter(d => kindOf(d) === 'command' && d.path)) run.push(`- \`${d.name}\` (command, \`${d.path}\`)${d.does ? `: ${d.does}` : ''}`);
   for (const d of contracts.filter(d => ['doc', 'page', 'file', 'data'].includes(kindOf(d)) && d.path)) run.push(`- \`${d.path}\` (${kindOf(d)})${d.does ? `: ${d.does}` : ''}`);
   lines.push('## How to run', '', ...(run.length ? run : ['- See the files.']), '');
   // A result from another snapshot than these files is stale, never shown as current.

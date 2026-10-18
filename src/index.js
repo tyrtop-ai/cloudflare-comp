@@ -44,7 +44,7 @@ import { zipFiles } from './zip.js';
 import { INPUT_SCHEMA, INPUT_TABLES, normalizeBase, loadBase, loadSources, chunksFor, baseNotes, sha256Bytes, gitMode, SOURCE_CLAUSE, summariesFor, existingFiles, baseFileRead, selfHostsOf } from './room-inputs.js';
 import { allowReport } from './fetcher.js';
 import { catalogue as brokerCatalogue, shown as shownCatalogue, classify as classifyAsk, brokerRequest, sourceAnswer, baseAnswer, nextHeld, viewAnswer } from './broker.js';
-import { normalizePackages, installedPackages, stdlibRow, piecePackages, packageLine } from './packages.js';
+import { normalizePackages, piecePackages, packageLine } from './packages.js';
 import { boxPathError } from '../container/build-path.mjs';
 import { contractExamples, checkSummary, checkExamples, commandLine } from './validations.js';
 import { splitLevel } from './splitter.js';
@@ -687,8 +687,7 @@ export class ControlRoom extends DurableObject {
     return id;
   }
   promptHandlers() { return query(this.db(),'SELECT id,kind,prompt,prompt_id,root,created_root,spawned_at,ended_at FROM prompt_handlers ORDER BY spawned_at,id'); }
-  installedSet() { return installedPackages(this.installedToolchains(),this.read('toolchain_inventory',null)); }
-  // v8 live 4: a row's packages, as its row lists them (the room's manager is created with the installed set).
+  // v8 live 4: a row's packages, as its row lists them (the room's manager is created with none).
   packagesOf(id) { return this.v8()?normalizePackages(parse(this.node(id)?.packages,[])):[]; }
   // A row's packages as a prompt shows them: every one its row lists, as it lists it (owner, 2026-10-15 22:11: "same way as interfaces").
   packageView(id) { return this.packagesOf(id); }
@@ -1394,8 +1393,8 @@ export class ControlRoom extends DurableObject {
     const carried=pass.map(r=>({path:r.path,content_base64:toBase64(new Uint8Array(r.bytes)),mode:gitMode(r.mode),passthrough:true,reason:r.reason}));
     return {...app,files:[...notes,...own,...carried]};
   }
-  // v8 live 4: packages, the installed modules the row lists, given by the
-  // parent as its contracts are (Root's: the installed set).
+  // v8 live 4: packages, the modules the row lists by name, given by the
+  // parent as its contracts are (the room's manager starts with none).
   // v8 M3 review (L4): role, the runtime's own rows' ('builder', 'compiler'), from the spec that only the runtime writes.
   // v8: seq, the spawn's sequence within its parent (the row's id is made
   // from it); the repository is named by the room's hex and the row's id
@@ -3999,7 +3998,7 @@ export class ControlRoom extends DurableObject {
     let ps=[];
     if(ask.length) {
       ps=await pieceReach(this.inferenceEnv(),{name:n.label,contracts:this.promisedOf(id).map(contractLine),files:[...piece.files].map(([path,content])=>({path,content})),
-        installed:[...this.packagesOf(id),...this.installedSet()].map(p=>p.name).filter((x,i,a)=>a.indexOf(x)===i),checks:ask}).catch(e=>ask.map(r=>({id:r.id,error:String(e?.message||e)})));
+        installed:this.packagesOf(id).map(p=>p.name),checks:ask}).catch(e=>ask.map(r=>({id:r.id,error:String(e?.message||e)})));
       const fresh=Object.fromEntries(ps.filter(x=>typeof x.p==='number').map(x=>[keyOf(due.find(r=>r.id===x.id)),x.p]));
       if(Object.keys(fresh).length)this.save(`piece_reach:${id}`,{...kept,...fresh});
     }
@@ -8009,18 +8008,18 @@ export class ControlRoom extends DurableObject {
   // top row's bundle.
   earlierRoom() { return this.v8()&&!!this.topId()&&this.get('levels_format','')!==LEVELS_FORMAT; }
   // The room starts: it creates the manager the prompt goes to (the room's
-  // id is that manager's parent in its id), with the installed packages, the
+  // id is that manager's parent in its id), with no packages, the
   // linked pages' chunks and the existing files it starts from, and keeps
   // its own record of which manager it created.
   // Returns the turns the linked pages' readers took (loadSources).
   async openRoom(prompt, budget) {
     const cap=normalizeTurnBudget(budget),{calls:read}=await this.loadSources(this.userGoal(),calls=>calls<cap);
     const all=this.allRefs(),base=this.read('base',null),label=clip(String(prompt).split(/(?<=[.!?])\s|\n/)[0],60)||'Prompt';
-    const m=await this.provision(await rowId(this.get('room_id',''),1,'manager'),null,label,prompt,[],[],this.installedSet(),'manager',{seq:1});
+    const m=await this.provision(await rowId(this.get('room_id',''),1,'manager'),null,label,prompt,[],[],[],'manager',{seq:1});
     this.set('room_manager',m.id);this.set('levels_format',LEVELS_FORMAT);
     if(all.length)this.save(`source_refs:${m.id}`,all);
     if(base)this.save(`base_digest:${m.id}`,base.digest||'');
-    this.event('room','room_opened',`The room created "${m.label}" from the prompt (${this.installedSet().length} packages); it is done when that manager's compiler has every validation of its subtree passing on its exact bundle.`,m.id);
+    this.event('room','room_opened',`The room created "${m.label}" from the prompt; it is done when that manager's compiler has every validation of its subtree passing on its exact bundle.`,m.id);
     return read;
   }
   // ---------- the level file ----------
@@ -9073,9 +9072,10 @@ export class ControlRoom extends DurableObject {
     }
     // This run is not a verified compile.
     this.save(`verified:${id}`,null);
-    // Each failed validation is a complaint: what the compiler observed, routed by the contracts it serves.
+    // Each failed validation is a complaint: what the compiler observed, as
+    // it gave it (no parse of it), routed by the contracts it serves.
     const items=failed.map(v=>({kind:'run',path:'',sites:[],parties:[],detail:status[v.id].detail,
-      facts:{validation:{id:v.id,serves:v.serves||[],check_kind:v.check?.kind||''},failure:failureHead(status[v.id].detail)}}));
+      facts:{validation:{id:v.id,serves:v.serves||[],check_kind:v.check?.kind||''}}}));
     this.event(id,'checks_reported',clip(`The compiler of ${this.node(id)?.label||id}: ${line}.`,900));
     span('reported',{ran:runs.length,passed:passes.length,failed:failed.length});
     if(!items.length) {

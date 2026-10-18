@@ -4,10 +4,10 @@
 # headless shell. An agent's session (src/box-session.js) writes its files
 # into /work and runs its commands there, as the box's root, with the
 # internet on: it installs whatever else it needs. iputils-ping is here for
-# the S0 probe's ICMP question only; /opt/box/hostname.py runs a command
-# under the box's own short host name (box-<16 hex>), which the probe
-# reports: the platform's name has a label over 63 characters, on which
-# Python's socket.getfqdn (http.server) fails.
+# the S0 probe's ICMP question only. Each command of a session runs through
+# /opt/box/hostname.py, under the box's own short host name (box-<16 hex>):
+# the platform's name has a label over 63 characters, on which Python's
+# socket.getfqdn (http.server) fails.
 FROM node:lts-bookworm-slim
 ARG BOX_BROWSER=0
 # What the image has from the start, so a session that needs one of these

@@ -129,7 +129,7 @@ test('A4: a split Python project whose pieces import each other completes: each 
   assert.equal(app.passed, true);
   assert.ok(app.files.some(f => f.path === 'count_words.py'));
   assert.ok(!app.files.some(f => f.path.startsWith('glue/')), 'no runtime script');
-  assert.match(app.files.find(f => f.path === '.recursive/RUN.md').content, /- `wordfreq`: `python3 wordfreq\.py`/);
+  assert.match(app.files.find(f => f.path === '.recursive/RUN.md').content, /- `wordfreq` \(command, `wordfreq\.py`\)/);
   assert.deepEqual(lintRequests(room, calls), []);
 });
 

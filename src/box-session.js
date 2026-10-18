@@ -2,8 +2,9 @@
 // compiler's, a worker's) has a single-use box of its own (src/box.js): it
 // opens on the session's first command, takes the session's files into its
 // folder (BOX_WORK), runs each command the session gives in that folder, and
-// is closed when the session ends. A file the session writes after the box
-// opened is written into it too. The internet is on (sessionBoxSpec), so the
+// is closed when the session ends. Each command runs under the box's own
+// host name, box-<16 hex> (BOX_HOSTNAME). A file the session writes after
+// the box opened is written into it too. The internet is on (sessionBoxSpec), so the
 // session installs whatever it judges it needs. Each command may run for the
 // room's verification time (boxTimes' run, from check_seconds); its result is
 // what the process did: its exit code, its output and error output as
@@ -36,6 +37,12 @@ export const BOX_WORK = '/work';
 // What a session's commands run as: the box's root, so a session installs
 // whatever it needs; the single-use box is the isolation.
 export const BOX_ROOT = '0:0';
+// v8 live 5 (owner 2026-10-16 05:08, "give boxes a hex16 name as well"): the
+// platform names a box's VM with a label over 63 characters, on which
+// Python's socket.getfqdn (http.server's bind) fails. /opt/box/hostname.py
+// (container/box) runs a command under the box's name, box-<16 hex>; every
+// command of a session runs through it.
+export const BOX_HOSTNAME = Object.freeze(['python3', '-I', '/opt/box/hostname.py']);
 // What an agent's session opens: the check image, or the browser image when
 // the validations it reads have browser checks; standard-1; the internet on,
 // so the session installs what it judges it needs.
@@ -80,7 +87,7 @@ export function boxSession({open, files = () => ({}), links = () => ({}), totalM
       try { o = await take(); } catch (e) { return {error: `The box did not open: ${message(e)}`}; }
       this.commands++;
       try {
-        const r = await o.box.run(argv, {stdin, ms: times.run, max: Infinity, user: BOX_ROOT, cwd: BOX_WORK});
+        const r = await o.box.run([...BOX_HOSTNAME, o.opened.name, '--', ...argv], {stdin, ms: times.run, max: Infinity, user: BOX_ROOT, cwd: BOX_WORK});
         return {exit: r.code, stdout: r.stdout, stderr: r.stderr, timed_out: r.timed_out};
       } catch (e) { return {error: `The box did not run it: ${message(e)}`}; }
     },

@@ -195,11 +195,13 @@ test('a bundle joined by the builder\'s own files and renames runs as a root scr
   assert.equal(c.passed, true, c.detail);
 });
 
-// RUN.md says how a command runs, as its row runs a file; the row holds no glue for the runtime to write.
-test('RUN.md runs a command as its row runs a file; the row holds no glue for the runtime to write', () => {
+// RUN.md names a command by its path and what it does, with no run command from a language row (owner 2026-10-17 20:39:
+// the runtime knows no language); the row holds no glue for the runtime to write.
+test('RUN.md names a command by its path and what it does, with no run command of a language; the row holds no glue', () => {
   const spec = {contracts: [{name: 'wordfreq', kind: 'command', path: 'wordfreq.py', does: 'prints the most frequent words'}, {name: 'count_words', kind: 'function', path: COUNTER}],
     validations: [{id: 'V1', serves: ['count_words'], check: {kind: 'call', steps: [{call: 'count_words', args: ['a a'], expect: {a: 2}}]}}]};
-  assert.match(runNotes({goal: 'g'}, spec, {}), /- `wordfreq`: `python3 wordfreq\.py`: prints the most frequent words/);
+  assert.match(runNotes({goal: 'g'}, spec, {}), /- `wordfreq` \(command, `wordfreq\.py`\): prints the most frequent words/);
+  assert.doesNotMatch(runNotes({goal: 'g'}, spec, {}), /python3/);
   assert.doesNotMatch(runNotes({goal: 'g'}, spec, {}), /glue\//);
   assert.equal(py.glue, undefined, 'the row holds no glue for the runtime to write');
 });
