@@ -661,7 +661,7 @@ test('v8 S8b: the Sources panel shows each link\'s title, host, size, and whethe
   assert.match(panel,/<span class="req-chip fail">not read<\/span> <b class="mono">S2<\/b> https:\/\/docs\.example\.com\/b <span class="faint">· docs\.example\.com · 0 bytes · source_refused: http 404<\/span>/);
   assert.equal(elements.get('sources-verdict').textContent,'2 sources · 1 not read · base loaded');
   const none=renderWithPage(true,{});
-  assert.match(none.get('sources').innerHTML,/No links in the goal/);
+  assert.match(none.get('sources').innerHTML,/No links in the prompts the room has taken/);
   assert.equal(none.get('sources-verdict').textContent,'None');
 });
 

@@ -151,14 +151,14 @@ function movePrompt(id,to) {
   order.splice(Math.max(0,Math.min(order.length,to)),0,id);
   return promptAction('/api/prompts/reorder',{order});
 }
-// v8 S8b: the goal's links (title, host, size, cut or not read) and what the run starts from.
+// v8 S8b: the links of every prompt the room took (title, host, size, cut or not read) and what the run starts from.
 const hostOf=u=>{try{return new URL(u).host;}catch{return '';}};
 function sourcesMarkup(s) {
   const base=s.base,list=s.sources||[];
   const baseLine=base?`<p class="panel-summary">Starts from <b class="mono">${esc(base.source)}</b>${base.ref?` at <span class="mono">${esc(base.ref)}</span>`:''}${base.resolved_sha?` <span class="faint mono">${esc(String(base.resolved_sha).slice(0,12))}</span>`:''} · ${Number(base.files)||0} files · ${Number(base.bytes)||0} bytes${base.skipped_count?` · ${Number(base.skipped_count)} skipped`:''}${base.passthrough?` · ${Number(base.passthrough)} carried untouched`:''}${base.truncated?' · <span class="req-chip fail">truncated</span>':''}${base.unverified?' · <span class="req-chip fail" title="base_unverified: that result had not passed its checks">unverified</span>':''}</p>`:'';
   const source=x=>`<li><span class="req-chip ${x.error?'fail':x.truncated?'stale':'pass'}">${x.error?'not read':x.truncated?'truncated':'read'}</span> <b class="mono">${esc(x.id)}</b> ${esc(x.title||x.url)} <span class="faint">· ${esc(hostOf(x.final_url||x.url))} · ${Number(x.bytes)||0} bytes${x.parts?` · ${Number(x.parts)} parts`:''}${x.error?` · ${esc(x.error)}`:''}</span></li>`;
   const items=list.length?`<div class="panel-section"><div class="eyebrow">SOURCES</div><ul class="panel-list">${list.map(source).join('')}</ul></div>`:'';
-  return baseLine+items||'<p class="empty">No links in the goal, and the run starts from nothing.</p>';
+  return baseLine+items||'<p class="empty">No links in the prompts the room has taken, and the run starts from nothing.</p>';
 }
 function renderSources(s) {
   if(!$('sources'))return;

@@ -77,7 +77,7 @@ Owner: "the top manager shouldn't even know it's a top manager." and "the room s
      4. The new worker writes the code, and the builder and compiler join and verify it as usual.
    - **Status:** (a) is enabled only together with (b). Steps 1–2 existed before this slice; step 3 (the re-split when no child owns a contract) and the subtree archive were built in it.
    - **Delete:** needScope's "write it yourself" answer, the end-of-line growth rule, "nobody up to Root covers it", carriersOf-based placement of asks, the uses planning, and routeFunction's growth branch. These fight this rule.
-5. **No text heuristics.** Workers see their contracts and the compiler's complaints, and the validations are their level's spec. There is nothing to hide from them.
+5. **No text heuristics.** The worker doesn't get validations (owner, 2026-10-16 05:49: "the worker doesn't get validations. The example sohuld be built from the validation."). It gets its prompt, with the examples the runtime renders from the validations of the contracts it delivers, and the complaints routed to it, verbatim. Nothing in either is masked or classified.
    - Delete: the wording/value classifier (isValueText, isWording, cardScope), interface-fact masking, and "secrets" masking for ordinary validations.
    - Benchmarks need no masking: the grader runs outside the room, after it finishes.
 6. **No blocklists and no path rules.** Agents have their world: the commands that exist in their box and the files they can see. Nothing is blocked; anything else doesn't exist for them.
@@ -172,7 +172,7 @@ The owner, verbatim:
 >
 > the workers work on their own little box, so they work on the architecture that was handed to them.
 
-The owner had asked "why does the runtime need to know what language the agents are speaking", and was told everywhere v8 used the language. The answer above is the design. Earlier rulings still bind.
+The owner had asked "why does the runtime need to know how what language the agents are speaking", and was told everywhere v8 used the language. The answer above is the design. Earlier rulings still bind.
 
 - **The compiler is an agent** (`src/compiler.js`). A level's compile is one session of functions on the compiler model: `list_files` and `read_file` over the level's joined files; `run(argv, stdin?)`, one command in its single-use box, which holds those files, runs as the box's root with the internet on, and returns the exit code, stdout and stderr as printed and whether it ran out of time; `result(validation, passed, observed)`, its verdict on one validation with what it observed; and `done`. It is given its validations as the splitter wrote them, the contracts they serve, and the files' paths, and it is not told about other agents. It installs whatever building and running the files needs, the way it judges.
 - **The runtime moves the results along.** A failed result is a complaint with the compiler's observed text, which the managers route by the contracts its validation serves (`route_to` / `extend`, as before). A validation with no result is not passed, and the compiler runs again within the room's budget. The room is done when the final compiler's results are all passed ("the room should be able to tell when its done by observing the final compiler").

@@ -515,3 +515,11 @@ The owner, 2026-10-17: "The runtime should be language adrogenous. It's just mov
 - **"Any code type"** is met by design: the agents install what their files need. The redesign is tested offline with a scripted compiler agent whose commands run for real on the test machine; no language has been tested end to end through a live compiler agent.
 - **Still language-aware:** a manager's `grant` of a new package name offers one option per toolchain row with an install (JavaScript and Python in a new room); the export's run notes and the benchmark graders read the rows' run commands.
 - **Records.** README, INSTALL-CLOUDFLARE, how-it-works, trying-v8, rulings.md and the dashboard's v8 labels say what the code does now.
+
+## Round 10 of the owner's red team: records
+
+- **Grants.** The Redesign entry's "Still language-aware" line is wrong about grants: a manager's `grant` of a package name no row lists is one option, `grant(<name>, new)`, by its name, in no language. how-it-works says so.
+- **Validations.** rulings.md and how-it-works give the owner's ruling (2026-10-16 05:49): "the worker doesn't get validations. The example sohuld be built from the validation." A worker gets the examples rendered from them and the complaints routed to it; no record calls the validations the workers' spec.
+- **Links.** The dashboard's Sources panel and INSTALL-CLOUDFLARE say that the links written in any prompt (the start prompt, an Adjust now change or a queued prompt) are read when the room takes that prompt.
+- **Verification time.** The dashboard's helper says what the setting bounds: each command in an agent's box (a worker's, a compiler's, a benchmark's grading command), whose result says when it ran out of time, with the box's start wait and its backstop life (three times the setting). The runtime turns nothing into a worker failure; the compiler agent gives the verdicts.
+- **Quotes.** rulings.md quotes the owner's question verbatim: "why does the runtime need to know how what language the agents are speaking".
