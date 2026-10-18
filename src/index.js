@@ -254,9 +254,11 @@ const replyFn = (fn, opts={}) => { const [f]=normalizeInterfaces(fn&&typeof fn==
 // had 50 direct children (run19's 28), one Clef step vetted them all, their
 // repositories took 86 s to create, and every routing question at Root ran
 // over dozens; a piece still large is split again by its own manager.
-// v8: check_seconds, the verification's time (seconds): what one compile's
-// checks have, the person's setting beside the turn budget (src/checks.js
-// checkLimitsOf; the box's times derive from it, src/box.js boxTimes).
+// v8: check_seconds, the Verification time (seconds), the person's setting
+// beside the turn budget: how long each command in an agent's box may run (a
+// worker's, a compiler's, a benchmark's grading command; src/checks.js
+// checkLimitsOf); a box's start wait and backstop life derive from it
+// (src/box-session.js boxTimes).
 export const ROOM_LIMITS = Object.freeze({
   max_agents: [2, 100000], max_depth: [1, 1000], parallel: [1, 10000], budget: [1, 10000000], max_children: [2, 64], check_seconds: [1, 86400]
 });
@@ -538,7 +540,7 @@ export class ControlRoom extends DurableObject {
     db.exec('CREATE TABLE IF NOT EXISTS goal_revisions (rev INTEGER PRIMARY KEY, prompt TEXT NOT NULL, text TEXT NOT NULL, effective TEXT NOT NULL, ts INTEGER NOT NULL)');
     // S9 review: an edit carries the version it read (409 when another edit came first).
     if (!query(db, "SELECT name FROM pragma_table_info('prompts')").some(c => c.name === 'version')) db.exec('ALTER TABLE prompts ADD COLUMN version INTEGER NOT NULL DEFAULT 0');
-    // v8 S8b: the goal's links (sources, source_chunks) and the project the room starts from (base_files).
+    // v8 S8b: the links of the prompts the room takes (sources, source_chunks) and the project the room starts from (base_files).
     for(const sql of INPUT_SCHEMA)db.exec(sql);
     // v8: a source's summary (sourceModel), in a column of its own.
     if (!query(db, "SELECT name FROM pragma_table_info('sources')").some(c => c.name === 'summary')) db.exec('ALTER TABLE sources ADD COLUMN summary TEXT');
@@ -577,9 +579,10 @@ export class ControlRoom extends DurableObject {
     const own=contractLanguages(this.treeContracts());
     return own.length?own:this.installedToolchains().filter(r=>r.id!=='text'&&(r.executables||[]).length).map(r=>r.id);
   }
-  // v8 S8b: the room's inputs beside its goal (src/room-inputs.js). The
-  // fetch the goal's links and a base repo are read with: the runtime's own,
-  // with no credential (a test injects TEST_FETCH).
+  // v8 S8b: the room's inputs beside its prompts (src/room-inputs.js). The
+  // fetch a prompt's links (the start prompt's, an Adjust now change's or a
+  // queued prompt's) and a base repo are read with: the runtime's own, with
+  // no credential (a test injects TEST_FETCH).
   fetcher() { return this.env.TEST_FETCH || ((input,init)=>fetch(input,init)); }
   basePaths() { return new Set(query(this.db(),'SELECT path FROM base_files').map(r=>r.path)); }
   // v8 S8b: the folder of the pieces' unplaced files (partsRoot): components,
@@ -7563,10 +7566,11 @@ export class ControlRoom extends DurableObject {
   // box (capability boxes S1), so no task shares a VM with another.
   // v8 S8b: base is what the run starts from (§7.1): {repo, ref?, dir?} or
   // {room} (a room's previous result, this room's own included); selfHosts
-  // names this deployment's host(s), which the goal's links may never
+  // names this deployment's host(s), which a prompt's links may never
   // reach. The base is read before the room is wiped, so a base that cannot
   // be read refuses the Start and leaves the previous run as it was; the
-  // goal's links are read at Root's first turn (loadSources).
+  // start prompt's links are read when the room opens (openRoom's
+  // loadSources), and a change's or a queued prompt's when it is applied.
   async start(goal,budget,settings = {},roomId='',{base=null,selfHosts=[]}={}) {
     if (this.busy || this.get('status')==='running') return {error:'Experiment already running'};
     // Refuse bad settings before the room is wiped: a refused Start must leave
@@ -9189,7 +9193,7 @@ export default {
         const goal=String(payload.goal||'').trim();
         // A v8 goal is taken as the person writes it, however short or long (an empty one has nothing to build); v7's keeps its limits.
         if (payload.settings?.pipeline==='v8'?!goal:goal.length<8 || goal.length>GOAL_LIMIT) return json({error:payload.settings?.pipeline==='v8'?'An empty goal has nothing to build':`Goal must have 8–${GOAL_LIMIT} characters`},400);
-        // v8 S8b: what the run starts from, and this deployment's host, which the goal's links never reach.
+        // v8 S8b: what the run starts from, and this deployment's host, which no prompt's links reach.
         const started=await stub.start(goal,normalizeTurnBudget(payload.budget??20),payload.settings||{},room,{base:payload.base??null,selfHosts:[url.host,...selfHostsOf(env)]});
         return json(started,started.error?started.status||400:200);
       }

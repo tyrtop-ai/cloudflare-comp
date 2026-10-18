@@ -6,11 +6,13 @@ import { kindOf } from './contracts.js';
 import { clip } from './protocol.js';
 import { runsOf, commandLine } from './validations.js';
 
-// The time a verification has is the room's setting check_seconds, which
-// the person sets beside the turn budget (src/index.js normalizeRoomSettings,
-// the dashboard's Verification time); every session's box is given it
-// (checkLimitsOf) and the box's own times derive from it (src/box.js boxTimes). DEFAULT_CHECK_SECONDS is the setting's value in
-// a room (or a benchmark run) that has not set it.
+// check_seconds, the room's Verification time, which the person sets beside
+// the turn budget (src/index.js normalizeRoomSettings), bounds each command
+// in an agent's box: a worker's, a compiler's, a benchmark's grading
+// command. Every session's box is given it (checkLimitsOf), and the box's
+// start wait and backstop life derive from it (src/box-session.js boxTimes).
+// DEFAULT_CHECK_SECONDS is the setting's value in a room (or a benchmark
+// run) that has not set it.
 export const DEFAULT_CHECK_SECONDS = 200;
 export const checkLimitsOf = settings => ({total_ms: 1000 * (Number(settings?.check_seconds) > 0 ? Number(settings.check_seconds) : DEFAULT_CHECK_SECONDS)});
 // What a validation's status holds: passed (true, false, or null when the
