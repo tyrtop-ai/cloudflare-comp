@@ -17,7 +17,7 @@ import {lintRequests, crashAt, reopen} from './helpers/levels.js';
 import {SOURCE_CLAUSE, chunkText} from '../src/fetcher.js';
 import {BASE_LABEL, MESSAGES} from '../src/prompts.js';
 import {normalizeBase, keepBaseFiles, summariesFor, chunksFor, baseFromApp, loadBase, baseFileRead} from '../src/room-inputs.js';
-import {STORE_ROW_BYTES} from '../src/base.js';
+import {STORE_ROW_BYTES, REPO_LIMITS} from '../src/base.js';
 import {splitterState, splitterCall, levelOf} from '../src/splitter.js';
 // After helpers/room.js has registered the cloudflare: loader.
 const {default: worker} = await import('../src/index.js');
@@ -134,6 +134,10 @@ test('base files: every text file, whole, at any path inside the box\'s folder (
   // Only what one storage row cannot hold (Cloudflare's 2 MB) is left out, and listed.
   const huge = keepBaseFiles([t('huge.json', 'q'.repeat(STORE_ROW_BYTES + 1)), t('ok.txt', 'x')]);
   assert.deepEqual([[...huge.files.keys()], huge.skipped], [['ok.txt'], [{path: 'huge.json', reason: `larger than one storage row holds (${STORE_ROW_BYTES} bytes)`}]]);
+  // Every one left out is listed, its path whole: no count of listed entries.
+  const long = `${'d/'.repeat(150)}x.txt`, left = keepBaseFiles([...Array.from({length: 260}, (_, i) => t(`s${i}.txt`, 'xx')), t(long, 'xx')], {maxFileBytes: 1});
+  assert.deepEqual([left.skipped.length, left.skipped_count, left.skipped.at(-1).path], [261, 261, long]);
+  assert.equal(REPO_LIMITS.maxSkipped, undefined);
   // A room's result: its project's files as text, whatever their paths, and the files it carried come back as bytes;
   // the notes its runtime wrote (marked runtime) are that room's, not the project's.
   const app = baseFromApp({kind: 'levels', files: [{path: '.recursive/RUN.md', content: 'r', runtime: true}, {path: '.recursive/mine.md', content: 'm'}, {path: 'a.txt', content: 'a'},
