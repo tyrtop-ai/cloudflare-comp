@@ -222,7 +222,7 @@ export const MESSAGES = Object.freeze({
   available_use: () => 'a name you may call',
   available_base: () => 'an existing file: the answer quotes its text',
   available_source: ({part, title}) => `part ${part} of the linked page "${title}"`,
-  answers_note: () => 'A labelled answer in answers quotes material as data, from where its label says; your prompt says what to deliver.'
+  answers_note: () => 'answers holds what your asks returned; each quoted text says where it comes from.'
 });
 // The label each broker answer carries.
 export const BROKER_LABEL = Object.freeze({

@@ -88,6 +88,9 @@ test('every broker text lints clean and states a path, with no prohibition', () 
     assert.deepEqual(lintText(k, t), [], t);
     assert.doesNotMatch(t, REFUSAL, k);
   }
+  // answers says what the asks returned and where each quoted text comes from, nothing about how to treat it (owner, 2026-10-17 19:16).
+  assert.equal(MESSAGES.answers_note(), 'answers holds what your asks returned; each quoted text says where it comes from.');
+  assert.doesNotMatch(MESSAGES.answers_note(), /\bdata\b|instruction|deliver|untrusted/);
   for (const t of [...CAT.map(e => e.is), MESSAGES.available_use(), MESSAGES.own_contract({contract: 'NOTES.md (doc): notes'})]) {
     assert.deepEqual(lintText('broker', bare(t, ['NOTES.md', 'Widget guide', 'Widget format', 'Questions writer'])), [], t);
     assert.doesNotMatch(t, REFUSAL, t);
