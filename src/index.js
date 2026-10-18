@@ -8839,8 +8839,8 @@ export class ControlRoom extends DurableObject {
   // level file holds for it, then each change its row took since.
   workerView(id, inbox=[], ownFiles=[]) {
     const design=this.assignmentOf(id),byId=this.validationsById(),callable=this.callableOf(id);
-    // How it is reached when something serves it: its files as they are, or its command listening on the port in PORT. A command's own command line, which nothing serves, is its file's.
-    const runText=c=>!c.run?'':c.run.static?'its files are served as they are':c.run.port?`${commandLine(c.run.argv)} starts it, listening on the port in PORT; ready when ${c.run.ready||'/'} answers`:'';
+    // How it is started, as its contract states it: its files as they are, or its command, and the path that answers once it is up when one is stated.
+    const runText=c=>!c.run?'':c.run.static?'its files are served as they are':`${commandLine(c.run.argv)} starts it${c.run.ready?`; ready when ${c.run.ready} answers`:''}`;
     // A contract as declared: its name, kind, path, what it does, takes and gives.
     const declared=c=>({name:c.name,kind:contractKind(c),...(c.path?{path:c.path}:{}),...(c.does?{does:c.does}:{}),
       ...(contractInputs(c).length?{inputs:contractInputs(c)}:{}),...(contractOutputs(c)?{outputs:contractOutputs(c)}:{}),...(c.effects?{effects:c.effects}:{})});

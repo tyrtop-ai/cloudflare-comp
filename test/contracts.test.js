@@ -78,8 +78,10 @@ test('v8: a level\'s contracts are kept whole and every one of them: no count of
   const out=normalizeContracts(many,{v8:true,serves:true});
   assert.equal(out.length,12);
   for(const c of out){assert.equal(c.does,long('does'));assert.equal(c.returns,long('the value'));assert.equal(c.effects,long('changes'));assert.equal(c.inputs.length,9);assert.equal(c.inputs[8].is,long('is'));assert.equal(c.serves.length,40);}
-  const cmd=N1({name:'serve',kind:'command',path:'serve.py',run:{argv:long('arg').split(' '),port:true,ready:`/${'r'.repeat(300)}`}});
-  assert.deepEqual(cmd.run,{argv:long('arg').split(' '),port:true,ready:`/${'r'.repeat(300)}`});
+  const cmd=N1({name:'serve',kind:'command',path:'serve.py',run:{argv:long('arg').split(' '),ready:`/${'r'.repeat(300)}`}});
+  assert.deepEqual(cmd.run,{argv:long('arg').split(' '),ready:`/${'r'.repeat(300)}`});
+  // A run is kept as the splitter stated it: no ready path is added, and none is dropped.
+  assert.deepEqual(N1({name:'serve',kind:'command',path:'serve.py',run:{argv:['serve']}}).run,{argv:['serve']});
   // v7 reads as it always did.
   assert.equal(normalizeContracts(many.map(({name,does})=>({name,does}))).length,8);
   assert.ok(normalizeContracts([{name:'f',does:long('does')}])[0].does.length<=160);

@@ -6,7 +6,7 @@
 // themselves are test/splitter.test.js.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {commandLine, readCheck, runOf, runsOf, servedRun, renderExample, checkExamples, contractExamples, checkSummary,
+import {commandLine, readCheck, runOf, renderExample, checkExamples, contractExamples, checkSummary,
   EXAMPLES_PER_CONTRACT} from '../src/validations.js';
 
 const ctx = (extra = {}) => ({paths: new Set(['README.md', 'convert.py', 'conv.py', 'index.html']), functions: new Set(['to_f', 'to_c', 'other']),
@@ -99,7 +99,7 @@ test('readCheck has no size caps: steps, texts, input files, a command line, std
 });
 const commandOutcomeText = c => renderExample(c).split(' → ').pop();
 
-test('runOf: only a page, a route or a command is started, by the run it states as given; a run on any other kind is refused; it listens on a port only when something serves it; runsOf lists what can be served', () => {
+test('runOf: only a page, a route or a command is started, by the run it states as given; a run on any other kind is refused; no port and no ready path is added', () => {
   assert.deepEqual(runOf({static: true}, {name: 'index.html', kind: 'page'}), {run: {static: true}});
   assert.deepEqual(runOf({run: ['python3', 'app.py'], ready: '/health'}, {name: 'GET /items', kind: 'route'}), {run: {argv: ['python3', 'app.py'], ready: '/health'}});
   assert.deepEqual(runOf({run: ['serve']}, {name: 'api', kind: 'route'}), {run: {argv: ['serve']}});
@@ -113,12 +113,6 @@ test('runOf: only a page, a route or a command is started, by the run it states 
   assert.equal(runOf({static: 'yes'}, {name: 'index.html', kind: 'page'}).error, 'a static run is static true and nothing else');
   for (const kind of ['function', 'file', 'doc', 'data'])
     assert.equal(runOf({static: true}, {name: 'x', kind}).error, `a ${kind} contract is not started, so it states no run`, kind);
-  // Served: a port and a ready path, by default "/".
-  assert.deepEqual(servedRun({argv: ['serve']}), {argv: ['serve'], port: true, ready: '/'});
-  assert.deepEqual(servedRun({argv: ['serve'], ready: '/up'}), {argv: ['serve'], port: true, ready: '/up'});
-  assert.deepEqual(servedRun({static: true}), {static: true});
-  assert.deepEqual(runsOf([{name: 'index.html', run: {static: true}}, {name: 'api', run: {argv: ['serve'], port: true, ready: '/'}}, {name: 'convert', kind: 'command', run: {argv: ['python3', 'cli.py']}}, {name: 'x'}]),
-    [{id: 'index.html', static: true}, {id: 'api', argv: ['serve'], port: true, ready: '/'}], 'a command nothing serves is no run a check reaches');
 });
 
 test('renderExample and contractExamples: a validation as the example a worker reads, its input and what follows, never the check itself; every distinct one, three at least per contract', () => {

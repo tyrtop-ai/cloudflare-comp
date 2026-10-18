@@ -30,7 +30,7 @@ test('requests to /tickets/1, /2 and /3 by validations serving PUT /tickets/:id 
   assert.deepEqual(results[5], {complete: true});
   const level = levelOf(s);
   assert.equal(contractExamples(level.contracts[0], level.validations).length, 3);
-  assert.deepEqual(level.contracts[0].run, {argv: ['node', 'src/server.js'], port: true, ready: '/'}, 'a route listens on the port its box gives it');
+  assert.deepEqual(level.contracts[0].run, {argv: ['node', 'src/server.js']}, 'the run as the splitter stated it: no port and no ready path added');
 });
 
 test('a route or a command that states no run is stored without one: nothing infers it from its file, and a check that serves it is told none states how it runs', () => {

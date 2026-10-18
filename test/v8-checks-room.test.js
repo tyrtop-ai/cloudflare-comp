@@ -274,13 +274,15 @@ test('a worker\'s file at a path another piece\'s contract places is its own: it
 
 // ------------------------------------------------------------ the pure helpers
 test('runNotes: the prompt, how to run each contract, and the validation table with the snapshot',()=>{
-  const spec={contracts:[{name:'index.html',kind:'page',path:'index.html',run:{static:true}},{name:'api',kind:'route',run:{argv:['serve'],port:true,ready:'/health'}},
+  const spec={contracts:[{name:'index.html',kind:'page',path:'index.html',run:{static:true}},{name:'api',kind:'route',run:{argv:['serve'],ready:'/health'}},{name:'cli',kind:'command',run:{argv:['serve','--other']}},
     {name:'temp',kind:'command',path:'temp.py',does:'converts'},{name:'GUIDE.md',kind:'doc',path:'GUIDE.md'}],
     validations:[{id:'V1',serves:['temp','api'],check:{kind:'command'}},{id:'V2',serves:['GUIDE.md'],check:{kind:'judge'}},{id:'V3',serves:['index.html'],check:{kind:'browser'}}]};
   const text=runNotes({goal:'Convert temperatures',room:'room-1',digest:'abcdef0123456789ff',passed:false},spec,{V1:{passed:true},V2:{passed:false,detail:'Clef judged p=0.20: q | r'},V3:{passed:null,detail:'not run'}});
   assert.match(text,/## Prompt\n\nConvert temperatures/);
   assert.match(text,/- `index\.html`: serve this folder with any static file server/);
-  assert.match(text,/- `api`: `serve` \(it reads the port from `PORT`; ready at `\/health`\)/);
+  assert.match(text,/- `api`: `serve` \(ready at `\/health`\)\./);
+  assert.match(text,/- `cli`: `serve --other`\./,'a run with no ready path is shown with none');
+  assert.doesNotMatch(text,/PORT|open `\/`/,'no port and no ready path the runtime adds');
   assert.match(text,/- `temp` \(command, `temp\.py`\): converts/);
   assert.doesNotMatch(text,/python3/,'no run command from a language row');
   assert.match(text,/1 of 3 pass\. These files \(snapshot `abcdef0123456789`\) have not passed every validation as exported\./);

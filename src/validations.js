@@ -207,10 +207,8 @@ function browserStep(s) {
 // contract states: {static: true} serves its files as they are; {run,
 // ready?} is a command's argument list (a program or a command contract,
 // then its arguments), kept as argv as written, and the path it answers at
-// once it is up. A contract that states no run has none. It serves on the
-// port the box gives it ({port: true, ready}) only when something serves it (servedRun): a route
-// always, a page or a command once a level's http or browser check serves
-// it. {run} | {error}.
+// once it is up, when the splitter gives one. A contract that states no run
+// has none. The run is stored and shown as stated. {run} | {error}.
 export const RUN_KINDS = new Set(['page', 'route', 'command']);
 export function runOf(raw, contract) {
   const kind = kindOf(contract);
@@ -224,16 +222,6 @@ export function runOf(raw, contract) {
   if (raw.ready !== undefined && typeof raw.ready !== 'string') return {error: 'its ready path is a path'};
   return {run: {argv: parsed.argv, ...(raw.ready !== undefined ? {ready: raw.ready} : {})}};
 }
-// A run something serves: it listens on the port the box gives it, ready
-// when its ready path (by default "/") answers.
-export function servedRun(run) {
-  if (!run || run.static) return run;
-  return {argv: run.argv, port: true, ready: run.ready || '/'};
-}
-// The runs a level's checks may serve, by contract name (checks.js reads
-// them): a static one, or one that listens on its port. A command's own
-// argument list, which nothing serves, is not one.
-export const runsOf = contracts => (contracts || []).filter(c => c?.run && (c.run.static || c.run.port)).map(c => c.run.static ? {id: c.name, static: true} : {id: c.name, argv: c.run.argv, port: true, ready: c.run.ready || '/'});
 
 // ------------------------------------------------------------ examples
 // A validation as the examples a worker reads: its input and what it

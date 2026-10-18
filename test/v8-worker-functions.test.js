@@ -114,6 +114,19 @@ test('run runs one command in the worker\'s own box, which holds its files as th
   assert.ok(Object.values(room.read('validation_status', {})).every(s => s.passed === true), 'the compiler\'s results alone set the status');
 });
 
+// Owner 2026-10-17 19:16 ("Those interfaces shouldn't be mutating the data ever"): a contract's run reaches the worker as the splitter stated it.
+test('a worker reads each contract\'s run as the splitter stated it: its command, and the path that answers once it is up only when one is stated; no port is said', async () => {
+  const page = {name: 'index.html', kind: 'page', path: 'index.html', does: 'the page', run: {run: ['node', 'serve.js'], ready: '/up'}};
+  const level = {...CLI_LEVEL, contracts: [{...CONVERT, run: {run: ['node', 'convert.js']}}, page]};
+  const leaf = (_u, _n, _s, {round}) => round === 1 ? [{name: 'write_file', arguments: {path: 'convert.js', content: CONVERT_JS}}, {name: 'write_file', arguments: {path: 'index.html', content: '<p>x</p>\n'}}]
+    : [{name: 'done', arguments: {summary: 'the converter and its page'}}];
+  const {room, calls} = await levelRoom({prompt: CLI, split: () => level, leaf, settings: ALONE});
+  assert.equal(room.get('status'), 'complete', trail(room));
+  assert.deepEqual(calls.leaf[0].prompt.deliver.map(c => [c.name, c.runs]), [['convert', 'node convert.js starts it'], ['index.html', 'node serve.js starts it; ready when /up answers']]);
+  assert.doesNotMatch(JSON.stringify(calls.leaf[0]), /PORT|\bport\b/);
+  assert.deepEqual(room.levelDesign(room.roomManager()).contracts.map(c => c.run), [{argv: ['node', 'convert.js']}, {argv: ['node', 'serve.js'], ready: '/up'}], 'the level file holds each run as stated');
+});
+
 // ------------------------------------------------------------ a worker's world is its own files
 test('a worker\'s files are its own repository, every path in it: a folder the runtime once kept, a name with a space, a dotfile, each is written, reaches its box and ships; a level places a file in any folder; no path rule is said', async () => {
   const NOTES = {name: 'memory/NOTES.md', kind: 'doc', path: 'memory/NOTES.md', does: 'notes on the units'};

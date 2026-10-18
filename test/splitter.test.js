@@ -84,8 +84,10 @@ test('contract: stored exactly as given, or refused with exactly why: a kind out
   // A route states its run as given; with none it is stored without one.
   assert.deepEqual(calls(s, [['contract', {name: 'GET /items', kind: 'route', path: 'server.py', does: 'lists items', run: {run: ['python3', 'server.py'], ready: '/health'}}], ['contract', {name: 'GET /other', kind: 'route', path: 'server.py', does: 'x'}], ['contract', {name: 'index.html', kind: 'page', path: 'index.html', does: 'the page'}]]),
     [{stored: 'GET /items', kind: 'route', examples_needed: 3}, {stored: 'GET /other', kind: 'route', examples_needed: 3}, {stored: 'index.html', kind: 'page'}]);
+  // Owner 2026-10-17 19:16 ("Those interfaces shouldn't be mutating the data ever"): the level holds each run as the splitter stated it, with no port and no ready path added.
+  calls(s, [['http_check', {serves: ['GET /things'], serve: 'GET /things', steps: [{path: '/things'}]}]]);
   const runs = Object.fromEntries(levelOf(s).contracts.map(c => [c.name, c.run ?? null]));
-  assert.deepEqual([runs['GET /items'], runs['GET /other'], runs['index.html']], [{argv: ['python3', 'server.py'], port: true, ready: '/health'}, null, null]);
+  assert.deepEqual([runs['GET /items'], runs['GET /things'], runs['GET /other'], runs['index.html']], [{argv: ['python3', 'server.py'], ready: '/health'}, {argv: ['serve-items']}, null, null]);
 });
 
 test('a check function: serves names declared contracts exactly (the error lists them verbatim) and the check runs as written; the result is its id, the examples it renders and each served contract\'s count so far', () => {

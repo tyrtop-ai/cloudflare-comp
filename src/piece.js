@@ -12,7 +12,6 @@
 //   its requests, its command contract, the contract it calls), which name a
 //   pass with the validation.
 import { kindOf } from './contracts.js';
-import { runsOf } from './validations.js';
 
 // ------------------------------------------------------------ scope
 // validations: [{id, level}] (level: the manager whose splitter wrote it);
@@ -56,7 +55,7 @@ export function checkUses(r, spec) {
   const c = r?.check || {}, ds = spec?.contracts || [], out = [];
   const command = argv => { const d = ds.find(x => kindOf(x) === 'command' && x.name === argv[0]); return d ? {name: d.name, kind: 'command', path: d.path || ''} : null; };
   if (c.kind === 'http' || c.kind === 'browser') {
-    const run = runsOf(ds).find(x => x.id === c.serve) || null;
+    const d = ds.find(x => x.name === c.serve && x.run), run = d ? {id: d.name, ...d.run} : null;
     out.push(run, run && !run.static ? command(argvOf(run)) : null);
   }
   if (c.kind === 'command') out.push(command(argvOf(c)));
