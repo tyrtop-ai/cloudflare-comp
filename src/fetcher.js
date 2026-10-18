@@ -20,34 +20,26 @@ export const USER_AGENT = 'recursive-control-plane-fetcher/1 (+no-credentials)';
 // rechecked. A caller that fetches something else (a dataset, src/bench.js)
 // passes its own maxBytes.
 export const LIMITS = Object.freeze({});
-// Content types a dataset may have (src/bench.js); archives only with policy.archive.
-// A link in the prompt is read whatever type it is served as.
-const TEXT_TYPES = /^(?:text\/[a-z0-9.+-]+|application\/(?:json|x-ndjson|jsonl|ld\+json|xhtml\+xml|xml|markdown|x-markdown|[a-z0-9.-]+\+json|vnd\.github(?:\.v3)?(?:\.raw)?(?:\+json)?))$/;
-const ARCHIVE_TYPES = /^application\/(?:gzip|x-gzip|x-tar|x-gtar|octet-stream)$/;
+// A link in the prompt, and a dataset, is read whatever type it is served as.
 export class FetchRefused extends Error {}
 const clip = (v, n = 300) => String(v ?? '').slice(0, n);
 const normHost = h => String(h || '').toLowerCase().replace(/\.$/, '');
-const isIpLike = h => h.startsWith('[') || h.includes(':') || /^[0-9.]+$/.test(h) ||
-  /(?:^|\.)(?:0x[0-9a-f]*|[0-9]+)$/i.test(h);
-const validName = h => h.length <= 253 && h.includes('.') &&
-  h.split('.').every(l => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(l));
 const underSuffix = (host, suffix) => host === suffix || host.endsWith('.' + suffix);
-const allowEntry = s => {
-  const h = normHost(String(s ?? '').trim().replace(/^\*?\./, ''));
-  return h && validName(h) && !isIpLike(h) ? h : null;
-};
+// An entry as the owner writes it, as a host suffix: a leading *. or . and a
+// trailing dot are the same suffix. No rule over its name or address.
+const allowEntry = s => normHost(String(s ?? '').trim().replace(/^\*?\./, '')) || null;
 
 // Owner list: the FETCH_ALLOW value (a string the caller reads from its own
 // config) or an array, or DEFAULT_ALLOW when unset. Each entry is a host
-// suffix as the owner writes it; one that is not a DNS name (an IP literal,
-// a single label) is reported as unusable.
+// suffix as the owner writes it (a name, a single label, an IP address),
+// used as written.
 export function parseAllow(value) {
   if (value == null || (typeof value === 'string' && value.trim() === '')) return [...DEFAULT_ALLOW];
   return allowReport(value).allow;
 }
 // v8 S8b review: the forms an owner writes: a host, a URL (its scheme, path
 // and :443 dropped), a JSON array string. {allow, dropped}: the entries kept
-// and those that are not a usable host suffix (as written, clipped).
+// and those that name no host at all (as written, clipped).
 const allowForm = s => String(s ?? '').trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/[/?#].*$/, '').replace(/^[^@]*@/, '').replace(/:443$/, '');
 export function allowReport(value) {
   let list = [];
@@ -65,7 +57,7 @@ export function allowReport(value) {
   }
   return {allow, dropped};
 }
-// A room's list keeps only valid entries already covered by the owner's list.
+// A room's list keeps only entries already covered by the owner's list.
 export const narrowAllow = (owner, room) => room == null ? [...owner] :
   [...new Set(room.map(allowEntry).filter(Boolean))].filter(h => owner.some(o => underSuffix(h, o)));
 
@@ -73,10 +65,10 @@ export const narrowAllow = (owner, room) => room == null ? [...owner] :
 // every custom domain and route host of this deployment) and
 // requireSelfHosts: true, so the fetcher can never call back into its own
 // API even if the owner allowlists a parent domain.
-export function fetchPolicy({allow = DEFAULT_ALLOW, room = null, selfHosts = [], requireSelfHosts = false, archive = false, ...limits} = {}) {
+export function fetchPolicy({allow = DEFAULT_ALLOW, room = null, selfHosts = [], requireSelfHosts = false, ...limits} = {}) {
   const self = selfHosts.map(h => normHost(String(h).replace(/:\d+$/, ''))).filter(Boolean);
   if (requireSelfHosts && !self.length) throw new Error('fetchPolicy: selfHosts must name the deployment host(s)');
-  return Object.freeze({allow: narrowAllow(parseAllow(allow), room), selfHosts: self, archive: !!archive, ...LIMITS, ...limits});
+  return Object.freeze({allow: narrowAllow(parseAllow(allow), room), selfHosts: self, ...LIMITS, ...limits});
 }
 
 // Why this URL may not be fetched, or null when it may.
@@ -87,8 +79,6 @@ export function urlRefusal(raw, policy) {
   if (u.port !== '' && u.port !== '443') return 'only port 443 is fetched';
   if (u.username || u.password) return 'URLs with credentials are refused';
   const host = normHost(u.hostname);
-  if (isIpLike(host)) return 'IP literals are refused';
-  if (!validName(host)) return 'not a public host name';
   if (policy.selfHosts.some(s => underSuffix(host, s))) return "the deployment's own host is refused";
   if (!policy.allow.some(s => underSuffix(host, s))) return `host ${host} is not on the allowlist`;
   return null;
@@ -276,10 +266,6 @@ export async function guardedFetch(url, {fetch, policy, accept = '*/*'} = {}) {
   }
 }
 
-export function allowedType(type, policy) {
-  return TEXT_TYPES.test(type) || (policy.archive && ARCHIVE_TYPES.test(type));
-}
-
 // --- text ------------------------------------------------------------------------
 
 const titleOf = (text, type) => {
@@ -308,7 +294,7 @@ export async function fetchSource(goal, url, {fetch, policy = fetchPolicy(), max
   if (why) return {...result, error: `source_refused: ${why}`};
   const state = {fed: 0};
   try {
-    const {response, final_url} = await guardedFetch(url, {fetch, policy: {...policy, archive: false},
+    const {response, final_url} = await guardedFetch(url, {fetch, policy,
       accept: 'text/html, text/markdown, text/plain, application/json;q=0.9, text/*;q=0.8, */*;q=0.5'});
     Object.assign(result, {final_url, status: response.status, content_type: mediaType(response)});
     if (response.status < 200 || response.status > 299) { cancelBody(response); throw new FetchRefused(`http ${response.status}`); }

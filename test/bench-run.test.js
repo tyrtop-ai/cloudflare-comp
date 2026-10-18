@@ -254,6 +254,30 @@ test('a grading that could not run is no round: the completed room is graded aga
   assert.equal(b.status().aggregate.error, 0);
 });
 
+// R10-edges/chrono-1: a task in a language no harness covers is graded by the compiler's session with the room's compiler model; a session that gives no grade settles the task, so the run ends.
+test('a task in any language is graded, by the compiler\'s session when no harness covers it, and never graded forever: a grading with no grade settles the task', async () => {
+  const lua = JSON.stringify({id: 'l0', language: 'lua', prompt: 'Write add(a, b) in Lua.', tests: 'assert(add(1, 2) == 3)\n'});
+  const verdicts = [true, null], models = [];
+  const AI = {run: async (model, input) => {
+    models.push(model);
+    if (input.messages.some(m => m.role === 'tool')) return {tool_calls: []};
+    const v = verdicts.shift();
+    return {tool_calls: v === null ? [{name: 'done', arguments: {}}] : [{name: 'result', arguments: {validation: 'benchmark_tests', passed: v, observed: 'lua: ok'}}, {name: 'done', arguments: {}}]};
+  }};
+  for (const expected of [['done', 'pass'], ['done', 'error']]) {
+    const {rooms, run} = benchEnv({AI}), b = run();
+    await b.begin({id: ID, dataset: {text: lua}, settings: {...SETTINGS, compiler_model: 'c'}, concurrency: 1, selfHosts: ['cp.test']});
+    await b.alarm();
+    rooms.end(taskRoom(ID, 0, 0), pass);
+    await b.alarm();
+    const t = b.status().tasks[0];
+    assert.deepEqual([t.status, t.outcome], expected);
+    assert.equal(b.status().status, 'done');
+    if (expected[1] === 'error') assert.match(t.detail, /^the grader gave no grade: the grader's session gave no result/);
+  }
+  assert.ok(models.every(m => m === 'c'), 'the room settings\' compiler model grades');
+});
+
 // Owner 2026-10-15 23:16 "no stopgaps? ever?": no count of failed deletes leaves a room behind.
 test('a room marked for deletion is tried again on every later tick until its delete goes through, with no count of tries', async () => {
   const {rooms, run} = benchEnv(), b = run();
@@ -554,9 +578,9 @@ test('there is no grading mode in which nothing goes back: /api/bench ignores a 
   const s = await b.alarm().then(() => b.status());
   assert.deepEqual(s.tasks.map(t => [t.status, t.once, t.rounds]), [['done', 'pass', 1], ['running', 'fail', 1]]);
   assert.equal(rooms.log.filter(l => l[0] === 'complaint').length, 1);
-  // Each grading opened a box of its own, with the internet off.
+  // Each grading opened a box of its own, with the internet on.
   assert.equal(boxes.boxes.length, 2);
-  assert.ok(boxes.boxes.every(x => x.container.options?.enableInternet === false));
+  assert.ok(boxes.boxes.every(x => x.container.options?.enableInternet === true));
 });
 
 // ------------------------------------------------------------------ a task room, for real

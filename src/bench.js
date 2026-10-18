@@ -6,7 +6,7 @@
 // or secrets. Datasets are read through src/fetcher.js (guardedFetch: any
 // host the owner's FETCH_ALLOW allows, this deployment's own hosts refused,
 // https only, manual and rechecked redirects, no credentials, decompressed
-// bodies), whole.
+// bodies), whole, whatever content type they are served as.
 //
 // A task room is an ordinary room started from the task's prompt, as the
 // benchmark wrote it: the runtime adds no language, path, library or
@@ -16,12 +16,13 @@
 // its own, with the benchmark's tests (src/bench-run.js); its harness finds
 // the entry in whichever file the room put it (src/bench-harness.js). The
 // tests and the harness live only in the grader's input
-// files. A task is loaded in whatever language its row is written in: the
-// toolchain rows (src/toolchains.js) say which files are that language's and
-// how the box runs them.
-import { fetchPolicy, guardedFetch, plainBody, readCapped, allowedType, redactText, FetchRefused } from './fetcher.js';
-import { TOOLCHAINS, COMPILE_ROWS } from './toolchains.js';
-import { pythonHarness as pyHarness, javascriptHarness as jsHarness, testsAfterHarness } from './bench-harness.js';
+// files. A task is loaded in whatever language its row is written in, by
+// the name the row gives it: the runtime knows no language. Python's and
+// JavaScript's tests run through their harness; any other language's are
+// run by an agent, the compiler's session, with the internet on, so it
+// installs what that language needs (src/bench-run.js gradeBundle).
+import { fetchPolicy, guardedFetch, plainBody, readCapped, redactText, FetchRefused } from './fetcher.js';
+import { pythonHarness as pyHarness, javascriptHarness as jsHarness } from './bench-harness.js';
 
 // No count, size or deadline is set on a benchmark: its tasks are every row
 // the dataset holds, or the first `limit` the person names, read for as long
@@ -31,14 +32,11 @@ export const BENCH_LIMITS = Object.freeze({
   concurrency: [1, 16], budget: [1, 100000]
 });
 export const BENCH_FORMATS = Object.freeze(['humaneval', 'mbpp', 'multipl-e', 'generic']);
-// Every toolchain row the box knows, code rows and compile rows alike.
-const ROWS = [...TOOLCHAINS, ...COMPILE_ROWS];
 // The grader's input files: data files (.txt), so the harness is run by its
 // interpreter and never imported by the solution.
 export const FIXTURE = Object.freeze({harness: 'bench_check.txt', tests: 'bench_tests.txt', prompt: 'bench_prompt.txt'});
 // How the check runs the harness (src/bench-harness.js says why): Python's
-// under python3 -I; JavaScript's, and the one that runs any other language's
-// tests after the solution, preloaded by node.
+// under python3 -I; JavaScript's preloaded by node.
 const RUN = Object.freeze({python: `python3 -I ${FIXTURE.harness}`, node: `node -r ./${FIXTURE.harness} -e 0`});
 
 const plain = v => v && typeof v === 'object' && !Array.isArray(v);
@@ -99,40 +97,27 @@ export const javascriptHarness = ({entry}) => jsHarness({entry, files: FIXTURE})
 
 // --- tasks ------------------------------------------------------------------------
 
-// The language a row names, as {id, extensions}: the toolchain row that
-// has the name as its id, an alias, its name or an extension; a name no row
-// has stands for itself, and its files are those with the name as their
-// extension (MultiPL-E names its languages by their file extension).
-// known: only a row's language, or null.
-function languageOf(v, {known = false} = {}) {
-  const n = String(v ?? '').trim().toLowerCase();
+// The names a harness answers to: a row naming one of them is graded by
+// that harness. Any other name is the row's language as the row writes it.
+const HARNESSED = Object.freeze({python: ['python', 'py', 'python3'], javascript: ['javascript', 'js', 'node', 'nodejs']});
+function languageOf(v) {
+  const n = String(v ?? '').trim();
   if (!n) return null;
-  const row = ROWS.find(r => r.id === n || (r.aliases || []).includes(n) || (r.extensions || []).includes(`.${n}`) || String(r.name || '').toLowerCase() === n);
-  if (row) return {id: row.id, extensions: [...(row.extensions || [])]};
-  return known ? null : {id: n, extensions: /^[a-z0-9+#-]+$/.test(n) ? [`.${n}`] : []};
+  return Object.keys(HARNESSED).find(id => HARNESSED[id].includes(n.toLowerCase())) || n;
 }
-// The commands the box runs a file with, by extension: every row's run_file
-// for its extensions (only those of `extensions`, when it names any).
-function runCommands(extensions = []) {
-  const out = {};
-  for (const r of ROWS) if (Array.isArray(r.run_file)) for (const e of r.extensions || [])
-    if (!extensions.length || extensions.includes(e)) out[e] ??= [...r.run_file];
-  return out;
-}
-// The two languages whose harness loads the entry and runs the tests against it.
-const HARNESSED = new Set(['python', 'javascript']);
+const harnessed = language => Object.hasOwn(HARNESSED, language);
 const taskId = (format, row, index) => (str(row.task_id) || str(row.name) || str(row.id) || `${format}-${index}`)
   .replace(/^(\d+)$/, format === 'mbpp' ? 'MBPP/$1' : '$1');
 
-// The grader of one task: a command check that runs the harness against the
-// bundle the room ships, with the benchmark's tests as its input files; the
-// run grades by the command's exit (src/bench-run.js gradeBundle).
-// Python and JavaScript have their own harness; any other language's tests
-// run after the solution's file, by the command the box runs that file
-// with (testsAfterHarness). A language no row runs has no check: the grader
-// says so ({unrunnable}), and that grading observes nothing: the task stays
-// running and is graded again (src/bench-run.js), until it is done.
-export function benchGrader({language, extensions = [], entry, tests, prompt = '', callCheck = true}) {
+// The grader of one task. Python and JavaScript: a command check that runs
+// the harness against the bundle the room ships, with the benchmark's tests
+// as its input files; the run grades by the command's exit. Any other
+// language: the benchmark's tests as one validation, with the tests as an
+// input file, which the compiler's session runs against the bundle as the
+// benchmark states them; its result is the grade (src/bench-run.js
+// gradeBundle).
+export const BENCH_VALIDATION = 'benchmark_tests';
+export function benchGrader({language, entry, tests, prompt = '', callCheck = true}) {
   const expect = {exit: 0};
   const files = {[FIXTURE.tests]: tests};
   if (language === 'python') {
@@ -140,17 +125,15 @@ export function benchGrader({language, extensions = [], entry, tests, prompt = '
     return {id: 'grader', serves: [], check: {kind: 'command', run: RUN.python, files: {[FIXTURE.harness]: pythonHarness({entry, callCheck}), ...files}, expect}};
   }
   if (language === 'javascript') return {id: 'grader', serves: [], check: {kind: 'command', run: RUN.node, files: {[FIXTURE.harness]: javascriptHarness({entry}), ...files}, expect}};
-  const runs = runCommands(extensions);
-  if (!Object.keys(runs).length) return {id: 'grader', serves: [], unrunnable: `no toolchain row of the box runs ${language || 'the task\'s'} files${extensions.length ? ` (${extensions.join(', ')})` : ''}`};
-  return {id: 'grader', serves: [], check: {kind: 'command', run: RUN.node, files: {[FIXTURE.harness]: testsAfterHarness({entry, runs, files: FIXTURE}), ...files}, expect}};
+  return {id: 'grader', serves: [], files, validation: {id: BENCH_VALIDATION, serves: [],
+    check: {kind: 'tests', language, tests: FIXTURE.tests, ...(entry ? {entry} : {}), expect: 'the benchmark\'s tests in the tests file pass when run against the files, as the benchmark states them'}}};
 }
 
 // One row as a task, or {skip} with the reason: its prompt, verbatim, is
 // the goal the task's room starts from; its entry (the function the tests
 // call) and tests are the grader's only. A row in a language other than
-// Python and JavaScript needs no entry: its grader runs the tests after
-// each file of that language (the files that name the entry, when the row
-// gives one). opts: format (forced).
+// Python and JavaScript needs no entry: the agent that grades it reads the
+// tests (and the entry, when the row gives one). opts: format (forced).
 export function taskFromRow(row, index = 0, {format = null} = {}) {
   const f = format || detectFormat(row);
   if (!f) return {skip: 'unrecognised row: expected HumanEval, MBPP, MultiPL-E or {id, language, prompt, tests} fields'};
@@ -170,22 +153,22 @@ export function taskFromRow(row, index = 0, {format = null} = {}) {
     const imports = Array.isArray(row.test_imports) ? row.test_imports.filter(t => typeof t === 'string') : [];
     tests = [...imports, str(row.test_setup_code), ...list].filter(s => s.trim()).join('\n') + '\n';
   } else if (f === 'multipl-e') {
-    language = languageOf(row.language) || languageOf(String(row.name).split('_')[0], {known: true});
+    language = languageOf(row.language);
     if (!language) return {id, skip: 'the row names no language'};
     prompt = str(row.prompt); tests = str(row.tests); callCheck = false;
-    entry = HARNESSED.has(language.id) ? promptEntry(prompt, language.id) : null;
+    entry = harnessed(language) ? promptEntry(prompt, language) : null;
   } else {
     language = languageOf(row.language);
     if (!language) return {id, skip: 'the row names no language: give "language" (python, javascript, ruby, …)'};
     prompt = str(row.prompt); tests = Array.isArray(row.tests) ? row.tests.filter(t => typeof t === 'string').join('\n') : str(row.tests);
-    entry = (str(row.entry_point) || str(row.entry)).trim() || (HARNESSED.has(language.id) ? promptEntry(prompt, language.id) : null);
-    if (language.id === 'python') promptFixture = /(?:^|\n)\s*(?:async\s+)?def\s/.test(prompt) ? prompt : '';
+    entry = (str(row.entry_point) || str(row.entry)).trim() || (harnessed(language) ? promptEntry(prompt, language) : null);
+    if (language === 'python') promptFixture = /(?:^|\n)\s*(?:async\s+)?def\s/.test(prompt) ? prompt : '';
   }
-  if (HARNESSED.has(language.id) && !entry) return {id, skip: 'no entry function could be read from the row'};
+  if (harnessed(language) && !entry) return {id, skip: 'no entry function could be read from the row'};
   if (!prompt.trim()) return {id, skip: 'the row has no prompt'};
   if (!String(tests ?? '').trim()) return {id, skip: 'the row has no tests'};
-  const grader = benchGrader({language: language.id, extensions: language.extensions, entry, tests, prompt: promptFixture, callCheck});
-  return {id, format: f, language: language.id, entry: entry || null, prompt, grader};
+  const grader = benchGrader({language, entry, tests, prompt: promptFixture, callCheck});
+  return {id, format: f, language, entry: entry || null, prompt, grader};
 }
 
 // Rows → tasks, every one or the first `limit`, with the skipped rows and why.
@@ -215,13 +198,13 @@ async function sha256(text) {
 // runs over the same tasks compare equal whatever page size or text fetched
 // them, and differ when a task's prompt or tests differ.
 // One task's digest (its goal and its tests), so runs compare task by task.
-export const taskDigest = async t => (await sha256(JSON.stringify([t.prompt, t.grader?.check?.files?.[FIXTURE.tests] ?? '']))).slice(0, 16);
-export const tasksDigest = tasks => sha256(JSON.stringify(tasks.map(t => [t.id, t.prompt, t.grader?.check?.files?.[FIXTURE.tests] ?? ''])));
+const testsOf = g => g?.check?.files?.[FIXTURE.tests] ?? g?.files?.[FIXTURE.tests] ?? '';
+export const taskDigest = async t => (await sha256(JSON.stringify([t.prompt, testsOf(t.grader)]))).slice(0, 16);
+export const tasksDigest = tasks => sha256(JSON.stringify(tasks.map(t => [t.id, t.prompt, testsOf(t.grader)])));
 // The policy for dataset fetches: the owner's allowlist (FETCH_ALLOW, or the
-// fetcher's default) as it is, the deployment's own hosts refused, archives
-// (a .jsonl.gz served as octet-stream) allowed.
+// fetcher's default) as it is, the deployment's own hosts refused.
 export function benchPolicy({allow, selfHosts = [], ...limits} = {}) {
-  return fetchPolicy({allow, selfHosts, requireSelfHosts: true, archive: true, ...limits});
+  return fetchPolicy({allow, selfHosts, requireSelfHosts: true, ...limits});
 }
 // A datasets-server rows URL: its pages are fetched up to `want` rows, or all of them.
 const rowsApi = u => u.hostname === 'datasets-server.huggingface.co' && u.pathname === '/rows';
@@ -239,9 +222,7 @@ export async function fetchDataset(url, {fetch, policy, want = null, redact = t 
     const {response, final_url: f} = await guardedFetch(target, {fetch, policy,
       accept: 'application/json, application/x-ndjson, application/jsonl, text/plain;q=0.9, application/gzip;q=0.8, */*;q=0.1'});
     final_url = f;
-    const type = String(response.headers?.get?.('content-type') || '').split(';')[0].trim().toLowerCase();
     if (response.status < 200 || response.status > 299) { try { response.body?.cancel?.().catch?.(() => {}); } catch {} throw new FetchRefused(`http ${response.status}`); }
-    if (!allowedType(type, policy)) { try { response.body?.cancel?.().catch?.(() => {}); } catch {} throw new FetchRefused(`content type ${type || '(none)'} is not read`); }
     const body = await plainBody(response.body, {encoding: response.headers?.get?.('content-encoding') || ''});
     const read = await readCapped(body, Infinity);
     if (read.bytes.subarray(0, 8192).includes(0)) throw new FetchRefused('binary content (a parquet or archive file is not read; use a JSON lines URL)');
@@ -314,8 +295,10 @@ export function roomOutcome(s) {
 }
 // The grader's result as an outcome: pass, fail (what it observed, whole:
 // the complaint the run sends the room), or error when it could not run:
-// it observed nothing, so the run grades the room again (BenchRun.graded).
+// it observed nothing, so the run grades the room again (BenchRun.graded);
+// an error that settles the task when it ran and gave no grade.
 export function gradeOutcome(g) {
+  if (g?.ungraded) return {outcome: 'error', detail: `the grader gave no grade: ${g.ungraded}`, settled: true};
   if (!g || g.infrastructure) return {outcome: 'error', detail: `the grader could not run: ${g?.infrastructure || 'no answer'}`};
   return g.passed ? {outcome: 'pass', detail: ''} : {outcome: 'fail', detail: g.detail || 'the benchmark\'s tests failed'};
 }

@@ -81,22 +81,23 @@ test('MBPP rows: the function the asserts call, from the reference code\'s names
   assert.equal(tasks[0].grader.check.files[FIXTURE.prompt], undefined);
 });
 
-test('MultiPL-E rows: every language loads (owner: "Any code type"); JavaScript\'s entry is the last function of the prompt; another language\'s tests run after the solution, by the command its toolchain row runs a file with', () => {
-  const {tasks, skipped, formats} = loadTasks([...MULTIPLE_JS, ...MULTIPLE_RB], {limit: 10});
-  assert.deepEqual(tasks.map(t => [t.id, t.language, t.entry]), [['Toy_0_add_two', 'javascript', 'add_two'], ['Toy_1_rev', 'javascript', 'rev'], ['Toy_2_neg', 'javascript', 'neg'], ['Toy_3_rs', 'rust', null], ['Toy_0_add_two_rb', 'ruby', null]]);
+// Owner 2026-10-17 20:39 "The runtime should be language adrogenous": a row's language is the name it writes; no toolchain row decides which languages are graded.
+test('MultiPL-E rows: every language loads (owner: "Any code type"); JavaScript\'s entry is the last function of the prompt; another language\'s tests are one validation for the grading agent, with the tests as its input file', () => {
+  const {tasks, skipped, formats} = loadTasks([...MULTIPLE_JS, ...MULTIPLE_RB, {...MULTIPLE_RB[0], name: 'Toy_9_lua', language: 'lua'}], {limit: 10});
+  assert.deepEqual(tasks.map(t => [t.id, t.language, t.entry]), [['Toy_0_add_two', 'javascript', 'add_two'], ['Toy_1_rev', 'javascript', 'rev'], ['Toy_2_neg', 'javascript', 'neg'], ['Toy_3_rs', 'rs', null], ['Toy_0_add_two_rb', 'rb', null], ['Toy_9_lua', 'lua', null]]);
   for (const [i, t] of tasks.slice(0, 3).entries()) assertGrader(t, {language: 'javascript', entry: t.entry, prompt: MULTIPLE_JS[i].prompt});
-  assert.deepEqual(formats, {'multipl-e': 5});
+  assert.deepEqual(formats, {'multipl-e': 6});
   assert.deepEqual(skipped, []);
   assert.equal(tasks[0].prompt, '//Add two numbers.\n// >>> add_two(1, 2)\n// 3\nfunction add_two(a, b){\n');
-  // Ruby: the harness runs the tests after each .rb file, with the ruby row's run_file.
+  // Ruby, Rust, Lua: no command of the runtime's; the benchmark's tests as written, in the tests file the grading agent runs.
+  for (const t of tasks.slice(3)) {
+    assert.equal(t.grader.check, undefined);
+    assert.equal(t.grader.unrunnable, undefined);
+    assert.deepEqual(t.grader.validation, {id: bench.BENCH_VALIDATION, serves: [], check: {kind: 'tests', language: t.language, tests: FIXTURE.tests, expect: t.grader.validation.check.expect}});
+  }
   const rb = tasks[4];
   assert.equal(rb.prompt, MULTIPLE_RB[0].prompt);
-  assert.equal(rb.grader.check.run, `node -r ./${FIXTURE.harness} -e 0`);
-  assert.match(rb.grader.check.files[FIXTURE.harness], /"\.rb":\["ruby","\{path\}"\]/);
-  assert.equal(rb.grader.check.files[FIXTURE.tests], MULTIPLE_RB[0].tests);
-  // Rust: loaded as written; its toolchain row runs a .rs file (build, then run), so its tests run after the solution like Ruby's.
-  assert.equal(tasks[3].grader.unrunnable, undefined);
-  assert.match(tasks[3].grader.check.files[FIXTURE.harness], /"\.rs":\["sh","-c"/);
+  assert.deepEqual(rb.grader.files, {[FIXTURE.tests]: MULTIPLE_RB[0].tests});
 });
 
 test('generic {id, language, prompt, tests} rows: the language from the row (a row naming none is skipped), the entry from the row or the prompt', () => {
@@ -118,11 +119,8 @@ test('an entry is taken as the row writes it: no length or JS/Python name shape 
   const rb = taskFromRow({id: 'g-rb', language: 'ruby', entry: 'empty?', prompt: 'Write empty?(xs).', tests: 'raise unless empty?([])'}, 0);
   assert.equal(rb.skip, undefined);
   assert.equal(rb.entry, 'empty?');
-  // The harness looks for files naming the entry with the name quoted as text, not as a pattern.
-  const line = rb.grader.check.files[FIXTURE.harness].split('\n').find(l => l.includes('const word'));
-  const word = new Function('ENTRY', line + '\nreturn word;')('empty?');
-  assert.equal(word.test('def empty?(xs) = xs.size == 0'), true);
-  assert.equal(word.test('def empt(xs) = 1'), false);
+  // The grading agent reads the entry as the row writes it.
+  assert.equal(rb.grader.validation.check.entry, 'empty?');
   // Python and JavaScript still need a name the harness can call.
   assert.match(taskFromRow({id: 'g-none', language: 'python', prompt: 'Do it.', tests: 'assert True'}).skip, /no entry function/);
 });
@@ -201,19 +199,33 @@ test('JavaScript graders: ESM, CommonJS and plain declarations pass wherever the
   assert.equal((await verify(g, {'solution.js': 'export const greet = name => `hi ${name}`;\n'})).passed, true);
 });
 
-const hasRuby = spawnSync('ruby', ['--version']).status === 0;
-test('Ruby graders: the tests run after the solution, wherever the room put it; a wrong solution fails with what the tests printed', {skip: !hasRuby && 'ruby is not installed'}, async () => {
+// Any other language: the compiler's session grades, in a box of its own with the internet on, by the benchmark's own tests; its result is the grade.
+const scripted = calls => { const requests = []; return {requests, AI: {run: async (model, input) => { requests.push({model, input: JSON.parse(JSON.stringify(input))}); const c = calls[requests.length - 1]; return {tool_calls: c ? c : []}; }}}; };
+test('another language\'s grader: the compiler\'s session runs the benchmark\'s tests against the bundle, with the internet on, and its result is the grade; a session that gives none is no grade', async () => {
   const [rb] = MULTIPLE_RB.map(r => taskFromRow(r));
-  for (const sol of [{'add.rb': 'def add_two(a, b)\n  a + b\nend\n'}, {'lib/math/add.rb': '# adds\ndef add_two(a, b) = a + b\n', 'README.md': '# x\n'}]) {
-    const c = await verify(rb, sol);
-    assert.equal(c.passed, true, `${JSON.stringify(sol)}: ${c.detail}`);
-  }
-  const wrong = await verify(rb, {'add.rb': 'def add_two(a, b)\n  a - b\nend\n'});
-  assert.equal(wrong.passed, false);
-  assert.match(wrong.detail, /expected but was|Failure/, 'the detail is the whole observation, the tests\' output with it');
-  assert.match(wrong.detail, /exit 1/);
-  const none = await verify(rb, {'README.md': '# nothing to run\n'});
-  assert.match(none.detail, /exit 3/);
+  const solution = new Map([['lib/add.rb', 'def add_two(a, b) = a + b\n']]);
+  const ai = scripted([[{name: 'list_files', arguments: {}}], [{name: 'run', arguments: {argv: ['sh', '-c', 'cat lib/add.rb bench_tests.txt > t.rb; ls']}}],
+    [{name: 'result', arguments: {validation: bench.BENCH_VALIDATION, passed: false, observed: 'ruby t.rb: 1 failure: expected 42 but was 38'}}, {name: 'done', arguments: {}}]]);
+  const boxes = fakeBoxes();
+  const g = await gradeBundle({BOXES: boxes, AI: ai.AI}, rb.grader, solution, {total_ms: 60_000}, {model: '@cf/qwen/qwen3-30b-a3b-fp8'});
+  assert.deepEqual(g, {passed: false, detail: 'ruby t.rb: 1 failure: expected 42 but was 38'});
+  assert.equal(ai.requests[0].model, '@cf/qwen/qwen3-30b-a3b-fp8');
+  // It reads its one validation, the tests file beside the bundle, and the paths; the internet is on so it installs the language.
+  const asked = JSON.parse(ai.requests[0].input.messages.find(m => m.role === 'user').content);
+  assert.deepEqual(asked, {validations: [rb.grader.validation], contracts: [], files: [FIXTURE.tests, 'lib/add.rb']});
+  assert.match(JSON.stringify(ai.requests[1].input.messages.at(-1)), /bench_tests\.txt/);
+  const [{container}] = boxes.boxes;
+  assert.deepEqual([container.options.enableInternet, container.running], [true, false]);
+  assert.equal(container.written[FIXTURE.tests], MULTIPLE_RB[0].tests);
+  const pass = scripted([[{name: 'result', arguments: {validation: bench.BENCH_VALIDATION, passed: true, observed: '1 tests, 1 assertions, 0 failures'}}, {name: 'done', arguments: {}}]]);
+  assert.deepEqual(await gradeBundle({BOXES: fakeBoxes(), AI: pass.AI}, rb.grader, solution, {total_ms: 60_000}), {passed: true, detail: ''});
+  // No result: no grade, which settles the task (no run grades forever).
+  const silent = scripted([[{name: 'done', arguments: {}}]]);
+  const none = await gradeBundle({BOXES: fakeBoxes(), AI: silent.AI}, rb.grader, solution, {total_ms: 60_000});
+  assert.match(none.ungraded, /gave no result for the benchmark's tests/);
+  assert.deepEqual(gradeOutcome(none), {outcome: 'error', detail: `the grader gave no grade: ${none.ungraded}`, settled: true});
+  // A grader stored with nothing to run (a run from before) is no grade either.
+  assert.deepEqual(await gradeBundle({BOXES: fakeBoxes()}, {id: 'grader', serves: [], unrunnable: 'no toolchain row of the box runs lua files'}, solution), {ungraded: 'no toolchain row of the box runs lua files'});
 });
 
 // ------------------------------------------------------------------ fetching
@@ -272,6 +284,19 @@ test('fetchDataset: a JSON lines file, a gzipped one served as octet-stream, a r
   const src = readFileSync(new URL('../src/bench.js', import.meta.url), 'utf8');
   assert.doesNotMatch(src, /\benv\b|GITHUB_TOKEN|APP_TOKEN|Authorization|Cookie|credentials\s*:|globalThis\.fetch/);
   assert.doesNotMatch(src, /\bfetch\s*\(/, 'every request goes through the fetcher\'s guardedFetch');
+});
+
+// R10-edges/chrono-2 (owner 2026-10-15 05:16, 2026-10-17: interfaces never change the data): a dataset is read whatever content type it is served as; only a body that cannot be read is not.
+test('fetchDataset: a dataset is read whatever content type it is served as, or none; only a body that cannot be read is refused', async () => {
+  const url = 'https://raw.githubusercontent.com/toy/bench/main/d';
+  for (const type of ['application/x-jsonlines', 'application/jsonlines+json', 'text/html', 'image/png', 'application/vnd.whatever', null]) {
+    const fetch = fakeFetch({[url]: () => new Response(jsonl(HUMANEVAL), {headers: type ? {'content-type': type} : {}})});
+    const got = await fetchDataset(url, {fetch, policy: policy()});
+    assert.equal(got.error, null, String(type));
+    assert.equal(got.text, jsonl(HUMANEVAL), String(type));
+  }
+  const parquet = fakeFetch({[url]: () => new Response(new Uint8Array([0x50, 0x41, 0x52, 0x31, 0, 0, 0]), {headers: {'content-type': 'application/x-jsonlines'}})});
+  assert.match((await fetchDataset(url, {fetch: parquet, policy: policy()})).error, /source_refused: binary content/);
 });
 
 test('fetchDataset: a datasets-server rows URL is paged up to the wanted rows; a large body is read whole', async () => {
