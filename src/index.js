@@ -37,7 +37,7 @@ import { callOf, esmSyntax, placeholders, startKeys } from './linker.js';
 import { contractCheck, contractBody, stubExports, exportNames, awaitFixes, asyncExports } from './linker.js';
 import { dataPiece } from './problems.js';
 import { MAX_INTERFACES } from './interfaces.js';
-import { inheritServes, otherName, kindOf as contractKind, contractLine, gateLine, PLACED_KINDS, contractInputs, contractOutputs } from './contracts.js';
+import { inheritServes, otherName, kindOf as contractKind, contractLine, PLACED_KINDS, contractInputs, contractOutputs } from './contracts.js';
 import { branchDirectory, packageDirectory, packagePath, partsRoot, PARTS_ROOT } from './assembly.js';
 import { placeChecks, checkUses, textHash } from './piece.js';
 import { zipFiles } from './zip.js';
@@ -264,13 +264,10 @@ export const DEFAULT_ROOM_SETTINGS = Object.freeze({
   packages: 'none', pipeline: 'v7',
   max_agents: 64, max_depth: 10, parallel: 16, max_children: 7, check_seconds: DEFAULT_CHECK_SECONDS,
   model: '@cf/qwen/qwen3-30b-a3b-fp8', worker_model: '@cf/qwen/qwen3-30b-a3b-fp8', compiler_model: '@cf/qwen/qwen3-30b-a3b-fp8', split_model: '@cf/cloudflare/clef-flash', split_threshold: 0.7,
-  // v8 live 5: the split's three tunable numbers. split_floor: a pre-grade p at
-  // or below it means Clef is very certain no split is needed, and the manager
-  // hands its whole assignment down to one worker (the manager never writes
-  // code). split_valid_bar: the bar
+  // v8 live 5: the split's tunable numbers. split_valid_bar: the bar
   // Clef's split_valid p must reach, the same for every manager at every
   // depth. split_size_bar: the bar Clef's split_size p must reach.
-  split_floor: 0.1, split_valid_bar: 0.5, split_size_bar: 0.5
+  split_valid_bar: 0.5, split_size_bar: 0.5
 });
 // v8 live 5: a level's split is reviewed by Clef up to this many times (the
 // first session and two more, each after the review's objection).
@@ -332,8 +329,8 @@ export function normalizeRoomSettings(raw = {}, prior = DEFAULT_ROOM_SETTINGS) {
     if (!Number.isFinite(p) || p<0.2 || p>0.8) throw new Error('Invalid split threshold: expected 0.2–0.8');
     result.split_threshold=p;
   }
-  // v8 live 5: the split's floor and bars, each a probability.
-  for (const [key,[min,max]] of Object.entries({split_floor:[0,0.5],split_valid_bar:[0.05,0.95],split_size_bar:[0.05,0.95]})) {
+  // v8 live 5: the split's bars, each a probability.
+  for (const [key,[min,max]] of Object.entries({split_valid_bar:[0.05,0.95],split_size_bar:[0.05,0.95]})) {
     if (raw[key] === undefined) continue;
     const p=Number(raw[key]);
     if (!Number.isFinite(p) || p<min || p>max) throw new Error(`Invalid ${key}: expected ${min}–${max}`);
@@ -480,8 +477,8 @@ export class ControlRoom extends DurableObject {
     db.exec("CREATE TABLE IF NOT EXISTS prompt_handlers (id TEXT PRIMARY KEY, kind TEXT NOT NULL, prompt TEXT NOT NULL, prompt_id TEXT NOT NULL DEFAULT '', root TEXT NOT NULL, created_root INTEGER NOT NULL DEFAULT 0, spawned_at INTEGER NOT NULL, ended_at INTEGER)");
     // v8: each level's validations (V<n>): the level that holds it, the contracts it serves, its check, what it says, and Clef's marks.
     db.exec("CREATE TABLE IF NOT EXISTS validations (id TEXT PRIMARY KEY, level TEXT NOT NULL, serves TEXT NOT NULL, spec TEXT NOT NULL, says TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '{}', created INTEGER NOT NULL)");
-    // v8: the splitter sessions (splitter-<hex16>), each under the manager that ran it; outcome: done, or why its session ended without done (rounds, context, mock); output: its calls with their results, and its level.
-    db.exec("CREATE TABLE IF NOT EXISTS splitters (id TEXT PRIMARY KEY, manager TEXT NOT NULL, kind TEXT NOT NULL, attempt INTEGER NOT NULL, spawned_at INTEGER NOT NULL, ended_at INTEGER, outcome TEXT NOT NULL DEFAULT '', output TEXT NOT NULL DEFAULT '{}')");
+    // v8: every session of a manager's splitter (one agent per manager, splitter-<hex16>), in order; continues: '' (a new job), 'conversation' (it resumes one the room's turn budget ended) or 'context' (it carries what one whose context window filled declared); outcome: done, or why it ended without done (context, budget, mock); output: its calls with their results, and its level.
+    db.exec("CREATE TABLE IF NOT EXISTS splitter_sessions (manager TEXT NOT NULL, session INTEGER NOT NULL, splitter TEXT NOT NULL, kind TEXT NOT NULL, continues TEXT NOT NULL DEFAULT '', spawned_at INTEGER NOT NULL, ended_at INTEGER, outcome TEXT NOT NULL DEFAULT '', output TEXT NOT NULL DEFAULT '{}', PRIMARY KEY (manager, session))");
     // Speed v1 review: a version per agent row (rev) and one for the alias
     // table, bumped by triggers on every write, so a dashboard delta selects
     // only the agents changed since its cursor and knows when the export list
@@ -1097,6 +1094,15 @@ export class ControlRoom extends DurableObject {
       ...this.promptsHead()
     };
   }
+  // v8: each manager's splitter, one agent: its id, its manager, its state
+  // (running while a session of it runs, waiting when its last session ended
+  // without done and goes on, done once its last session's done completed),
+  // and its sessions, each with the outcome of Clef's last review in it.
+  splitterAgents() {
+    const by=new Map();
+    for(const x of this.splitterRows()){const verdict=this.read(`split_attempts:${x.manager}`,[]).findLast(a=>a.session===x.session)?.outcome||'';by.set(x.manager,[...(by.get(x.manager)||[]),{...x,verdict}]);}
+    return [...by].map(([manager,sessions])=>{const last=sessions.at(-1);return {id:last.splitter,manager,state:!last.ended_at?'running':last.outcome==='done'?'done':'waiting',sessions};});
+  }
   // v8: what the dashboard shows of the levels: each validation with what it
   // serves, its check in a few words, Clef's marks, the row that holds it and
   // its last result (a result older than the last change to a delivered file
@@ -1108,7 +1114,7 @@ export class ControlRoom extends DurableObject {
     return {room_manager:this.roomManager(),validation_status:status,readers:this.read('source_readers',[]),
       validations:this.validationRows().map(v=>({id:v.id,level:v.level,held:held.get(v.id)||'',serves:v.serves,kind:v.check?.kind||'',check:checkSummary(v.check),...(v.says?{says:v.says}:{})})),
       levels:this.levelFiles().map(f=>{const l=this.levelDesign(f.manager);return {...f,label:this.node(f.manager)?.label||'',children:l?.children.length||0,archived:l?.archived.length||0,contracts:l?.contracts.length||0,validations:l?.validations.length||0};}),
-      splitters:this.splitterRows().map(x=>({...x,verdict:this.read(`split_attempts:${x.manager}`,[]).findLast(a=>a.splitter===x.id)?.outcome||''})),
+      splitters:this.splitterAgents(),
       compilers:this.levelCompilers()};
   }
   // v8: each level's compiler, once its builder first handed it the piece: its
@@ -1288,7 +1294,7 @@ export class ControlRoom extends DurableObject {
       problems:this.problems('1=1'),repair_tickets:query(this.db(),'SELECT * FROM repair_tickets ORDER BY created'),state,cursors,split_attempts,
       // v8: every manager's level file (where it is, the commit, and the level it holds) and every splitter step with what it answered.
       ...(this.v8()?{levels:this.levelFiles().map(f=>({...f,level:this.levelDesign(f.manager)})),
-        splitter_steps:query(this.db(),'SELECT id,manager,kind,attempt,spawned_at,ended_at,outcome,output FROM splitters ORDER BY spawned_at,id').map(r=>({...r,output:parse(r.output,{})}))}:{}),
+        splitter_sessions:query(this.db(),'SELECT manager,session,splitter,kind,continues,spawned_at,ended_at,outcome,output FROM splitter_sessions ORDER BY spawned_at,manager,session').map(r=>({...r,output:parse(r.output,{})}))}:{}),
       // v8 S9: the prompt's revisions and every prompt, with its outcome.
       goal_revisions:query(this.db(),'SELECT rev,prompt,text,effective,ts FROM goal_revisions ORDER BY rev'),prompt_history:this.promptRows(),
       // v8 S8b: every source with its summary and digest, the base as it was read, and each base file's digest (the files themselves are in /api/app).
@@ -1430,12 +1436,12 @@ export class ControlRoom extends DurableObject {
   productionNodeCount() {return this.allNodes().filter(n=>!isRuntimeNode(n)&&n.status!=='retired'&&!(n.status==='archived'&&this.v8())).length;}
   // v7.15: a node's promise, the only accessor.
   promisedOf(id) {const n=this.node(id);return n?parse(n.interfaces,[]):[];}
-  // v8 live 5: the split's floor and bars (room settings, each with its default).
-  splitConfig() {const s=this.settings(),d=DEFAULT_ROOM_SETTINGS;return {floor:s.split_floor??d.split_floor,valid_bar:s.split_valid_bar??d.split_valid_bar,size_bar:s.split_size_bar??d.split_size_bar};}
+  // v8 live 5: the split's bars (room settings, each with its default).
+  splitConfig() {const s=this.settings(),d=DEFAULT_ROOM_SETTINGS;return {valid_bar:s.split_valid_bar??d.split_valid_bar,size_bar:s.split_size_bar??d.split_size_bar};}
   // v8 live 5: what Clef graded of a manager's splits, in order (split_attempts:<id>):
-  // attempt 0, the pre-grade (p, the floor, whether the catch fired); attempt n,
-  // the nth proposal's review (its piece count, the valid and size ps,
-  // the bars, the retry parameter it was made with, and its outcome). Only
+  // attempt n, the nth division's review in its job (the splitter and the
+  // session it was done's in, its piece count, the valid and size ps, the
+  // bars, the retry parameter it was made with, and its outcome). Only
   // the attempts made for the row's current task count.
   splitAttempts(id) {const key=taskKey(this.node(id)?.task);return this.read(`split_attempts:${id}`,[]).filter(a=>a.task===key);}
   recordAttempt(id, entry) {this.save(`split_attempts:${id}`,[...this.read(`split_attempts:${id}`,[]),{...entry,task:taskKey(this.node(id)?.task)}]);}
@@ -1467,15 +1473,9 @@ export class ControlRoom extends DurableObject {
   // rebuild or an extension not admitted yet), or while a contract of its
   // level has no live child to deliver it (an archived child's, or one a
   // complaint named), which its next turn's rebuild hands down.
-  owesWorker(id) { const j=this.read(`level_job:${id}`,null);return j?!j.admitted:!!this.levelIndex(id)&&this.orphansOf(id).orphans.length>0; }
+  owesWorker(id) { const j=this.read(`level_job:${id}`,null);return j&&j.kind!=='restate'?!j.admitted:!!this.levelIndex(id)&&this.orphansOf(id).orphans.length>0; }
   takePieces(id, count) { if(count>this.piecesRoom(id))return false;this.save('split_taken',{...this.read('split_taken',{}),[id]:2*count});return true; }
   releasePieces(id) { const t={...this.read('split_taken',{})};if(id in t){delete t[id];this.save('split_taken',t);} }
-  // v8 live 5: what every manager's split gate reads beside its assignment:
-  // its own row's contracts, one line each (gateLine), each with the ids of
-  // the validations it serves, as the row holds them.
-  gateContracts(id) {
-    return this.promisedOf(id).map(c=>gateLine(c)).filter(Boolean);
-  }
   // A room whose Root promises start (live, started under v7.15) answers
   // function requests from promises; MOCK and v7.14 rooms route as v7.14.
   // v7's request machinery only: a v8 room answers asks by its levels (routeAsk).
@@ -6681,7 +6681,7 @@ export class ControlRoom extends DurableObject {
       catch {failed++;}
     }
     if(typeof this.ctx.storage.deleteAll==='function'){await this.ctx.storage.deleteAlarm?.();await this.ctx.storage.deleteAll();}
-    else for(const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','validations','splitters','piece_files','problems','repair_tickets','goal_revisions','prompts','meta'])this.db().exec(`DELETE FROM ${table}`);
+    else for(const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','validations','splitter_sessions','piece_files','problems','repair_tickets','goal_revisions','prompts','meta'])this.db().exec(`DELETE FROM ${table}`);
     return {repos_deleted:deleted,repos_failed:failed};
   }
   async agentTurn(id) {
@@ -7581,7 +7581,7 @@ export class ControlRoom extends DurableObject {
       if(loaded.error)return {error:clip(loaded.error,600)};
     }
     // v8 S9: a Start keeps the queued prompts (they apply once this run ends) and forgets the rest.
-    for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','validations','splitters','piece_files','problems','repair_tickets','goal_revisions',...INPUT_TABLES,'meta']) this.db().exec(`DELETE FROM ${table}`);
+    for (const table of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','validations','splitter_sessions','piece_files','problems','repair_tickets','goal_revisions',...INPUT_TABLES,'meta']) this.db().exec(`DELETE FROM ${table}`);
     this.db().exec("DELETE FROM prompts WHERE status!='queued'");
     // v8 S9: the Start budget, each queued prompt's run budget unless the prompt has its own.
     {let b;try{b=normalizeTurnBudget(budget);}catch{b=20;}this.set('start_budget',String(b));}
@@ -7977,11 +7977,11 @@ export class ControlRoom extends DurableObject {
   // no manager up to the room holds archives the asker (routeAsk), and the
   // compensating controls rebuild what it delivered.
   // Every manager is the same:
-  //  - its split step: Clef pre-grades the assignment (the runtime's catch at
-  //    split_floor); its splitter (a short-lived session, table splitters)
-  //    declares the level's contracts, validations and pieces through its
-  //    functions (src/splitter.js), and Clef reviews the level in one
-  //    batched call (reviewLevel), up to SPLIT_ATTEMPTS times; the manager admits
+  //  - its split step: its splitter (one agent per manager, each session a
+  //    row of splitter_sessions) declares the level's contracts, validations
+  //    and pieces through its functions (src/splitter.js), and Clef reviews
+  //    every division its done completes in one batched call (reviewLevel),
+  //    up to SPLIT_ATTEMPTS times, each NO done's result in the same session; the manager admits
   //    the result (admitLevel): its level file (writeLevel), the
   //    validations it holds, and its children, the pieces or one worker;
   //  - it routes, with Clef: a complaint the compiler observed goes down to
@@ -8157,103 +8157,112 @@ export class ControlRoom extends DurableObject {
     return out;
   }
   // ---------- the split step ----------
-  // One splitter session per turn. A level with no design yet: Clef pre-grades it
-  // once; a pre-grade at or below split_floor (the runtime's catch), or no
-  // room for pieces, hands a level whose contracts were given to one worker
-  // with no splitter call, and asks the splitter of a level with none only
-  // for the level's contracts and validations. Otherwise piece is offered,
-  // the splitter proposes a division (its done completes two or more
-  // pieces), and Clef's review alone decides whether that division is
-  // valid: each NO is a new session with its objection (larger pieces, or a
-  // different division), up to SPLIT_ATTEMPTS attempts. A session that ends
-  // without done (its context window full, or the room's turn budget spent)
-  // goes on in a new session from what it declared. A pending job (level_job:<id>:
-  // a rebuild of what an archived child delivered, or an extension for a
-  // change none of its children covers) is an attempt of the same
-  // kind on a level that has its design, under the same pre-grade: Clef
-  // grades a manager once, and a caught manager's jobs are not divided either.
+  // Each manager has one splitter (rowId(manager, 1, 'splitter')), one agent:
+  // every session of it is a turn of that agent (a row of splitter_sessions).
+  // A level given contracts with no room for pieces (the room's agent or
+  // depth limit) goes to one worker with no splitter call. Otherwise piece is
+  // offered when the room has room for pieces (canSplitPieces): every
+  // manager tries to split, its done completes only a division of two or
+  // more, and Clef reviews every division (reviewDivision), which its done calls: a NO with attempts left
+  // (SPLIT_ATTEMPTS) is done's result, what was judged and why, and the same
+  // session goes on with everything it declared; the NO of the last attempt
+  // hands the level down whole. A session that ends without done goes on as
+  // the same splitter: when the room's turn budget ended it, its conversation
+  // resumes; when its context window was full, a new context carries what it
+  // declared and the last NO it heard. A pending job (level_job:<id>: a
+  // rebuild of what an archived child delivered, an extension for a change
+  // none of its children covers, or a restatement of the piece whose files
+  // did not change in answer to a complaint) is a session of the same
+  // splitter on a level that has its design.
   async splitStep(id, job=null) {
-    const given=this.assignmentOf(id),own=job?job.own||[]:given.contracts,cfg=this.splitConfig(),started=Date.now(),r3=x=>Math.round(x*1000)/1000;
+    const given=this.assignmentOf(id),own=job?job.own||[]:given.contracts;
     this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
-    if(!job&&!this.splitAttempts(id).some(a=>a.attempt===0)) {
-      const pre=await shouldSplit({...this.inferenceEnv(),SPLIT_THRESHOLD:cfg.floor,SPLIT_FLOOR:cfg.floor},given.prompt,null,this.gateContracts(id)),caught=pre.probability<=cfg.floor;
-      this.recordAttempt(id,{attempt:0,p:r3(pre.probability),floor:cfg.floor,caught,ms:Date.now()-started});
-      this.event(id,'split_gate',caught?`Clef's pre-grade p=${pre.probability.toFixed(3)} is at or below the floor ${cfg.floor}: no division is tried (${Date.now()-started} ms).`:`Clef's pre-grade p=${pre.probability.toFixed(3)} is above the floor ${cfg.floor}: the splitter proposes and Clef reviews (${Date.now()-started} ms).`);
-    }
-    const caught=this.splitAttempts(id).find(a=>a.attempt===0)?.caught,room=this.canSplitPieces(id,2);
-    const kind=job?.kind||'split',key=`${kind}:${job?.key||''}`;
-    if(!job&&(caught||!room)&&own.length)
-      return this.admitLevel(id,{contracts:own,validations:[],pieces:[]},{why:caught?`Clef's pre-grade is at or below the floor ${cfg.floor}, so it hands its whole assignment down to one worker.`:'There is no room for pieces that each hand down to a worker (the room\'s agent or depth limit), so it hands its whole assignment down to one worker.'});
-    const divide=room&&!caught,tried=this.splitAttempts(id).filter(a=>a.attempt>0&&a.job===key),attempt=tried.length+1,feedback=this.read(`split_feedback:${id}`,null);
-    const out=await this.runSplitter(id,{kind,assignment:job?.text||given.prompt,own,divide,attempt,feedback}),level=out.level;
-    // A session that ended without done (its context window full, or the room's turn budget spent) goes on in a new session next turn, from what it declared, as a worker's does: nothing is held or handed down.
-    if(!level) {
-      this.save(`split_carry:${id}`,{key,attempt,...out.carry});
-      this.event(id,'splitter',`${out.sid}'s session ended without done after ${out.rounds} rounds (${out.reason==='context'?'its context window was full':out.reason==='budget'?'the room\'s turn budget is spent':out.reason}); a new session goes on ${out.reason==='budget'?'when the room has turns again':'next turn'}, from what it declared.`);
+    const kind=job?.kind||'split',key=`${kind}:${job?.key||''}`,restate=kind==='restate',room=!restate&&this.canSplitPieces(id,2);
+    if(!job&&!room&&own.length)
+      return this.admitLevel(id,{contracts:own,validations:[],pieces:[]},{why:'There is no room for pieces that each hand down to a worker (the room\'s agent or depth limit), so it hands its whole assignment down to one worker.'});
+    const assignment=job?.text||given.prompt,started=Date.now();
+    const out=await this.runSplitter(id,{kind,key,assignment,own,divide:room,restate,review:room?(level,at)=>this.reviewDivision(id,{key,assignment,level,...at}):null});
+    // A session that ended without done goes on as the same splitter next turn: nothing is held or handed down.
+    if(!out.end) {
       this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
       return void this.save('queue',addLast(this.read('queue',[]),id));
     }
-    this.save(`split_carry:${id}`,null);
-    // With piece offered, done completes only a division (two or more pieces), and Clef's review alone admits it, retries it or hands the level down.
-    const pieces=level.pieces,retry=feedback?.retry||'';
-    // A level with no division (piece not offered, or the room could create none by the time its done was called) goes to one worker.
-    if(!divide||pieces.length<2) {
-      this.recordAttempt(id,{attempt,job:key,splitter:out.sid,pieces:0,outcome:'admitted',ms:Date.now()-started});
-      return this.admitLevel(id,{...level,pieces:[]},{job,why:divide?'There is no room for pieces that each hand down to a worker (the room\'s agent or depth limit), so it hands its whole assignment down to one worker.':'The level goes to one worker.'});
-    }
-    const review=await reviewLevel(this.inferenceEnv(),{assignment:job?.text||given.prompt,contracts:level.contracts,pieces,attempt,retry});
+    const {why='',...level}=out.end;
+    // A division Clef admitted, the level Clef's last NO hands down whole (why), or a restatement.
+    if(restate||why||level.pieces.length>=2)return this.admitLevel(id,level,{job,why});
+    // Room for no division by the time its done was called: one worker.
+    this.recordAttempt(id,{attempt:this.splitAttempts(id).filter(a=>a.attempt>0&&a.job===key).length+1,job:key,splitter:out.sid,session:out.session,pieces:0,outcome:'admitted',ms:Date.now()-started});
+    return this.admitLevel(id,{...level,pieces:[]},{job,why:room?'There is no room for pieces that each hand down to a worker (the room\'s agent or depth limit), so it hands its whole assignment down to one worker.':'The level goes to one worker.'});
+  }
+  // Clef's review of the division a splitter's done completed (attempt: the
+  // reviews of this job so far, plus one): {end} admits it, or hands the level
+  // down whole on the last attempt's NO; {result} is done's result on a NO
+  // with attempts left: the pieces judged (rejected) and why (problems, as
+  // RETRY says it).
+  async reviewDivision(id, {key, assignment, level, sid, session}) {
+    const cfg=this.splitConfig(),started=Date.now(),r3=x=>Math.round(x*1000)/1000,pieces=level.pieces;
+    const tried=this.splitAttempts(id).filter(a=>a.attempt>0&&a.job===key),attempt=tried.length+1,retry=/^retry (\w+)$/.exec(tried.at(-1)?.outcome||'')?.[1]||'';
+    const review=await reviewLevel(this.inferenceEnv(),{assignment,contracts:level.contracts,pieces,attempt,retry});
     const validBar=cfg.valid_bar,sizeBar=cfg.size_bar,ok=review.valid>=validBar&&review.size>=sizeBar,next=ok?'':review.size<sizeBar?'larger':'different';
     const stop=ok||attempt<SPLIT_ATTEMPTS?'':`on attempt ${attempt} of ${SPLIT_ATTEMPTS}`;
-    this.recordAttempt(id,{attempt,job:key,splitter:out.sid,pieces:pieces.length,valid_p:r3(review.valid),size_p:r3(review.size),valid_bar:validBar,size_bar:sizeBar,
+    this.recordAttempt(id,{attempt,job:key,splitter:sid,session,pieces:pieces.length,valid_p:r3(review.valid),size_p:r3(review.size),valid_bar:validBar,size_bar:sizeBar,
       ...(retry?{retry}:{}),outcome:ok?'admitted':stop?'handed down':`retry ${next}`,ms:Date.now()-started});
-    const said=`Clef's review of ${pieces.length} pieces (attempt ${attempt} of ${SPLIT_ATTEMPTS}${retry?`, retried with ${retry==='different'?'a different division':'larger pieces'}`:''}): split_valid p=${review.valid.toFixed(3)} (bar ${validBar}), split_size p=${review.size.toFixed(3)} (bar ${sizeBar})`;
-    if(ok){this.event(id,'split_review',`${said}: YES, the pieces are admitted.`);return this.admitLevel(id,level,{job});}
-    if(stop){this.event(id,'split_review',`${said}: NO ${stop}, so the level goes to one worker.`);return this.admitLevel(id,{...level,pieces:[]},{job,why:`${said}: NO ${stop}.`});}
+    const said=`Clef's review of ${pieces.length} pieces (attempt ${attempt} of ${SPLIT_ATTEMPTS}${retry?`, after a NO asking for ${retry==='different'?'a different division':'larger pieces'}`:''}): split_valid p=${review.valid.toFixed(3)} (bar ${validBar}), split_size p=${review.size.toFixed(3)} (bar ${sizeBar})`;
+    if(ok){this.event(id,'split_review',`${said}: YES, the pieces are admitted.`);return {end:level};}
+    if(stop){this.event(id,'split_review',`${said}: NO ${stop}, so the level goes to one worker.`);return {end:{...level,pieces:[],why:`${said}: NO ${stop}.`}};}
     this.releasePieces(id);
-    const shown=pieces.map(c=>({label:c.label,task:c.task,contracts:c.contracts}));
-    this.save(`split_feedback:${id}`,next==='larger'?{kind:'too_small',retry:'larger',reason:RETRY.too_small(pieces.length),rejected:shown}:{kind:'invalid',retry:'different',reason:RETRY.different,rejected:shown});
-    this.event(id,'split_review',`${said}: NO, so its splitter tries again with ${next==='larger'?'larger pieces':'a different division'}.`);
-    this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
-    this.save('queue',addLast(this.read('queue',[]),id));
+    this.event(id,'split_review',`${said}: NO, so its splitter revises its division in the same session.`);
+    return {result:{rejected:pieces.map(c=>({label:c.label,task:c.task,contracts:c.contracts})),problems:[next==='larger'?RETRY.too_small(pieces.length):RETRY.different]}};
   }
-  // One splitter session (a row of splitters, splitter-<hex16>, its sequence
-  // the manager's count of splitter steps): the model states the level
-  // through its functions (src/splitter.js), and the row keeps every call
-  // with its result. {sid, level, reason, rounds}: level is null when the
-  // session ended without done.
-  async runSplitter(id, {kind, assignment, own, divide, attempt, feedback}) {
-    const sid=await rowId(id,query(this.db(),'SELECT COUNT(*) AS n FROM splitters WHERE manager=?',id)[0].n+1,'splitter'),packages=this.packageView(id),digest=this.heldDigest(id),held=this.validationRows().filter(v=>own.some(c=>(c.serves||[]).includes(v.id)));
+  // One session of a manager's splitter (a row of splitter_sessions: its
+  // manager, its sequence, the splitter's id, and what it continues: '' for a
+  // new job, 'conversation' when it resumes one the room's turn budget ended,
+  // 'context' when it carries what one whose context window filled declared).
+  // The model states the level through its functions (src/splitter.js), and
+  // the row keeps every call with its result. {sid, session, end, reason,
+  // rounds}: end is the level its done completed, null when the session ended
+  // without done (split_session:<id> then keeps what it goes on from).
+  async runSplitter(id, {kind, key, assignment, own, divide, restate, review}) {
+    const sid=await rowId(id,1,'splitter'),session=query(this.db(),'SELECT COUNT(*) AS n FROM splitter_sessions WHERE manager=?',id)[0].n+1;
+    const saved=this.read(`split_session:${id}`,null),went=saved?.key===key?saved:null,carry=went?.state||null,resume=went?.reason==='budget'?went.messages||null:null;
+    const packages=this.packageView(id),digest=this.heldDigest(id),held=this.validationRows().filter(v=>own.some(c=>(c.serves||[]).includes(v.id)));
     // A job adds to a level that has its design (its level file): the contracts it has already, apart from those the job restates.
     const have=kind==='split'?[]:(this.levelDesign(id)?.contracts||[]).filter(c=>!own.some(o=>o.name===c.name));
-    // The names the level may call: its row's uses, and for a rebuild those the rows it replaces were handed.
+    // The names the level may call: its row's uses, and for a rebuild or a restatement those the rows it states were handed.
     const job=kind==='split'?null:this.read(`level_job:${id}`,null),calls=[...this.callableOf(id),...this.namedContracts(id,job?.uses||[])].filter((c,i,a)=>a.findIndex(x=>x.name===c.name)===i&&!own.some(o=>o.name===c.name)&&!have.some(o=>o.name===c.name));
-    this.db().exec("INSERT INTO splitters(id,manager,kind,attempt,spawned_at,ended_at,outcome,output) VALUES (?,?,?,?,?,NULL,'','{}')",sid,id,kind,attempt,Date.now());
+    this.db().exec("INSERT INTO splitter_sessions(manager,session,splitter,kind,continues,spawned_at,ended_at,outcome,output) VALUES (?,?,?,?,?,?,NULL,'','{}')",id,session,sid,kind,resume?'conversation':carry?'context':'',Date.now());
     // The bound it is told is what the room can create when the session starts; piece and done read it as it stands then (room), and done takes the division (takePieces). Nothing is held while the session runs.
     this.releasePieces(id);
     const room=()=>divide?Math.min(this.maxChildren(),this.piecesRoom(id)):0,max=room();
-    const carried=this.read(`split_carry:${id}`,null),carry=carried&&carried.key===`${kind}:${job?.key||''}`&&carried.attempt===attempt?carried:null;
-    // A job's level (a rebuild) rewrites what its contracts are known by: a validation it holds that serves only the contracts it delivers it may take out with drop_validation, by its id; one an earlier session of the job took out is gone.
+    // A job's level (a rebuild, a restatement) rewrites what its contracts are known by: a validation it holds that serves only the contracts it delivers it may take out with drop_validation, by its id; one an earlier session of the job took out is gone.
     const shown=held.filter(v=>!(carry?.dropped||[]).includes(v.id)),mine=v=>kind!=='split'&&v.serves.every(n=>own.some(c=>c.name===n)),droppable=shown.filter(mine).map(v=>v.id);
+    let feedback=went?.feedback||null;
     const request={assignment,
-      ...(own.length?{contracts_you_deliver:own.map(({serves:_,...c})=>c)}:{}),
+      ...(restate?{label:job.label,restate:MESSAGES.restate()}:{}),
+      // A restatement's contracts as it stated them so far, in a new context.
+      ...(own.length?{contracts_you_deliver:(carry?.own||own).map(({serves:_,...c})=>c)}:{}),
       ...(shown.length?{validations_you_have:shown.map(v=>({...(mine(v)?{id:v.id}:{}),serves:v.serves,check:v.check}))}:{}),
-      // What was observed when its contracts ran, each a complaint the files delivering them answered unchanged (rebuildOrphans).
+      // What was observed when the files delivering the piece ran, each a complaint they answered unchanged (restate).
       ...(job?.complaints?.length?{complaints:job.complaints}:{}),
       ...(have.length?{contracts_you_have:have.map(({serves:_,...c})=>c)}:{}),
       ...(calls.length?{contracts_you_may_call:calls.map(({serves:_,...c})=>c)}:{}),
       ...(packages.length?{your_packages:packages.map(p=>({name:p.name,...(p.provides?{provides:p.provides}:{})}))}:{}),
       ...(typeof digest==='string'&&digest?{base_note:MESSAGES.base_note(),existing_files:this.existingFiles()}:{}),
       ...this.sourceInputs(id,'summaries'),
-      max_pieces:max,
-      ...(feedback?.reason?{previous_answer_problems:[feedback.reason],...(feedback.rejected?.length?{rejected:feedback.rejected}:{})}:{})};
+      ...(restate?{}:{max_pieces:max}),
+      ...(feedback?{previous_answer_problems:feedback.problems,rejected:feedback.rejected}:{})};
     if(carry)request.declared_so_far={contracts:carry.contracts.map(({serves:_,...c})=>c),validations:carry.validations.map(v=>({id:v.id,serves:v.serves,check:v.check})),pieces:carry.pieces,...(carry.dropped?.length?{dropped_validations:carry.dropped}:{})};
-    const out=await splitLevel(this.inferenceEnv('splitter'),request,{own,held,have,calls,base:[...this.basePaths()],room,take:k=>this.takePieces(id,k),divide,carry,droppable,refs:this.sourceRefs(id),...(typeof digest==='string'&&digest?{readBase:p=>this.readBaseFile(p)}:{})},{spend:()=>this.spendCall?this.spendCall():true});
-    this.db().exec('UPDATE splitters SET ended_at=?,outcome=?,output=? WHERE id=?',Date.now(),out.level?'done':out.reason,splitterRecord(out),sid);
-    const l=out.level;
-    this.event(id,'splitter',clip(l?`${sid} declared ${l.contracts.length} contract(s), ${l.validations.length} validation(s), ${l.pieces.length} piece(s) in ${out.rounds} round(s) and ${out.transcript.length} call(s).`:`${sid}'s session ended without done (${out.reason}) after ${out.rounds} round(s) and ${out.transcript.length} call(s).`,600));
-    return {sid,level:l,reason:out.reason,rounds:out.rounds,carry:{contracts:out.state.contracts,validations:out.state.validations,pieces:out.state.pieces,dropped:out.state.dropped}};
+    const reviewed=review?async level=>{const r=await review(level,{sid,session});if(r.result)feedback=r.result;return r;}:null;
+    const out=await splitLevel(this.inferenceEnv('splitter'),request,{own,held,have,calls,base:[...this.basePaths()],room,take:k=>this.takePieces(id,k),divide,restate,review:reviewed,carry,droppable,refs:this.sourceRefs(id),...(typeof digest==='string'&&digest?{readBase:p=>this.readBaseFile(p)}:{})},{spend:()=>this.spendCall?this.spendCall():true,resume});
+    this.db().exec('UPDATE splitter_sessions SET ended_at=?,outcome=?,output=? WHERE manager=? AND session=?',Date.now(),out.level?'done':out.reason,splitterRecord(out),id,session);
+    const l=out.level,s=out.state;
+    this.save(`split_session:${id}`,l?null:{key,reason:out.reason,state:{own:s.own,contracts:s.contracts,validations:s.validations,pieces:s.pieces,dropped:s.dropped},...(feedback?{feedback}:{}),...(out.reason==='budget'?{messages:out.messages}:{})});
+    const how=out.reason==='context'?'its context window was full, so it goes on next turn in a new context, from what it declared':out.reason==='budget'?'the room\'s turn budget is spent, so its conversation goes on when the room has turns again':`${out.reason}; it goes on next turn`;
+    this.event(id,'splitter',clip(l?`${sid}, session ${session}: declared ${l.contracts.length} contract(s), ${l.validations.length} validation(s), ${l.pieces.length} piece(s) in ${out.rounds} round(s) and ${out.transcript.length} call(s).`:`${sid}, session ${session}: ended without done after ${out.rounds} round(s) and ${out.transcript.length} call(s): ${how}.`,600));
+    return {sid,session,end:l,reason:out.reason,rounds:out.rounds};
   }
-  splitterRows() { return query(this.db(),'SELECT id,manager,kind,attempt,spawned_at,ended_at,outcome FROM splitters ORDER BY spawned_at,id'); }
+  // Every splitter session, in order: its manager, its sequence, the splitter's id, its job's kind, what it continues, when it ran and how it ended.
+  splitterRows() { return query(this.db(),'SELECT manager,session,splitter,kind,continues,spawned_at,ended_at,outcome FROM splitter_sessions ORDER BY spawned_at,manager,session'); }
   // The manager admits a level: its validations (each a row, V<n>, held where
   // its contracts meet: placeChecks), its contracts with the ids of the
   // validations serving each, and its children: the pieces, each a manager,
@@ -8267,8 +8276,13 @@ export class ControlRoom extends DurableObject {
   // children and validations to the file, and its contracts replace the
   // file's contracts of the same name; a validation of a contract the level
   // already had joins that contract's serves, here and below (serveBelow).
+  // A restatement creates no child: the entry of the worker it restates
+  // takes the piece as stated (its label, task, the contracts it delivers
+  // and, when given, the names it uses), its row the restated contracts, and
+  // the same worker goes on with its files and the revised assignment
+  // (restated).
   async admitLevel(id, level, {why='', job=null}={}) {
-    const n=this.node(id),given=this.assignmentOf(id),own=job?job.own||[]:given.contracts,prior=this.levelDesign(id);
+    const n=this.node(id),given=this.assignmentOf(id),own=job?job.own||[]:given.contracts,prior=this.levelDesign(id),restate=job?.kind==='restate'?job:null;
     // What its level file does not list never landed: a reservation of children, validations and their ids are released, and this admission takes their place.
     const listed=new Set([...(prior?.children||[]),...(prior?.archived||[])].map(c=>c.id)),held=new Set((prior?.validations||[]).map(v=>v.id));
     for(const b of this.levelBatches(id))if(!(await this.batchIds(id,b)).some(x=>listed.has(x)))this.db().exec('DELETE FROM spawn_batches WHERE batch_key=?',b.batch_key);
@@ -8281,7 +8295,7 @@ export class ControlRoom extends DurableObject {
     const dropped=new Set(level.dropped||[]),unserved=c=>dropped.size?{...c,serves:(c.serves||[]).filter(v=>!dropped.has(v))}:c;
     const droppedAt=[...new Set(this.validationRows().filter(v=>dropped.has(v.id)).map(v=>v.level))].filter(l=>l!==id);
     const contracts=level.contracts.map(c=>({...c,serves:[...new Set([...unserved(c).serves||[],...level.validations.filter(v=>v.serves.includes(c.name)).map(v=>ids.get(v.id))])]}));
-    const pieces=(level.pieces||[]).length>=2?level.pieces:[],stated=!job&&!own.length;
+    const pieces=!restate&&(level.pieces||[]).length>=2?level.pieces:[],statedAll=!job&&!own.length;
     const mine=name=>contracts.find(c=>c.name===name);
     // A rebuild hands its level's worker what the rows it replaces were handed: their uses and refs. A piece gets what the splitter named for it through piece(), as its contracts.
     const handed=job?.kind==='rebuild'?{uses:job.uses||[],refs:job.refs||[]}:null,refs=handed?handed.refs:this.sourceRefs(id);
@@ -8289,35 +8303,38 @@ export class ControlRoom extends DurableObject {
     const whole=this.packagesOf(id).map(p=>p.name);
     const worker={label:job?.label||given.label,task:job?.text||given.prompt,interfaces:contracts,uses:handed?handed.uses:job?[]:given.calls,role:'worker',
       ...(refs.length?{refs}:{}),...(whole.length?{packages:whole}:{}),...(typeof this.heldDigest(id)==='string'?{base_digest:this.heldDigest(id)}:{})};
-    const specs=this.planPackages(id,pieces.length?pieces.map(p=>({label:p.label,task:p.task,interfaces:p.contracts.map(mine).filter(Boolean),...(p.uses?.length?{uses:p.uses}:{}),role:'manager',...(p.refs?{refs:p.refs}:{}),...(p.packages?{packages:p.packages}:{})})):[worker]);
-    const key=`level:${id}:${this.levelBatches(id).length}`,batch=this.reserveSpawn(id,specs,key);
+    const specs=restate?[]:this.planPackages(id,pieces.length?pieces.map(p=>({label:p.label,task:p.task,interfaces:p.contracts.map(mine).filter(Boolean),...(p.uses?.length?{uses:p.uses}:{}),role:'manager',...(p.refs?{refs:p.refs}:{}),...(p.packages?{packages:p.packages}:{})})):[worker]);
+    const key=`level:${id}:${this.levelBatches(id).length}`,batch=restate?null:this.reserveSpawn(id,specs,key);
     this.releasePieces(id);
     // No room for its children: the room's agent or depth limit is below what it already holds (the person lowered it, or an extension adds a worker to a room already at its agent limit); nothing is admitted, and Continue tries the level again.
-    if(!batch){this.reserveValidations(id,0);return void this.escalate(id,'split_capacity',`"${n.label}" could not create its ${specs.length} children (the room's agent or depth limit); raise the limit and Continue.`);}
+    if(!batch&&!restate){this.reserveValidations(id,0);return void this.escalate(id,'split_capacity',`"${n.label}" could not create its ${specs.length} children (the room's agent or depth limit); raise the limit and Continue.`);}
     // Its level file: the level's contracts, its children (their ids follow from the reservation), its validations, added to the file as it stands when it is written.
-    const made=await this.batchIds(id,batch),added=normalizeInterfaces(contracts,this.contractOpts());
+    const made=batch?await this.batchIds(id,batch):[],added=normalizeInterfaces(contracts,this.contractOpts());
     const entry=(s,i)=>({id:made[i],role:roleOf(s)||'manager',label:s.label,prompt:s.task,delivers:(s.interfaces||[]).map(c=>c.name),calls:s.uses||[]});
     const entries=specs.map(entry),written=level.validations.map(v=>({id:ids.get(v.id),serves:v.serves,check:v.check,...(v.says?{says:v.says}:{})}));
     // A validation of a contract the level already has serves it too: the contract carries its id wherever it is delivered (serveBelow), so its worker gets the examples.
     const joins=Object.fromEntries([...new Set(written.flatMap(v=>v.serves))].filter(name=>!added.some(c=>c.name===name)).map(name=>[name,written.filter(v=>v.serves.includes(name)).map(v=>v.id)]));
     // A commit that fails leaves the level as it was: its reservations are released (a restart's are, by the next admission).
     let landed=false;
-    const release=e=>{if(!landed){this.db().exec('DELETE FROM spawn_batches WHERE batch_key=?',key);this.reserveValidations(id,0);}throw e;};
-    await this.updateLevel(id,cur=>({format:LEVELS_FORMAT,manager:id,contracts:[...(cur?.contracts||[]).filter(c=>!added.some(x=>x.name===c.name)).map(c=>joined(unserved(c),joins)),...added],children:[...(cur?.children||[]),...entries],
-      validations:[...(cur?.validations||[]).filter(v=>!dropped.has(v.id)),...written],archived:cur?.archived||[]}),()=>{
+    const release=e=>{if(!landed){if(batch)this.db().exec('DELETE FROM spawn_batches WHERE batch_key=?',key);this.reserveValidations(id,0);}throw e;};
+    const piece=restate?level.pieces[0]:null,stated=c=>c.id===restate?.worker?{...c,label:piece.label,prompt:piece.task,delivers:piece.contracts,...(piece.uses?.length?{calls:piece.uses}:{})}:c;
+    // What the admission does once its level file holds it; a restatement that states the piece as its level file already holds it changes no file, and this runs all the same.
+    const after=()=>{
       landed=true;
       for(const v of dropped)this.db().exec('DELETE FROM validations WHERE id=?',v);
       for(const v of written)
         this.db().exec('INSERT INTO validations(id,level,serves,spec,says,created) VALUES (?,?,?,?,?,?)',v.id,id,JSON.stringify(v.serves),JSON.stringify(v.check),v.says||'',Date.now());
       this.reserveValidations(id,0);
       // The manager's own contracts take the level's refined form (by name); a level that stated its own contracts holds them all.
-      if(!job)this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(stated?contracts:own.map(c=>mine(c.name)||c)),id);
-      this.save(`split_feedback:${id}`,null);
+      if(!job)this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(statedAll?contracts:own.map(c=>mine(c.name)||c)),id);
+      if(restate)this.restated(id,restate,piece,added);
       this.save(`level_job:${id}`,{...(job||{kind:'split'}),admitted:{contracts,joins}});
       // The first level a room admits says which box its first session needs.
       if(!this.get('prewarmed'))this.prewarmLevel(this.specOf(this.validationRows()));
-      this.event(id,pieces.length?'split_admitted':'hand_down',clip(`${pieces.length?`Admitted ${pieces.length} pieces: ${pieces.map(p=>`"${p.label}" (${p.contracts.join(', ')})`).join('; ')}; ${level.validations.length} validation(s).`:`${why||'The level goes to one worker.'} ${level.validations.length} validation(s) of its own.`}${dropped.size?` Its splitter took out ${[...dropped].join(', ')}.`:''}`,1200));
-    }).catch(release);
+      if(!restate)this.event(id,pieces.length?'split_admitted':'hand_down',clip(`${pieces.length?`Admitted ${pieces.length} pieces: ${pieces.map(p=>`"${p.label}" (${p.contracts.join(', ')})`).join('; ')}; ${level.validations.length} validation(s).`:`${why||'The level goes to one worker.'} ${level.validations.length} validation(s) of its own.`}${dropped.size?` Its splitter took out ${[...dropped].join(', ')}.`:''}`,1200));
+    };
+    await this.updateLevel(id,cur=>({format:LEVELS_FORMAT,manager:id,contracts:[...(cur?.contracts||[]).filter(c=>!added.some(x=>x.name===c.name)).map(c=>joined(unserved(c),joins)),...added],children:[...(cur?.children||[]).map(stated),...entries],
+      validations:[...(cur?.validations||[]).filter(v=>!dropped.has(v.id)),...written],archived:cur?.archived||[]}),()=>after()).then(()=>{if(!landed)after();}).catch(release);
     for(const l of droppedAt)await this.updateLevel(l,cur=>cur?{...cur,contracts:cur.contracts.map(unserved),validations:cur.validations.filter(v=>!dropped.has(v.id))}:null);
     await this.finishLevel(id);
   }
@@ -8451,8 +8468,8 @@ export class ControlRoom extends DurableObject {
     if(inbox.length)this.acknowledge(id,inbox);
     await this.routeHeld(id);
     if(wait())return;
-    // A new job (a rebuild, an extension) is the next turn's: one splitter attempt each.
-    if(this.read(`level_job:${id}`,null)||await this.rebuildOrphans(id)){this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);this.save('queue',addLast(this.read('queue',[]),id));return;}
+    // A new job (a restatement, a rebuild, an extension) is the next turn's: a session of its splitter.
+    if(this.read(`level_job:${id}`,null)||this.takeRestate(id)||await this.rebuildOrphans(id)){this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);this.save('queue',addLast(this.read('queue',[]),id));return;}
     if(wait())return;
     const kids=this.liveChildren(id),allDone=kids.length>0&&kids.every(c=>c.status==='done'),busy=this.problemsHeld(id).length>0;
     let result=null;
@@ -8678,8 +8695,7 @@ export class ControlRoom extends DurableObject {
   // An agent archived with its subtree: its row and its files stay as they
   // are, and nothing it holds moves; the builder leaves it out of its join.
   // Its manager's level file lists it among the archived, as its entry stood.
-  // extra: what its entry keeps besides why (restate: the complaints its delivery did not change for).
-  async archive(id, why, extra={}) {
+  async archive(id, why) {
     const n=this.node(id);
     if(!n)return;
     for(const x of this.subtree(id)) {
@@ -8691,7 +8707,7 @@ export class ControlRoom extends DurableObject {
     this.event(id,'archived',clip(`"${n.label}" is archived with its subtree: ${why}. Its files stay as they are; its manager rebuilds what it delivered.`,700),n.parent||'');
     if(n.parent&&this.levelIndex(n.parent))await this.updateLevel(n.parent,level=>{
       const entry=level?.children.find(c=>c.id===id);
-      return entry?{...level,children:level.children.filter(c=>c!==entry),archived:[...level.archived,{...entry,why:clip(why,600),...extra}]}:null;
+      return entry?{...level,children:level.children.filter(c=>c!==entry),archived:[...level.archived,{...entry,why:clip(why,600)}]}:null;
     });
     this.placeChecks();
     if(n.parent)this.wake(n.parent);
@@ -8720,26 +8736,61 @@ export class ControlRoom extends DurableObject {
     const from=tasks.length?tasks:[this.node(m)],names=new Set(orphans.map(c=>c.name));
     const uses=[...new Set(from.flatMap(k=>this.assignmentOf(k.id).calls))].filter(x=>!names.has(x));
     const refs=[...new Set(from.flatMap(k=>this.sourceRefs(k.id)))];
-    // What its level file keeps of the rows it replaces: each complaint their delivery did not change for (restate), which its splitter reads.
-    const archived=this.levelDesign(m)?.archived||[],complaints=tasks.flatMap(k=>archived.filter(e=>e.id===k.id).flatMap(e=>e.complaints||[]));
-    this.save(`level_job:${m}`,{kind:'rebuild',key:crypto.randomUUID(),text:tasks.map(k=>this.assignmentOf(k.id).prompt).join('\n\n')||this.assignmentOf(m).prompt,label:tasks[0]?.label||this.node(m).label,own:orphans,uses,refs,...(complaints.length?{complaints}:{})});
+    this.save(`level_job:${m}`,{kind:'rebuild',key:crypto.randomUUID(),text:tasks.map(k=>this.assignmentOf(k.id).prompt).join('\n\n')||this.assignmentOf(m).prompt,label:tasks[0]?.label||this.node(m).label,own:orphans,uses,refs});
     this.event(m,'level_rebuild',clip(`No live child of "${this.node(m)?.label||m}" delivers ${orphans.map(c=>c.name).join(', ')}; its splitter rebuilds ${orphans.length>1?'them':'it'}.`,600));
     return true;
   }
   // A worker that answers a complaint with done, its files byte for byte as
   // they were when it was handed the complaint, holds a problem statement
   // that does not say what was observed (owner, 2026-10-17: "problem
-  // statement failure, not worker or routing failure"). Its statement is
-  // its entry in its level: its prompt, its contracts and the validations
-  // its examples are rendered from. It is archived, its entry keeping the
-  // complaints, and its level's splitter rebuilds its contracts
-  // (rebuildOrphans), reading what was observed and that the delivery did
-  // not change; a validation that serves only those contracts it may take
-  // out and state anew (drop_validation).
-  async restate(id, complaints) {
-    const n=this.node(id);
-    this.event(id,'complaint_unchanged',clip(`Its files are unchanged since it was handed ${complaints.length>1?`${complaints.length} complaints`:'a complaint'}; its level's splitter rebuilds its contracts: ${complaints.join(' | ')}`,900),n.parent||'');
-    await this.archive(id,`its delivery did not change in answer to ${complaints.length>1?'complaints':'a complaint'}: ${complaints.join(' | ')}`,{complaints:complaints.map(observed=>({observed,delivered_files:'unchanged since it was observed'}))});
+  // statement failure, not worker or routing failure"). The statement's
+  // creator is its level's splitter (owner, 2026-10-18: "this failed, send
+  // it back to creator"): the complaints, and that the delivery did not
+  // change, go to it (restates:<manager>), and its next session restates
+  // that piece (takeRestate): its task, its contracts and the validations
+  // serving them. The worker waits, and goes on as itself, with its files,
+  // on the revised assignment once it is admitted (restated).
+  restate(id, complaints) {
+    const n=this.node(id),m=n.parent;
+    this.db().exec("UPDATE agents SET status='waiting' WHERE id=?",id);
+    this.save(`restates:${m}`,[...this.read(`restates:${m}`,[]).filter(r=>r.worker!==id),{worker:id,complaints:complaints.map(observed=>({observed,delivered_files:'unchanged since it was observed'}))}]);
+    this.event(id,'complaint_unchanged',clip(`Its files are unchanged since it was handed ${complaints.length>1?`${complaints.length} complaints`:'a complaint'}; they go to its level's splitter, which restates its piece: ${complaints.join(' | ')}`,900),m);
+    this.wake(m);
+  }
+  // The next piece m's splitter restates: a job (level_job:<m>) of the
+  // worker's assignment as it stands, its contracts, the names it calls and
+  // the complaints. False when none is waiting.
+  takeRestate(m) {
+    const [next,...rest]=this.read(`restates:${m}`,[]);
+    if(!next)return false;
+    this.save(`restates:${m}`,rest);
+    const w=this.node(next.worker);
+    if(!w||['archived','retired','failed'].includes(w.status)||!this.levelIndex(m))return this.takeRestate(m);
+    const a=this.assignmentOf(w.id);
+    this.save(`level_job:${m}`,{kind:'restate',key:crypto.randomUUID(),worker:w.id,text:a.prompt,label:a.label,own:a.contracts,uses:a.calls,complaints:next.complaints});
+    this.event(m,'level_restate',clip(`The files delivering "${w.label}" did not change in answer to ${next.complaints.length>1?'complaints':'a complaint'}; its splitter restates that piece.`,600),w.id);
+    return true;
+  }
+  // The worker a restatement restated goes on as itself: its row takes the
+  // piece as stated (its label, task and contracts), its changes are part of
+  // the task stated anew, the complaints it answered are closed (the
+  // splitter answered them), and it is woken with its files as they are.
+  restated(m, job, piece, added) {
+    const w=this.node(job.worker);
+    if(!w||['archived','retired','failed'].includes(w.status))return;
+    const restated=piece.contracts.map(name=>added.find(c=>c.name===name)).filter(Boolean);
+    this.db().exec('UPDATE agents SET label=?,task=?,interfaces=? WHERE id=?',piece.label,piece.task,JSON.stringify(restated),w.id);
+    // The manager's own contracts of the same names take the restated form.
+    const mine=parse(this.node(m)?.interfaces,[]);
+    if(mine.some(c=>added.some(x=>x.name===c?.name)))this.db().exec('UPDATE agents SET interfaces=? WHERE id=?',JSON.stringify(mine.map(c=>added.find(x=>x.name===c?.name)||c)),m);
+    // The refs and packages the piece is stated with, when given: its refs are those, and its packages join its row's.
+    if(piece.refs)this.save(`source_refs:${w.id}`,piece.refs);
+    if(piece.packages){const r=piecePackages(piece,this.packagesOf(m));this.db().exec('UPDATE agents SET packages=? WHERE id=?',JSON.stringify(normalizePackages([...parse(w.packages,[]),...r.packages])),w.id);}
+    this.save(`revisions:${w.id}`,[]);
+    this.save(`complaints:${w.id}`,[]);
+    this.db().exec("UPDATE problems SET status='closed',outcome='restated',updated=? WHERE assignee=? AND status='assigned' AND stage='complaint'",Date.now(),w.id);
+    this.event(m,'restated',clip(`Its splitter restated "${piece.label}": ${piece.task}`,900),w.id);
+    this.wake(w.id);
   }
   // The complaints worker id holds whose record has the digest of its files as they are now: those it changed nothing for.
   unchangedComplaints(id) {
@@ -8854,14 +8905,14 @@ export class ControlRoom extends DurableObject {
         const node=this.node(id);
         if(!node||['archived','failed','retired'].includes(node.status))return;
         const open=query(this.db(),'SELECT topic FROM route_workers WHERE worker=?',id).map(r=>r.topic);
-        // A done with its files as they were when it was handed a complaint: its problem statement is rewritten (restate).
+        // A done with its files as they were when it was handed a complaint: its problem statement goes back to its splitter (restate).
         const unanswered=end?.done?this.unchangedComplaints(id):[];
         // A session its context window ended goes on in a new session next turn, with its files as it wrote them; the room's turn budget bounds it.
         if(!end) {
           this.db().exec("UPDATE agents SET status='ready' WHERE id=?",id);
           this.save('queue',addLast(this.read('queue',[]),id));
         } else if(unanswered.length) {
-          await this.restate(id,unanswered);
+          this.restate(id,unanswered);
         } else if(end.done) {
           this.db().exec("UPDATE agents SET status='done' WHERE id=?",id);
           this.event(id,'done','Delivered its files.');
@@ -9067,7 +9118,7 @@ export class ControlRoom extends DurableObject {
   }
   async clear() {
     if (this.busy || this.get('status')==='running') return {error:'Experiment is running'};
-    for (const name of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','validations','splitters','piece_files','problems','repair_tickets','goal_revisions','prompts',...INPUT_TABLES,'meta']) this.db().exec(`DELETE FROM ${name}`);
+    for (const name of ['staged_writes','wake_epochs','route_hops','route_workers','manager_routes','pending_turns','spawn_batches','exposed_files','artifact_contents','artifact_files','messages','events','spans','agents','prompt_handlers','validations','splitter_sessions','piece_files','problems','repair_tickets','goal_revisions','prompts',...INPUT_TABLES,'meta']) this.db().exec(`DELETE FROM ${name}`);
     this.queuedAt.clear();
     return this.snapshot();
   }

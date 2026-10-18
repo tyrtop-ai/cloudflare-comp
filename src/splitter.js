@@ -1,13 +1,14 @@
 // v8: a manager's splitter works through functions. Its session
 // (src/session.js) offers contract, validation, piece (when the level may
-// divide), drop_validation (when it holds validations it may take out), level and done; each call stores what it was given, exactly, or
+// divide, or when it restates one piece), drop_validation (when it holds validations it may take out), level and done; each call stores what it was given, exactly, or
 // says exactly why it cannot, and nothing else reads what the model writes.
-// done ends the session once the level lacks nothing (missingOf): with
-// piece offered, that includes a division of two or more pieces. The level
-// it returns is what the session declared: {contracts, validations,
-// pieces}. Whether the division is valid, and whether pieces are too small,
-// is Clef's review alone (src/model.js reviewLevel), which reads the
-// assignment and the pieces as written.
+// done completes the level once it lacks nothing (missingOf): with piece
+// offered, that includes a division of two or more pieces. The level it returns is
+// what the session declared: {contracts, validations, pieces}. Whether a
+// division is valid, and whether pieces are too small, is Clef's review alone
+// (src/model.js reviewLevel), which reads the assignment and the pieces as
+// written: the room's review(level), called by done, and a NO is done's
+// result in the same session, which goes on with everything it declared.
 import { normalizeContract, kindOf, nameError, PLACED_KINDS, PATH_NAMED, CONTRACT_KINDS } from './contracts.js';
 import { readCheck, CHECK_FIELDS, runOf, servedRun, runsOf, unheldPath, ownExamples, checkExamples, EXAMPLES_PER_CONTRACT, EXAMPLE_KINDS } from './validations.js';
 import { rootedPath } from '../container/build-path.mjs';
@@ -28,20 +29,26 @@ const nameList = (v, what) => Array.isArray(v) && v.every(x => typeof x === 'str
 // called); take(count): the room takes a division of count pieces for this
 // level, true when it fits; divide: whether piece is offered at all.
 // carry: what an earlier session of the same level declared before its
-// context window filled ({contracts, validations, pieces}); this one goes on from it.
+// context window filled ({own, contracts, validations, pieces, dropped}); this one goes on from it.
+// restate: the level is one piece whose statement it states anew (the
+// files delivering it did not change in answer to a complaint): piece states
+// its task under its label, and contract states one of own anew under its
+// name. review(level), given to a level that may divide: Clef's review of a
+// division done completes, {end} (the level the session ends with) or
+// {result} (what done answers: the division was not admitted).
 // readBase(path), given to a level that holds the project the work starts
 // from: one file of it, whole (the room's readBaseFile), as read_file shows it.
 // refs: the outline refs of the linked pages this level holds, the only refs
 // a piece may be given. droppable: the ids of the held validations that
 // serve only the contracts this level delivers, which drop_validation takes
 // out (a rebuild, which rewrites what they are known by).
-export function splitterState({own = [], held = [], have = [], calls = [], base = [], maxPieces = 7, room = null, take = null, divide = true, carry = null, readBase = null, refs = [], droppable = []} = {}) {
+export function splitterState({own = [], held = [], have = [], calls = [], base = [], maxPieces = 7, room = null, take = null, divide = true, restate = false, review = null, carry = null, readBase = null, refs = [], droppable = []} = {}) {
   const dropped = [...(carry?.dropped || [])];
-  return {own, held: held.filter(h => !dropped.includes(h.id)), droppable: droppable.filter(id => !dropped.includes(id)), dropped, have: have.filter(c => c?.name && !own.some(o => o.name === c.name)), calls,
+  return {own: [...(carry?.own || own)], restate: !!restate, review: typeof review === 'function' ? review : null, held: held.filter(h => !dropped.includes(h.id)), droppable: droppable.filter(id => !dropped.includes(id)), dropped, have: have.filter(c => c?.name && !own.some(o => o.name === c.name)), calls,
     base: new Set(base instanceof Set ? [...base] : Array.isArray(base) ? base : []),
     room: typeof room === 'function' ? room : () => maxPieces, take: typeof take === 'function' ? take : () => true, divide, readBase: typeof readBase === 'function' ? readBase : null, refs: [...(refs || [])], contracts: [...(carry?.contracts || [])], validations: [...(carry?.validations || [])], pieces: [...(carry?.pieces || [])], done: false};
 }
-// The functions offered: piece and drop_piece only when the level may divide, read_file only when it holds the project the work starts from, drop_validation only when it holds validations it may take out.
+// The functions offered: piece and drop_piece only when the level may divide or restates its piece, read_file only when it holds the project the work starts from, drop_validation only when it holds validations it may take out.
 export const splitterTools = (divide, reads = false, drops = false) => TOOLS.splitter.filter(t => (divide || !PIECE_TOOLS.has(t.name)) && (reads || t.name !== 'read_file') && (drops || t.name !== 'drop_validation'));
 const PIECE_TOOLS = new Set(['piece', 'drop_piece']);
 // What the room can create now (room()), as piece and done say it.
@@ -74,7 +81,8 @@ function contract(s, a) {
   const path = a.path === undefined ? '' : rootedPath(a.path), name = PATH_NAMED.has(kind) ? rootedPath(a.name) : a.name;
   if (!name.trim()) return {error: 'name is required'};
   if (name !== name.trim()) return {error: `name ${JSON.stringify(name.slice(0, 80))} has spaces before or after it`};
-  if (s.own.some(c => c.name === name)) return {error: `"${name}" is already declared: it is one of the contracts you deliver`};
+  const given = s.own.findIndex(c => c.name === name);
+  if (given >= 0 && !s.restate) return {error: `"${name}" is already declared: it is one of the contracts you deliver`};
   if (s.contracts.some(c => c.name === name)) return {error: `"${name}" is already declared`};
   if (s.have.some(c => c.name === name)) return {error: `"${name}" is already declared: it is a contract your level already has`};
   if ((PLACED_KINDS.has(kind) || kind === 'function') && !path) return {error: `a ${kind} contract needs the relative path of its file`};
@@ -93,6 +101,8 @@ function contract(s, a) {
     run = r.run;
   }
   const c = normalizeContract({name, kind, ...(path ? {path} : {}), does: a.does || '', ...(a.inputs ? {inputs: a.inputs} : {}), ...(a.outputs ? {outputs: a.outputs} : {}), ...(a.effects ? {effects: a.effects} : {})}, {v8: true});
+  // A restatement states a contract it delivers anew under its name: it keeps the validations that serve it.
+  if (given >= 0) { s.own[given] = {...c, ...(run ? {run} : {}), serves: s.own[given].serves || []}; return {stored: name, kind, stated_anew: true, ...(EXAMPLE_KINDS.has(kind) ? {examples_needed: EXAMPLES_PER_CONTRACT} : {})}; }
   s.contracts.push({...c, ...(run ? {run} : {})});
   return {stored: name, kind, ...(EXAMPLE_KINDS.has(kind) ? {examples_needed: EXAMPLES_PER_CONTRACT} : {})};
 }
@@ -124,7 +134,8 @@ function piece(s, a) {
   const unknown = Object.keys(a).filter(k => !PIECE_FIELDS.includes(k));
   if (unknown.length) return {error: `piece has no field ${unknown.map(k => `"${k.slice(0, 40)}"`).join(', ')}; its fields are ${PIECE_FIELDS.join(', ')}`};
   const room = s.room();
-  if (s.pieces.length >= (room >= 2 ? room : 0)) return {error: `${roomNow(room)}, and the division has ${s.pieces.length}${room < 2 ? '; with fewer than 2 the level holds no division' : ''}`};
+  if (s.restate && s.pieces.length) return {error: `the piece is declared already, labelled "${s.pieces[0].label}": drop_piece takes it out`};
+  if (!s.restate && s.pieces.length >= (room >= 2 ? room : 0)) return {error: `${roomNow(room)}, and the division has ${s.pieces.length}${room < 2 ? '; with fewer than 2 the level holds no division' : ''}`};
   if (typeof a.label !== 'string' || !a.label.trim()) return {error: 'label is a text'};
   if (s.pieces.some(p => p.label === a.label)) return {error: `a piece labelled "${a.label}" is already declared`};
   if (typeof a.task !== 'string' || !a.task.trim()) return {error: 'task is a text'};
@@ -178,10 +189,11 @@ export function levelView(s) {
 // from the validations that serve it (a function's, steps that call it).
 // When piece is offered (the level may divide), the level is a division the
 // room can create now: every manager tries to split and Clef's review judges
-// the division, so a session with fewer than two pieces hears that its
+// every division, so a session with fewer than two pieces hears that its
 // division is not there yet, and one with more than the room can create now
 // hears what it can (with room for fewer than two, no division: the level
-// goes to one worker once its pieces are dropped).
+// goes to one worker once its pieces are dropped). A restatement states its
+// one piece.
 export function missingOf(s) {
   const out = [];
   for (const c of levelContracts(s).filter(c => EXAMPLE_KINDS.has(kindOf(c)))) {
@@ -189,6 +201,7 @@ export function missingOf(s) {
     if (n < EXAMPLES_PER_CONTRACT) out.push(`${c.name} has ${n} different example${n === 1 ? '' : 's'} of ${EXAMPLES_PER_CONTRACT} from the validations that serve it${kindOf(c) === 'function' ? ': steps that call it' : ''}.`);
   }
   const n = s.pieces.length, room = s.divide ? s.room() : 0;
+  if (s.restate && n !== 1) out.push('the piece, declared with piece: its task under its label, and the contracts it delivers.');
   if (s.divide && room >= 2 && n < 2) out.push(`the division has ${n} piece${n === 1 ? '' : 's'} of at least 2, each declared with piece.`);
   if (s.divide && n && n > (room >= 2 ? room : 0)) out.push(`${roomNow(room)}, and the division has ${n}${room < 2 ? '; with fewer than 2 the level holds no division' : ''}: drop_piece takes a piece out.`);
   return out;
@@ -208,12 +221,12 @@ function readBase(s, a) {
   if (typeof a.path !== 'string' || !a.path) return {error: 'path is the text of a relative path'};
   return s.readBase(a.path);
 }
-// One call: {result, end?}.
+// One call: {result, end?}; for a done whose division goes to review, a promise of it.
 export function splitterCall(s, name, args) {
   if (name === 'contract') return {result: contract(s, args)};
   if (CHECK_TOOL_KINDS[name]) return {result: checkCall(s, CHECK_TOOL_KINDS[name], args)};
-  if (name === 'piece' && s.divide) return {result: piece(s, args)};
-  if (name === 'drop_piece' && s.divide) return {result: dropPiece(s, args)};
+  if (name === 'piece' && (s.divide || s.restate)) return {result: piece(s, args)};
+  if (name === 'drop_piece' && (s.divide || s.restate)) return {result: dropPiece(s, args)};
   if (name === 'drop_validation' && s.droppable.length + s.dropped.length) return {result: dropValidation(s, args)};
   if (name === 'level') return {result: levelView(s)};
   if (name === 'read_file' && s.readBase) return {result: readBase(s, args)};
@@ -221,22 +234,25 @@ export function splitterCall(s, name, args) {
     const missing = missingOf(s);
     if (missing.length) return {result: {complete: false, missing}};
     // A division the room can create is taken for this level here, in the same step, so the room creates it once Clef's review admits it.
-    if (s.divide && s.pieces.length >= 2 && !s.take(s.pieces.length)) return {result: {complete: false, missing: [`${roomNow(s.room())}, and the division has ${s.pieces.length}: drop_piece takes a piece out.`]}};
-    s.done = true;
-    return {result: {complete: true}, end: levelOf(s)};
+    const division = s.divide && s.pieces.length >= 2;
+    if (division && !s.take(s.pieces.length)) return {result: {complete: false, missing: [`${roomNow(s.room())}, and the division has ${s.pieces.length}: drop_piece takes a piece out.`]}};
+    // Clef's review of the division: a NO is this call's result, and the session goes on with everything declared.
+    const close = r => { if (!('end' in r)) return {result: {complete: false, ...r.result}}; s.done = true; return {result: {complete: true}, end: r.end}; };
+    return division && s.review ? s.review(levelOf(s)).then(close) : close({end: levelOf(s)});
   }
   return {result: {error: `There is no function "${String(name).slice(0, 60)}".`}};
 }
 
 // The splitter's session: request is the user JSON it reads (its assignment
 // and world); world is splitterState's input; spend counts each model call
-// after the first against the room's turn budget (session). {level, state,
-// ended, reason, rounds, transcript}: level is null when the session ended
-// without done. Each answer may take what the model's context window leaves
-// (maxTokens Infinity: modelRequest's room).
-export async function splitLevel(env, request, world = {}, {spend = null} = {}) {
-  const s = splitterState(world), tools = splitterTools(s.divide, !!s.readBase, s.droppable.length + s.dropped.length > 0);
+// after the first against the room's turn budget (session); resume, the
+// conversation of a session the room's turn budget ended, which goes on.
+// {level, state, ended, reason, rounds, transcript, messages}: level is null
+// when the session ended without done. Each answer may take what the
+// model's context window leaves (maxTokens Infinity: modelRequest's room).
+export async function splitLevel(env, request, world = {}, {spend = null, resume = null} = {}) {
+  const s = splitterState(world), tools = splitterTools(s.divide || s.restate, !!s.readBase, s.droppable.length + s.dropped.length > 0);
   const out = await session(env, {system: systemPrompt('splitter'), user: JSON.stringify(request), tools, role: 'splitter', call: 'splitLevel', maxTokens: Infinity,
-    handle: (name, args) => splitterCall(s, name, args), spend});
-  return {level: out.ended ? out.end : null, state: s, ended: out.ended, reason: out.reason, rounds: out.rounds, transcript: out.transcript};
+    handle: (name, args) => splitterCall(s, name, args), spend, resume});
+  return {level: out.ended ? out.end : null, state: s, ended: out.ended, reason: out.reason, rounds: out.rounds, transcript: out.transcript, messages: out.messages};
 }

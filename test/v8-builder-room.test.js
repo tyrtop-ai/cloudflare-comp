@@ -17,8 +17,8 @@ import {toolchainById} from '../src/toolchains.js';
 
 const hasPython=spawnSync('python3',['--version']).status===0;
 
-// Clef: a room's manager divides (its pre-grade is above the floor); every piece is caught and hands its level to one worker; a manager chooses as choiceP says; the rest pass.
-const clefFor = goal => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: k === 'should_split' ? (String(input.state.assignment).startsWith(goal) ? 0.9 : 0.05) : choiceP(k, input.state) ?? 0.9}]))});
+// Clef: a manager chooses as choiceP says; the rest pass. A piece the test gives no pieces of its own proposes the scripted division Clef's review says NO to (helpers/room.js WHOLE), and hands its level to one worker.
+const clefFor = () => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: choiceP(k, input.state) ?? 0.9}]))});
 // Workers by the contracts they deliver: the n-th turn gets the n-th answer (the last one repeats).
 const scripted = answers => {
   const seen = new Map();
@@ -32,8 +32,8 @@ const scripted = answers => {
 };
 const blocks = (files, summary = 'wrote the files') => fileBlocks(files, {summary, done: true});
 // The room's manager states `level`; a piece restates its given contracts. build: the builders (the usual one by default).
-const levelRoom = ({level, goal, answers, build}) => liveRoom({split: user => user.contracts_you_deliver ? {contracts: user.contracts_you_deliver, validations: [], pieces: []} : level,
-  clef: clefFor(goal), leaf: scripted(answers), build});
+const levelRoom = ({level, answers, build}) => liveRoom({split: user => user.contracts_you_deliver ? {contracts: user.contracts_you_deliver, validations: [], pieces: []} : level,
+  clef: clefFor(), leaf: scripted(answers), build});
 const allPass = room => Object.values(room.read('validation_status', {})).length > 0 && Object.values(room.read('validation_status', {})).every(s => s.passed === true);
 const tail = room => events(room).slice(-14).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 260)}`).join('\n');
 const turnsOf = (calls, name) => calls.leaf.filter(u => u.prompt.deliver.some(c => c.name === name)).length;
@@ -99,7 +99,7 @@ const wfBuilder = ({renames = []} = {}) => (user, n, system, ctx) => {
 };
 
 test('A4: a split Python project whose pieces import each other completes: each function\'s file stands where its contract names it, the builders write the glue as files of their own and rename a read of a helper to where it sits; the export carries what they wrote', {skip: !hasPython && 'python3 is not installed'}, async () => {
-  const {room, calls, builds, drain} = levelRoom({level: WF_LEVEL, goal: WF_GOAL, answers: wfAnswers(), build: wfBuilder()});
+  const {room, calls, builds, drain} = levelRoom({level: WF_LEVEL, answers: wfAnswers(), build: wfBuilder()});
   await room.start(WF_GOAL, 40, {pipeline: 'v8'});
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
@@ -134,7 +134,7 @@ test('A4: a split Python project whose pieces import each other completes: each 
 });
 
 test('A4 with builders that join nothing: the boxes get exactly the delivered files, and nothing the runtime wrote', {skip: !hasPython && 'python3 is not installed'}, async () => {
-  const {room, builds, drain} = levelRoom({level: WF_LEVEL, goal: WF_GOAL, answers: wfAnswers(), build: () => [{name: 'done', arguments: {summary: 'joined nothing'}}]});
+  const {room, builds, drain} = levelRoom({level: WF_LEVEL, answers: wfAnswers(), build: () => [{name: 'done', arguments: {summary: 'joined nothing'}}]});
   await room.start(WF_GOAL, 30, {pipeline: 'v8'});
   await drain();
   assert.notEqual(room.get('status'), 'complete', tail(room));
@@ -147,7 +147,7 @@ test('A4 with builders that join nothing: the boxes get exactly the delivered fi
 
 test('A4 renames: a read of count_word and a call of topWords are renamed by the room\'s manager\'s builder in its copies; the workers\' files stay as written and nobody repairs', {skip: !hasPython && 'python3 is not installed'}, async () => {
   const ranking = RANKING.replace('from count_words import count_words', 'from count_word import count_words'), wordfreq = WORDFREQ.replace('in top_words(f.read()', 'in topWords(f.read()');
-  const {room, calls, builds, drain} = levelRoom({level: WF_LEVEL, goal: WF_GOAL, answers: wfAnswers({ranking, wordfreq}),
+  const {room, calls, builds, drain} = levelRoom({level: WF_LEVEL, answers: wfAnswers({ranking, wordfreq}),
     build: wfBuilder({renames: [['ranking.py', 'count_word', 'count_words'], ['wordfreq.py', 'topWords', 'top_words']]})});
   await room.start(WF_GOAL, 40, {pipeline: 'v8'});
   await drain();
@@ -170,7 +170,7 @@ test('A4 renames: a read of count_word and a call of topWords are renamed by the
 
 test('a reference no builder joins fails the run: the complaint goes down to the reader\'s worker as the compiler observed it, nothing relinks after the run, and the worker\'s fix is joined again', {skip: !hasPython && 'python3 is not installed'}, async () => {
   const odd = WORDFREQ.replace('from top_words import top_words', 'from tally import most_common').replace('in top_words(f.read()', 'in most_common(f.read()');
-  const {room, calls, drain} = levelRoom({level: WF_LEVEL, goal: WF_GOAL, answers: wfAnswers({wordfreq: odd, wordfreqFixed: WORDFREQ}), build: wfBuilder()});
+  const {room, calls, drain} = levelRoom({level: WF_LEVEL, answers: wfAnswers({wordfreq: odd, wordfreqFixed: WORDFREQ}), build: wfBuilder()});
   await room.start(WF_GOAL, 40, {pipeline: 'v8'});
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
@@ -206,7 +206,7 @@ const FORMULA = 'def to_fahrenheit(celsius):\n    return celsius * 9 / 5 + 32\n'
 test('S4b\'s Python CLI room: a command that imports another piece\'s function runs once the builder\'s file at the root takes it from where it is defined', {skip: !hasPython && 'python3 is not installed'}, async () => {
   const {room, calls, builds, drain} = levelRoom({level: TEMP_LEVEL, goal: TEMP_GOAL,
     answers: {temp: [blocks([{path: 'temp.py', content: TEMP_PY}])], to_fahrenheit: [blocks([{path: 'formula.py', content: FORMULA}])], 'USAGE.md': [blocks([{path: 'USAGE.md', content: '# Usage\n\nRun `python3 temp.py 100`.\n'}])]}});
-  await room.start(TEMP_GOAL, 30, {pipeline: 'v8'});
+  await room.start(TEMP_GOAL, 50, {pipeline: 'v8'});
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
   assert.ok(allPass(room));
@@ -242,7 +242,7 @@ const ENTRY = "const { toRoman } = require('./toRoman');\nconst { fromRoman } = 
 test('A3 (JavaScript): a library whose entry requires the other pieces\' functions is joined by the builder renaming each path to the file each function\'s contract names, from the placed entry', async () => {
   const {room, calls, builds, drain} = levelRoom({level: ROMAN_LEVEL, goal: ROMAN_GOAL,
     answers: {'index.js': [blocks([{path: 'index.js', content: ENTRY}])], toRoman: [blocks([{path: 'roman-out.js', content: TO_ROMAN}])], fromRoman: [blocks([{path: 'roman-in.js', content: FROM_ROMAN}])]}});
-  await room.start(ROMAN_GOAL, 30, {pipeline: 'v8'});
+  await room.start(ROMAN_GOAL, 50, {pipeline: 'v8'});
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));
   assert.ok(allPass(room));
@@ -317,7 +317,7 @@ test('a browser page with two scripts importing each other: the builders rename 
 test('a Python file under a standard name (json.py) that no contract places sits under its piece\'s folder, where it hides no standard module; the project completes', {skip: !hasPython && 'python3 is not installed'}, async () => {
   const greet = (id, who) => ({id, serves: ['greet'], check: {kind: 'command', argv: ['greet', ...String(who).split(' ')], expect: {exit: 0, stdout_has: [`hello ${who}`]}}});
   const level = {contracts: [{name: 'greet', kind: 'command', path: 'greet.py', does: 'prints a greeting for the name given'}], validations: [greet('a', 'ada'), greet('b', 'bo'), greet('c', 'cy')], pieces: []};
-  const {room, calls, drain} = levelRoom({level, goal: 'never divided', answers: {greet: [blocks([{path: 'greet.py', content: 'import sys\nimport json\nprint("hello " + sys.argv[1])\n'}, {path: 'json.py', content: 'def dumps(x):\n    return str(x)\n'}])]}});
+  const {room, calls, drain} = levelRoom({level, answers: {greet: [blocks([{path: 'greet.py', content: 'import sys\nimport json\nprint("hello " + sys.argv[1])\n'}, {path: 'json.py', content: 'def dumps(x):\n    return str(x)\n'}])]}});
   await room.start('A command that greets.', 10, {pipeline: 'v8'});
   await drain();
   assert.equal(room.get('status'), 'complete', tail(room));

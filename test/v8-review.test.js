@@ -138,27 +138,27 @@ test('F7 (v8 live 6): two pieces placing one path, and a contract a job adds at 
   const job = stated({contracts: [{name: 'reverse', kind: 'function', path: 'shout.py', does: 'reverses a word'}], validations: [call('r1', ['reverse'], 'reverse', 'ab', 'ba'), call('r2', ['reverse'], 'reverse', 'a', 'a'), call('r3', ['reverse'], 'reverse', 'xyz', 'zyx')], pieces: []}, {have: [CONTRACTS[0]], divide: false});
   assert.deepEqual([job.done, job.level.pieces, job.level.division], [{complete: true}, [], undefined]);
 });
-test('F7 (v8 live 6): Clef reads the original and the pieces as written; a division that places one file from two pieces is its to judge from the contracts\' own lines, and when it says NO the splitter divides again and the next division is admitted', {skip}, async () => {
+test('F7 (v8 live 6): Clef reads the original and the pieces as written; a division that places one file from two pieces is its to judge from the contracts\' own lines, and when it says NO the splitter revises its division in the same session and the next division is admitted', {skip}, async () => {
   const C = CONTRACTS.map(c => ['shout', 'loud'].includes(c.name) ? {...c, path: 'words.py'} : c);
   const flat = [{label: 'Shouter', task: 'Write shout', contracts: ['shout']}, {label: 'Louder', task: 'Write loud, which uses shout', contracts: ['loud'], uses: ['shout']}, {label: 'Quiet', task: 'Write whisper and soft', contracts: ['whisper', 'soft']}, {label: 'Notes', task: 'Write NOTES.md', contracts: ['NOTES.md']}];
-  let n = 0;
-  const split = (user, _n, _system, {round}) => {
-    if (user.contracts_you_deliver) return splitFor({parts: flat})(user);
-    if (round === 1) n++;
-    return n === 1 ? {contracts: C, validations: VALIDATIONS, pieces: flat} : {contracts: CONTRACTS, validations: VALIDATIONS, pieces: flat};
-  };
-  const shared = (key, state) => state.contracts.filter(l => / in words\.py/.test(l)).length > 1 ? 0.1 : 0.9;
-  const r = await toolkit({split, clef: clefFor([], {'^split_valid$': shared})});
+  const WORDS = 'def shout(s):\n    return str(s).upper() + "!"\n\n\ndef loud(s):\n    return shout(s) + shout(s)\n';
+  const merged = [{label: 'Loud', task: 'Write shout and loud, in words.py', contracts: ['shout', 'loud']}, ...flat.slice(2)];
+  // The NO is done's result: the splitter keeps its contracts and validations and revises its pieces.
+  const split = (user, _n, _system, {no}) => user.contracts_you_deliver ? splitFor({parts: flat})(user) : {contracts: C, validations: VALIDATIONS, pieces: no ? merged : flat};
+  const shared = (key, state) => (state.pieces || []).filter(p => p.contracts.some(c => ['shout', 'loud'].includes(c))).length > 1 ? 0.1 : 0.9;
+  const r = await toolkit({split, leaf: leafOf({answers: {shout: WORDS, loud: WORDS}}), clef: clefFor([], {'^split_valid$': shared})});
   assert.equal(r.room.get('status'), 'complete', tail(r.room));
   const m = at(r.room);
   assert.ok(!events(r.room, 'split_defects').length, 'the runtime rejected nothing');
   const reviews = r.calls.clef.filter(c => 'split_valid' in (c.questions || {}) && c.state?.assignment?.startsWith(GOAL));
   assert.equal(reviews.length, 2);
+  assert.equal(r.calls.split.filter(u => !u.contracts_you_deliver).length, 1, 'one session of the room\'s manager\'s splitter');
   // No facts the runtime worked out: the assignment, the contracts' lines, the pieces as declared.
   for (const r of reviews) assert.deepEqual(Object.keys(r.state), ['assignment', 'contracts', 'pieces']);
   assert.deepEqual(reviews[0].state.pieces.map(p => Object.keys(p)), flat.map(() => ['slot', 'label', 'task', 'contracts']));
   assert.equal(reviews[0].state.contracts.filter(l => / in words\.py/.test(l)).length, 2, 'the contracts\' lines say where each is placed');
-  assert.match(events(r.room, 'split_review').find(e => e.actor === m.Root).body, /NO, so its splitter tries again/);
+  assert.deepEqual(reviews[1].state.pieces.map(p => p.label), ['Loud', 'Quiet', 'Notes']);
+  assert.match(events(r.room, 'split_review').find(e => e.actor === m.Root).body, /NO, so its splitter revises its division in the same session/);
   assert.ok(!events(r.room, 'bundle_conflict').length, 'no file is placed twice');
 });
 

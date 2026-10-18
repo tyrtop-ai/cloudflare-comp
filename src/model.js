@@ -108,9 +108,7 @@ export function splitProbability(output) {
     throw new Error('Clef returned no valid should_split.noul probability');
   return probability;
 }
-// v8 live 5: contracts, the row's contracts one line each (gateLine), travel
-// beside the assignment, at every manager alike.
-export async function shouldSplit(env, task, mockContext, contracts = []) {
+export async function shouldSplit(env, task, mockContext) {
   if (env.MOCK_AI === 'true') {
     const result=mockDecomposition(mockContext);
     return {split:Array.isArray(result.spawn),probability:Array.isArray(result.spawn)?1:0};
@@ -123,17 +121,15 @@ export async function shouldSplit(env, task, mockContext, contracts = []) {
   // can propose an admissible partition. Review concrete failed proposals when
   // deciding whether to split again or route this assignment to implementation.
   const feedback=mockContext?.split_feedback || null;
-  // v8 live 5: a pre-grade, asked once before the splitter runs, so no feedback is read.
-  const question=pipelineV8(env)?CLEF.split:feedback
+  const question=feedback
     ? 'A previous proposed decomposition was rejected. Based on the ASSIGNED CODE and the specific rejected partition, is there still a credible split into TWO OR MORE independent, in-scope code-writing assignments covering the whole requested code? Answer NO if the correct next step is to implement the assigned code directly rather than invent unrelated subdivisions. Answer YES if a corrected partition is feasible. Do not treat the previous YES as binding.'
     : 'Can this requested CODE be written as TWO OR MORE smaller independently authored source-code modules or functions, whose code can be linked to implement the ENTIRE assigned code? Prefer yes if the code can be divided further, even into very small functions. Answer no only if the code itself is an indivisible implementation unit. Do not split into research, design discussions, decisions, documentation, or plans.';
   const answer=await clefRun(env,'shouldSplit',selector,{
     model:clef,
-    state:pipelineV8(env)?{assignment:String(task),contracts:(Array.isArray(contracts)?contracts:[]).map(String).filter(Boolean)}:
-      feedback ? {assigned_behavior:String(task).slice(0,2600),previous_split_rejection:feedback} :
+    state:feedback ? {assigned_behavior:String(task).slice(0,2600),previous_split_rejection:feedback} :
       {assigned_behavior:String(task).slice(0,2600)},
     questions:{should_split:{type:'noul',instructions:question}}
-  },pipelineV8(env)?output=>{const p=output?.answers?.should_split?.noul;return {attempt:0,p,...(Number.isFinite(Number(env.SPLIT_FLOOR))?{floor:Number(env.SPLIT_FLOOR),caught:p<=Number(env.SPLIT_FLOOR)}:{})};}:null);
+  },null);
   const probability=splitProbability(answer);
   return {split:probability >= (Number(env.SPLIT_THRESHOLD)||0.7),probability};
 }

@@ -24,13 +24,14 @@ const LEVEL = {
 const FILES = {'USAGE.md': '# Usage\n\nRun `hello Ada`; it prints `Hello, Ada!`.\n', 'hello.js': "function greet(name) { return 'Hello, ' + name + '!'; }\nconsole.log(greet(process.argv[2]));\n"};
 
 test('Clef never deletes: with NO to every review question, every validation, contract and file stays; the reviews are events', async () => {
-  // NO to both review questions; the room's manager still divides (its pre-grade), the judge reads the guide.
+  // NO to both review questions; the room's manager still proposes its division, the judge reads the guide.
   const clef = usualClef({'^(?:split_valid|split_size)$': 0.05, '^judge$': 0.9});
   const leaf = user => deliver(Object.fromEntries(user.prompt.deliver.map(c => [c.path, FILES[c.path]])));
   const {room, calls} = await levelRoom({prompt: PROMPT, split: () => LEVEL, leaf, clef});
   assert.equal(room.get('status'), 'complete', events(room).slice(-10).map(e => `${e.kind}: ${e.body.slice(0, 200)}`).join('\n'));
-  // Reviewed NO on every attempt: the splitter retries, and the last NO hands the level to one worker; nothing is removed.
-  assert.equal(calls.split.length, SPLIT_ATTEMPTS);
+  // Reviewed NO on every attempt: the splitter retries in its one session (each NO done's result), and the last NO hands the level to one worker; nothing is removed.
+  assert.equal(calls.split.length, 1);
+  assert.equal(calls.splitNo.length, SPLIT_ATTEMPTS - 1);
   assert.match(events(room, 'split_review').at(-1).body, /NO on attempt 3 of 3, so the level goes to one worker/);
   assert.equal(room.validationRows().length, LEVEL.validations.length, 'every validation is a row');
   assert.ok(!room.validationRows().some(v => 'notes' in v), 'Clef grades no validation');
@@ -52,5 +53,5 @@ test('Clef never deletes: a doubted division is retried, then admitted whole as 
   assert.equal(reviews.length, 3);
   assert.ok(reviews.every(b => /split_valid p=0\.050/.test(b)));
   assert.match(reviews.at(-1), /NO on attempt 3 of 3, so the level goes to one worker/);
-  assert.deepEqual(room.splitterRows().map(r => r.outcome), ['done', 'done', 'done']);
+  assert.deepEqual(room.splitterRows().map(r => r.outcome), ['done'], 'one session: each NO was done\'s result in it');
 });

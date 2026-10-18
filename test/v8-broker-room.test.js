@@ -62,8 +62,7 @@ function fakeFetch() {
 const sourceModel = (user, system) => system.startsWith('You read one part') ? {says: `Gist of ${user.sources[0].ref}: how widget records are kept.`} :
   {title: /guide/.test(JSON.stringify(user)) ? 'Widget guide' : 'Widget format', says: 'How the widget is laid out and used.'};
 // Clef: the room's manager divides and nothing else does; every other question passes.
-const clefFor = goal => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul:
-  k === 'should_split' ? (String(input.state.assignment).startsWith(goal) ? 0.9 : 0.05) : 0.9}]))});
+const clefFor = () => input => ({answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: 0.9}]))});
 // Workers by the contracts they deliver: in the first round of their session they ask by name ([name, need] pairs),
 // and in the next, having read the answers, they write their files and are done.
 const scripted = answers => (user, _n, _system, {round}) => {
@@ -75,7 +74,7 @@ const scripted = answers => (user, _n, _system, {round}) => {
 const trace = room => events(room).slice(-20).map(e => `${e.actor} ${e.kind}: ${e.body.slice(0, 240)}`).join('\n');
 const has = (id, path, text) => ({id, serves: [path], check: {kind: 'file', path, has: [text]}});
 function brokerRoom({goal, level, answers}) {
-  const r = liveRoom({split: user => user.contracts_you_deliver ? {contracts: user.contracts_you_deliver, validations: [], pieces: []} : level, clef: clefFor(goal), leaf: scripted(answers), source: sourceModel, room_id: 'room-brkr-0001'});
+  const r = liveRoom({split: user => user.contracts_you_deliver ? {contracts: user.contracts_you_deliver, validations: [], pieces: []} : level, clef: clefFor(), leaf: scripted(answers), source: sourceModel, room_id: 'room-brkr-0001'});
   const fetch = fakeFetch();
   Object.assign(r.env, {TEST_FETCH: fetch, FETCH_ALLOW: 'docs.example.com'});
   return {...r, fetch};

@@ -57,22 +57,25 @@ export const noCall = names => `No function was called. The functions are: ${nam
 // spend(), when given, is asked before every model call after the first (the
 // first is the turn the session runs in): true counts that call against the
 // room's turn budget, false means the budget is spent.
-// transcript: [{name, arguments, result}] per call, in order.
-export async function session(env, {system, user, tools, handle, role = '', call = 'session', maxTokens = 4096, noThink = false, mock = null, spend = null}) {
+// transcript: [{name, arguments, result}] per call, in order. messages: the
+// conversation as it stands when the session returns; given back as resume,
+// the same conversation goes on from there (its system and user are those
+// it holds).
+export async function session(env, {system, user, tools, handle, role = '', call = 'session', maxTokens = 4096, noThink = false, mock = null, spend = null, resume = null}) {
   const selected = model(env), transcript = [], offered = typeof tools === 'function' ? tools : () => tools;
-  const messages = [{role: 'system', content: system}, {role: 'user', content: String(user)}];
+  const messages = Array.isArray(resume) && resume.length >= 2 ? [...resume] : [{role: 'system', content: system}, {role: 'user', content: String(user)}];
   for (let round = 1; ; round++) {
     const now = offered(), toolText = JSON.stringify(now).length;
-    if (round > 1 && spend && !spend()) return {ended: false, reason: 'budget', rounds: round - 1, transcript};
+    if (round > 1 && spend && !spend()) return {ended: false, reason: 'budget', rounds: round - 1, transcript, messages};
     let output;
     if (env.MOCK_AI === 'true') {
       const calls = mock ? await mock(round, messages) : [];
-      if (!Array.isArray(calls) || !calls.length) return {ended: false, reason: 'mock', rounds: round - 1, transcript};
+      if (!Array.isArray(calls) || !calls.length) return {ended: false, reason: 'mock', rounds: round - 1, transcript, messages};
       output = {tool_calls: calls};
     } else {
       const {params, suffix, thinking, tight} = modelRequest(selected, maxTokens, {noThink, promptChars: JSON.stringify(messages).length + toolText});
       // The context window is full: the session ends there (a resource limit).
-      if (tight) return {ended: false, reason: 'context', rounds: round - 1, transcript};
+      if (tight) return {ended: false, reason: 'context', rounds: round - 1, transcript, messages};
       const sent = suffix ? messages.map((m, i) => i === 1 ? {...m, content: m.content + suffix} : m) : messages;
       output = await traced(env, {kind: 'model', name: call, role, model: selected, round, tools: now.length, max_tokens: params.max_tokens ?? params.max_completion_tokens, no_think: !!noThink, thinking},
         () => env.AI.run(selected, {messages: sent, tools: now, ...params}), o => ({tool_calls: toolCallsOf(o, round).length}));
@@ -96,7 +99,7 @@ export async function session(env, {system, user, tools, handle, role = '', call
       transcript.push({name: c.name, arguments: parsed.args ?? c.arguments ?? null, result: result ?? null});
       if (end) break;
     }
-    if (end) return {ended: true, end: end.value, reason: 'ended', rounds: round, transcript};
+    if (end) return {ended: true, end: end.value, reason: 'ended', rounds: round, transcript, messages};
     messages.push({role: 'assistant', content: '', tool_calls: asked}, ...results);
   }
 }

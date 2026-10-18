@@ -353,3 +353,60 @@ test('drop_validation takes a held validation it may take out, by its id, out of
   // With nothing it may take out, there is no such function.
   assert.deepEqual(splitterCall(splitterState({own: [own], held}), 'drop_validation', {id: 'V1'}).result, {error: 'There is no function "drop_validation".'});
 });
+
+// Owner, 2026-10-18: "the spltiter is going to retry the split not build a new splitter". Clef's review is done's: a NO is done's result,
+// the same session goes on with everything it declared, and a second done is reviewed again.
+test('done reviews a division it completes: a NO is its result (the pieces judged and why), the level stays open with everything declared, and the next done is reviewed again', async () => {
+  const reviews = [];
+  const review = async level => { reviews.push(level.pieces.map(p => p.label)); return reviews.length === 1 ? {result: {rejected: level.pieces, problems: ['why']}} : {end: level}; };
+  const s = splitterState({own: [CONVERT], divide: true, review, held: [1, 2, 3].map(i => ({id: `V${i}`, serves: ['convert'], check: {kind: 'command', argv: ['convert', `${i}`], expect: {stdout_has: [`${i}`]}}}))});
+  s.own[0] = {...CONVERT, serves: ['V1', 'V2', 'V3']};
+  for (const label of ['A', 'B']) assert.ok(splitterCall(s, 'piece', {label, task: `Write ${label}`, contracts: ['convert']}).result.stored);
+  const first = await splitterCall(s, 'done', {});
+  assert.deepEqual(first, {result: {complete: false, rejected: s.pieces, problems: ['why']}});
+  assert.equal(s.done, false, 'the session goes on');
+  assert.deepEqual(levelView(s).pieces.map(p => p.label), ['A', 'B'], 'nothing declared is lost');
+  assert.deepEqual(splitterCall(s, 'drop_piece', {label: 'B'}).result, {dropped: 'B', pieces: 1});
+  assert.ok(splitterCall(s, 'piece', {label: 'C', task: 'Write C', contracts: ['convert']}).result.stored);
+  const second = await splitterCall(s, 'done', {});
+  assert.deepEqual(second.result, {complete: true});
+  assert.deepEqual(second.end.pieces.map(p => p.label), ['A', 'C']);
+  assert.deepEqual(reviews, [['A', 'B'], ['A', 'C']]);
+  // A level with no division to review completes as before, with no review.
+  const plain = splitterState({divide: false, review: () => { throw new Error('reviewed'); }});
+  assert.deepEqual(splitterCall(plain, 'done', {}).result, {complete: true});
+});
+
+// Owner, 2026-10-18: an unchanged answer goes back to the creator of the statement: the splitter restates that one piece with piece, contract and the check functions.
+test('a restatement states one piece anew: piece takes its task under its label, contract states a contract it delivers anew under its name (keeping the validations that serve it), and done completes once the piece is stated', () => {
+  const given = {...CONVERT, serves: ['V1', 'V2', 'V3']};
+  const held = [1, 2, 3].map(i => ({id: `V${i}`, serves: ['convert'], check: {kind: 'command', argv: ['convert', `${i}`], expect: {stdout_has: [`${i}`]}}}));
+  const s = splitterState({own: [given], held, droppable: ['V1', 'V2', 'V3'], restate: true, divide: false});
+  assert.deepEqual(splitterTools(s.divide || s.restate, false, true).map(t => t.name).filter(n => ['piece', 'drop_piece', 'drop_validation'].includes(n)), ['piece', 'drop_piece', 'drop_validation']);
+  assert.deepEqual(splitterCall(s, 'done', {}).result, {complete: false, missing: ['the piece, declared with piece: its task under its label, and the contracts it delivers.']});
+  assert.deepEqual(splitterCall(s, 'contract', {...CONVERT, does: 'converts a Celsius temperature to Fahrenheit, printing one decimal'}).result, {stored: 'convert', kind: 'command', stated_anew: true, examples_needed: 3});
+  assert.equal(s.own[0].does, 'converts a Celsius temperature to Fahrenheit, printing one decimal');
+  assert.deepEqual(s.own[0].serves, ['V1', 'V2', 'V3'], 'the validations that serve it stay');
+  assert.ok(splitterCall(s, 'piece', {label: 'Converter', task: 'Write the converter; it prints one decimal.', contracts: ['convert']}).result.stored);
+  assert.match(splitterCall(s, 'piece', {label: 'Other', task: 'x', contracts: ['convert']}).result.error, /the piece is declared already, labelled "Converter": drop_piece takes it out/);
+  const out = splitterCall(s, 'done', {});
+  assert.deepEqual(out.result, {complete: true});
+  assert.deepEqual(out.end.pieces, [{label: 'Converter', task: 'Write the converter; it prints one decimal.', contracts: ['convert'], uses: []}]);
+  assert.equal(out.end.contracts[0].does, 'converts a Celsius temperature to Fahrenheit, printing one decimal');
+  // Outside a restatement a contract it delivers is not stated again.
+  assert.match(splitterCall(splitterState({own: [given]}), 'contract', CONVERT).result.error, /is already declared: it is one of the contracts you deliver/);
+});
+
+test('a session the room\'s turn budget ends hands back its conversation, and given back as resume the same conversation goes on from its last call', async () => {
+  const sent = [];
+  const env = {AI: {run: async (_m, input) => { sent.push(input.messages); return {tool_calls: [{name: sent.length === 1 ? 'level' : 'done', arguments: {}}]}; }}};
+  let spent = 0;
+  const first = await splitLevel(env, {assignment: 'x'}, {divide: false}, {spend: () => ++spent < 1});
+  assert.equal(first.reason, 'budget');
+  assert.equal(first.level, null);
+  assert.deepEqual(first.messages.map(m => m.role), ['system', 'user', 'assistant', 'tool']);
+  const again = await splitLevel(env, {assignment: 'ignored: the conversation holds its request'}, {divide: false}, {resume: first.messages});
+  assert.equal(again.reason, 'ended');
+  assert.deepEqual(sent[1].slice(0, 4), first.messages, 'the model reads the same conversation, its last call\'s result included');
+  assert.equal(JSON.parse(sent[1][1].content).assignment, 'x');
+});

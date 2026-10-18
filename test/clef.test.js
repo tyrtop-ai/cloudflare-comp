@@ -124,21 +124,14 @@ test('v7.15.9: the model picker and the settings agree, and each model is called
 // ------------------------------------------------------------------ v8 (S6)
 // Under v8 (the room's env says PIPELINE 'v8') every Clef question is a
 // CLEF text from src/prompts.js (§6.4), with state keys about work, not code.
-// v8 live 5: the pre-grade reads the assignment and the row's contracts, one line each; it is asked once, before any splitter call, so no feedback reaches it.
-test('v8 live 5: the pre-grade asks CLEF.split over {assignment, contracts}, with no rejection in its state',async()=>{
+// Owner, 2026-10-18: "remove the pre grade ... flat remove it". No Clef question pre-grades an assignment under v8; a v7 room keeps its gate, byte for byte.
+test('v8: there is no pre-grade question; a v7 room keeps its split gate, byte for byte',async()=>{
   const {CLEF}=await import('../src/prompts.js');
-  const asked=[];
-  const env={PIPELINE:'v8',AI:{run:async(_name,input)=>{asked.push(input);return {answers:{should_split:{noul:0.598}}};}}};
-  const contracts=['file app.py (app.py): Runs the issue tracker server; serves R1, R2, R3, R4','page index.html (index.html): Displays list of tickets; serves R2, R4'];
-  const r=await shouldSplit(env,'A page and its styles',{split_feedback:{reason:'both pieces wrote the page'}},contracts);
-  assert.equal(r.probability,0.598);
-  assert.equal(asked[0].questions.should_split.instructions,CLEF.split);
-  assert.equal(asked[0].questions.should_split.type,'noul');
-  assert.deepEqual(asked[0].state,{assignment:'A page and its styles',contracts});
-  // A v7 room keeps its question and state, byte for byte.
-  await shouldSplit({AI:env.AI},'x',{});
-  assert.match(asked[1].questions.should_split.instructions,/^Can this requested CODE be written/);
-  assert.deepEqual(asked[1].state,{assigned_behavior:'x'});
+  assert.ok(!('split' in CLEF));
+  const asked=[],AI={run:async(_name,input)=>{asked.push(input);return {answers:{should_split:{noul:0.598}}};}};
+  await shouldSplit({AI},'x',{});
+  assert.match(asked[0].questions.should_split.instructions,/^Can this requested CODE be written/);
+  assert.deepEqual(asked[0].state,{assigned_behavior:'x'});
 });
 
 test('v8: Clef reviews a division in one call with only the owner\'s two questions: given the original and the pieces, is it valid, and are the pieces not too small', async () => {
@@ -158,19 +151,17 @@ test('v8: Clef reviews a division in one call with only the owner\'s two questio
   await assert.rejects(reviewLevel({PIPELINE: 'v8', AI: {run: async () => ({answers: {split_valid: {noul: 0.5}}})}}, {pieces}), /no valid review/);
 });
 
-test('v8: Clef grades the original as written: the pre-grade, the review and the reach questions carry the assignment, every piece\'s label and task and every contract, unclipped', async () => {
+test('v8: Clef grades the original as written: the review and the reach questions carry the assignment, every piece\'s label and task and every contract, unclipped', async () => {
   const {reviewLevel, pieceReach} = await import('../src/model.js');
   const asked = [], env = {PIPELINE: 'v8', AI: {run: async (_name, input) => { asked.push(input); return {answers: Object.fromEntries(Object.keys(input.questions).map(k => [k, {noul: 0.8}]))}; }}};
   const assignment = 'Build the whole tracker: '.repeat(400).trim();
   const contracts = Array.from({length: 30}, (_, i) => ({name: `f${i}`, kind: 'function', path: `f${i}.py`, does: `does step ${i} ${'in full detail '.repeat(20).trim()}`}));
   const lines = ['x'.repeat(3000), ...contracts.map(c => `function ${c.name}: ${c.does}`)];
-  await shouldSplit(env, assignment, null, lines);
-  assert.deepEqual(asked[0].state, {assignment, contracts: lines});
   const pieces = [{label: 'The first piece, named in more than seventy characters for this test', task: 'Write it. '.repeat(300).trim(), contracts: contracts.slice(0, 15).map(c => c.name)},
     {label: 'The second piece, named in more than seventy characters for this test too', task: 'Write that. '.repeat(300).trim(), contracts: contracts.slice(15).map(c => c.name)}];
   const validations = contracts.map((c, i) => ({id: `v${i}`, serves: [c.name], says: 'what it says '.repeat(40).trim(), check: {kind: 'call', steps: [{call: c.name, args: ['a'.repeat(400)], expect: 'b'.repeat(400)}]}}));
   await reviewLevel(env, {assignment, contracts, pieces});
-  const st = asked[1].state;
+  const st = asked[0].state;
   assert.equal(st.assignment, assignment);
   assert.equal(st.contracts.length, 30);
   assert.deepEqual(st.pieces.map(p => [p.label, p.task]), pieces.map(p => [p.label, p.task]));

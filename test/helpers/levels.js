@@ -53,13 +53,12 @@ export function pieceRunsAlone(piece = {}, installed = []) {
     return true;
   });
 }
-// The usual Clef: the room's manager divides (its pre-grade is above the
-// floor), any level whose contracts were given is caught (one worker), a
-// manager chooses as choiceP says, and every review, scope and judging
-// question says yes.
+// The usual Clef: a manager chooses as choiceP says, and every review,
+// scope and judging question says yes (a division a scripted splitter
+// proposes for a level its fake gave no pieces is answered NO by the room
+// helper: WHOLE).
 export const usualClef = (overrides = {}) => clefBy((key, state, input) => {
   for (const [re, v] of Object.entries(overrides)) if (new RegExp(re).test(key)) return typeof v === 'function' ? v(key, state, input) : v;
-  if (key === 'should_split') return state.contracts?.length ? 0.05 : 0.9;
   return choiceP(key, state) ?? 0.9;
 });
 
