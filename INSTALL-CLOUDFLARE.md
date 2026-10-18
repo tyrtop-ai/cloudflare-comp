@@ -156,7 +156,7 @@ npx wrangler artifacts repos list --namespace default   # empty until the first 
 npx wrangler tail qwen-control-plane-v4 --format pretty # live logs, leave running during a run
 ```
 
-For v8, you can check how a box's host name reads. Every command of an agent's session runs through the host-name wrapper (`/opt/box/hostname.py`) as the box's root, under the box's own name (`box-` and 16 hex characters). The probe runs the wrapper as the image's default user (uid 10001), in a user namespace, not as root. Deploy with the probe on, ask for its `hostname` item, then deploy again with the probe off:
+For v8, you can check how a box's host name reads. Every command of an agent's session runs through the host-name wrapper (`/opt/box/hostname.py`) as the box's root, under the box's own name (`box-` and 16 hex characters). The probe runs the wrapper the same way, as root in the box's folder. Deploy with the probe on, ask for its `hostname` item, then deploy again with the probe off:
 
 ```bash
 npx wrangler deploy --var BOX_PROBE:1

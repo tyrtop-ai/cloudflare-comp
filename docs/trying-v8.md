@@ -82,7 +82,7 @@ The image holds `/opt/box/hostname.py`, and every command of an agent's session 
 
 Whatever the compiler then observes in its box, it reports as it observed it. Whether a Python server binds in a live compiler's box has not been observed since the redesign.
 
-After deploying, you can run the probe's `hostname` item once (section 6.1): `runner_named` says whether the wrapper names the box when the image's default user (uid 10001) runs it, in a user namespace of its own. A session runs it as the box's root, without a user namespace, which the probe does not try.
+After deploying, you can run the probe's `hostname` item once (section 6.1): `runner_named` says whether the wrapper names the box when it runs as a session's commands do: as the box's root, in its folder, without a user namespace.
 
 ### 6.3 The prewarmed box
 
@@ -115,7 +115,7 @@ The full probe opens about 70 boxes and takes a few minutes; keep `curl` waiting
 | `network` | with the internet off: TCP 1.1.1.1:53 and :443, DNS, HTTP 80/443, ICMP; plus a control box with the internet on | that `enableInternet: false` really holds, should a box need it (no v8 box has the internet off: a worker's, a compiler's and a grading's all have it on) |
 | `caps`, `unshare` | `CapEff` of an exec (default user, uid 10001, uid 0), and which namespaces `unshare` may create | what an agent's commands (uid 0) may do inside a box |
 | `env` | environment variable names of an exec and of PID 1 | that nothing secret reaches a box |
-| `hostname` | the platform's host name (scrubbed like any id, with each label's length) and Python's `getfqdn` of it; the name a command run by the image's default user (uid 10001) runs under through `/opt/box/hostname.py` (`runner_named`: it is the box's name, and `getfqdn` answers it); whether uid 0 could set the platform's name itself | whether the wrapper every session's command runs through can name a box in this deployment (section 6.2; the probe runs it as uid 10001, a session as root) |
+| `hostname` | the platform's host name (scrubbed like any id, with each label's length) and Python's `getfqdn` of it; the name a command run as root, as a session's are, runs under through `/opt/box/hostname.py` (`runner_named`: it is the box's name, and `getfqdn` answers it); whether uid 0 could set the platform's name itself | whether the wrapper every session's command runs through can name a box in this deployment (section 6.2; the probe runs it as root, as a session does) |
 | `snapshot` | `snapshotContainer` time and size, and the restore start | the install box hand-over (S9) |
 | `browser` | Chromium loading `http://app.internal/` through interception, and a WebSocket back | the server box and client box split (S2) |
 | `relay` | a line relayed box A → Durable Object → box B | the bench split's call protocol (S4) |

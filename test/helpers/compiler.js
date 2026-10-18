@@ -166,7 +166,7 @@ export function checkJob(v, contracts = []) {
     if (d?.kind === 'command' && d.path) job.missing_path = d.path;
   }
   if (c.kind === 'call') job.module = byName.get(c.steps?.[0]?.call)?.path || '';
-  if (c.kind === 'http') { const d = byName.get(c.serve); job.run = d?.run?.static ? {static: true} : d?.run?.run ? {...resolve(d.run.run), ready: d.run.ready || '/'} : null; }
+  if (c.kind === 'http') { const d = byName.get(c.serve); job.run = d?.run?.static ? {static: true} : d?.run?.argv ? {...resolve(d.run.argv), ready: d.run.ready || '/'} : null; }
   return job;
 }
 // What CHECKER printed; a run the box could not give, or a CHECKER that printed no verdict, is no result (none).
