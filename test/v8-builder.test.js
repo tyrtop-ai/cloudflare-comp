@@ -36,7 +36,7 @@ test('the builder\'s functions: each does exactly what it is given or says exact
   assert.equal(builderTools(), TOOLS.builder);
   // read_file: a delivered file as it stands, or that there is none and which there are.
   assert.deepEqual(call('read_file', {path: 'store.js'}).result, {path: 'store.js', content: STORE});
-  assert.deepEqual(call('read_file', {path: 'README.md'}).result, {error: MESSAGES.builder_no_file({path: 'README.md', paths: 'report.js, store.js'})}, 'an existing file is outside its world');
+  assert.deepEqual(call('read_file', {path: 'README.md'}).result, {error: MESSAGES.builder_no_file({path: 'README.md', paths: 'report.js, store.js'})}, 'a path its world holds no file at');
   assert.deepEqual(call('read_file', {path: 'store.js', lines: 2}).result, {error: 'read_file has no field "lines"; its fields are path'});
   // rename: every place the name stands whole, never inside a longer name; each changed line shown.
   assert.deepEqual(call('rename', {path: 'report.js', from: './createTicket', to: './store.js', name_characters: '_$'}).result,
@@ -116,6 +116,20 @@ test('a delivered file stays the file at its path: the builder\'s write_file the
   assert.deepEqual([w.files.get('wire.js'), w.renamed.get('wire.js')], ['joined\n', [{from: 'delivered', to: 'joined'}]]);
   assert.deepEqual(builderCall(w, 'delete_file', {path: home('wire.js')}).result, {removed: home('wire.js')});
   assert.deepEqual(builderWork(w, {}, () => '').glue, {});
+});
+
+test('an existing file stays the file at its path as a delivered one does: the builder reads it, renames names in its copy, and its write_file there writes in its own folder and says where; one carried as it is says why it has no text', () => {
+  const home = p => `components/p_builder/${p}`;
+  const w = builderWorld({files: new Map([['README.md', '# Base\n'], ['store.js', STORE]]), from: new Map([['store.js', 'Ticket store']]), carried: new Map([['logo.png', 'binary']]), home});
+  assert.deepEqual(builderCall(w, 'read_file', {path: 'README.md'}).result, {path: 'README.md', content: '# Base\n'});
+  assert.deepEqual(builderCall(w, 'read_file', {path: 'logo.png'}).result, {path: 'logo.png', carried_untouched: 'binary'});
+  assert.deepEqual(builderCall(w, 'read_file', {path: 'nope'}).result, {error: MESSAGES.builder_no_file({path: 'nope', paths: 'README.md, logo.png, store.js'})});
+  assert.deepEqual(builderCall(w, 'write_file', {path: 'README.md', content: 'mine\n'}).result, {written: home('README.md'), characters: 5, says: MESSAGES.builder_beside({path: 'README.md', piece: '', at: home('README.md')})});
+  assert.match(MESSAGES.builder_beside({path: 'README.md', piece: '', at: home('README.md')}), /^README\.md is an existing file, which stays the file there; yours is written at components\/p_builder\/README\.md\.$/);
+  assert.equal(builderCall(w, 'write_file', {path: 'logo.png', content: 'x'}).result.written, home('logo.png'));
+  assert.equal(builderCall(w, 'rename', {path: 'README.md', from: 'Base', to: 'Joined', name_characters: ''}).result.renamed, 'README.md');
+  assert.deepEqual([w.files.get('README.md'), w.renamed.get('README.md')], ['# Joined\n', [{from: 'Base', to: 'Joined'}]]);
+  assert.deepEqual(builderCall(w, 'rename', {path: 'logo.png', from: 'a', to: 'b', name_characters: ''}).result, {error: MESSAGES.builder_no_text({path: 'logo.png', why: 'binary'})});
 });
 
 // ------------------------------------------------------------ package directories

@@ -3696,11 +3696,13 @@ export class ControlRoom extends DurableObject {
   // left out and none is chosen over another (copies with one text are one file). Then what this level's builder made of
   // them (builtWork): each renamed file's text where the delivered text is
   // still the one the rename was made from, and the builder's own files
-  // beside them: a delivered file stays the file at its path (the workers
-  // write the code; the builder renames its names), so a file of the
-  // builder's at that path stands in the builder's own folder (ownAt: its
-  // path -> where it stands).
-  // Returns the bundle (bundleFiles' shape) with raw, the files as copied.
+  // beside them: a delivered or existing file stays the file at its path
+  // (the workers write the code; the builder renames its names), so a file
+  // of the builder's at that path stands in the builder's own folder, as its
+  // write_file said (ownAt: its path -> where it stands).
+  // Returns the bundle (bundleFiles' shape) with raw, the files as copied,
+  // and the builder's world: delivered (the delivered and existing files),
+  // deliveredBy, and carriedAsIs (each existing file with no text, with why).
   async joinPiece(m, bid=this.builderOf(m)?.id||null) {
     const files=new Map(),origin=new Map(),placed=new Set(),by=new Map(),copies=[],root=this.partsRoot();
     // Each copy: where it is placed (at), and its writer's own folder (home).
@@ -3740,24 +3742,25 @@ export class ControlRoom extends DurableObject {
     const actor=bid||m;
     if(twice.length)this.noteOnce(actor,'bundle_conflict',`Two files are placed at the same path, so each delivered copy stands in its writer's own folder: ${twice.join(', ')}.`);
     this.addBase(m,files);
-    const raw=new Map(files),work=bid?this.builtWork(bid):null,glue=new Map(),ownAt=new Map(),aside=[];
-    for(const [p,r] of Object.entries(work?.renamed||{}))if(by.has(p)&&r?.base===textHash(files.get(p)))files.set(p,r.text);
-    // The delivered files as the builder's world holds them (its renames in them), each with the child it came from.
-    const delivered=new Map([...files].filter(([p])=>by.has(p))),deliveredBy=new Map(by);
+    const raw=new Map(files),work=bid?this.builtWork(bid):null,glue=new Map(),ownAt=new Map();
+    for(const [p,r] of Object.entries(work?.renamed||{}))if(files.has(p)&&r?.base===textHash(files.get(p)))files.set(p,r.text);
+    // The builder's world: the delivered and existing files at their paths (its renames in them), each delivered one
+    // with the child it came from, and each existing file carried as it is (no text) with why.
+    const delivered=new Map(files),deliveredBy=new Map(by);
+    const carriedAsIs=this.holdsBase(m)?new Map(query(this.db(),'SELECT path,reason FROM base_passthrough ORDER BY path').filter(r=>!files.has(r.path)).map(r=>[r.path,r.reason||'carried untouched'])):new Map();
     // The builder's own files stay its own (built:<builder>, its world), each in the piece (glue): at its path, or in
-    // its own folder where a delivered or an existing file stands at that path (owner, 2026-10-16 05:21: the
-    // builder "writes glue between the interfaces created by the worker"; only workers write the code, an existing
-    // file's included).
-    const existing=this.holdsBase(m)?new Set([...this.basePaths(),...this.passthroughPaths()]):new Set(),home=bid&&this.builderHome(bid);
+    // its own folder where a delivered or an existing file stands at that path, as its write_file said (owner,
+    // 2026-10-16 05:21: the builder "writes glue between the interfaces created by the worker"; only workers write
+    // the code, an existing file's included).
+    const home=bid&&this.builderHome(bid);
     for(const [p,t] of Object.entries(work?.glue||{})) {
-      const at=by.has(p)||existing.has(p)?home(p):p;
-      if(at!==p){ownAt.set(p,at);aside.push(`${p} (the builder's at ${at})`);}
+      const at=delivered.has(p)||carriedAsIs.has(p)?home(p):p;
+      if(at!==p)ownAt.set(p,at);
       files.set(at,t);glue.set(at,t);
     }
-    if(aside.length)this.noteOnce(actor,'bundle_conflict',`A delivered or existing file stands at the path of the builder's own file, so the builder's file stands in its own folder: ${aside.join(', ')}.`);
-    return {...this.pieceBundle(m,files,origin,placed,by,glue,raw),delivered,deliveredBy,ownAt};
+    return {...this.pieceBundle(m,files,origin,placed,by,glue,raw),delivered,deliveredBy,carriedAsIs,ownAt};
   }
-  // Where a builder's own file at a path stands when a delivered file holds that path: its own folder.
+  // Where a builder's own file at a path stands when a delivered or existing file holds that path: its own folder.
   builderHome(bid) { const label=this.node(bid)?.label||BUILDER_LABEL,root=this.partsRoot(); return p=>packagePath(label,p,bid,root); }
   // What a builder made of its children's files: {renamed: {path: {base,
   // text, renames}}, glue: {path: text}} (src/builder.js builderWork).
@@ -3832,8 +3835,8 @@ export class ControlRoom extends DurableObject {
     this.db().exec('UPDATE agents SET turn=turn+1 WHERE id=?',id);
     const seen=this.joinedInput(m),piece=await this.joinPiece(m,id),labels=new Map(this.children(m).map(c=>[c.id,c.label]));
     const from=new Map([...piece.deliveredBy].map(([p,c])=>[p,labels.get(c)||c]));
-    // Its world: the delivered files, and its own files where the piece holds them (its own folder for one where a delivered file stands).
-    const world=builderWorld({files:piece.delivered,from,glue:new Map(Object.entries(this.builtWork(id)?.glue||{}).map(([p,t])=>[piece.ownAt.get(p)||p,t])),home:this.builderHome(id)});
+    // Its world: the delivered and existing files, and its own files where the piece holds them (its own folder for one where a delivered or existing file stands).
+    const world=builderWorld({files:piece.delivered,from,carried:piece.carriedAsIs,glue:new Map(Object.entries(this.builtWork(id)?.glue||{}).map(([p,t])=>[piece.ownAt.get(p)||p,t])),home:this.builderHome(id)});
     this.event(id,'working',`Turn ${n.turn+1}; joining ${world.files.size} file(s) of ${this.node(m)?.label||m}'s children.`);
     const out=await builderSession(this.inferenceEnv('builder'),this.builderView(m,world),world);
     this.save(`built:${id}`,builderWork(world,this.builtWork(id)||{},p=>textHash(piece.raw.get(p))));
@@ -3857,10 +3860,12 @@ export class ControlRoom extends DurableObject {
   }
   // The builder's request: the design artifact (its manager's level file, as
   // the manager's repository holds it) and the paths of the files it joins,
-  // each with the piece it came from, and its own.
+  // each with the piece it came from or marked existing (one carried as it
+  // is, with why), and its own.
   builderView(m, world) {
-    const files=[...world.files.keys()].sort().map(p=>({path:p,piece:world.from.get(p)||''}));
-    return {design:this.levelDesign(m),files:[...files,...[...world.glue.keys()].sort().map(p=>({path:p,yours:true}))]};
+    const files=[...world.files.keys()].sort().map(p=>world.from.has(p)?{path:p,piece:world.from.get(p)}:{path:p,existing:true});
+    const carried=[...world.carried].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([p,why])=>({path:p,existing:true,carried_untouched:why}));
+    return {design:this.levelDesign(m),files:[...files,...carried,...[...world.glue.keys()].sort().map(p=>({path:p,yours:true}))]};
   }
   // Join and store a builder's piece; one piece_link span. v8 M3 review
   // (M1): compare and store. The piece's input and its owned digest are read
