@@ -2257,3 +2257,9 @@ the manager routes ideas
 
 the workers work on their own little box, so they work on the architecture that was handed to them.
 ````
+
+## 2026-10-18 00:00
+
+````text
+why am I getting multiple splitters for a manager?
+````
