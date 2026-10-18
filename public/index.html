@@ -55,7 +55,7 @@
             <input id="max-children" type="range" min="0" max="1000" step="1" value="0" data-min="2" data-max="64" /></div>
           <div class="range-control"><label for="check-seconds">Verification time, seconds (v8) <input id="check-seconds-value" class="count" type="number" inputmode="numeric" min="1" max="86400" step="1" value="200" aria-label="Verification time in seconds, exact value" /></label>
             <input id="check-seconds" type="range" min="0" max="1000" step="1" value="0" data-min="1" data-max="86400" /></div>
-          <p class="helper">How long one compile's checks of a level may run, in all. What the project does within it is what the checks observe: a command still running, a page that never showed what a step expects, a server that never answered, all go back to the workers as failures.</p>
+          <p class="helper">How long one command in an agent's box may run: each command a worker or a compiler runs, and a benchmark's grading command. A command still running at the end of it comes back with its result saying it ran out of time, and the agent judges what that means. A box also gets this long to start, and is destroyed three times this long after it opens or after its last command starts, whichever is later.</p>
           <label for="model" id="model-label">Manager model (splits, decisions, linking)</label>
 
           <select id="model">
@@ -134,7 +134,7 @@
         </section>
         <section class="panel sources-panel" id="sources-panel">
           <div class="section-head"><h2>Sources and base</h2><span class="right-note" id="sources-verdict">None</span></div>
-          <div id="sources" class="panel-view"><p class="empty">Links written in the goal are read once, at the start, and a run can start from a public GitHub repo or this room's previous result.</p></div>
+          <div id="sources" class="panel-view"><p class="empty">Links written in a prompt (the start prompt, an Adjust now change or a queued prompt) are read when the room takes that prompt, and a run can start from a public GitHub repo or this room's previous result.</p></div>
         </section>
         <section class="panel tree-panel">
           <div class="section-head"><span class="counter">03</span><h2>Ownership tree</h2><span class="right-note">Observer sees the tree. Individual models don't.</span><button type="button" class="secondary tree-save" id="save-tree" title="Save the ownership graph as an SVG image">Save as SVG</button></div>

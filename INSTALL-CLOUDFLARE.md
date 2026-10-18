@@ -105,9 +105,9 @@ npx wrangler secret put GITHUB_TOKEN
 
 Use a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) limited to the repositories you export to, with **Contents: Read and write** and **Pull requests: Read and write** (GitHub adds **Metadata: Read** itself). The token stays in the Worker: the export reads it from the secret only, never from a request, never returns or logs it, and removes it from every error message. The Worker talks only to `https://github.com` and `https://api.github.com` for exports. Without the secret, `POST /api/export/github` returns `503` with `Set GITHUB_TOKEN with wrangler secret put GITHUB_TOKEN`; downloading the app as a ZIP needs no token.
 
-### Optional: which sites a goal's links may be read from (v8 pipeline)
+### Optional: which sites a prompt's links may be read from (v8 pipeline)
 
-A v8 run reads the `https://` links written in its goal once, at the start. It can also start from a public GitHub repo or a room's previous result (**Start from** in the dashboard, or `base` in `POST /api/run`). Two settings control this. Both go under `vars` in `wrangler.jsonc` and take effect on the next `npm run deploy`.
+A v8 room reads the `https://` links written in each prompt it takes: the start prompt's when the room opens, and a change's or a queued prompt's when it is applied. It can also start from a public GitHub repo or a room's previous result (**Start from** in the dashboard, or `base` in `POST /api/run`). Two settings control this. Both go under `vars` in `wrangler.jsonc` and take effect on the next `npm run deploy`.
 
 **`FETCH_ALLOW`**: the hosts links may be read from, as comma-separated host suffixes. Without it, the list is the default in `src/fetcher.js` (`DEFAULT_ALLOW`: GitHub, Hugging Face, a few documentation sites). For example:
 

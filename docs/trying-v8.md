@@ -13,7 +13,7 @@ npx wrangler containers list
 
 The Container image is bigger now (Node LTS, Python 3, Chromium headless shell; about 0.9 GB unpacked), so the first deploy and the first Container start take a few minutes longer. Leave `npx wrangler tail qwen-control-plane-v4 --format pretty` running during the runs.
 
-If you serve the Worker on your own domain, set `SELF_HOSTS` first ([INSTALL-CLOUDFLARE.md](../INSTALL-CLOUDFLARE.md#optional-which-sites-a-goals-links-may-be-read-from-v8-pipeline)).
+If you serve the Worker on your own domain, set `SELF_HOSTS` first ([INSTALL-CLOUDFLARE.md](../INSTALL-CLOUDFLARE.md#optional-which-sites-a-prompts-links-may-be-read-from-v8-pipeline)).
 
 ## 2. Set the room to v8
 
