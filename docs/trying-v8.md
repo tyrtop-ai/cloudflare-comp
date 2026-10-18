@@ -19,7 +19,7 @@ If you serve the Worker on your own domain, set `SELF_HOSTS` first ([INSTALL-CLO
 
 Use a new room for each goal. Set **Pipeline** to **v8** before pressing **Start**. A room keeps the pipeline it started with, and Continue can't change it. Leave the other settings at their defaults, with a turn budget of 100.
 
-The room creates one manager from your prompt, and the manager's splitter states its level through functions. The **Levels** panel then shows each validation (with a pass, fail or untested chip), each manager's level file (a button that opens it), and each splitter step with Clef's verdict on it. The graph shows every agent: managers and workers as circles, link readers, splitters, builders and compilers as squares. The room is done when its manager's compiler observes every validation passing; nothing else completes it. If the room holds, the panel says why:
+The room creates one manager from your prompt, and the manager's splitter states its level through functions. The **Levels** panel then shows each validation (with a pass, fail or untested chip), each manager's level file (a button that opens it), and each splitter session with Clef's verdict in it. The graph shows every agent: managers and workers as circles, link readers, splitters, builders and compilers as squares. The room is done when its manager's compiler observes every validation passing; nothing else completes it. If the room holds, the panel says why:
 
 | Hold | Meaning | What to do |
 |---|---|---|
@@ -46,7 +46,7 @@ The room creates one manager from your prompt, and the manager's splitter states
 
 **"Build a small issue tracker that lets someone create, view, update, and delete tickets."** (the old default)
 - No `start()` requirement is added in v8. The splitter chooses the shape, and the contracts it declares (routes, a page, a command) say what it chose.
-- Watch the graph: each piece is a manager of its own, with its own splitter steps, builder and compiler.
+- Watch the graph: each piece is a manager of its own, with its own splitter (one square, its sessions in its details), builder and compiler.
 - If you have time, run the same goal in a v7 room to compare wall time, repair rounds and whether you'd use the result.
 
 ## 4. A small benchmark
@@ -57,11 +57,11 @@ In the **Benchmarks** panel:
 - **Grading:** a failed grade goes back into the room as a complaint, like anything else, and the room works on it until the task passes or its budget is spent.
 - Use the same model pickers and turn budget as for the rooms above.
 
-Press **Run benchmark**. It keeps going with the page closed. A task room is an ordinary room whose prompt is the task's prompt: for most HumanEval tasks Clef's pre-grade should keep the level whole, so one worker writes the function. A task's outcome is what the room and the grader observed: graded (passed or failed), or a failure when the room failed, held or ran out of turns. A task that was stopped, or whose room stopped with an error, is counted apart from the scored ones. A grading that could not run is no grading: the room is graded again until one observes it.
+Press **Run benchmark**. It keeps going with the page closed. A task room is an ordinary room whose prompt is the task's prompt: for most HumanEval tasks Clef's review should say NO to every division the splitter proposes, so the level goes whole to one worker, which writes the function. A task's outcome is what the room and the grader observed: graded (passed or failed), or a failure when the room failed, held or ran out of turns. A task that was stopped, or whose room stopped with an error, is counted apart from the scored ones. A grading that could not run is no grading: the room is graded again until one observes it.
 
 ## 5. What to send back
 
-- **For each room:** **Export observation JSON**. It contains each manager's level file, the validations and their results, the splitter steps, the complaints and asks, every event and every span. The spans are what the speed analysis reads: each model call (role, model, tokens), each Clef gate, each git phase, each box session, and dispatch delays. Every compiler session, and every worker session that runs a command, has its own box (section 6), so its container span (named `compiler` or `worker`) carries `commands` and `box: {fresh: true, internet: true, image, instance, name, start_ms, ready_ms, cold}`; `start_ms` is that box's start cost. A run's first session normally runs in a box opened earlier (section 6.3): its span adds `prewarmed: true` and `waited_ms`, and a `box` span named `prewarm` records that box's own start.
+- **For each room:** **Export observation JSON**. It contains each manager's level file, the validations and their results, the splitter sessions, the complaints and asks, every event and every span. The spans are what the speed analysis reads: each model call (role, model, tokens), each Clef gate, each git phase, each box session, and dispatch delays. Every compiler session, and every worker session that runs a command, has its own box (section 6), so its container span (named `compiler` or `worker`) carries `commands` and `box: {fresh: true, internet: true, image, instance, name, start_ms, ready_ms, cold}`; `start_ms` is that box's start cost. A run's first session normally runs in a box opened earlier (section 6.3): its span adds `prewarmed: true` and `waited_ms`, and a `box` span named `prewarm` records that box's own start.
 - **For the benchmark:** the JSON from `GET /api/bench?id=<run id>` (task outcomes, times, tokens, room ids), plus the room exports of one or two failed tasks.
 
 **The room export contains your Cloudflare account id**, inside the Artifacts remote URLs. Don't commit it to this repo or post it anywhere public; send it privately. The benchmark status JSON contains no remote URLs or account ids.

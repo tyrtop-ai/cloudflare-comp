@@ -515,3 +515,15 @@ The owner, 2026-10-17: "The runtime should be language adrogenous. It's just mov
 - **"Any code type"** is met by design: the agents install what their files need. The redesign is tested offline with a scripted compiler agent whose commands run for real on the test machine; no language has been tested end to end through a live compiler agent.
 - **Still language-aware:** a manager's `grant` of a new package name offers one option per toolchain row with an install (JavaScript and Python in a new room); the export's run notes and the benchmark graders read the rows' run commands.
 - **Records.** README, INSTALL-CLOUDFLARE, how-it-works, trying-v8, rulings.md and the dashboard's v8 labels say what the code does now.
+
+## Back to the creator; no pre-grade
+
+The owner, 2026-10-18: "It's not "this failed, spin up a new agent" it's "this failed, send it back to creator"", and "yeah remove the pre grade for now. flat remove it". The rulings, with the owner's words, are in docs/owner/rulings.md.
+
+- **One splitter per manager.** Its id is `rowId(manager, 1, 'splitter')`, and each of its sessions is a row of `splitter_sessions` (manager, session, splitter, kind, what it continues, outcome, its calls). The `splitters` table is gone; `split_attempts` entries name the session they were reviewed in.
+- **Clef's review is `done`'s** (`src/splitter.js`, `reviewDivision`): a NO with attempts left is `done`'s result (`{complete: false, rejected, problems}`), and the same session goes on with everything declared. `RETRY` says so ("then call done again"). `split_feedback` and `split_carry` are gone from v8.
+- **A session that ends without `done`** keeps what it goes on from in `split_session:<manager>`: its conversation when the turn budget ended it (`session`'s `resume`), or what it declared when its context window filled.
+- **An unchanged answer is restated, not archived.** `restate` sends the complaints to the worker's level's splitter (`restates:<manager>`, `takeRestate`), whose session restates that piece: `piece` under its label, `contract` stating one of its contracts anew under its name (the only new behaviour; no new function), the check functions and `drop_validation`, explained in the request by `MESSAGES.restate`. `admitLevel` writes the entry and the contracts, `restated` closes the complaints and wakes the same worker. The archive's `complaints` entry and the rebuild request's `complaints` are gone.
+- **No pre-grade.** `CLEF.split`, `split_floor`, `gateContracts` and `gateLine` are gone; the v7 split gate is unchanged. With room for pieces, every splitter proposes a division of two or more and Clef reviews every one.
+- **Dashboard.** One splitter square per manager, its sessions in its details; the Levels panel lists the splitter sessions; Clef's model label names the review of every division.
+- **Tests.** The scripted rooms' splitter answers a NO in the same session; a scripted level with fewer than two pieces where `piece` is offered proposes a division the scripted Clef says NO to, and goes whole to one worker. Budgets of rooms whose levels now take three reviews were raised.
