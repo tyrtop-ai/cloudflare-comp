@@ -57,7 +57,7 @@ In the **Benchmarks** panel:
 - **Grading:** a failed grade goes back into the room as a complaint, like anything else, and the room works on it until the task passes or its budget is spent.
 - Use the same model pickers and turn budget as for the rooms above.
 
-Press **Run benchmark**. It keeps going with the page closed. A task room is an ordinary room whose prompt is the task's prompt: for most HumanEval tasks Clef's review should say NO to every division the splitter proposes, so the level goes whole to one worker, which writes the function. A task's outcome is what the room and the grader observed: graded (passed or failed), or a failure when the room failed, held or ran out of turns. A task that was stopped, or whose room stopped with an error, is counted apart from the scored ones. A grading that could not run is no grading: the room is graded again until one observes it.
+Press **Run benchmark**. It keeps going with the page closed. A task room is an ordinary room whose prompt is the task's prompt: for most HumanEval tasks Clef's review should say NO to every division the splitter proposes, so the level goes whole to one worker, which writes the function. A task's outcome is what the room and the grader observed: graded (passed or failed), or a failure when the room failed, held or ran out of turns. A task that was stopped, or whose room stopped with an error, is counted apart from the scored ones. A grading that could not run is no grading: the room is graded again until one observes it. A grading that ran and gave no grade settles the task as an error. A Python or JavaScript task is graded by its harness's command; a task in any other language by a compiler agent's session, which runs the benchmark's tests in its box and whose result is the grade.
 
 ## 5. What to send back
 
@@ -68,7 +68,7 @@ Press **Run benchmark**. It keeps going with the page closed. A task room is an 
 
 ## 6. Capability boxes: every v8 session in its own box
 
-A v8 room gives each compiler session, and each worker session that runs a command, a **single-use box**: a new Durable Object (`Box`) with its own VM, started with the internet on, opened on the session's first command, holding the session's files in `/work`, and destroyed when the session ends. Each command runs there as the box's root, with no environment but a fixed `PATH`, so the agent installs whatever it needs (`src/box-session.js`). A benchmark's grading opens one of its own with the internet off, and no two benchmark tasks share one. If a box can't be opened (for example, if the image isn't deployed), each `run` says so to the agent; a validation the compiler then gives no result for has none, and the compiler runs again within the room's turn budget. There is no shared Container to fall back to. v7 rooms keep `BuildExecutor` unchanged.
+A v8 room gives each compiler session, and each worker session that runs a command, a **single-use box**: a new Durable Object (`Box`) with its own VM, started with the internet on, opened on the session's first command, holding the session's files in `/work`, and destroyed when the session ends. Each command runs there as the box's root, under the box's own host name (section 6.2), with no environment but a fixed `PATH` (and `BOX_HOSTNAME_STATUS`), so the agent installs whatever it needs (`src/box-session.js`). A benchmark's grading opens one of its own, with the internet on too, and no two benchmark tasks share one. If a box can't be opened (for example, if the image isn't deployed), each `run` says so to the agent; a validation the compiler then gives no result for has none, and the compiler runs again within the room's turn budget. There is no shared Container to fall back to. v7 rooms keep `BuildExecutor` unchanged.
 
 The boxes come from a second Container application in `wrangler.jsonc`. It uses the `durable_object` scheduling policy (public beta) and has three images: `check` (Node, Python 3, Go, gcc and g++, a Java JDK, Ruby, PHP, Rust and their package managers, so a session that needs one of these doesn't wait for its install), `browser` (`check` plus Chromium) and `fetch` (Node only). The first `npm run deploy` builds all three, so it takes longer.
 
@@ -78,11 +78,11 @@ The first box of a run is slow to start: its image is pulled, so it takes 9 to 1
 
 The platform names each box's VM with a label longer than the 63 characters a host name label may have. On such a name Python's `socket.getfqdn` fails (`UnicodeError: encoding with 'idna' codec failed (UnicodeError: label too long)`), and so does `http.server`'s `HTTPServer`, which calls it when it binds, so every Python server would crash.
 
-The image holds `/opt/box/hostname.py`, which runs a command under the box's own name in a user namespace of its own: `box-` followed by the first 16 hex characters of the SHA-256 of the box's Durable Object id (for example `box-3f9a0c27d18e4b65`), with an `/etc/hosts` that resolves it, so `getfqdn` answers without asking DNS. The same name is in each session's span (`box.name`) and in the probe's report.
+The image holds `/opt/box/hostname.py`, and every command of an agent's session runs through it (`src/box-session.js`, `BOX_HOSTNAME`), as the box's root. The command gets host-name and mount namespaces of its own, whose host name is the box's own name: `box-` followed by the first 16 hex characters of the SHA-256 of the box's Durable Object id (for example `box-3f9a0c27d18e4b65`), with an `/etc/hosts` that resolves it, so `getfqdn` answers without asking DNS. The same name is in each session's span (`box.name`) and in the probe's report. When the namespaces can't be made, the command still runs, under the platform's name, and `BOX_HOSTNAME_STATUS` in its environment says which: `set`, or why not.
 
-An agent's commands do not run under it: they run as the box's root under the platform's name, and the agent can use the wrapper or set the name itself if a server of its needs it. Whatever the compiler then observes in its box, it reports as it observed it. Whether a Python server binds in a live compiler's box has not been observed since the redesign.
+Whatever the compiler then observes in its box, it reports as it observed it. Whether a Python server binds in a live compiler's box has not been observed since the redesign.
 
-After deploying, you can run the probe's `hostname` item once (section 6.1): `runner_named` says whether the wrapper works in this deployment's boxes.
+After deploying, you can run the probe's `hostname` item once (section 6.1): `runner_named` says whether the wrapper names the box when the image's default user (uid 10001) runs it, in a user namespace of its own. A session runs it as the box's root, without a user namespace, which the probe does not try.
 
 ### 6.3 The prewarmed box
 
@@ -112,10 +112,10 @@ The full probe opens about 70 boxes and takes a few minutes; keep `curl` waiting
 |---|---|---|
 | `start` | start→ready p50/p95 per image and instance | whether a warm pool is needed (p95 above 1.5 s) |
 | `exec` | exec round trip from a Durable Object, and inside the box | per-check box cost (S2) |
-| `network` | with the internet off: TCP 1.1.1.1:53 and :443, DNS, HTTP 80/443, ICMP; plus a control box with the internet on | that `enableInternet: false` really holds (a benchmark's grading box) |
+| `network` | with the internet off: TCP 1.1.1.1:53 and :443, DNS, HTTP 80/443, ICMP; plus a control box with the internet on | that `enableInternet: false` really holds, should a box need it (no v8 box has the internet off: a worker's, a compiler's and a grading's all have it on) |
 | `caps`, `unshare` | `CapEff` of an exec (default user, uid 10001, uid 0), and which namespaces `unshare` may create | what an agent's commands (uid 0) may do inside a box |
 | `env` | environment variable names of an exec and of PID 1 | that nothing secret reaches a box |
-| `hostname` | the platform's host name (scrubbed like any id, with each label's length) and Python's `getfqdn` of it; the name a command runs under through `/opt/box/hostname.py` (`runner_named`: it is the box's name, and `getfqdn` answers it); whether uid 0 could set the platform's name itself | whether an agent's server can get a valid host name in its box (section 6.2) |
+| `hostname` | the platform's host name (scrubbed like any id, with each label's length) and Python's `getfqdn` of it; the name a command run by the image's default user (uid 10001) runs under through `/opt/box/hostname.py` (`runner_named`: it is the box's name, and `getfqdn` answers it); whether uid 0 could set the platform's name itself | whether the wrapper every session's command runs through can name a box in this deployment (section 6.2; the probe runs it as uid 10001, a session as root) |
 | `snapshot` | `snapshotContainer` time and size, and the restore start | the install box hand-over (S9) |
 | `browser` | Chromium loading `http://app.internal/` through interception, and a WebSocket back | the server box and client box split (S2) |
 | `relay` | a line relayed box A → Durable Object → box B | the bench split's call protocol (S4) |
