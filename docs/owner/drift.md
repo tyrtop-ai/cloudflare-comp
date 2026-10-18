@@ -14,7 +14,7 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - drift, `src/index.js:9274`
 - Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists. || 2026-10-15 15:57: "in general I never want to tell an agent what they can't do. I want it to just simply be archiecturally the only path …
 - Required: No path rule refuses what an agent writes or tells it what it can't do. An agent's world is its own repo and what exists, and the runtime's own folders stay outside that world by construction.
-- Fixed in: fd50fe7: the refusal of a .git path or one over the store's 255/512 limit stays (the file store, putFile and the ZIP and GitHub exports, all shared with v7, cannot hold one); MESSAGES.too_long now says the limit is the store's, not a repository's. Put to the owner in plain words: keep it, or give v8 its own store and export path checks so only .git is refused.
+- Fixed in: fd50fe7 then fb184d2: the refusal is gone, as the owner had ruled (2026-10-16 05:39 'there should be no path rules for agents'; 2026-10-17 'I'm not going to design for some 1% scenario'): unheldPath, records_folder and too_long are deleted; write_file and contract take any path; README, how-it-works, rulings.md, CHANGELOG-v8 and the test titles say there is no path rule.
 
 ### R2-worker/code-4: Broker rewrites existing files and linked pages it quotes to a worker (sanitizeText envelope escaping, invisible-char stripping) and labels them 'untrusted'
 - extra, `src/broker.js:113`
@@ -32,7 +32,7 @@ Every finding of every round, with each judge's vote and reason: `redteam-findin
 - unfixed, `src/worker.js:52`
 - Owner (2026-10-16 05:39): there should be no per command blocklists, there should be no path rules for agents, it's literally performed via architecture. They have commands they can run, things they can see, we don't block things here, okay? It's just they have their world that exists.
 - Required: No path rule should refuse a worker's write. Anything a repository cannot hold should be outside the worker's world by construction, not a refusal text. Until then, the changelog, docs and test title must not claim there is no path rule.
-- Fixed in: fd50fe7: the records stop denying the refusal: README, how-it-works, rulings.md, a CHANGELOG-v8 correction and both test titles say write_file and contract refuse a .git path and one past the store's limit, which is for the owner to rule on.
+- Fixed in: fd50fe7 then fb184d2: the refusal is gone, as the owner had ruled (2026-10-16 05:39 'there should be no path rules for agents'; 2026-10-17 'I'm not going to design for some 1% scenario'): unheldPath, records_folder and too_long are deleted; write_file and contract take any path; README, how-it-works, rulings.md, CHANGELOG-v8 and the test titles say there is no path rule.
 
 ### R5-edges/code-1: A base repo's glue/ and .recursive/ files, and names with format characters or not in NFC, are dropped before any agent sees them
 - unfixed, `src/room-inputs.js:99`
