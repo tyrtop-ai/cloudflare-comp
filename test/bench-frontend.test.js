@@ -87,7 +87,7 @@ test('the runs list, one run\'s results with a link to each task\'s room, and a 
   assert.equal(context.benchRunsMarkup([]), '<p class="empty">No benchmark runs yet.</p>');
   const results = context.benchResultsMarkup(RUN);
   assert.match(results, /pass@1 <b>50\.0%<\/b> <span class="faint">\(1 passed of 2 scored: pass \+ fail; 0 errors not scored\)/);
-  assert.match(results, /title="pass@1 = first gradings passed ÷ scored tasks \(pass \+ fail\); errors \(a room that could not run, an observer&#39;s stop\) are not scored; a grading that could not run is graded again until it observes"/);
+  assert.match(results, /title="pass@1 = first gradings passed ÷ scored tasks \(pass \+ fail\); errors \(a room that could not run, an observer&#39;s stop, a grading that gave no grade\) are not scored; a grading that could not run is graded again until it observes"/);
   assert.ok(!/until done/.test(results), 'a run stored without the until-done aggregate shows pass@1 alone');
   assert.match(results, /workers llama-4-scout-17b-16e-instruct · 2 at once · keeps failed rooms · budget 60 turns · dataset https:\/\/raw\.githubusercontent\.com\/toy\/bench\/main\/he\.jsonl · 0123456789ab · 1 rows skipped/);
   assert.match(results, /<td class="mono">HumanEval\/0<\/td><td><span class="req-chip pass">pass<\/span><\/td><td class="num">60 s<\/td><td class="num">10,000<\/td><td class="num">3\.0 s<\/td><td><a href="\/\?room=bench-abcdef012345-0-0" target="_blank" rel="noopener" class="mono">open room<\/a><\/td>/);

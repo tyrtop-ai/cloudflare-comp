@@ -665,7 +665,7 @@ const benchOutcome=t=>t.outcome||(t.status==='running'?'running':'queued');
 // until it observes.
 // Until done is the pass rate once the grader's failures went back to the
 // rooms, and the mean gradings it took.
-const SCORED_NOTE='pass@1 = first gradings passed ÷ scored tasks (pass + fail); errors (a room that could not run, an observer\'s stop) are not scored; a grading that could not run is graded again until it observes';
+const SCORED_NOTE='pass@1 = first gradings passed ÷ scored tasks (pass + fail); errors (a room that could not run, an observer\'s stop, a grading that gave no grade) are not scored; a grading that could not run is graded again until it observes';
 const benchRate=a=>pct(a?.pass_at_1);
 const UNTIL_DONE_NOTE='the grader\'s failures go back to each room as complaints until a grading passes or the room ends';
 const untilDoneNote=a=>a?.until_done?`<span title="${esc(UNTIL_DONE_NOTE)}">until done <b>${pct(a.until_done.pass_rate)}</b> <span class="faint">(${count(a.until_done.pass)} of ${count(a.until_done.scored)}; mean ${a.until_done.mean_rounds_to_done??'–'} gradings)</span></span>`:'';
